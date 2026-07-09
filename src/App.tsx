@@ -1,50 +1,128 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
+const services = [
+  { name: "OpenClaw", status: "Running" },
+  { name: "Ollama", status: "Running" },
+  { name: "Docker", status: "Running" },
+  { name: "Cherry Studio", status: "Running" },
+];
+
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [message, setMessage] = useState("");
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  async function startAll() {
+  setMessage("🚀 Starting services...");
 
+  const result = await invoke<string>("start_all");
+
+  setMessage(result);
+}
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
+    <div
+      style={{
+        display: "flex",
+        height: "100vh",
+        background: "#0f172a",
+        color: "white",
+        fontFamily: "Arial, sans-serif",
+      }}
+    >
+      {/* Sidebar */}
+      <div
+        style={{
+          width: "220px",
+          background: "#111827",
+          padding: "24px",
+          borderRight: "1px solid #374151",
         }}
       >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+        <h2>🤖 AI OS</h2>
+
+        <p>🏠 Dashboard</p>
+        <p>🚀 Services</p>
+        <p>💾 Backup</p>
+        <p>📜 Logs</p>
+        <p>⚙️ Settings</p>
+      </div>
+
+      {/* Main */}
+      <div
+        style={{
+          flex: 1,
+          padding: "32px",
+        }}
+      >
+        <h1>Russell AI OS</h1>
+        <p style={{ color: "#9ca3af" }}>
+          Your Personal AI Workspace
+        </p>
+
+        <h2 style={{ marginTop: 40 }}>System Status</h2>
+
+        {services.map((item) => (
+          <div
+            key={item.name}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              background: "#1f2937",
+              padding: "16px",
+              borderRadius: "12px",
+              marginTop: "12px",
+            }}
+          >
+            <span>{item.name}</span>
+
+            <span style={{ color: "#22c55e" }}>
+              ● {item.status}
+            </span>
+          </div>
+        ))}
+
+        <div style={{ marginTop: "32px" }}>
+          <button
+            onClick={startAll}
+            style={{
+              padding: "12px 24px",
+              marginRight: "12px",
+              background: "#2563eb",
+              border: "none",
+              borderRadius: "10px",
+              color: "white",
+              cursor: "pointer",
+            }}
+          >
+            🚀 Start All
+          </button>
+
+          <button
+            style={{
+              padding: "12px 24px",
+              background: "#374151",
+              border: "none",
+              borderRadius: "10px",
+              color: "white",
+              cursor: "pointer",
+            }}
+          >
+            💾 Backup
+          </button>
+          {message && (
+  <p
+    style={{
+      marginTop: "20px",
+      color: "#22c55e",
+      fontWeight: "bold",
+    }}
+  >
+    {message}
+  </p>
+)}
+        </div>
+      </div>
+    </div>
   );
 }
 
