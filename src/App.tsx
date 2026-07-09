@@ -2,14 +2,14 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
-const services = [
-  { name: "OpenClaw", status: "Running" },
-  { name: "Ollama", status: "Running" },
-  { name: "Docker", status: "Running" },
-  { name: "Cherry Studio", status: "Running" },
-];
-
 function App() {
+  const [services, setServices] = useState([
+  { name: "OpenClaw", status: "Unknown" },
+  { name: "Ollama", status: "Unknown" },
+  { name: "Docker", status: "Unknown" },
+  { name: "Cherry Studio", status: "Unknown" },
+]);
+
   const [message, setMessage] = useState("");
 
   async function startAll() {
@@ -19,7 +19,26 @@ function App() {
 
   setMessage(result);
 }
-  return (
+  async function healthCheck() {
+  setMessage("🩺 Checking health...");
+
+  const result = await invoke<string>("health_check");
+
+  setMessage(result);
+
+  setServices([
+  { name: "OpenClaw", status: result.includes("OpenClaw: 🟢") ? "Running" : "Stopped" },
+  { name: "Ollama", status: result.includes("Ollama: 🟢") ? "Running" : "Stopped" },
+  { name: "Docker", status: result.includes("Docker: 🟢") ? "Running" : "Stopped" },
+  {
+  name: "Cherry Studio",
+  status: result.includes("Cherry Studio: 🟢")
+    ? "Running"
+    : "Stopped",
+},
+]);
+}
+return (
     <div
       style={{
         display: "flex",
@@ -62,40 +81,51 @@ function App() {
         <h2 style={{ marginTop: 40 }}>System Status</h2>
 
         {services.map((item) => (
-          <div
-            key={item.name}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              background: "#1f2937",
-              padding: "16px",
-              borderRadius: "12px",
-              marginTop: "12px",
-            }}
-          >
+  <div
+    key={item.name}
+    style={{
+      display: "flex",
+      justifyContent: "space-between",
+      background: "#1f2937",
+      padding: "16px",
+      borderRadius: "12px",
+      marginTop: "12px",
+      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.25)", 
+    }}
+  >
             <span>{item.name}</span>
 
-            <span style={{ color: "#22c55e" }}>
-              ● {item.status}
-            </span>
+           <span
+  style={{
+    color:
+      item.status === "Running"
+        ? "#22c55e" // 🟢 绿色
+        : item.status === "Stopped"
+        ? "#ef4444" // 🔴 红色
+        : "#facc15", // 🟡 黄色 (Unknown)
+  }}
+>
+  {item.status}
+</span>
           </div>
         ))}
 
         <div style={{ marginTop: "32px" }}>
           <button
-            onClick={startAll}
-            style={{
-              padding: "12px 24px",
-              marginRight: "12px",
-              background: "#2563eb",
-              border: "none",
-              borderRadius: "10px",
-              color: "white",
-              cursor: "pointer",
-            }}
-          >
-            🚀 Start All
-          </button>
+  onClick={startAll}
+  style={{
+    padding: "12px 24px",
+    marginRight: "12px",
+    background: "#2563eb",
+    border: "none",
+    borderRadius: "10px",
+    color: "white",
+    cursor: "pointer",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.25)",
+  }}
+>
+  🚀 Start All
+</button>
 
           <button
             style={{
@@ -105,21 +135,31 @@ function App() {
               borderRadius: "10px",
               color: "white",
               cursor: "pointer",
+              boxShadow: "0 4px 12px rgba(0, 0, 0, 0.25)",
             }}
           >
             💾 Backup
           </button>
-          {message && (
-  <p
-    style={{
-      marginTop: "20px",
-      color: "#22c55e",
-      fontWeight: "bold",
-    }}
-  >
-    {message}
-  </p>
-)}
+
+          <button
+  onClick={healthCheck}
+  style={{
+    padding: "12px 24px",
+    marginLeft: "12px",
+    background: "#16a34a",
+    border: "none",
+    borderRadius: "10px",
+    color: "white",
+    cursor: "pointer",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.25)",
+  }}
+>
+  🩺 Health Check
+</button>
+
+          {/* {message && (
+  <p>{message}</p>
+)} */}
         </div>
       </div>
     </div>

@@ -114,3 +114,16 @@ button {
     background-color: #0f0f0f69;
   }
 }
+
+button {
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  opacity: 0.9;
+  transform: translateY(-2px);
+}
+
+button:active {
+  transform: translateY(0);
+}
