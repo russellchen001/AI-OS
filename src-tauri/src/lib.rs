@@ -1,3 +1,4 @@
+use std::process::Command;
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -6,8 +7,15 @@ fn greet(name: &str) -> String {
 
 #[tauri::command]
 fn start_all() -> String {
-    println!("Starting AI services...");
-    "🚀 AI OS started!".to_string()
+    let _ = Command::new("open")
+        .args(["-a", "Docker"])
+        .spawn();
+
+    let _ = Command::new("open")
+        .args(["-a", "Ollama"])
+        .spawn();
+
+    "🚀 Docker and Ollama started!".to_string()
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
