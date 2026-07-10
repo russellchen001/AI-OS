@@ -1,5 +1,5 @@
-mod stop;
 mod health;
+mod stop;
 
 use std::process::Command;
 
@@ -14,11 +14,30 @@ fn start_all() -> String {
         .args(["-a", "Docker"])
         .spawn();
 
-    let _ = Command::new("open")
-        .args(["-a", "Ollama"])
+    let _ = Command::new("sh")
+        .args([
+            "-c",
+            "brew services start ollama >/dev/null 2>&1 || \
+             ollama serve >/dev/null 2>&1 &",
+        ])
         .spawn();
 
-    "🚀 Docker and Ollama started!".to_string()
+    let _ = Command::new("sh")
+        .args([
+            "-c",
+            "launchctl bootstrap gui/$(id -u) \
+             \"$HOME/Library/LaunchAgents/ai.openclaw.gateway.plist\" \
+             2>/dev/null || true; \
+             launchctl kickstart -k \
+             gui/$(id -u)/ai.openclaw.gateway",
+        ])
+        .spawn();
+
+    let _ = Command::new("open")
+        .args(["-a", "Cherry Studio"])
+        .spawn();
+
+    "🚀 Start All command sent!".to_string()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
