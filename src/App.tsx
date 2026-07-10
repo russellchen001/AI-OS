@@ -19,6 +19,13 @@ function App() {
 
   setMessage(result);
 }
+
+async function stopAll() {
+  const result = await invoke<string>("stop_all");
+  alert(result);
+  await healthCheck();
+}
+
   async function healthCheck() {
   setMessage("🩺 Checking health...");
 
@@ -125,6 +132,22 @@ return (
   }}
 >
   🚀 Start All
+</button>
+
+<button
+  onClick={stopAll}
+  style={{
+    padding: "12px 24px",
+    marginRight: "12px",
+    background: "#dc2626",
+    border: "none",
+    borderRadius: "10px",
+    color: "white",
+    cursor: "pointer",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.25)",
+  }}
+>
+  🛑 Stop All
 </button>
 
           <button
