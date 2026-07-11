@@ -1,0 +1,153 @@
+.service-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 118px;
+  height: 36px;
+  padding: 0 11px 0 7px;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  box-shadow: none;
+  transition:
+    color 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    transform 180ms ease,
+    opacity 180ms ease;
+}
+
+.service-toggle:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+}
+
+.service-toggle:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.service-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.service-toggle-track {
+  position: relative;
+  display: inline-flex;
+  width: 42px;
+  height: 23px;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.5);
+  transition:
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.service-toggle-thumb {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 7px rgba(15, 23, 42, 0.36);
+  transform: translateX(0);
+  transition: transform 190ms ease;
+}
+
+.service-toggle-on {
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.service-toggle-on .service-toggle-track {
+  background: #22c55e;
+  box-shadow: 0 0 13px rgba(34, 197, 94, 0.35);
+}
+
+.service-toggle-on .service-toggle-thumb {
+  transform: translateX(19px);
+}
+
+.service-toggle-off {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.32);
+  background: rgba(239, 68, 68, 0.09);
+}
+
+.service-toggle-off .service-toggle-track {
+  background: rgba(239, 68, 68, 0.68);
+}
+
+.service-toggle-label {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-toggle-large {
+  min-width: 180px;
+  height: 48px;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 18px;
+  border-radius: 12px;
+}
+
+.service-toggle-large .service-toggle-track {
+  width: 50px;
+  height: 27px;
+}
+
+.service-toggle-large .service-toggle-thumb {
+  width: 21px;
+  height: 21px;
+}
+
+.service-toggle-large.service-toggle-on
+  .service-toggle-thumb {
+  transform: translateX(23px);
+}
+
+.service-toggle-large .service-toggle-label {
+  font-size: 13px;
+}
+
+.toggle-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(37, 99, 235, 0.25);
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: toggle-spin 650ms linear infinite;
+}
+
+.service-toggle-loading .service-toggle-thumb {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
+}
+
+@keyframes toggle-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 560px) {
+  .service-toggle {
+    min-width: 112px;
+  }
+
+  .service-toggle-large {
+    width: 100%;
+    min-width: 0;
+  }
+}

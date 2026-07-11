@@ -1,73 +1,72 @@
 use std::process::Command;
 
-pub fn check_service(name: &str) -> bool {
-    match name {
-        // OpenClaw
-        "openclaw" => {
-            Command::new("launchctl")
-                .args(["list"])
-                .output()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .contains("ai.openclaw.gateway")
-                })
-                .unwrap_or(false)
-        }
+fn command_success(command: &str) -> bool {
+    Command::new("/bin/sh")
+        .args(["-c", command])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
 
-        // Docker Desktop
-        "docker" => {
-            Command::new("osascript")
-                .args([
-                    "-e",
-                    "application id \"com.docker.docker\" is running",
-                ])
-                .output()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .trim()
-                        == "true"
-                })
-                .unwrap_or(false)
-        }
-
-        // Ollama
-        "ollama" => {
-            Command::new("pgrep")
-                .args(["-f", "ollama"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        }
-
-        // Cherry Studio
-        "Cherry Studio" => {
-            Command::new("pgrep")
-                .args(["-f", "Cherry Studio"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        }
-
-        _ => false,
+fn status_icon(running: bool) -> &'static str {
+    if running {
+        "🟢"
+    } else {
+        "🔴"
     }
 }
 
 #[tauri::command]
 pub fn health_check() -> String {
-    let docker = check_service("docker");
-    let ollama = check_service("ollama");
-    let openclaw = check_service("openclaw");
-    let cherry = check_service("Cherry Studio");
+    let openclaw_running = command_success(
+        r#"
+curl -fsS http://localhost:18789 >/dev/null 2>&1 ||
+launchctl print gui/$(id -u)/ai.openclaw.gateway >/dev/null 2>&1 ||
+pgrep -f "openclaw" >/dev/null 2>&1
+"#,
+    );
+
+    let ollama_running = command_success(
+        r#"
+curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1 ||
+pgrep -f "ollama serve" >/dev/null 2>&1
+"#,
+    );
+
+    let docker_running = command_success(
+        r#"
+"/Applications/Docker.app/Contents/Resources/bin/docker" info \
+>/dev/null 2>&1
+"#,
+    );
+
+    let open_webui_running = command_success(
+        r#"
+curl -fsS http://localhost:3000 >/dev/null 2>&1 ||
+curl -fsS http://localhost:8080 >/dev/null 2>&1 ||
+"/Applications/Docker.app/Contents/Resources/bin/docker" ps \
+--format '{{.Names}}' 2>/dev/null |
+grep -Ei 'open[-_]?webui' >/dev/null
+"#,
+    );
+
+    let cherry_running = command_success(
+        r#"
+pgrep -x "Cherry Studio" >/dev/null 2>&1 ||
+pgrep -f "/Cherry Studio.app/" >/dev/null 2>&1
+"#,
+    );
 
     format!(
-        "🩺 Health Check\n\n\
-🐳 Docker: {}\n\
-🦙 Ollama: {}\n\
-🤖 OpenClaw: {}\n\
-🍒 Cherry Studio: {}",
-        if docker { "🟢 Running" } else { "🔴 Stopped" },
-        if ollama { "🟢 Running" } else { "🔴 Stopped" },
-        if openclaw { "🟢 Running" } else { "🔴 Stopped" },
-        if cherry { "🟢 Running" } else { "🔴 Stopped" },
+        "OpenClaw: {}\n\
+Ollama: {}\n\
+Docker: {}\n\
+Open WebUI: {}\n\
+Cherry Studio: {}",
+        status_icon(openclaw_running),
+        status_icon(ollama_running),
+        status_icon(docker_running),
+        status_icon(open_webui_running),
+        status_icon(cherry_running),
     )
 }

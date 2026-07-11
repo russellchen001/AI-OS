@@ -1,442 +1,720 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useState,
   type CSSProperties,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
-type ServiceStatus = "Running" | "Stopped" | "Unknown";
+type ServiceStatus =
+  | "Running"
+  | "Stopped"
+  | "Unknown";
 
 type Service = {
   name: string;
   icon: string;
+  description: string;
   status: ServiceStatus;
 };
 
-type ButtonName = "start" | "stop" | "backup" | "health" | null;
+type PageName =
+  | "Dashboard"
+  | "Services"
+  | "Settings";
+
+type ThemeMode = "dark" | "light";
+
+type Settings = {
+  refreshInterval: number;
+  openClawUrl: string;
+  ollamaUrl: string;
+  openWebUiUrl: string;
+  theme: ThemeMode;
+};
+
+type Metrics = {
+  cpu: number;
+  memoryUsed: number;
+  memoryTotal: number;
+  diskUsed: number;
+  diskTotal: number;
+};
+
+const INITIAL_SERVICES: Service[] = [
+  {
+    name: "OpenClaw",
+    icon: "🤖",
+    description: "Local AI gateway",
+    status: "Unknown",
+  },
+  {
+    name: "Ollama",
+    icon: "🦙",
+    description: "Local model runtime",
+    status: "Unknown",
+  },
+  {
+    name: "Docker",
+    icon: "🐳",
+    description: "Container runtime",
+    status: "Unknown",
+  },
+  {
+    name: "Open WebUI",
+    icon: "🌐",
+    description: "Browser AI workspace",
+    status: "Unknown",
+  },
+  {
+    name: "Cherry Studio",
+    icon: "🍒",
+    description: "Desktop AI client",
+    status: "Unknown",
+  },
+];
+
+const DEFAULT_SETTINGS: Settings = {
+  refreshInterval: 5,
+  openClawUrl: "http://localhost:18789",
+  ollamaUrl: "http://localhost:11434",
+  openWebUiUrl: "http://localhost:3000",
+  theme: "dark",
+};
+
+const EMPTY_METRICS: Metrics = {
+  cpu: 0,
+  memoryUsed: 0,
+  memoryTotal: 0,
+  diskUsed: 0,
+  diskTotal: 0,
+};
+
+function loadSettings(): Settings {
+  try {
+    const stored =
+      localStorage.getItem("ai-os-settings");
+
+    if (!stored) {
+      return DEFAULT_SETTINGS;
+    }
+
+    return {
+      ...DEFAULT_SETTINGS,
+      ...(JSON.parse(stored) as Partial<Settings>),
+    };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
 
 function App() {
-  const [services, setServices] = useState<Service[]>([
-    { name: "OpenClaw", icon: "🤖", status: "Unknown" },
-    { name: "Ollama", icon: "🦙", status: "Unknown" },
-    { name: "Docker", icon: "🐳", status: "Unknown" },
-    { name: "Cherry Studio", icon: "🍒", status: "Unknown" },
-  ]);
+  const [activePage, setActivePage] =
+    useState<PageName>("Dashboard");
 
-  const [message, setMessage] = useState("");
-  const [lastUpdated, setLastUpdated] = useState("Not checked");
-  const [isChecking, setIsChecking] = useState(false);
-  const [hoveredButton, setHoveredButton] =
-    useState<ButtonName>(null);
-  const [hoveredNav, setHoveredNav] = useState<string | null>(
-    null,
+  const [services, setServices] =
+    useState<Service[]>(INITIAL_SERVICES);
+
+  const [settings, setSettings] =
+    useState<Settings>(loadSettings);
+
+  const [metrics, setMetrics] =
+    useState<Metrics>(EMPTY_METRICS);
+
+  const [message, setMessage] =
+    useState("");
+
+  const [lastUpdated, setLastUpdated] =
+    useState("Not checked");
+
+  const [isChecking, setIsChecking] =
+    useState(false);
+
+  const [globalAction, setGlobalAction] =
+    useState<"start" | "stop" | null>(null);
+
+  const [serviceAction, setServiceAction] =
+    useState<string | null>(null);
+
+  const [openAction, setOpenAction] =
+    useState<string | null>(null);
+
+  const isBusy =
+    globalAction !== null ||
+    serviceAction !== null;
+
+  const healthCheck = useCallback(
+    async (showMessage = true) => {
+      try {
+        setIsChecking(true);
+
+        const result =
+          await invoke<string>("health_check");
+
+        if (showMessage) {
+          setMessage(result);
+        }
+
+        setServices((current) =>
+          current.map((service) => ({
+            ...service,
+            status: result.includes(
+              `${service.name}: 🟢`,
+            )
+              ? "Running"
+              : "Stopped",
+          })),
+        );
+
+        setLastUpdated(
+          new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }),
+        );
+      } catch (error) {
+        setMessage(
+          `Health Check failed: ${String(error)}`,
+        );
+      } finally {
+        setIsChecking(false);
+      }
+    },
+    [],
   );
 
-  const healthCheck = useCallback(async () => {
-    try {
-      setIsChecking(true);
+  const refreshMetrics =
+    useCallback(async () => {
+      try {
+        const result =
+          await invoke<string>(
+            "system_metrics",
+          );
 
-      const result = await invoke<string>("health_check");
+        const [
+          cpu,
+          memoryUsed,
+          memoryTotal,
+          diskUsed,
+          diskTotal,
+        ] = result.split("|").map(Number);
 
-      setMessage(result);
-
-      setServices([
-        {
-          name: "OpenClaw",
-          icon: "🤖",
-          status: result.includes("OpenClaw: 🟢")
-            ? "Running"
-            : "Stopped",
-        },
-        {
-          name: "Ollama",
-          icon: "🦙",
-          status: result.includes("Ollama: 🟢")
-            ? "Running"
-            : "Stopped",
-        },
-        {
-          name: "Docker",
-          icon: "🐳",
-          status: result.includes("Docker: 🟢")
-            ? "Running"
-            : "Stopped",
-        },
-        {
-          name: "Cherry Studio",
-          icon: "🍒",
-          status: result.includes("Cherry Studio: 🟢")
-            ? "Running"
-            : "Stopped",
-        },
-      ]);
-
-      setLastUpdated(
-        new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }),
-      );
-    } catch (error) {
-      setMessage(`Health Check failed: ${String(error)}`);
-    } finally {
-      setIsChecking(false);
-    }
-  }, []);
+        setMetrics({
+          cpu:
+            Number.isFinite(cpu)
+              ? cpu
+              : 0,
+          memoryUsed:
+            Number.isFinite(memoryUsed)
+              ? memoryUsed
+              : 0,
+          memoryTotal:
+            Number.isFinite(memoryTotal)
+              ? memoryTotal
+              : 0,
+          diskUsed:
+            Number.isFinite(diskUsed)
+              ? diskUsed
+              : 0,
+          diskTotal:
+            Number.isFinite(diskTotal)
+              ? diskTotal
+              : 0,
+        });
+      } catch (error) {
+        console.error(
+          "Metrics refresh failed:",
+          error,
+        );
+      }
+    }, []);
 
   async function startAll() {
     try {
+      setGlobalAction("start");
       setMessage("🚀 Starting services...");
 
-      const result = await invoke<string>("start_all");
+      const result =
+        await invoke<string>("start_all");
 
       setMessage(result);
 
       window.setTimeout(() => {
-        healthCheck();
+        healthCheck(false);
       }, 5000);
+
+      window.setTimeout(() => {
+        healthCheck(false);
+      }, 20000);
+
+      window.setTimeout(() => {
+        healthCheck(false);
+      }, 30000);
     } catch (error) {
-      setMessage(`Start All failed: ${String(error)}`);
+      setMessage(
+        `Start All failed: ${String(error)}`,
+      );
+    } finally {
+      setGlobalAction(null);
     }
   }
 
   async function stopAll() {
     try {
+      setGlobalAction("stop");
       setMessage("🛑 Stopping services...");
 
-      const result = await invoke<string>("stop_all");
+      const result =
+        await invoke<string>("stop_all");
 
       setMessage(result);
-      alert(result);
 
       window.setTimeout(() => {
-        healthCheck();
-      }, 3000);
+        healthCheck(false);
+      }, 8000);
     } catch (error) {
-      setMessage(`Stop All failed: ${String(error)}`);
+      setMessage(
+        `Stop All failed: ${String(error)}`,
+      );
+    } finally {
+      setGlobalAction(null);
     }
   }
 
-  function backup() {
-    setMessage("💾 Backup will be implemented in Sprint 3.");
+  async function startService(
+    service: string,
+  ) {
+    try {
+      setServiceAction(`start:${service}`);
+
+      setMessage(
+        `🚀 Starting ${service}...`,
+      );
+
+      const result =
+        await invoke<string>(
+          "start_service",
+          { service },
+        );
+
+      setMessage(result);
+
+      const delay =
+        service === "Docker"
+          ? 20000
+          : service === "Open WebUI"
+            ? 8000
+            : 3000;
+
+      window.setTimeout(() => {
+        healthCheck(false);
+      }, delay);
+    } catch (error) {
+      setMessage(
+        `Failed to start ${service}: ${String(
+          error,
+        )}`,
+      );
+    } finally {
+      setServiceAction(null);
+    }
+  }
+
+  async function stopService(
+    service: string,
+  ) {
+    try {
+      setServiceAction(`stop:${service}`);
+
+      setMessage(
+        `🛑 Stopping ${service}...`,
+      );
+
+      const result =
+        await invoke<string>(
+          "stop_service",
+          { service },
+        );
+
+      setMessage(result);
+
+      const delay =
+        service === "Docker"
+          ? 8000
+          : service === "Open WebUI"
+            ? 4000
+            : 2500;
+
+      window.setTimeout(() => {
+        healthCheck(false);
+      }, delay);
+    } catch (error) {
+      setMessage(
+        `Failed to stop ${service}: ${String(
+          error,
+        )}`,
+      );
+    } finally {
+      setServiceAction(null);
+    }
+  }
+
+  async function openService(
+    service: string,
+  ) {
+    try {
+      setOpenAction(service);
+
+      const result =
+        await invoke<string>(
+          "open_service",
+          {
+            service,
+            openclawUrl:
+              settings.openClawUrl,
+            ollamaUrl:
+              settings.ollamaUrl,
+            openWebUiUrl:
+              settings.openWebUiUrl,
+          },
+        );
+
+      setMessage(result);
+    } catch (error) {
+      setMessage(
+        `Failed to open ${service}: ${String(
+          error,
+        )}`,
+      );
+    } finally {
+      setOpenAction(null);
+    }
   }
 
   useEffect(() => {
-    healthCheck();
+    localStorage.setItem(
+      "ai-os-settings",
+      JSON.stringify(settings),
+    );
 
-    const timer = window.setInterval(() => {
-      healthCheck();
-    }, 5000);
+    document.documentElement.dataset.theme =
+      settings.theme;
+  }, [settings]);
 
-    return () => window.clearInterval(timer);
-  }, [healthCheck]);
+  useEffect(() => {
+    healthCheck(false);
+    refreshMetrics();
 
-  const runningCount = services.filter(
-    (service) => service.status === "Running",
-  ).length;
+    const interval =
+      window.setInterval(() => {
+        healthCheck(false);
+        refreshMetrics();
+      }, Math.max(
+        settings.refreshInterval,
+        2,
+      ) * 1000);
 
-  const stoppedCount = services.filter(
-    (service) => service.status === "Stopped",
-  ).length;
+    return () =>
+      window.clearInterval(interval);
+  }, [
+    healthCheck,
+    refreshMetrics,
+    settings.refreshInterval,
+  ]);
 
-  const unknownCount = services.filter(
-    (service) => service.status === "Unknown",
-  ).length;
+  const runningCount = useMemo(
+    () =>
+      services.filter(
+        (service) =>
+          service.status === "Running",
+      ).length,
+    [services],
+  );
 
-  const navItems = [
-    { name: "Dashboard", icon: "🏠" },
-    { name: "Services", icon: "🚀" },
-    { name: "Backup", icon: "💾" },
-    { name: "Logs", icon: "📜" },
-    { name: "Settings", icon: "⚙️" },
+  const stoppedCount = useMemo(
+    () =>
+      services.filter(
+        (service) =>
+          service.status === "Stopped",
+      ).length,
+    [services],
+  );
+
+  const unknownCount = useMemo(
+    () =>
+      services.filter(
+        (service) =>
+          service.status === "Unknown",
+      ).length,
+    [services],
+  );
+
+  const allRunning =
+    services.length > 0 &&
+    runningCount === services.length;
+
+  function handleGlobalToggle() {
+    if (isBusy) {
+      return;
+    }
+
+    if (allRunning) {
+      stopAll();
+    } else {
+      startAll();
+    }
+  }
+
+  function updateSetting<K extends keyof Settings>(
+    key: K,
+    value: Settings[K],
+  ) {
+    setSettings((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
+
+  function resetSettings() {
+    setSettings(DEFAULT_SETTINGS);
+    setMessage(
+      "⚙️ Settings restored to defaults.",
+    );
+  }
+
+  const navItems: Array<{
+    name: PageName;
+    icon: string;
+  }> = [
+    {
+      name: "Dashboard",
+      icon: "🏠",
+    },
+    {
+      name: "Services",
+      icon: "🚀",
+    },
+    {
+      name: "Settings",
+      icon: "⚙️",
+    },
   ];
 
-  const buttonBaseStyle: CSSProperties = {
-    width: "100%",
-    minWidth: 0,
-    height: "54px",
-    padding: "0 14px",
-    border: "1px solid rgba(255, 255, 255, 0.08)",
-    borderRadius: "12px",
-    color: "white",
-    cursor: "pointer",
-    fontSize: "clamp(13px, 1.5vw, 16px)",
-    fontWeight: 700,
-    whiteSpace: "nowrap",
-    transition:
-      "transform 160ms ease, box-shadow 160ms ease, filter 160ms ease",
+  const appStyle: CSSProperties = {
+    display: "flex",
+    minHeight: "100vh",
+    background:
+      settings.theme === "dark"
+        ? "radial-gradient(circle at top right,#172554 0%,#0f172a 38%,#020617 100%)"
+        : "linear-gradient(135deg,#f8fafc,#e2e8f0)",
+    color:
+      settings.theme === "dark"
+        ? "#ffffff"
+        : "#0f172a",
+    fontFamily:
+      "Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
   };
 
-  function getButtonStyle(
-    name: ButtonName,
-    background: string,
-  ): CSSProperties {
-    const isHovered = hoveredButton === name;
+  const cardStyle: CSSProperties = {
+    borderRadius: "16px",
+    background:
+      settings.theme === "dark"
+        ? "rgba(30,41,59,.76)"
+        : "rgba(255,255,255,.82)",
+    border:
+      settings.theme === "dark"
+        ? "1px solid rgba(148,163,184,.12)"
+        : "1px solid rgba(148,163,184,.24)",
+    boxShadow:
+      "0 10px 30px rgba(15,23,42,.14)",
+    backdropFilter: "blur(14px)",
+  };
 
-    return {
-      ...buttonBaseStyle,
-      background,
-      transform: isHovered
-        ? "translateY(-2px) scale(1.015)"
-        : "translateY(0) scale(1)",
-      filter: isHovered ? "brightness(1.12)" : "brightness(1)",
-      boxShadow: isHovered
-        ? "0 10px 24px rgba(0, 0, 0, 0.35)"
-        : "0 5px 14px rgba(0, 0, 0, 0.22)",
-    };
+  function renderServiceRows() {
+    return (
+      <div className="service-list">
+        {services.map((service) => {
+          const running =
+            service.status === "Running";
+
+          const starting =
+            serviceAction ===
+            `start:${service.name}`;
+
+          const stopping =
+            serviceAction ===
+            `stop:${service.name}`;
+
+          const loading =
+            starting || stopping;
+
+          return (
+            <div
+              key={service.name}
+              className="service-row"
+              style={cardStyle}
+            >
+              <div className="service-info">
+                <span className="service-icon">
+                  {service.icon}
+                </span>
+
+                <div>
+                  <div className="service-name">
+                    {service.name}
+                  </div>
+
+                  <div className="service-description">
+                    {service.description}
+                  </div>
+                </div>
+              </div>
+
+              <div className="service-actions">
+                <span
+                  className={[
+                    "status-badge",
+                    running
+                      ? "status-running"
+                      : service.status ===
+                          "Stopped"
+                        ? "status-stopped"
+                        : "status-unknown",
+                  ].join(" ")}
+                >
+                  ● {service.status}
+                </span>
+
+                <ServiceToggle
+                  checked={running}
+                  disabled={isBusy}
+                  loading={loading}
+                  label={
+                    starting
+                      ? "Starting..."
+                      : stopping
+                        ? "Stopping..."
+                        : running
+                          ? "Running"
+                          : "Stopped"
+                  }
+                  onChange={() => {
+                    if (running) {
+                      stopService(
+                        service.name,
+                      );
+                    } else {
+                      startService(
+                        service.name,
+                      );
+                    }
+                  }}
+                />
+
+                <button
+                  type="button"
+                  className="open-button"
+                  disabled={
+                    openAction ===
+                    service.name
+                  }
+                  onClick={() =>
+                    openService(
+                      service.name,
+                    )
+                  }
+                >
+                  {openAction ===
+                  service.name
+                    ? "Opening..."
+                    : "↗ Open"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
   }
-
-  function getStatusStyle(
-    status: ServiceStatus,
-  ): CSSProperties {
-    if (status === "Running") {
-      return {
-        color: "#86efac",
-        background: "rgba(34, 197, 94, 0.14)",
-        border: "1px solid rgba(34, 197, 94, 0.38)",
-      };
-    }
-
-    if (status === "Stopped") {
-      return {
-        color: "#fca5a5",
-        background: "rgba(239, 68, 68, 0.14)",
-        border: "1px solid rgba(239, 68, 68, 0.38)",
-      };
-    }
-
-    return {
-      color: "#fde047",
-      background: "rgba(250, 204, 21, 0.14)",
-      border: "1px solid rgba(250, 204, 21, 0.38)",
-    };
-  }
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        minHeight: "100vh",
-        background:
-          "radial-gradient(circle at top right, #172554 0%, #0f172a 38%, #020617 100%)",
-        color: "white",
-        fontFamily:
-          "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      }}
-    >
-      {/* Sidebar */}
-      <aside
-        style={{
-          width: "220px",
-          flexShrink: 0,
-          padding: "24px 18px",
-          background: "rgba(15, 23, 42, 0.92)",
-          borderRight: "1px solid rgba(148, 163, 184, 0.14)",
-          backdropFilter: "blur(18px)",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            padding: "4px 8px 24px",
-          }}
-        >
-          <div
-            style={{
-              width: "40px",
-              height: "40px",
-              display: "grid",
-              placeItems: "center",
-              borderRadius: "12px",
-              background:
-                "linear-gradient(135deg, #2563eb, #7c3aed)",
-              boxShadow: "0 8px 22px rgba(37, 99, 235, 0.3)",
-              fontSize: "21px",
-            }}
-          >
+    return (
+    <div style={appStyle}>
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-icon">
             🤖
           </div>
 
           <div>
-            <div style={{ fontSize: "18px", fontWeight: 800 }}>
+            <div className="brand-title">
               AI OS
             </div>
-            <div
-              style={{
-                marginTop: "2px",
-                color: "#64748b",
-                fontSize: "11px",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-              }}
-            >
+
+            <div className="brand-subtitle">
               Control Center
             </div>
           </div>
         </div>
 
-        <nav
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "8px",
-          }}
-        >
-          {navItems.map((item) => {
-            const isActive = item.name === "Dashboard";
-            const isHovered = hoveredNav === item.name;
-
-            return (
-              <div
-                key={item.name}
-                onMouseEnter={() => setHoveredNav(item.name)}
-                onMouseLeave={() => setHoveredNav(null)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "11px",
-                  padding: "12px 14px",
-                  borderRadius: "11px",
-                  cursor: "pointer",
-                  color: isActive ? "#ffffff" : "#94a3b8",
-                  fontWeight: isActive ? 700 : 500,
-                  background: isActive
-                    ? "linear-gradient(135deg, rgba(37, 99, 235, 0.88), rgba(79, 70, 229, 0.78))"
-                    : isHovered
-                      ? "rgba(148, 163, 184, 0.1)"
-                      : "transparent",
-                  transform: isHovered
-                    ? "translateX(3px)"
-                    : "translateX(0)",
-                  boxShadow: isActive
-                    ? "0 8px 22px rgba(37, 99, 235, 0.2)"
-                    : "none",
-                  transition:
-                    "background 160ms ease, transform 160ms ease",
-                }}
-              >
-                <span>{item.icon}</span>
-                <span>{item.name}</span>
-              </div>
-            );
-          })}
+        <nav className="nav-list">
+          {navItems.map((item) => (
+            <button
+              key={item.name}
+              type="button"
+              className={[
+                "nav-item",
+                activePage === item.name
+                  ? "nav-item-active"
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              onClick={() =>
+                setActivePage(item.name)
+              }
+            >
+              <span>{item.icon}</span>
+              <span>{item.name}</span>
+            </button>
+          ))}
         </nav>
 
-        <div
-          style={{
-            marginTop: "32px",
-            padding: "14px",
-            borderRadius: "12px",
-            background: "rgba(30, 41, 59, 0.7)",
-            border: "1px solid rgba(148, 163, 184, 0.12)",
-          }}
-        >
-          <div
-            style={{
-              color: "#64748b",
-              fontSize: "11px",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-            }}
-          >
+        <div className="refresh-card">
+          <div className="refresh-label">
             Auto Refresh
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "7px",
-              marginTop: "8px",
-              color: "#86efac",
-              fontSize: "13px",
-              fontWeight: 700,
-            }}
-          >
-            <span
-              style={{
-                width: "8px",
-                height: "8px",
-                borderRadius: "50%",
-                background: "#22c55e",
-                boxShadow: "0 0 10px #22c55e",
-              }}
-            />
-            Every 5 seconds
+          <div className="refresh-value">
+            <span className="online-dot" />
+            Every{" "}
+            {settings.refreshInterval}{" "}
+            seconds
           </div>
         </div>
       </aside>
 
-      {/* Main */}
-      <main
-        style={{
-          flex: 1,
-          minWidth: 0,
-          padding: "32px",
-          overflow: "auto",
-        }}
-      >
-        {/* Header */}
-        <header
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "24px",
-            flexWrap: "wrap",
-          }}
-        >
+      <main className="main-content">
+        <header className="top-header">
           <div>
-            <h1
-              style={{
-                margin: 0,
-                fontSize: "clamp(28px, 4vw, 40px)",
-                letterSpacing: "-0.03em",
-              }}
-            >
-              Russell AI OS
-            </h1>
+            <h1>Russell AI OS</h1>
 
-            <p
-              style={{
-                margin: "8px 0 0",
-                color: "#94a3b8",
-                fontSize: "15px",
-              }}
-            >
+            <p>
               Your Personal AI Workspace
             </p>
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "10px",
-              padding: "10px 14px",
-              borderRadius: "12px",
-              color: "#cbd5e1",
-              background: "rgba(30, 41, 59, 0.72)",
-              border: "1px solid rgba(148, 163, 184, 0.14)",
-              fontSize: "13px",
-            }}
-          >
+          <div className="updated-badge">
             <span
-              style={{
-                display: "inline-block",
-                width: "9px",
-                height: "9px",
-                borderRadius: "50%",
-                background: isChecking ? "#facc15" : "#22c55e",
-                boxShadow: isChecking
-                  ? "0 0 10px #facc15"
-                  : "0 0 10px #22c55e",
-              }}
+              className={[
+                "updated-dot",
+                isChecking
+                  ? "updated-dot-checking"
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
             />
 
             {isChecking
@@ -445,221 +723,395 @@ function App() {
           </div>
         </header>
 
-        {/* Stats */}
-        <section
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "repeat(auto-fit, minmax(150px, 1fr))",
-            gap: "14px",
-            marginTop: "30px",
-          }}
-        >
-          <StatCard
-            title="Total Services"
-            value={services.length}
-            icon="🧩"
-            accent="#60a5fa"
-          />
+        {activePage === "Dashboard" && (
+          <>
+            <section className="stats-grid">
+              <StatCard
+                title="Total Services"
+                value={services.length}
+                icon="🧩"
+                accent="#60a5fa"
+                cardStyle={cardStyle}
+              />
 
-          <StatCard
-            title="Running"
-            value={runningCount}
-            icon="✅"
-            accent="#22c55e"
-          />
+              <StatCard
+                title="Running"
+                value={runningCount}
+                icon="✅"
+                accent="#22c55e"
+                cardStyle={cardStyle}
+              />
 
-          <StatCard
-            title="Stopped"
-            value={stoppedCount}
-            icon="⛔"
-            accent="#ef4444"
-          />
+              <StatCard
+                title="Stopped"
+                value={stoppedCount}
+                icon="⛔"
+                accent="#ef4444"
+                cardStyle={cardStyle}
+              />
 
-          <StatCard
-            title="Unknown"
-            value={unknownCount}
-            icon="⚠️"
-            accent="#facc15"
-          />
-        </section>
+              <StatCard
+                title="Unknown"
+                value={unknownCount}
+                icon="⚠️"
+                accent="#facc15"
+                cardStyle={cardStyle}
+              />
+            </section>
 
-        <section style={{ marginTop: "34px" }}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: "16px",
-              marginBottom: "14px",
-            }}
-          >
-            <h2 style={{ margin: 0, fontSize: "21px" }}>
-              System Status
-            </h2>
+            <section className="section-block">
+              <div className="section-header">
+                <div>
+                  <h2>
+                    System Performance
+                  </h2>
 
-            <span style={{ color: "#64748b", fontSize: "13px" }}>
-              {runningCount}/{services.length} services online
-            </span>
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "12px",
-            }}
-          >
-            {services.map((item) => (
-              <div
-                key={item.name}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: "16px",
-                  padding: "17px 18px",
-                  borderRadius: "14px",
-                  background: "rgba(30, 41, 59, 0.76)",
-                  border:
-                    "1px solid rgba(148, 163, 184, 0.12)",
-                  boxShadow: "0 8px 24px rgba(0, 0, 0, 0.2)",
-                  backdropFilter: "blur(12px)",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "12px",
-                    minWidth: 0,
-                  }}
-                >
-                  <span
-                    style={{
-                      width: "38px",
-                      height: "38px",
-                      display: "grid",
-                      placeItems: "center",
-                      flexShrink: 0,
-                      borderRadius: "11px",
-                      background: "rgba(15, 23, 42, 0.76)",
-                      fontSize: "19px",
-                    }}
-                  >
-                    {item.icon}
-                  </span>
-
-                  <span
-                    style={{
-                      overflow: "hidden",
-                      fontSize: "16px",
-                      fontWeight: 650,
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {item.name}
-                  </span>
+                  <p>
+                    Live macOS resource usage
+                  </p>
                 </div>
 
-                <span
-                  style={{
-                    ...getStatusStyle(item.status),
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "7px",
-                    flexShrink: 0,
-                    padding: "7px 12px",
-                    borderRadius: "999px",
-                    fontSize: "13px",
-                    fontWeight: 750,
-                  }}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={refreshMetrics}
                 >
-                  <span style={{ fontSize: "10px" }}>●</span>
-                  {item.status}
+                  ↻ Refresh
+                </button>
+              </div>
+
+              <div className="metrics-grid">
+                <MetricCard
+                  title="CPU Usage"
+                  icon="🧠"
+                  value={`${metrics.cpu.toFixed(
+                    1,
+                  )}%`}
+                  progress={metrics.cpu}
+                  accent="#3b82f6"
+                  cardStyle={cardStyle}
+                />
+
+                <MetricCard
+                  title="Memory"
+                  icon="💾"
+                  value={`${metrics.memoryUsed.toFixed(
+                    1,
+                  )} / ${metrics.memoryTotal.toFixed(
+                    1,
+                  )} GB`}
+                  progress={
+                    metrics.memoryTotal > 0
+                      ? (metrics.memoryUsed /
+                          metrics.memoryTotal) *
+                        100
+                      : 0
+                  }
+                  accent="#8b5cf6"
+                  cardStyle={cardStyle}
+                />
+
+                <MetricCard
+                  title="Disk"
+                  icon="🗄️"
+                  value={`${metrics.diskUsed.toFixed(
+                    1,
+                  )} / ${metrics.diskTotal.toFixed(
+                    1,
+                  )} GB`}
+                  progress={
+                    metrics.diskTotal > 0
+                      ? (metrics.diskUsed /
+                          metrics.diskTotal) *
+                        100
+                      : 0
+                  }
+                  accent="#f59e0b"
+                  cardStyle={cardStyle}
+                />
+              </div>
+            </section>
+
+            <section className="section-block">
+              <div className="section-header">
+                <div>
+                  <h2>System Status</h2>
+
+                  <p>
+                    Control your local AI
+                    services
+                  </p>
+                </div>
+
+                <span className="online-count">
+                  {runningCount}/
+                  {services.length} services
+                  online
                 </span>
               </div>
-            ))}
-          </div>
-        </section>
 
-        {/* Buttons */}
-        <section
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "repeat(auto-fit, minmax(135px, 1fr))",
-            gap: "12px",
-            width: "100%",
-            marginTop: "28px",
-          }}
-        >
-          <button
-            onClick={startAll}
-            onMouseEnter={() => setHoveredButton("start")}
-            onMouseLeave={() => setHoveredButton(null)}
-            style={getButtonStyle(
-              "start",
-              "linear-gradient(135deg, #2563eb, #3b82f6)",
-            )}
-          >
-            🚀 Start All
-          </button>
+              {renderServiceRows()}
+            </section>
 
-          <button
-            onClick={stopAll}
-            onMouseEnter={() => setHoveredButton("stop")}
-            onMouseLeave={() => setHoveredButton(null)}
-            style={getButtonStyle(
-              "stop",
-              "linear-gradient(135deg, #dc2626, #ef4444)",
-            )}
-          >
-            🛑 Stop All
-          </button>
+            <section className="bottom-actions">
+              <ServiceToggle
+                checked={allRunning}
+                disabled={isBusy}
+                loading={
+                  globalAction !== null
+                }
+                large
+                label={
+                  globalAction === "start"
+                    ? "Starting All..."
+                    : globalAction ===
+                        "stop"
+                      ? "Stopping All..."
+                      : allRunning
+                        ? "All Services Running"
+                        : "Start All Services"
+                }
+                onChange={
+                  handleGlobalToggle
+                }
+              />
 
-          <button
-            onClick={backup}
-            onMouseEnter={() => setHoveredButton("backup")}
-            onMouseLeave={() => setHoveredButton(null)}
-            style={getButtonStyle(
-              "backup",
-              "linear-gradient(135deg, #475569, #64748b)",
-            )}
-          >
-            💾 Backup
-          </button>
+              <button
+                type="button"
+                className="action-button backup-button"
+                onClick={() =>
+                  setMessage(
+                    "💾 Backup will be implemented in the next step.",
+                  )
+                }
+              >
+                💾 Backup
+              </button>
 
-          <button
-            onClick={healthCheck}
-            onMouseEnter={() => setHoveredButton("health")}
-            onMouseLeave={() => setHoveredButton(null)}
-            style={getButtonStyle(
-              "health",
-              "linear-gradient(135deg, #16a34a, #22c55e)",
-            )}
-          >
-            {isChecking ? "⏳ Checking..." : "🩺 Health Check"}
-          </button>
-        </section>
+              <button
+                type="button"
+                className="action-button health-button"
+                disabled={
+                  isBusy || isChecking
+                }
+                onClick={() =>
+                  healthCheck(true)
+                }
+              >
+                {isChecking
+                  ? "⏳ Checking..."
+                  : "🩺 Health Check"}
+              </button>
+            </section>
+          </>
+        )}
+
+        {activePage === "Services" && (
+          <section className="page-section">
+            <div className="section-header">
+              <div>
+                <h2>Services</h2>
+
+                <p>
+                  Start, stop and open each
+                  local service
+                </p>
+              </div>
+
+              <ServiceToggle
+                checked={allRunning}
+                disabled={isBusy}
+                loading={
+                  globalAction !== null
+                }
+                large
+                label={
+                  globalAction === "start"
+                    ? "Starting All..."
+                    : globalAction ===
+                        "stop"
+                      ? "Stopping All..."
+                      : allRunning
+                        ? "Stop All Services"
+                        : "Start All Services"
+                }
+                onChange={
+                  handleGlobalToggle
+                }
+              />
+            </div>
+
+            {renderServiceRows()}
+          </section>
+        )}
+
+        {activePage === "Settings" && (
+          <section className="page-section">
+            <div className="section-header">
+              <div>
+                <h2>Settings</h2>
+
+                <p>
+                  Configure refresh,
+                  addresses and appearance
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={resetSettings}
+              >
+                Reset Defaults
+              </button>
+            </div>
+
+            <div
+              className="settings-card"
+              style={cardStyle}
+            >
+              <label className="setting-field">
+                <span>
+                  Auto Refresh Interval
+                </span>
+
+                <small>
+                  Minimum refresh interval
+                  is 2 seconds.
+                </small>
+
+                <select
+                  value={
+                    settings.refreshInterval
+                  }
+                  onChange={(event) =>
+                    updateSetting(
+                      "refreshInterval",
+                      Number(
+                        event.target.value,
+                      ),
+                    )
+                  }
+                >
+                  <option value={2}>
+                    2 seconds
+                  </option>
+
+                  <option value={5}>
+                    5 seconds
+                  </option>
+
+                  <option value={10}>
+                    10 seconds
+                  </option>
+
+                  <option value={30}>
+                    30 seconds
+                  </option>
+
+                  <option value={60}>
+                    60 seconds
+                  </option>
+                </select>
+              </label>
+
+              <label className="setting-field">
+                <span>OpenClaw URL</span>
+
+                <small>
+                  Used by the Open button.
+                </small>
+
+                <input
+                  type="url"
+                  value={
+                    settings.openClawUrl
+                  }
+                  onChange={(event) =>
+                    updateSetting(
+                      "openClawUrl",
+                      event.target.value,
+                    )
+                  }
+                  placeholder="http://localhost:18789"
+                />
+              </label>
+
+              <label className="setting-field">
+                <span>Ollama URL</span>
+
+                <small>
+                  Used by the Open button.
+                </small>
+
+                <input
+                  type="url"
+                  value={settings.ollamaUrl}
+                  onChange={(event) =>
+                    updateSetting(
+                      "ollamaUrl",
+                      event.target.value,
+                    )
+                  }
+                  placeholder="http://localhost:11434"
+                />
+              </label>
+
+              <label className="setting-field">
+                <span>Open WebUI URL</span>
+
+                <small>
+                  Used by the Open button.
+                </small>
+
+                <input
+                  type="url"
+                  value={
+                    settings.openWebUiUrl
+                  }
+                  onChange={(event) =>
+                    updateSetting(
+                      "openWebUiUrl",
+                      event.target.value,
+                    )
+                  }
+                  placeholder="http://localhost:3000"
+                />
+              </label>
+
+              <label className="setting-field">
+                <span>Theme</span>
+
+                <small>
+                  Switch between dark and
+                  light appearance.
+                </small>
+
+                <select
+                  value={settings.theme}
+                  onChange={(event) =>
+                    updateSetting(
+                      "theme",
+                      event.target
+                        .value as ThemeMode,
+                    )
+                  }
+                >
+                  <option value="dark">
+                    Dark
+                  </option>
+
+                  <option value="light">
+                    Light
+                  </option>
+                </select>
+              </label>
+            </div>
+          </section>
+        )}
 
         {message && (
-          <section
-            style={{
-              marginTop: "24px",
-              padding: "17px 18px",
-              borderRadius: "14px",
-              color: "#cbd5e1",
-              background: "rgba(15, 23, 42, 0.66)",
-              border: "1px solid rgba(148, 163, 184, 0.12)",
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, monospace",
-              fontSize: "13px",
-              lineHeight: 1.65,
-              whiteSpace: "pre-line",
-            }}
-          >
+          <section className="message-panel">
             {message}
           </section>
         )}
@@ -668,11 +1120,67 @@ function App() {
   );
 }
 
+type ServiceToggleProps = {
+  checked: boolean;
+  disabled?: boolean;
+  loading?: boolean;
+  label: string;
+  large?: boolean;
+  onChange: () => void;
+};
+
+function ServiceToggle({
+  checked,
+  disabled = false,
+  loading = false,
+  label,
+  large = false,
+  onChange,
+}: ServiceToggleProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      className={[
+        "service-toggle",
+        checked
+          ? "service-toggle-on"
+          : "service-toggle-off",
+        large
+          ? "service-toggle-large"
+          : "",
+        loading
+          ? "service-toggle-loading"
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      onClick={onChange}
+    >
+      <span className="service-toggle-track">
+        <span className="service-toggle-thumb">
+          {loading && (
+            <span className="toggle-spinner" />
+          )}
+        </span>
+      </span>
+
+      <span className="service-toggle-label">
+        {label}
+      </span>
+    </button>
+  );
+}
+
 type StatCardProps = {
   title: string;
   value: number;
   icon: string;
   accent: string;
+  cardStyle: CSSProperties;
 };
 
 function StatCard({
@@ -680,59 +1188,91 @@ function StatCard({
   value,
   icon,
   accent,
+  cardStyle,
 }: StatCardProps) {
   return (
     <div
-      style={{
-        position: "relative",
-        overflow: "hidden",
-        padding: "18px",
-        borderRadius: "15px",
-        background: "rgba(30, 41, 59, 0.7)",
-        border: "1px solid rgba(148, 163, 184, 0.12)",
-        boxShadow: "0 8px 24px rgba(0, 0, 0, 0.18)",
-        backdropFilter: "blur(12px)",
-      }}
+      className="stat-card"
+      style={cardStyle}
     >
       <div
+        className="stat-card-glow"
         style={{
-          position: "absolute",
-          top: "-28px",
-          right: "-28px",
-          width: "86px",
-          height: "86px",
-          borderRadius: "50%",
           background: accent,
-          filter: "blur(42px)",
-          opacity: 0.22,
         }}
       />
 
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: "12px",
-        }}
-      >
-        <span style={{ color: "#94a3b8", fontSize: "13px" }}>
-          {title}
-        </span>
-
-        <span style={{ fontSize: "19px" }}>{icon}</span>
+      <div className="stat-card-header">
+        <span>{title}</span>
+        <span>{icon}</span>
       </div>
 
       <div
-        style={{
-          marginTop: "12px",
-          color: accent,
-          fontSize: "30px",
-          fontWeight: 800,
-          lineHeight: 1,
-        }}
+        className="stat-card-value"
+        style={{ color: accent }}
       >
         {value}
+      </div>
+    </div>
+  );
+}
+
+type MetricCardProps = {
+  title: string;
+  icon: string;
+  value: string;
+  progress: number;
+  accent: string;
+  cardStyle: CSSProperties;
+};
+
+function MetricCard({
+  title,
+  icon,
+  value,
+  progress,
+  accent,
+  cardStyle,
+}: MetricCardProps) {
+  const safeProgress = Math.min(
+    Math.max(progress, 0),
+    100,
+  );
+
+  return (
+    <div
+      className="metric-card"
+      style={cardStyle}
+    >
+      <div className="metric-header">
+        <div>
+          <span className="metric-title">
+            {title}
+          </span>
+
+          <div className="metric-value">
+            {value}
+          </div>
+        </div>
+
+        <span className="metric-icon">
+          {icon}
+        </span>
+      </div>
+
+      <div className="metric-track">
+        <div
+          className="metric-progress"
+          style={{
+            width: `${safeProgress}%`,
+            background: accent,
+            boxShadow: `0 0 14px ${accent}55`,
+          }}
+        />
+      </div>
+
+      <div className="metric-percent">
+        {safeProgress.toFixed(1)}%
       </div>
     </div>
   );
