@@ -717,17 +717,13 @@ fn gateway_handshake(
     gateway_token: &str,
 ) -> GatewayHandshake {
     let ws_url =
-        match websocket_url(
-            server_url,
-        ) {
+        match websocket_url(server_url) {
             Ok(value) => value,
 
             Err(error) => {
                 return GatewayHandshake {
                     success: false,
-                    state:
-                        "error"
-                            .to_string(),
+                    state: "error".to_string(),
                     message: error,
                     version: None,
                     payload: None,
@@ -735,38 +731,28 @@ fn gateway_handshake(
             }
         };
 
-    let (
-        mut socket,
-        _response,
-    ) = match connect(
-        ws_url.as_str(),
-    ) {
-        Ok(value) => value,
+    let (mut socket, _response) =
+        match connect(ws_url.as_str()) {
+            Ok(value) => value,
 
-        Err(error) => {
-            return GatewayHandshake {
-                success: false,
-                state:
-                    "unreachable"
-                        .to_string(),
-
-                message:
-                    websocket_error(
-                        error,
-                    ),
-
-                version: None,
-                payload: None,
-            };
-        }
-    };
+            Err(error) => {
+                return GatewayHandshake {
+                    success: false,
+                    state: "unreachable".to_string(),
+                    message: websocket_error(error),
+                    version: None,
+                    payload: None,
+                };
+            }
+        };
 
     configure_socket_timeout(
         &mut socket,
     );
 
     /*
-     * Gateway 首帧应是 connect.challenge。
+     * OpenClaw Gateway 连接后，
+     * 第一条消息应为 connect.challenge。
      */
     let challenge =
         match read_json_message(
@@ -780,9 +766,7 @@ fn gateway_handshake(
 
                 return GatewayHandshake {
                     success: false,
-                    state:
-                        "unreachable"
-                            .to_string(),
+                    state: "unreachable".to_string(),
                     message: error,
                     version: None,
                     payload: None,
@@ -793,30 +777,24 @@ fn gateway_handshake(
     let challenge_event =
         challenge
             .get("event")
-            .and_then(
-                Value::as_str,
-            );
+            .and_then(Value::as_str);
 
-    if challenge_event !=
-        Some(
-            "connect.challenge",
-        )
+    if challenge_event
+        != Some("connect.challenge")
     {
         let _ =
             socket.close(None);
 
         return GatewayHandshake {
             success: false,
-            state:
-                "error".to_string(),
+            state: "error".to_string(),
 
             message:
                 "The server responded, but it did not provide an OpenClaw connect challenge."
                     .to_string(),
 
             version: None,
-            payload:
-                Some(challenge),
+            payload: Some(challenge),
         };
     }
 
@@ -828,25 +806,29 @@ fn gateway_handshake(
         );
 
     /*
-     * 远程 Gateway 可能进一步要求设备身份或配对。
-     * 此基础客户端先使用共享 Gateway Token 请求只读权限。
+     * 使用 OpenClaw 允许的客户端身份。
+     *
+     * 注意：
+     * client.id 使用 cli，
+     * client.mode 使用 operator。
      */
     let connect_request =
         json!({
             "type": "req",
             "id": request_id,
             "method": "connect",
+
             "params": {
                 "minProtocol": PROTOCOL_VERSION,
                 "maxProtocol": PROTOCOL_VERSION,
 
                 "client": {
-                    "id": "ai-os",
+                    "id": "cli",
                     "version": env!(
                         "CARGO_PKG_VERSION"
                     ),
-                    "platform": std::env::consts::OS,
-                    "mode": "operator"
+                    "platform": "macos",
+                    "mode": "cli"
                 },
 
                 "role": "operator",
@@ -866,7 +848,7 @@ fn gateway_handshake(
                 "locale": "en-US",
 
                 "userAgent": format!(
-                    "ai-os/{}",
+                    "openclaw-cli/{}",
                     env!(
                         "CARGO_PKG_VERSION"
                     )
@@ -888,15 +870,8 @@ fn gateway_handshake(
 
         return GatewayHandshake {
             success: false,
-            state:
-                "unreachable"
-                    .to_string(),
-
-            message:
-                websocket_error(
-                    error,
-                ),
-
+            state: "unreachable".to_string(),
+            message: websocket_error(error),
             version: None,
             payload: None,
         };
@@ -914,9 +889,7 @@ fn gateway_handshake(
 
                 return GatewayHandshake {
                     success: false,
-                    state:
-                        "unreachable"
-                            .to_string(),
+                    state: "unreachable".to_string(),
                     message: error,
                     version: None,
                     payload: None,
@@ -930,9 +903,7 @@ fn gateway_handshake(
     let ok =
         response
             .get("ok")
-            .and_then(
-                Value::as_bool,
-            )
+            .and_then(Value::as_bool)
             .unwrap_or(false);
 
     if ok {
@@ -944,47 +915,34 @@ fn gateway_handshake(
         let version =
             payload
                 .as_ref()
-                .and_then(
-                    |value| {
-                        value
-                            .get("server")
-                    },
-                )
-                .and_then(
-                    |server| {
-                        server.get(
-                            "version",
-                        )
-                    },
-                )
-                .and_then(
-                    Value::as_str,
-                )
-                .map(
-                    str::to_string,
-                );
+                .and_then(|value| {
+                    value.get("server")
+                })
+                .and_then(|server| {
+                    server.get("version")
+                })
+                .and_then(Value::as_str)
+                .map(str::to_string);
+
+        let message =
+            match &version {
+                Some(version) => {
+                    format!(
+                        "Connected to OpenClaw Gateway {}.",
+                        version,
+                    )
+                }
+
+                None => {
+                    "Connected to OpenClaw Gateway."
+                        .to_string()
+                }
+            };
 
         return GatewayHandshake {
             success: true,
-            state:
-                "connected"
-                    .to_string(),
-
-            message:
-                match &version {
-                    Some(version) => {
-                        format!(
-                            "Connected to OpenClaw Gateway {}.",
-                            version,
-                        )
-                    }
-
-                    None => {
-                        "Connected to OpenClaw Gateway."
-                            .to_string()
-                    }
-                },
-
+            state: "connected".to_string(),
+            message,
             version,
             payload,
         };
@@ -995,51 +953,29 @@ fn gateway_handshake(
 
     let error_message =
         error_value
-            .and_then(
-                |value| {
-                    value.get(
-                        "message",
-                    )
-                },
-            )
-            .and_then(
-                Value::as_str,
-            )
+            .and_then(|value| {
+                value.get("message")
+            })
+            .and_then(Value::as_str)
             .unwrap_or(
                 "OpenClaw rejected the connection.",
             );
 
     let error_code =
         error_value
-            .and_then(
-                |value| {
-                    value.get(
-                        "code",
-                    )
-                },
-            )
-            .and_then(
-                Value::as_str,
-            )
+            .and_then(|value| {
+                value.get("code")
+            })
+            .and_then(Value::as_str)
             .or_else(|| {
                 error_value
-                    .and_then(
-                        |value| {
-                            value.get(
-                                "details",
-                            )
-                        },
-                    )
-                    .and_then(
-                        |details| {
-                            details.get(
-                                "code",
-                            )
-                        },
-                    )
-                    .and_then(
-                        Value::as_str,
-                    )
+                    .and_then(|value| {
+                        value.get("details")
+                    })
+                    .and_then(|details| {
+                        details.get("code")
+                    })
+                    .and_then(Value::as_str)
             });
 
     let state =
@@ -1048,15 +984,18 @@ fn gateway_handshake(
             error_code,
         );
 
+    let lower_message =
+        error_message.to_lowercase();
+
     let friendly_message =
-        if error_message
-            .to_lowercase()
+        if lower_message
             .contains("device")
-            || error_message
-                .to_lowercase()
-                .contains(
-                    "pair",
-                )
+            || lower_message
+                .contains("pair")
+            || lower_message
+                .contains("signature")
+            || lower_message
+                .contains("nonce")
         {
             format!(
                 "{} The remote Gateway requires device identity or pairing.",
@@ -1069,11 +1008,9 @@ fn gateway_handshake(
     GatewayHandshake {
         success: false,
         state,
-        message:
-            friendly_message,
+        message: friendly_message,
         version: None,
-        payload:
-            Some(response),
+        payload: Some(response),
     }
 }
 
