@@ -836,42 +836,52 @@ fn extract_error(
     (message, code)
 }
 
+fn find_string_recursive(value: &Value, key: &str) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            if let Some(found) = map.get(key).and_then(Value::as_str) {
+                return Some(found.to_string());
+            }
+
+            for child in map.values() {
+                if let Some(found) = find_string_recursive(child, key) {
+                    return Some(found);
+                }
+            }
+
+            None
+        }
+        Value::Array(items) => {
+            for item in items {
+                if let Some(found) = find_string_recursive(item, key) {
+                    return Some(found);
+                }
+            }
+
+            None
+        }
+        _ => None,
+    }
+}
+
 fn extract_gateway_metadata(
     payload: Option<&Value>,
 ) -> (Option<String>, Option<String>) {
-    let version =
-        payload
-            .and_then(|value| value.get("server"))
+    let version = payload.and_then(|value| {
+        value
+            .get("server")
             .and_then(|server| server.get("version"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .or_else(|| {
-                payload
-                    .and_then(|value| value.get("version"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            });
+            .or_else(|| find_string_recursive(value, "version"))
+    });
 
-    let gateway_id =
-        payload
-            .and_then(|value| value.get("server"))
-            .and_then(|server| {
-                server
-                    .get("id")
-                    .or_else(|| {
-                        server.get("gatewayId")
-                    })
-            })
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                payload
-                    .and_then(|value| {
-                        value.get("gatewayId")
-                    })
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            });
+    let gateway_id = payload.and_then(|value| {
+        find_string_recursive(value, "instanceId")
+            .or_else(|| find_string_recursive(value, "instance_id"))
+            .or_else(|| find_string_recursive(value, "gatewayId"))
+            .or_else(|| find_string_recursive(value, "gateway_id"))
+    });
 
     (version, gateway_id)
 }
