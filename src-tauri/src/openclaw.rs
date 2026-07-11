@@ -1,20 +1,12 @@
 use chrono::Utc;
-
-use serde::{
-    Deserialize,
-    Serialize,
-};
-
-use serde_json::{
-    json,
-    Value,
-};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use std::{
     fs,
     net::TcpStream,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use tungstenite::{
@@ -30,7 +22,16 @@ use url::Url;
 const CONFIG_FILE_NAME: &str =
     "openclaw-servers.json";
 
+const EXPORT_SCHEMA_VERSION: u32 = 1;
 const PROTOCOL_VERSION: u64 = 4;
+const CONNECTION_TIMEOUT_SECONDS: u64 = 10;
+
+type GatewaySocket =
+    WebSocket<MaybeTlsStream<TcpStream>>;
+
+/* ===========================
+   Stored models
+=========================== */
 
 #[derive(
     Debug,
@@ -44,19 +45,43 @@ struct StoredOpenClawServer {
     name: String,
     server_url: String,
     gateway_token: String,
+
     enabled: bool,
     active: bool,
     auto_connect: bool,
 
-    #[serde(default)]
+    #[serde(default = "default_connection_state")]
     connection_state: String,
 
     #[serde(default)]
     connection_message: String,
 
     #[serde(default)]
+    version: Option<String>,
+
+    #[serde(default)]
+    gateway_id: Option<String>,
+
+    #[serde(default)]
+    latency_ms: Option<u64>,
+
+    #[serde(default)]
     last_checked_at: Option<String>,
+
+    #[serde(default)]
+    created_at: Option<String>,
+
+    #[serde(default)]
+    updated_at: Option<String>,
 }
+
+fn default_connection_state() -> String {
+    "unknown".to_string()
+}
+
+/* ===========================
+   Public models
+=========================== */
 
 #[derive(
     Debug,
@@ -70,7 +95,7 @@ pub struct OpenClawServer {
     pub server_url: String,
 
     /*
-     * 永远不把真实 Token 返回前端。
+     * 真实 Token 永远不返回前端。
      */
     pub gateway_token: String,
     pub has_gateway_token: bool,
@@ -81,12 +106,19 @@ pub struct OpenClawServer {
 
     pub connection_state: String,
     pub connection_message: String,
+
+    pub version: Option<String>,
+    pub gateway_id: Option<String>,
+    pub latency_ms: Option<u64>,
     pub last_checked_at: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 #[derive(
     Debug,
     Clone,
+    Serialize,
     Deserialize,
 )]
 #[serde(rename_all = "camelCase")]
@@ -98,23 +130,19 @@ pub struct OpenClawServerInput {
     pub auto_connect: bool,
 }
 
-#[derive(
-    Debug,
-    Serialize,
-)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenClawActionResult {
     pub success: bool,
     pub message: String,
 
-    #[serde(
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub server: Option<OpenClawServer>,
 }
 
 #[derive(
     Debug,
+    Clone,
     Serialize,
 )]
 #[serde(rename_all = "camelCase")]
@@ -124,46 +152,128 @@ pub struct OpenClawConnectionResult {
     pub message: String,
     pub checked_at: String,
 
-    #[serde(
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub version: Option<String>,
+    pub gateway_id: Option<String>,
+    pub latency_ms: Option<u64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub server: Option<OpenClawServer>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawRemoteStatus {
+    pub connected: bool,
+
+    pub server_id: String,
+    pub server_name: String,
+    pub server_url: String,
+
+    pub gateway_status: Option<String>,
+    pub version: Option<String>,
+    pub gateway_id: Option<String>,
+    pub latency_ms: Option<u64>,
+    pub checked_at: Option<String>,
+    pub raw_response: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawDashboardSummary {
+    pub configured: bool,
+    pub connected: bool,
+
+    pub server_id: Option<String>,
+    pub server_name: Option<String>,
+    pub server_url: Option<String>,
+
+    pub state: String,
+    pub message: String,
+
+    pub version: Option<String>,
+    pub gateway_id: Option<String>,
+    pub latency_ms: Option<u64>,
+    pub last_checked_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawRuntimeConfig {
+    pub mode: String,
+    pub active_server_id: Option<String>,
+    pub active_server: Option<OpenClawServer>,
 }
 
 #[derive(
     Debug,
     Serialize,
+    Deserialize,
 )]
 #[serde(rename_all = "camelCase")]
-pub struct OpenClawRemoteStatus {
-    pub connected: bool,
-    pub server_id: String,
-    pub server_name: String,
-    pub server_url: String,
+struct OpenClawExportDocument {
+    schema_version: u32,
+    exported_at: String,
+    includes_secrets: bool,
+    servers: Vec<OpenClawServerInput>,
+}
 
-    #[serde(
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub gateway_status: Option<String>,
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawExportResult {
+    pub success: bool,
+    pub message: String,
+    pub json: Option<String>,
+}
 
-    #[serde(
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub version: Option<String>,
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawImportResult {
+    pub success: bool,
+    pub message: String,
+    pub imported_count: usize,
+    pub skipped_count: usize,
+}
 
-    #[serde(
-        skip_serializing_if = "Option::is_none"
-    )]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawGatewayRequest {
+    pub method: String,
+
+    #[serde(default)]
+    pub params: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawGatewayResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<Value>,
     pub raw_response: Option<String>,
 }
 
-struct GatewayHandshake {
-    success: bool,
+/* ===========================
+   Internal Gateway models
+=========================== */
+
+struct GatewaySession {
+    socket: GatewaySocket,
+    version: Option<String>,
+    gateway_id: Option<String>,
+    latency_ms: u64,
+    connect_payload: Option<Value>,
+}
+
+struct GatewayFailure {
     state: String,
     message: String,
-    version: Option<String>,
     payload: Option<Value>,
+    latency_ms: Option<u64>,
 }
+
+/* ===========================
+   Result helpers
+=========================== */
 
 fn action_success(
     message: impl Into<String>,
@@ -186,26 +296,38 @@ fn action_failure(
     }
 }
 
-fn config_directory()
-    -> Result<PathBuf, String>
-{
-    let home =
-        dirs::home_dir()
-            .ok_or_else(|| {
-                "Unable to determine the home directory."
-                    .to_string()
-            })?;
+fn connection_failure(
+    state: impl Into<String>,
+    message: impl Into<String>,
+) -> OpenClawConnectionResult {
+    OpenClawConnectionResult {
+        success: false,
+        state: state.into(),
+        message: message.into(),
+        checked_at: Utc::now().to_rfc3339(),
 
-    Ok(
-        home
-            .join(".ai-os")
-            .join("config"),
-    )
+        version: None,
+        gateway_id: None,
+        latency_ms: None,
+        server: None,
+    }
 }
 
-fn config_file()
-    -> Result<PathBuf, String>
-{
+/* ===========================
+   Configuration storage
+=========================== */
+
+fn config_directory() -> Result<PathBuf, String> {
+    let home =
+        dirs::home_dir().ok_or_else(|| {
+            "Unable to determine the home directory."
+                .to_string()
+        })?;
+
+    Ok(home.join(".ai-os").join("config"))
+}
+
+fn config_file() -> Result<PathBuf, String> {
     Ok(
         config_directory()?
             .join(CONFIG_FILE_NAME),
@@ -213,79 +335,82 @@ fn config_file()
 }
 
 fn read_servers()
-    -> Result<
-        Vec<StoredOpenClawServer>,
-        String,
-    >
+    -> Result<Vec<StoredOpenClawServer>, String>
 {
-    let path =
-        config_file()?;
+    let path = config_file()?;
 
     if !path.exists() {
         return Ok(Vec::new());
     }
 
     let contents =
-        fs::read_to_string(
-            &path,
-        )
-        .map_err(|error| {
-            format!(
-                "Unable to read OpenClaw configuration {}: {}",
-                path.display(),
-                error,
-            )
-        })?;
+        fs::read_to_string(&path)
+            .map_err(|error| {
+                format!(
+                    "Unable to read OpenClaw configuration {}: {}",
+                    path.display(),
+                    error,
+                )
+            })?;
 
     if contents.trim().is_empty() {
         return Ok(Vec::new());
     }
 
-    serde_json::from_str(
-        &contents,
-    )
-    .map_err(|error| {
-        format!(
-            "Unable to parse OpenClaw configuration: {}",
-            error,
-        )
-    })
+    serde_json::from_str(&contents)
+        .map_err(|error| {
+            format!(
+                "Unable to parse OpenClaw configuration: {}",
+                error,
+            )
+        })
 }
 
 fn write_servers(
-    servers:
-        &[StoredOpenClawServer],
+    servers: &[StoredOpenClawServer],
 ) -> Result<(), String> {
-    let directory =
-        config_directory()?;
+    let directory = config_directory()?;
 
-    fs::create_dir_all(
-        &directory,
-    )
-    .map_err(|error| {
-        format!(
-            "Unable to create OpenClaw configuration directory: {}",
-            error,
-        )
-    })?;
-
-    let path =
-        config_file()?;
-
-    let contents =
-        serde_json::to_string_pretty(
-            servers,
-        )
+    fs::create_dir_all(&directory)
         .map_err(|error| {
             format!(
-                "Unable to serialize OpenClaw configuration: {}",
+                "Unable to create OpenClaw configuration directory: {}",
                 error,
             )
         })?;
 
+    let path = config_file()?;
+
+    let contents =
+        serde_json::to_string_pretty(servers)
+            .map_err(|error| {
+                format!(
+                    "Unable to serialize OpenClaw configuration: {}",
+                    error,
+                )
+            })?;
+
+    /*
+     * 先写临时文件，再替换正式文件，
+     * 避免程序中断导致配置损坏。
+     */
+    let temporary_path =
+        path.with_extension("json.tmp");
+
     fs::write(
-        &path,
+        &temporary_path,
         contents,
+    )
+    .map_err(|error| {
+        format!(
+            "Unable to write OpenClaw configuration: {}",
+            error,
+        )
+    })?;
+
+    fs::rename(
+        &temporary_path,
+        &path,
     )
     .map_err(|error| {
         format!(
@@ -300,67 +425,47 @@ fn public_server(
     stored: &StoredOpenClawServer,
 ) -> OpenClawServer {
     OpenClawServer {
-        id:
-            stored.id.clone(),
+        id: stored.id.clone(),
+        name: stored.name.clone(),
+        server_url: stored.server_url.clone(),
 
-        name:
-            stored.name.clone(),
-
-        server_url:
-            stored.server_url.clone(),
-
-        /*
-         * 列表只返回掩码。
-         */
         gateway_token:
-            if stored
-                .gateway_token
-                .is_empty()
-            {
+            if stored.gateway_token.trim().is_empty() {
                 String::new()
             } else {
-                "••••••••••••••••"
-                    .to_string()
+                "••••••••••••••••".to_string()
             },
 
         has_gateway_token:
-            !stored
-                .gateway_token
-                .trim()
-                .is_empty(),
+            !stored.gateway_token.trim().is_empty(),
 
-        enabled:
-            stored.enabled,
-
-        active:
-            stored.active,
-
-        auto_connect:
-            stored.auto_connect,
+        enabled: stored.enabled,
+        active: stored.active,
+        auto_connect: stored.auto_connect,
 
         connection_state:
-            if stored
-                .connection_state
-                .is_empty()
-            {
+            if stored.connection_state.trim().is_empty() {
                 "unknown".to_string()
             } else {
-                stored
-                    .connection_state
-                    .clone()
+                stored.connection_state.clone()
             },
 
         connection_message:
-            stored
-                .connection_message
-                .clone(),
+            stored.connection_message.clone(),
 
+        version: stored.version.clone(),
+        gateway_id: stored.gateway_id.clone(),
+        latency_ms: stored.latency_ms,
         last_checked_at:
-            stored
-                .last_checked_at
-                .clone(),
+            stored.last_checked_at.clone(),
+        created_at: stored.created_at.clone(),
+        updated_at: stored.updated_at.clone(),
     }
 }
+
+/* ===========================
+   Validation and IDs
+=========================== */
 
 fn normalize_url(
     value: &str,
@@ -385,9 +490,7 @@ fn normalize_url(
             })?;
 
     match parsed.scheme() {
-        "http" | "https" |
-        "ws" | "wss" => {}
-
+        "http" | "https" | "ws" | "wss" => {}
         _ => {
             return Err(
                 "Server URL must use HTTP, HTTPS, WS or WSS."
@@ -447,9 +550,6 @@ fn websocket_url(
         }
     }
 
-    /*
-     * OpenClaw Gateway 使用根 WebSocket 地址。
-     */
     if parsed.path().is_empty() {
         parsed.set_path("/");
     }
@@ -458,8 +558,7 @@ fn websocket_url(
 }
 
 fn validate_input(
-    input:
-        &OpenClawServerInput,
+    input: &OpenClawServerInput,
     require_token: bool,
 ) -> Result<(), String> {
     if input.name.trim().is_empty() {
@@ -473,11 +572,8 @@ fn validate_input(
         &input.server_url,
     )?;
 
-    if require_token &&
-        input
-            .gateway_token
-            .trim()
-            .is_empty()
+    if require_token
+        && input.gateway_token.trim().is_empty()
     {
         return Err(
             "Gateway Token is required."
@@ -488,18 +584,14 @@ fn validate_input(
     Ok(())
 }
 
-fn generate_id(
-    name: &str,
-) -> String {
+fn generate_id(name: &str) -> String {
     let slug =
         name
             .trim()
             .to_lowercase()
             .chars()
             .map(|character| {
-                if character
-                    .is_ascii_alphanumeric()
-                {
+                if character.is_ascii_alphanumeric() {
                     character
                 } else {
                     '-'
@@ -507,11 +599,7 @@ fn generate_id(
             })
             .collect::<String>()
             .split('-')
-            .filter(
-                |part| {
-                    !part.is_empty()
-                },
-            )
+            .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join("-");
 
@@ -522,73 +610,112 @@ fn generate_id(
         } else {
             &slug
         },
-        Utc::now()
-            .timestamp_millis(),
+        Utc::now().timestamp_millis(),
     )
 }
 
+fn unique_server_name(
+    servers: &[StoredOpenClawServer],
+    requested_name: &str,
+) -> String {
+    let base =
+        requested_name.trim();
+
+    if !servers.iter().any(|server| {
+        server.name.eq_ignore_ascii_case(base)
+    }) {
+        return base.to_string();
+    }
+
+    for number in 2..10_000 {
+        let candidate =
+            format!("{} {}", base, number);
+
+        if !servers.iter().any(|server| {
+            server
+                .name
+                .eq_ignore_ascii_case(&candidate)
+        }) {
+            return candidate;
+        }
+    }
+
+    format!(
+        "{} {}",
+        base,
+        Utc::now().timestamp_millis(),
+    )
+}
+
+/* ===========================
+   WebSocket helpers
+=========================== */
+
 fn configure_socket_timeout(
-    socket:
-        &mut WebSocket<
-            MaybeTlsStream<TcpStream>,
-        >,
+    socket: &mut GatewaySocket,
 ) {
     let duration =
-        Some(
-            Duration::from_secs(10),
-        );
+        Some(Duration::from_secs(
+            CONNECTION_TIMEOUT_SECONDS,
+        ));
 
     match socket.get_mut() {
-        MaybeTlsStream::Plain(
-            stream,
-        ) => {
+        MaybeTlsStream::Plain(stream) => {
             let _ =
-                stream
-                    .set_read_timeout(
-                        duration,
-                    );
+                stream.set_read_timeout(duration);
 
             let _ =
-                stream
-                    .set_write_timeout(
-                        duration,
-                    );
+                stream.set_write_timeout(duration);
         }
 
-        MaybeTlsStream::NativeTls(
-            stream,
-        ) => {
-            let tcp =
-                stream.get_mut();
+        MaybeTlsStream::NativeTls(stream) => {
+            let tcp = stream.get_mut();
 
             let _ =
-                tcp.set_read_timeout(
-                    duration,
-                );
+                tcp.set_read_timeout(duration);
 
             let _ =
-                tcp.set_write_timeout(
-                    duration,
-                );
+                tcp.set_write_timeout(duration);
         }
 
         _ => {}
     }
 }
 
+fn websocket_error(
+    error: WebSocketError,
+) -> String {
+    match error {
+        WebSocketError::Io(io_error) => {
+            format!(
+                "Unable to reach OpenClaw Gateway: {}",
+                io_error,
+            )
+        }
+
+        WebSocketError::Http(response) => {
+            format!(
+                "OpenClaw rejected the WebSocket request with HTTP status {}.",
+                response.status(),
+            )
+        }
+
+        other => {
+            format!(
+                "OpenClaw WebSocket error: {}",
+                other,
+            )
+        }
+    }
+}
+
 fn read_json_message(
-    socket:
-        &mut WebSocket<
-            MaybeTlsStream<TcpStream>,
-        >,
+    socket: &mut GatewaySocket,
 ) -> Result<Value, String> {
     loop {
         let message =
-            socket
-                .read()
-                .map_err(
-                    websocket_error,
-                )?;
+            socket.read()
+                .map_err(websocket_error)?;
 
         match message {
             Message::Text(text) => {
@@ -617,14 +744,8 @@ fn read_json_message(
 
             Message::Ping(payload) => {
                 socket
-                    .send(
-                        Message::Pong(
-                            payload,
-                        ),
-                    )
-                    .map_err(
-                        websocket_error,
-                    )?;
+                    .send(Message::Pong(payload))
+                    .map_err(websocket_error)?;
             }
 
             Message::Close(frame) => {
@@ -635,37 +756,6 @@ fn read_json_message(
             }
 
             _ => {}
-        }
-    }
-}
-
-fn websocket_error(
-    error: WebSocketError,
-) -> String {
-    match error {
-        WebSocketError::Io(
-            io_error,
-        ) => {
-            format!(
-                "Unable to reach OpenClaw Gateway: {}",
-                io_error,
-            )
-        }
-
-        WebSocketError::Http(
-            response,
-        ) => {
-            format!(
-                "OpenClaw rejected the WebSocket request with HTTP status {}.",
-                response.status(),
-            )
-        }
-
-        other => {
-            format!(
-                "OpenClaw WebSocket error: {}",
-                other,
-            )
         }
     }
 }
@@ -682,97 +772,156 @@ fn classify_gateway_error(
         )
         .to_lowercase();
 
-    if combined.contains(
-        "unauthorized",
-    ) || combined.contains(
-        "invalid token",
-    ) || combined.contains(
-        "token missing",
-    ) || combined.contains(
-        "auth",
-    ) && combined.contains(
-        "token",
-    ) {
-        return "unauthorized"
-            .to_string();
+    if combined.contains("unauthorized")
+        || combined.contains("invalid token")
+        || combined.contains("token missing")
+        || (
+            combined.contains("auth")
+            && combined.contains("token")
+        )
+    {
+        return "unauthorized".to_string();
     }
 
-    if combined.contains(
-        "device",
-    ) || combined.contains(
-        "pairing",
-    ) || combined.contains(
-        "nonce",
-    ) || combined.contains(
-        "signature",
-    ) {
-        return "error".to_string();
+    if combined.contains("pairing")
+        || combined.contains("pairing_required")
+        || combined.contains("device approval")
+    {
+        return "pairing-required".to_string();
+    }
+
+    if combined.contains("connection refused")
+        || combined.contains("timed out")
+        || combined.contains("network")
+        || combined.contains("dns")
+    {
+        return "unreachable".to_string();
     }
 
     "error".to_string()
 }
 
-fn gateway_handshake(
+fn extract_error(
+    response: &Value,
+) -> (String, Option<String>) {
+    let error_value =
+        response.get("error");
+
+    let message =
+        error_value
+            .and_then(|value| value.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or(
+                "OpenClaw rejected the request.",
+            )
+            .to_string();
+
+    let code =
+        error_value
+            .and_then(|value| value.get("code"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                error_value
+                    .and_then(|value| {
+                        value.get("details")
+                    })
+                    .and_then(|details| {
+                        details.get("code")
+                    })
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+
+    (message, code)
+}
+
+fn extract_gateway_metadata(
+    payload: Option<&Value>,
+) -> (Option<String>, Option<String>) {
+    let version =
+        payload
+            .and_then(|value| value.get("server"))
+            .and_then(|server| server.get("version"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                payload
+                    .and_then(|value| value.get("version"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+
+    let gateway_id =
+        payload
+            .and_then(|value| value.get("server"))
+            .and_then(|server| {
+                server
+                    .get("id")
+                    .or_else(|| {
+                        server.get("gatewayId")
+                    })
+            })
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                payload
+                    .and_then(|value| {
+                        value.get("gatewayId")
+                    })
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+
+    (version, gateway_id)
+}
+
+/* ===========================
+   Gateway connection
+=========================== */
+
+fn open_gateway_session(
     server_url: &str,
     gateway_token: &str,
-) -> GatewayHandshake {
-    let ws_url =
-        match websocket_url(server_url) {
-            Ok(value) => value,
+) -> Result<GatewaySession, GatewayFailure> {
+    let started_at = Instant::now();
 
-            Err(error) => {
-                return GatewayHandshake {
-                    success: false,
-                    state: "error".to_string(),
-                    message: error,
-                    version: None,
-                    payload: None,
-                };
-            }
-        };
+    let ws_url =
+        websocket_url(server_url)
+            .map_err(|message| GatewayFailure {
+                state: "error".to_string(),
+                message,
+                payload: None,
+                latency_ms: None,
+            })?;
 
     let (mut socket, _response) =
-        match connect(ws_url.as_str()) {
-            Ok(value) => value,
-
-            Err(error) => {
-                return GatewayHandshake {
-                    success: false,
-                    state: "unreachable".to_string(),
-                    message: websocket_error(error),
-                    version: None,
-                    payload: None,
-                };
-            }
-        };
+        connect(ws_url.as_str())
+            .map_err(|error| GatewayFailure {
+                state: "unreachable".to_string(),
+                message: websocket_error(error),
+                payload: None,
+                latency_ms: Some(
+                    started_at.elapsed().as_millis()
+                        as u64,
+                ),
+            })?;
 
     configure_socket_timeout(
         &mut socket,
     );
 
-    /*
-     * OpenClaw Gateway 连接后，
-     * 第一条消息应为 connect.challenge。
-     */
     let challenge =
-        match read_json_message(
-            &mut socket,
-        ) {
-            Ok(value) => value,
-
-            Err(error) => {
-                let _ =
-                    socket.close(None);
-
-                return GatewayHandshake {
-                    success: false,
-                    state: "unreachable".to_string(),
-                    message: error,
-                    version: None,
-                    payload: None,
-                };
-            }
-        };
+        read_json_message(&mut socket)
+            .map_err(|message| GatewayFailure {
+                state: "unreachable".to_string(),
+                message,
+                payload: None,
+                latency_ms: Some(
+                    started_at.elapsed().as_millis()
+                        as u64,
+                ),
+            })?;
 
     let challenge_event =
         challenge
@@ -782,35 +931,37 @@ fn gateway_handshake(
     if challenge_event
         != Some("connect.challenge")
     {
-        let _ =
-            socket.close(None);
+        let _ = socket.close(None);
 
-        return GatewayHandshake {
-            success: false,
+        return Err(GatewayFailure {
             state: "error".to_string(),
 
             message:
                 "The server responded, but it did not provide an OpenClaw connect challenge."
                     .to_string(),
 
-            version: None,
             payload: Some(challenge),
-        };
+
+            latency_ms: Some(
+                started_at.elapsed().as_millis()
+                    as u64,
+            ),
+        });
     }
 
     let request_id =
         format!(
-            "ai-os-{}",
-            Utc::now()
-                .timestamp_millis(),
+            "ai-os-connect-{}",
+            Utc::now().timestamp_millis(),
         );
 
     /*
-     * 使用 OpenClaw 允许的客户端身份。
+     * 已根据本机 OpenClaw 2026.6.11
+     * 验证通过的身份格式：
      *
-     * 注意：
-     * client.id 使用 cli，
-     * client.mode 使用 operator。
+     * client.id   = cli
+     * client.mode = cli
+     * role        = operator
      */
     let connect_request =
         json!({
@@ -824,10 +975,14 @@ fn gateway_handshake(
 
                 "client": {
                     "id": "cli",
+
                     "version": env!(
                         "CARGO_PKG_VERSION"
                     ),
-                    "platform": "macos",
+
+                    "platform":
+                        std::env::consts::OS,
+
                     "mode": "cli"
                 },
 
@@ -856,49 +1011,37 @@ fn gateway_handshake(
             }
         });
 
-    if let Err(error) =
-        socket.send(
-            Message::Text(
-                connect_request
-                    .to_string()
-                    .into(),
-            ),
-        )
-    {
-        let _ =
-            socket.close(None);
-
-        return GatewayHandshake {
-            success: false,
+    socket
+        .send(Message::Text(
+            connect_request
+                .to_string()
+                .into(),
+        ))
+        .map_err(|error| GatewayFailure {
             state: "unreachable".to_string(),
             message: websocket_error(error),
-            version: None,
             payload: None,
-        };
-    }
+            latency_ms: Some(
+                started_at.elapsed().as_millis()
+                    as u64,
+            ),
+        })?;
 
     let response =
-        match read_json_message(
-            &mut socket,
-        ) {
-            Ok(value) => value,
+        read_json_message(&mut socket)
+            .map_err(|message| GatewayFailure {
+                state: "unreachable".to_string(),
+                message,
+                payload: None,
+                latency_ms: Some(
+                    started_at.elapsed().as_millis()
+                        as u64,
+                ),
+            })?;
 
-            Err(error) => {
-                let _ =
-                    socket.close(None);
-
-                return GatewayHandshake {
-                    success: false,
-                    state: "unreachable".to_string(),
-                    message: error,
-                    version: None,
-                    payload: None,
-                };
-            }
-        };
-
-    let _ =
-        socket.close(None);
+    let latency_ms =
+        started_at.elapsed().as_millis()
+            as u64;
 
     let ok =
         response
@@ -906,158 +1049,472 @@ fn gateway_handshake(
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-    if ok {
-        let payload =
-            response
-                .get("payload")
-                .cloned();
+    if !ok {
+        let _ = socket.close(None);
 
-        let version =
-            payload
-                .as_ref()
-                .and_then(|value| {
-                    value.get("server")
-                })
-                .and_then(|server| {
-                    server.get("version")
-                })
-                .and_then(Value::as_str)
-                .map(str::to_string);
+        let (message, code) =
+            extract_error(&response);
 
-        let message =
-            match &version {
-                Some(version) => {
-                    format!(
-                        "Connected to OpenClaw Gateway {}.",
-                        version,
-                    )
-                }
-
-                None => {
-                    "Connected to OpenClaw Gateway."
-                        .to_string()
-                }
-            };
-
-        return GatewayHandshake {
-            success: true,
-            state: "connected".to_string(),
-            message,
-            version,
-            payload,
-        };
-    }
-
-    let error_value =
-        response.get("error");
-
-    let error_message =
-        error_value
-            .and_then(|value| {
-                value.get("message")
-            })
-            .and_then(Value::as_str)
-            .unwrap_or(
-                "OpenClaw rejected the connection.",
+        let state =
+            classify_gateway_error(
+                &message,
+                code.as_deref(),
             );
 
-    let error_code =
-        error_value
-            .and_then(|value| {
-                value.get("code")
-            })
-            .and_then(Value::as_str)
-            .or_else(|| {
-                error_value
-                    .and_then(|value| {
-                        value.get("details")
-                    })
-                    .and_then(|details| {
-                        details.get("code")
-                    })
-                    .and_then(Value::as_str)
-            });
+        return Err(GatewayFailure {
+            state,
+            message,
+            payload: Some(response),
+            latency_ms: Some(latency_ms),
+        });
+    }
 
-    let state =
-        classify_gateway_error(
-            error_message,
-            error_code,
+    let payload =
+        response
+            .get("payload")
+            .cloned();
+
+    let (version, gateway_id) =
+        extract_gateway_metadata(
+            payload.as_ref(),
         );
 
-    let lower_message =
-        error_message.to_lowercase();
+    Ok(GatewaySession {
+        socket,
+        version,
+        gateway_id,
+        latency_ms,
+        connect_payload: payload,
+    })
+}
+/* ===========================
+   Gateway requests
+=========================== */
 
-    let friendly_message =
-        if lower_message
-            .contains("device")
-            || lower_message
-                .contains("pair")
-            || lower_message
-                .contains("signature")
-            || lower_message
-                .contains("nonce")
-        {
-            format!(
-                "{} The remote Gateway requires device identity or pairing.",
-                error_message,
+fn invoke_gateway_method(
+    session: &mut GatewaySession,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, GatewayFailure> {
+    let method =
+        method.trim();
+
+    if method.is_empty() {
+        return Err(
+            GatewayFailure {
+                state:
+                    "error"
+                        .to_string(),
+
+                message:
+                    "Gateway method is required."
+                        .to_string(),
+
+                payload: None,
+                latency_ms: None,
+            },
+        );
+    }
+
+    let request_id =
+        format!(
+            "ai-os-request-{}",
+            Utc::now()
+                .timestamp_millis(),
+        );
+
+    let request =
+        json!({
+            "type": "req",
+            "id": request_id,
+            "method": method,
+            "params": params.unwrap_or_else(
+                || json!({})
             )
-        } else {
-            error_message.to_string()
-        };
+        });
 
-    GatewayHandshake {
-        success: false,
-        state,
-        message: friendly_message,
-        version: None,
-        payload: Some(response),
+    session
+        .socket
+        .send(
+            Message::Text(
+                request
+                    .to_string()
+                    .into(),
+            ),
+        )
+        .map_err(
+            |error| {
+                GatewayFailure {
+                    state:
+                        "unreachable"
+                            .to_string(),
+
+                    message:
+                        websocket_error(
+                            error,
+                        ),
+
+                    payload:
+                        None,
+
+                    latency_ms:
+                        Some(
+                            session
+                                .latency_ms,
+                        ),
+                }
+            },
+        )?;
+
+    loop {
+        let response =
+            read_json_message(
+                &mut session.socket,
+            )
+            .map_err(
+                |message| {
+                    GatewayFailure {
+                        state:
+                            "unreachable"
+                                .to_string(),
+
+                        message,
+
+                        payload:
+                            None,
+
+                        latency_ms:
+                            Some(
+                                session
+                                    .latency_ms,
+                            ),
+                    }
+                },
+            )?;
+
+        /*
+         * OpenClaw 可能在请求响应之间发送事件。
+         * 这里只处理与当前 request id 对应的响应。
+         */
+        let response_id =
+            response
+                .get("id")
+                .and_then(
+                    Value::as_str,
+                );
+
+        if response_id
+            != Some(
+                request_id
+                    .as_str(),
+            )
+        {
+            continue;
+        }
+
+        let ok =
+            response
+                .get("ok")
+                .and_then(
+                    Value::as_bool,
+                )
+                .unwrap_or(false);
+
+        if ok {
+            return Ok(
+                response
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(
+                        Value::Null,
+                    ),
+            );
+        }
+
+        let (
+            message,
+            code,
+        ) =
+            extract_error(
+                &response,
+            );
+
+        return Err(
+            GatewayFailure {
+                state:
+                    classify_gateway_error(
+                        &message,
+                        code.as_deref(),
+                    ),
+
+                message,
+
+                payload:
+                    Some(
+                        response,
+                    ),
+
+                latency_ms:
+                    Some(
+                        session
+                            .latency_ms,
+                    ),
+            },
+        );
     }
 }
 
-fn update_connection_result(
-    servers:
-        &mut [StoredOpenClawServer],
-    index: usize,
-    handshake:
-        &GatewayHandshake,
+fn test_server_connection(
+    server_url: &str,
+    gateway_token: &str,
 ) -> OpenClawConnectionResult {
     let checked_at =
-        Utc::now().to_rfc3339();
+        Utc::now()
+            .to_rfc3339();
 
-    servers[index]
-        .connection_state =
-        handshake.state.clone();
+    match open_gateway_session(
+        server_url,
+        gateway_token,
+    ) {
+        Ok(
+            mut session,
+        ) => {
+            let _ =
+                session
+                    .socket
+                    .close(None);
 
-    servers[index]
-        .connection_message =
-        handshake.message.clone();
+            let message =
+                match (
+                    session
+                        .version
+                        .as_ref(),
+                    session
+                        .latency_ms,
+                ) {
+                    (
+                        Some(
+                            version,
+                        ),
+                        latency,
+                    ) => {
+                        format!(
+                            "Connected to OpenClaw Gateway {} in {} ms.",
+                            version,
+                            latency,
+                        )
+                    }
 
-    servers[index]
-        .last_checked_at =
-        Some(
-            checked_at.clone(),
-        );
+                    (
+                        None,
+                        latency,
+                    ) => {
+                        format!(
+                            "Connected to OpenClaw Gateway in {} ms.",
+                            latency,
+                        )
+                    }
+                };
 
-    OpenClawConnectionResult {
-        success:
-            handshake.success,
+            OpenClawConnectionResult {
+                success:
+                    true,
 
-        state:
-            handshake.state.clone(),
+                state:
+                    "connected"
+                        .to_string(),
 
-        message:
-            handshake.message.clone(),
+                message,
 
-        checked_at,
+                checked_at,
 
-        server:
-            Some(
-                public_server(
-                    &servers[index],
-                ),
-            ),
+                version:
+                    session
+                        .version,
+
+                gateway_id:
+                    session
+                        .gateway_id,
+
+                latency_ms:
+                    Some(
+                        session
+                            .latency_ms,
+                    ),
+
+                server:
+                    None,
+            }
+        }
+
+        Err(
+            failure,
+        ) => {
+            OpenClawConnectionResult {
+                success:
+                    false,
+
+                state:
+                    failure
+                        .state,
+
+                message:
+                    failure
+                        .message,
+
+                checked_at,
+
+                version:
+                    None,
+
+                gateway_id:
+                    None,
+
+                latency_ms:
+                    failure
+                        .latency_ms,
+
+                server:
+                    None,
+            }
+        }
     }
 }
+
+fn apply_connection_result(
+    stored:
+        &mut StoredOpenClawServer,
+
+    result:
+        &OpenClawConnectionResult,
+) {
+    stored.connection_state =
+        result.state.clone();
+
+    stored.connection_message =
+        result.message.clone();
+
+    stored.version =
+        result.version.clone();
+
+    stored.gateway_id =
+        result.gateway_id.clone();
+
+    stored.latency_ms =
+        result.latency_ms;
+
+    stored.last_checked_at =
+        Some(
+            result
+                .checked_at
+                .clone(),
+        );
+
+    stored.updated_at =
+        Some(
+            Utc::now()
+                .to_rfc3339(),
+        );
+}
+
+fn ensure_single_active_server(
+    servers:
+        &mut [StoredOpenClawServer],
+) {
+    let active_enabled_indexes =
+        servers
+            .iter()
+            .enumerate()
+            .filter_map(
+                |(
+                    index,
+                    server,
+                )| {
+                    if server.active
+                        && server.enabled
+                    {
+                        Some(index)
+                    } else {
+                        None
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+
+    if let Some(
+        first_active,
+    ) =
+        active_enabled_indexes
+            .first()
+            .copied()
+    {
+        for (
+            index,
+            server,
+        ) in
+            servers
+                .iter_mut()
+                .enumerate()
+        {
+            server.active =
+                index
+                    == first_active;
+        }
+
+        return;
+    }
+
+    if let Some(
+        first_enabled,
+    ) =
+        servers
+            .iter()
+            .position(
+                |server| {
+                    server.enabled
+                },
+            )
+    {
+        for (
+            index,
+            server,
+        ) in
+            servers
+                .iter_mut()
+                .enumerate()
+        {
+            server.active =
+                index
+                    == first_enabled;
+        }
+    } else {
+        for server in
+            servers
+                .iter_mut()
+        {
+            server.active =
+                false;
+        }
+    }
+}
+
+fn raw_json(
+    value: Option<&Value>,
+) -> Option<String> {
+    value.and_then(
+        |payload| {
+            serde_json::
+                to_string_pretty(
+                    payload,
+                )
+                .ok()
+        },
+    )
+}
+
+/* ===========================
+   Server management commands
+=========================== */
 
 #[tauri::command]
 pub fn list_openclaw_servers()
@@ -1069,29 +1526,40 @@ pub fn list_openclaw_servers()
     Ok(
         read_servers()?
             .iter()
-            .map(public_server)
+            .map(
+                public_server,
+            )
             .collect(),
     )
 }
 
 #[tauri::command]
 pub fn save_openclaw_server(
-    server: OpenClawServerInput,
+    server:
+        OpenClawServerInput,
 ) -> OpenClawActionResult {
-    if let Err(error) =
+    if let Err(
+        error,
+    ) =
         validate_input(
             &server,
             true,
         )
     {
-        return action_failure(error);
+        return action_failure(
+            error,
+        );
     }
 
     let mut servers =
         match read_servers() {
-            Ok(value) => value,
+            Ok(
+                value,
+            ) => value,
 
-            Err(error) => {
+            Err(
+                error,
+            ) => {
                 return action_failure(
                     error,
                 );
@@ -1100,19 +1568,25 @@ pub fn save_openclaw_server(
 
     let normalized_url =
         match normalize_url(
-            &server.server_url,
+            &server
+                .server_url,
         ) {
-            Ok(value) => value,
+            Ok(
+                value,
+            ) => value,
 
-            Err(error) => {
+            Err(
+                error,
+            ) => {
                 return action_failure(
                     error,
                 );
             }
         };
 
-    let is_first =
-        servers.is_empty();
+    let now =
+        Utc::now()
+            .to_rfc3339();
 
     let stored =
         StoredOpenClawServer {
@@ -1122,10 +1596,10 @@ pub fn save_openclaw_server(
                 ),
 
             name:
-                server
-                    .name
-                    .trim()
-                    .to_string(),
+                unique_server_name(
+                    &servers,
+                    &server.name,
+                ),
 
             server_url:
                 normalized_url,
@@ -1140,7 +1614,7 @@ pub fn save_openclaw_server(
                 server.enabled,
 
             active:
-                is_first,
+                false,
 
             auto_connect:
                 server.auto_connect,
@@ -1153,30 +1627,73 @@ pub fn save_openclaw_server(
                 "Connection has not been tested."
                     .to_string(),
 
+            version:
+                None,
+
+            gateway_id:
+                None,
+
+            latency_ms:
+                None,
+
             last_checked_at:
                 None,
+
+            created_at:
+                Some(
+                    now.clone(),
+                ),
+
+            updated_at:
+                Some(now),
         };
 
     servers.push(
-        stored.clone(),
+        stored,
     );
 
-    if let Err(error) =
+    ensure_single_active_server(
+        &mut servers,
+    );
+
+    let created =
+        match servers
+            .last()
+    {
+        Some(
+            value,
+        ) => {
+            value.clone()
+        }
+
+        None => {
+            return action_failure(
+                "Unable to create OpenClaw server.",
+            );
+        }
+    };
+
+    if let Err(
+        error,
+    ) =
         write_servers(
             &servers,
         )
     {
-        return action_failure(error);
+        return action_failure(
+            error,
+        );
     }
 
     action_success(
         format!(
             "OpenClaw server {} was added.",
-            stored.name,
+            created.name,
         ),
+
         Some(
             public_server(
-                &stored,
+                &created,
             ),
         ),
     )
@@ -1185,32 +1702,48 @@ pub fn save_openclaw_server(
 #[tauri::command]
 pub fn update_openclaw_server(
     id: String,
-    server: OpenClawServerInput,
+    server:
+        OpenClawServerInput,
 ) -> OpenClawActionResult {
-    if let Err(error) =
+    if let Err(
+        error,
+    ) =
         validate_input(
             &server,
             false,
         )
     {
-        return action_failure(error);
+        return action_failure(
+            error,
+        );
     }
 
     let mut servers =
         match read_servers() {
-            Ok(value) => value,
+            Ok(
+                value,
+            ) => value,
 
-            Err(error) => {
+            Err(
+                error,
+            ) => {
                 return action_failure(
                     error,
                 );
             }
         };
 
-    let Some(index) =
-        servers.iter().position(
-            |item| item.id == id,
-        )
+    let Some(
+        index,
+    ) =
+        servers
+            .iter()
+            .position(
+                |item| {
+                    item.id
+                        == id
+                },
+            )
     else {
         return action_failure(
             "OpenClaw server was not found.",
@@ -1219,11 +1752,16 @@ pub fn update_openclaw_server(
 
     let normalized_url =
         match normalize_url(
-            &server.server_url,
+            &server
+                .server_url,
         ) {
-            Ok(value) => value,
+            Ok(
+                value,
+            ) => value,
 
-            Err(error) => {
+            Err(
+                error,
+            ) => {
                 return action_failure(
                     error,
                 );
@@ -1234,6 +1772,17 @@ pub fn update_openclaw_server(
         servers[index]
             .gateway_token
             .clone();
+
+    let old_url =
+        servers[index]
+            .server_url
+            .clone();
+
+    let token_changed =
+        !server
+            .gateway_token
+            .trim()
+            .is_empty();
 
     servers[index].name =
         server
@@ -1247,17 +1796,13 @@ pub fn update_openclaw_server(
 
     servers[index]
         .gateway_token =
-        if server
-            .gateway_token
-            .trim()
-            .is_empty()
-        {
-            old_token
-        } else {
+        if token_changed {
             server
                 .gateway_token
                 .trim()
                 .to_string()
+        } else {
+            old_token
         };
 
     servers[index].enabled =
@@ -1268,27 +1813,64 @@ pub fn update_openclaw_server(
         server.auto_connect;
 
     servers[index]
-        .connection_state =
-        "unknown".to_string();
+        .updated_at =
+        Some(
+            Utc::now()
+                .to_rfc3339(),
+        );
 
-    servers[index]
-        .connection_message =
-        "Connection must be tested again."
-            .to_string();
+    let connection_changed =
+        old_url
+            != servers[index]
+                .server_url
+        || token_changed;
 
-    servers[index]
-        .last_checked_at =
-        None;
+    if connection_changed {
+        servers[index]
+            .connection_state =
+            "unknown"
+                .to_string();
+
+        servers[index]
+            .connection_message =
+            "Connection settings changed. Test the server again."
+                .to_string();
+
+        servers[index]
+            .version =
+            None;
+
+        servers[index]
+            .gateway_id =
+            None;
+
+        servers[index]
+            .latency_ms =
+            None;
+
+        servers[index]
+            .last_checked_at =
+            None;
+    }
+
+    ensure_single_active_server(
+        &mut servers,
+    );
 
     let updated =
-        servers[index].clone();
+        servers[index]
+            .clone();
 
-    if let Err(error) =
+    if let Err(
+        error,
+    ) =
         write_servers(
             &servers,
         )
     {
-        return action_failure(error);
+        return action_failure(
+            error,
+        );
     }
 
     action_success(
@@ -1296,6 +1878,7 @@ pub fn update_openclaw_server(
             "OpenClaw server {} was updated.",
             updated.name,
         ),
+
         Some(
             public_server(
                 &updated,
@@ -1310,21 +1893,30 @@ pub fn delete_openclaw_server(
 ) -> OpenClawActionResult {
     let mut servers =
         match read_servers() {
-            Ok(value) => value,
+            Ok(
+                value,
+            ) => value,
 
-            Err(error) => {
+            Err(
+                error,
+            ) => {
                 return action_failure(
                     error,
                 );
             }
         };
 
-    let Some(index) =
-        servers.iter().position(
-            |server| {
-                server.id == id
-            },
-        )
+    let Some(
+        index,
+    ) =
+        servers
+            .iter()
+            .position(
+                |server| {
+                    server.id
+                        == id
+                },
+            )
     else {
         return action_failure(
             "OpenClaw server was not found.",
@@ -1332,28 +1924,24 @@ pub fn delete_openclaw_server(
     };
 
     let removed =
-        servers.remove(index);
+        servers.remove(
+            index,
+        );
 
-    if removed.active {
-        if let Some(first) =
-            servers
-                .iter_mut()
-                .find(
-                    |server| {
-                        server.enabled
-                    },
-                )
-        {
-            first.active = true;
-        }
-    }
+    ensure_single_active_server(
+        &mut servers,
+    );
 
-    if let Err(error) =
+    if let Err(
+        error,
+    ) =
         write_servers(
             &servers,
         )
     {
-        return action_failure(error);
+        return action_failure(
+            error,
+        );
     }
 
     action_success(
@@ -1366,27 +1954,177 @@ pub fn delete_openclaw_server(
 }
 
 #[tauri::command]
-pub fn toggle_openclaw_server(
+pub fn duplicate_openclaw_server(
     id: String,
-    enabled: bool,
 ) -> OpenClawActionResult {
     let mut servers =
         match read_servers() {
-            Ok(value) => value,
+            Ok(
+                value,
+            ) => value,
 
-            Err(error) => {
+            Err(
+                error,
+            ) => {
                 return action_failure(
                     error,
                 );
             }
         };
 
-    let Some(index) =
-        servers.iter().position(
-            |server| {
-                server.id == id
-            },
+    let Some(
+        source,
+    ) =
+        servers
+            .iter()
+            .find(
+                |server| {
+                    server.id
+                        == id
+                },
+            )
+            .cloned()
+    else {
+        return action_failure(
+            "OpenClaw server was not found.",
+        );
+    };
+
+    let now =
+        Utc::now()
+            .to_rfc3339();
+
+    let duplicate_name =
+        unique_server_name(
+            &servers,
+            &format!(
+                "{} Copy",
+                source.name,
+            ),
+        );
+
+    let duplicate =
+        StoredOpenClawServer {
+            id:
+                generate_id(
+                    &duplicate_name,
+                ),
+
+            name:
+                duplicate_name,
+
+            server_url:
+                source
+                    .server_url,
+
+            gateway_token:
+                source
+                    .gateway_token,
+
+            enabled:
+                source.enabled,
+
+            active:
+                false,
+
+            auto_connect:
+                source
+                    .auto_connect,
+
+            connection_state:
+                "unknown"
+                    .to_string(),
+
+            connection_message:
+                "Duplicated server has not been tested."
+                    .to_string(),
+
+            version:
+                None,
+
+            gateway_id:
+                None,
+
+            latency_ms:
+                None,
+
+            last_checked_at:
+                None,
+
+            created_at:
+                Some(
+                    now.clone(),
+                ),
+
+            updated_at:
+                Some(now),
+        };
+
+    servers.push(
+        duplicate.clone(),
+    );
+
+    ensure_single_active_server(
+        &mut servers,
+    );
+
+    if let Err(
+        error,
+    ) =
+        write_servers(
+            &servers,
         )
+    {
+        return action_failure(
+            error,
+        );
+    }
+
+    action_success(
+        format!(
+            "OpenClaw server {} was duplicated.",
+            duplicate.name,
+        ),
+
+        Some(
+            public_server(
+                &duplicate,
+            ),
+        ),
+    )
+}
+
+#[tauri::command]
+pub fn toggle_openclaw_server(
+    id: String,
+    enabled: bool,
+) -> OpenClawActionResult {
+    let mut servers =
+        match read_servers() {
+            Ok(
+                value,
+            ) => value,
+
+            Err(
+                error,
+            ) => {
+                return action_failure(
+                    error,
+                );
+            }
+        };
+
+    let Some(
+        index,
+    ) =
+        servers
+            .iter()
+            .position(
+                |server| {
+                    server.id
+                        == id
+                },
+            )
     else {
         return action_failure(
             "OpenClaw server was not found.",
@@ -1396,34 +2134,36 @@ pub fn toggle_openclaw_server(
     servers[index].enabled =
         enabled;
 
-    if !enabled &&
-        servers[index].active
-    {
+    servers[index]
+        .updated_at =
+        Some(
+            Utc::now()
+                .to_rfc3339(),
+        );
+
+    if !enabled {
         servers[index].active =
             false;
-
-        if let Some(other) =
-            servers
-                .iter_mut()
-                .find(
-                    |server| {
-                        server.enabled
-                    },
-                )
-        {
-            other.active = true;
-        }
     }
 
-    let updated =
-        servers[index].clone();
+    ensure_single_active_server(
+        &mut servers,
+    );
 
-    if let Err(error) =
+    let updated =
+        servers[index]
+            .clone();
+
+    if let Err(
+        error,
+    ) =
         write_servers(
             &servers,
         )
     {
-        return action_failure(error);
+        return action_failure(
+            error,
+        );
     }
 
     action_success(
@@ -1436,6 +2176,7 @@ pub fn toggle_openclaw_server(
                 "disabled"
             },
         ),
+
         Some(
             public_server(
                 &updated,
@@ -1450,28 +2191,39 @@ pub fn set_active_openclaw_server(
 ) -> OpenClawActionResult {
     let mut servers =
         match read_servers() {
-            Ok(value) => value,
+            Ok(
+                value,
+            ) => value,
 
-            Err(error) => {
+            Err(
+                error,
+            ) => {
                 return action_failure(
                     error,
                 );
             }
         };
 
-    let Some(target_index) =
-        servers.iter().position(
-            |server| {
-                server.id == id
-            },
-        )
+    let Some(
+        target_index,
+    ) =
+        servers
+            .iter()
+            .position(
+                |server| {
+                    server.id
+                        == id
+                },
+            )
     else {
         return action_failure(
             "OpenClaw server was not found.",
         );
     };
 
-    if !servers[target_index]
+    if !servers[
+        target_index
+    ]
         .enabled
     {
         return action_failure(
@@ -1479,27 +2231,44 @@ pub fn set_active_openclaw_server(
         );
     }
 
-    for server in
-        &mut servers
+    for (
+        index,
+        server,
+    ) in
+        servers
+            .iter_mut()
+            .enumerate()
     {
         server.active =
-            false;
+            index
+                == target_index;
     }
 
-    servers[target_index]
-        .active =
-        true;
+    servers[
+        target_index
+    ]
+        .updated_at =
+        Some(
+            Utc::now()
+                .to_rfc3339(),
+        );
 
     let updated =
-        servers[target_index]
-            .clone();
+        servers[
+            target_index
+        ]
+        .clone();
 
-    if let Err(error) =
+    if let Err(
+        error,
+    ) =
         write_servers(
             &servers,
         )
     {
-        return action_failure(error);
+        return action_failure(
+            error,
+        );
     }
 
     action_success(
@@ -1507,6 +2276,7 @@ pub fn set_active_openclaw_server(
             "{} is now the active OpenClaw server.",
             updated.name,
         ),
+
         Some(
             public_server(
                 &updated,
@@ -1515,122 +2285,387 @@ pub fn set_active_openclaw_server(
     )
 }
 
+/* ===========================
+   Connection commands
+=========================== */
+
 #[tauri::command]
 pub fn test_openclaw_connection(
     id: String,
 ) -> OpenClawConnectionResult {
     let mut servers =
         match read_servers() {
-            Ok(value) => value,
+            Ok(
+                value,
+            ) => value,
 
-            Err(error) => {
-                return OpenClawConnectionResult {
-                    success: false,
-                    state:
-                        "error"
-                            .to_string(),
-                    message: error,
-                    checked_at:
-                        Utc::now()
-                            .to_rfc3339(),
-                    server: None,
-                };
+            Err(
+                error,
+            ) => {
+                return connection_failure(
+                    "error",
+                    error,
+                );
             }
         };
 
-    let Some(index) =
-        servers.iter().position(
-            |server| {
-                server.id == id
-            },
-        )
+    let Some(
+        index,
+    ) =
+        servers
+            .iter()
+            .position(
+                |server| {
+                    server.id
+                        == id
+                },
+            )
     else {
-        return OpenClawConnectionResult {
-            success: false,
-            state:
-                "error".to_string(),
-            message:
-                "OpenClaw server was not found."
-                    .to_string(),
-            checked_at:
-                Utc::now()
-                    .to_rfc3339(),
-            server: None,
-        };
+        return connection_failure(
+            "error",
+            "OpenClaw server was not found.",
+        );
     };
 
-    let handshake =
-        gateway_handshake(
+    let mut result =
+        test_server_connection(
             &servers[index]
                 .server_url,
+
             &servers[index]
                 .gateway_token,
         );
 
-    let result =
-        update_connection_result(
-            &mut servers,
-            index,
-            &handshake,
+    apply_connection_result(
+        &mut servers[
+            index
+        ],
+        &result,
+    );
+
+    result.server =
+        Some(
+            public_server(
+                &servers[index],
+            ),
         );
 
-    let _ =
+    if let Err(
+        error,
+    ) =
         write_servers(
             &servers,
+        )
+    {
+        return connection_failure(
+            "error",
+            error,
         );
+    }
 
     result
 }
 
 #[tauri::command]
 pub fn test_openclaw_connection_input(
-    server: OpenClawServerInput,
+    server:
+        OpenClawServerInput,
 ) -> OpenClawConnectionResult {
-    let checked_at =
-        Utc::now().to_rfc3339();
-
-    if let Err(error) =
+    if let Err(
+        error,
+    ) =
         validate_input(
             &server,
             true,
         )
     {
-        return OpenClawConnectionResult {
-            success: false,
-            state:
-                "error".to_string(),
-            message: error,
-            checked_at,
-            server: None,
-        };
+        return connection_failure(
+            "error",
+            error,
+        );
     }
 
-    let handshake =
-        gateway_handshake(
-            &server.server_url,
-            &server.gateway_token,
+    test_server_connection(
+        &server.server_url,
+        &server.gateway_token,
+    )
+}
+
+#[tauri::command]
+pub fn test_all_openclaw_servers()
+    -> Result<
+        Vec<OpenClawConnectionResult>,
+        String,
+    >
+{
+    let mut servers =
+        read_servers()?;
+
+    let mut results =
+        Vec::new();
+
+    for server in
+        servers
+            .iter_mut()
+    {
+        if !server.enabled {
+            continue;
+        }
+
+        let mut result =
+            test_server_connection(
+                &server
+                    .server_url,
+
+                &server
+                    .gateway_token,
+            );
+
+        apply_connection_result(
+            server,
+            &result,
         );
 
-    OpenClawConnectionResult {
-        success:
-            handshake.success,
+        result.server =
+            Some(
+                public_server(
+                    server,
+                ),
+            );
 
-        state:
-            handshake.state,
-
-        message:
-            handshake.message,
-
-        checked_at,
-
-        server: None,
+        results.push(
+            result,
+        );
     }
+
+    write_servers(
+        &servers,
+    )?;
+
+    Ok(results)
 }
 
 #[tauri::command]
 pub fn get_active_openclaw_status()
     -> Result<
         OpenClawRemoteStatus,
+        String,
+    >
+{
+    let mut servers =
+        read_servers()?;
+
+    let index =
+        servers
+            .iter()
+            .position(
+                |server| {
+                    server.active
+                        && server.enabled
+                },
+            )
+            .ok_or_else(
+                || {
+                    "No active OpenClaw server is configured."
+                        .to_string()
+                },
+            )?;
+
+    let result =
+        test_server_connection(
+            &servers[index]
+                .server_url,
+
+            &servers[index]
+                .gateway_token,
+        );
+
+    apply_connection_result(
+        &mut servers[
+            index
+        ],
+        &result,
+    );
+
+    let server =
+        servers[index]
+            .clone();
+
+    write_servers(
+        &servers,
+    )?;
+
+    Ok(
+        OpenClawRemoteStatus {
+            connected:
+                result.success,
+
+            server_id:
+                server.id,
+
+            server_name:
+                server.name,
+
+            server_url:
+                server.server_url,
+
+            gateway_status:
+                Some(
+                    result.state,
+                ),
+
+            version:
+                result.version,
+
+            gateway_id:
+                result
+                    .gateway_id,
+
+            latency_ms:
+                result
+                    .latency_ms,
+
+            checked_at:
+                Some(
+                    result
+                        .checked_at,
+                ),
+
+            raw_response:
+                None,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn get_openclaw_dashboard_summary()
+    -> Result<
+        OpenClawDashboardSummary,
+        String,
+    >
+{
+    let servers =
+        read_servers()?;
+
+    let Some(
+        active,
+    ) =
+        servers
+            .iter()
+            .find(
+                |server| {
+                    server.active
+                        && server.enabled
+                },
+            )
+    else {
+        return Ok(
+            OpenClawDashboardSummary {
+                configured:
+                    false,
+
+                connected:
+                    false,
+
+                server_id:
+                    None,
+
+                server_name:
+                    None,
+
+                server_url:
+                    None,
+
+                state:
+                    "unknown"
+                        .to_string(),
+
+                message:
+                    "No active OpenClaw server is configured."
+                        .to_string(),
+
+                version:
+                    None,
+
+                gateway_id:
+                    None,
+
+                latency_ms:
+                    None,
+
+                last_checked_at:
+                    None,
+            },
+        );
+    };
+
+    Ok(
+        OpenClawDashboardSummary {
+            configured:
+                true,
+
+            connected:
+                active
+                    .connection_state
+                    == "connected",
+
+            server_id:
+                Some(
+                    active
+                        .id
+                        .clone(),
+                ),
+
+            server_name:
+                Some(
+                    active
+                        .name
+                        .clone(),
+                ),
+
+            server_url:
+                Some(
+                    active
+                        .server_url
+                        .clone(),
+                ),
+
+            state:
+                active
+                    .connection_state
+                    .clone(),
+
+            message:
+                active
+                    .connection_message
+                    .clone(),
+
+            version:
+                active
+                    .version
+                    .clone(),
+
+            gateway_id:
+                active
+                    .gateway_id
+                    .clone(),
+
+            latency_ms:
+                active
+                    .latency_ms,
+
+            last_checked_at:
+                active
+                    .last_checked_at
+                    .clone(),
+        },
+    )
+}
+
+#[tauri::command]
+pub fn get_openclaw_runtime_config()
+    -> Result<
+        OpenClawRuntimeConfig,
         String,
     >
 {
@@ -1642,57 +2677,630 @@ pub fn get_active_openclaw_status()
             .iter()
             .find(
                 |server| {
-                    server.active &&
-                    server.enabled
+                    server.active
+                        && server.enabled
                 },
-            )
-            .ok_or_else(|| {
-                "No active OpenClaw server is configured."
-                    .to_string()
-            })?;
+            );
 
-    let handshake =
-        gateway_handshake(
-            &active.server_url,
-            &active.gateway_token,
-        );
-
-    Ok(OpenClawRemoteStatus {
-        connected:
-            handshake.success,
-
-        server_id:
-            active.id.clone(),
-
-        server_name:
-            active.name.clone(),
-
-        server_url:
-            active
-                .server_url
-                .clone(),
-
-        gateway_status:
-            Some(
-                handshake
-                    .state
-                    .clone(),
-            ),
-
-        version:
-            handshake.version,
-
-        raw_response:
-            handshake
-                .payload
-                .and_then(
-                    |payload| {
-                        serde_json::
-                            to_string_pretty(
-                                &payload,
+    Ok(
+        OpenClawRuntimeConfig {
+            mode:
+                match active {
+                    Some(
+                        server,
+                    ) => {
+                        let parsed =
+                            Url::parse(
+                                &server
+                                    .server_url,
                             )
-                            .ok()
+                            .ok();
+
+                        let is_local =
+                            parsed
+                                .as_ref()
+                                .and_then(
+                                    Url::host_str,
+                                )
+                                .map(
+                                    |host| {
+                                        host
+                                            == "127.0.0.1"
+                                            || host
+                                                == "localhost"
+                                            || host
+                                                == "::1"
+                                    },
+                                )
+                                .unwrap_or(
+                                    false,
+                                );
+
+                        if is_local {
+                            "local"
+                                .to_string()
+                        } else {
+                            "remote"
+                                .to_string()
+                        }
+                    }
+
+                    None => {
+                        "local"
+                            .to_string()
+                    }
+                },
+
+            active_server_id:
+                active.map(
+                    |server| {
+                        server
+                            .id
+                            .clone()
                     },
                 ),
-    })
+
+            active_server:
+                active.map(
+                    public_server,
+                ),
+        },
+    )
+}
+
+/* ===========================
+   Import / Export
+=========================== */
+
+#[tauri::command]
+pub fn export_openclaw_servers(
+    include_secrets: bool,
+) -> OpenClawExportResult {
+    let servers =
+        match read_servers() {
+            Ok(
+                value,
+            ) => value,
+
+            Err(
+                error,
+            ) => {
+                return OpenClawExportResult {
+                    success:
+                        false,
+
+                    message:
+                        error,
+
+                    json:
+                        None,
+                };
+            }
+        };
+
+    let document =
+        OpenClawExportDocument {
+            schema_version:
+                EXPORT_SCHEMA_VERSION,
+
+            exported_at:
+                Utc::now()
+                    .to_rfc3339(),
+
+            includes_secrets:
+                include_secrets,
+
+            servers:
+                servers
+                    .iter()
+                    .map(
+                        |server| {
+                            OpenClawServerInput {
+                                name:
+                                    server
+                                        .name
+                                        .clone(),
+
+                                server_url:
+                                    server
+                                        .server_url
+                                        .clone(),
+
+                                gateway_token:
+                                    if include_secrets {
+                                        server
+                                            .gateway_token
+                                            .clone()
+                                    } else {
+                                        String::new()
+                                    },
+
+                                enabled:
+                                    server
+                                        .enabled,
+
+                                auto_connect:
+                                    server
+                                        .auto_connect,
+                            }
+                        },
+                    )
+                    .collect(),
+        };
+
+    match serde_json::
+        to_string_pretty(
+            &document,
+        )
+    {
+        Ok(
+            json,
+        ) => {
+            OpenClawExportResult {
+                success:
+                    true,
+
+                message:
+                    format!(
+                        "Exported {} OpenClaw server(s).",
+                        servers.len(),
+                    ),
+
+                json:
+                    Some(json),
+            }
+        }
+
+        Err(
+            error,
+        ) => {
+            OpenClawExportResult {
+                success:
+                    false,
+
+                message:
+                    format!(
+                        "Unable to export OpenClaw servers: {}",
+                        error,
+                    ),
+
+                json:
+                    None,
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn import_openclaw_servers(
+    json: String,
+    replace_existing: bool,
+) -> OpenClawImportResult {
+    let document =
+        match serde_json::
+            from_str::<
+                OpenClawExportDocument,
+            >(
+                &json,
+            )
+        {
+            Ok(
+                value,
+            ) => value,
+
+            Err(
+                error,
+            ) => {
+                return OpenClawImportResult {
+                    success:
+                        false,
+
+                    message:
+                        format!(
+                            "Unable to parse OpenClaw import file: {}",
+                            error,
+                        ),
+
+                    imported_count:
+                        0,
+
+                    skipped_count:
+                        0,
+                };
+            }
+        };
+
+    if document
+        .schema_version
+        != EXPORT_SCHEMA_VERSION
+    {
+        return OpenClawImportResult {
+            success:
+                false,
+
+            message:
+                format!(
+                    "Unsupported OpenClaw export schema version: {}",
+                    document.schema_version,
+                ),
+
+            imported_count:
+                0,
+
+            skipped_count:
+                document
+                    .servers
+                    .len(),
+        };
+    }
+
+    let mut servers =
+        if replace_existing {
+            Vec::new()
+        } else {
+            match read_servers() {
+                Ok(
+                    value,
+                ) => value,
+
+                Err(
+                    error,
+                ) => {
+                    return OpenClawImportResult {
+                        success:
+                            false,
+
+                        message:
+                            error,
+
+                        imported_count:
+                            0,
+
+                        skipped_count:
+                            0,
+                    };
+                }
+            }
+        };
+
+    let mut imported_count =
+        0usize;
+
+    let mut skipped_count =
+        0usize;
+
+    for input in
+        document.servers
+    {
+        if validate_input(
+            &input,
+            false,
+        )
+        .is_err()
+        {
+            skipped_count +=
+                1;
+
+            continue;
+        }
+
+        let normalized_url =
+            match normalize_url(
+                &input
+                    .server_url,
+            ) {
+                Ok(
+                    value,
+                ) => value,
+
+                Err(_) => {
+                    skipped_count +=
+                        1;
+
+                    continue;
+                }
+            };
+
+        let duplicate =
+            servers
+                .iter()
+                .any(
+                    |server| {
+                        server
+                            .server_url
+                            .eq_ignore_ascii_case(
+                                &normalized_url,
+                            )
+                    },
+                );
+
+        if duplicate {
+            skipped_count +=
+                1;
+
+            continue;
+        }
+
+        let now =
+            Utc::now()
+                .to_rfc3339();
+
+        let name =
+            unique_server_name(
+                &servers,
+                &input.name,
+            );
+
+        servers.push(
+            StoredOpenClawServer {
+                id:
+                    generate_id(
+                        &name,
+                    ),
+
+                name,
+
+                server_url:
+                    normalized_url,
+
+                gateway_token:
+                    input
+                        .gateway_token
+                        .trim()
+                        .to_string(),
+
+                enabled:
+                    input.enabled,
+
+                active:
+                    false,
+
+                auto_connect:
+                    input
+                        .auto_connect,
+
+                connection_state:
+                    "unknown"
+                        .to_string(),
+
+                connection_message:
+                    if input
+                        .gateway_token
+                        .trim()
+                        .is_empty()
+                    {
+                        "Imported without a Gateway Token."
+                            .to_string()
+                    } else {
+                        "Imported server has not been tested."
+                            .to_string()
+                    },
+
+                version:
+                    None,
+
+                gateway_id:
+                    None,
+
+                latency_ms:
+                    None,
+
+                last_checked_at:
+                    None,
+
+                created_at:
+                    Some(
+                        now.clone(),
+                    ),
+
+                updated_at:
+                    Some(now),
+            },
+        );
+
+        imported_count +=
+            1;
+    }
+
+    ensure_single_active_server(
+        &mut servers,
+    );
+
+    if let Err(
+        error,
+    ) =
+        write_servers(
+            &servers,
+        )
+    {
+        return OpenClawImportResult {
+            success:
+                false,
+
+            message:
+                error,
+
+            imported_count:
+                0,
+
+            skipped_count,
+        };
+    }
+
+    OpenClawImportResult {
+        success:
+            true,
+
+        message:
+            format!(
+                "Imported {} OpenClaw server(s); skipped {}.",
+                imported_count,
+                skipped_count,
+            ),
+
+        imported_count,
+
+        skipped_count,
+    }
+}
+
+/* ===========================
+   Unified active Gateway API
+=========================== */
+
+#[tauri::command]
+pub fn invoke_active_openclaw_gateway(
+    request:
+        OpenClawGatewayRequest,
+) -> OpenClawGatewayResponse {
+    let servers =
+        match read_servers() {
+            Ok(
+                value,
+            ) => value,
+
+            Err(
+                error,
+            ) => {
+                return OpenClawGatewayResponse {
+                    success:
+                        false,
+
+                    message:
+                        error,
+
+                    data:
+                        None,
+
+                    raw_response:
+                        None,
+                };
+            }
+        };
+
+    let Some(
+        active,
+    ) =
+        servers
+            .iter()
+            .find(
+                |server| {
+                    server.active
+                        && server.enabled
+                },
+            )
+    else {
+        return OpenClawGatewayResponse {
+            success:
+                false,
+
+            message:
+                "No active OpenClaw server is configured."
+                    .to_string(),
+
+            data:
+                None,
+
+            raw_response:
+                None,
+        };
+    };
+
+    let mut session =
+        match open_gateway_session(
+            &active
+                .server_url,
+
+            &active
+                .gateway_token,
+        ) {
+            Ok(
+                value,
+            ) => value,
+
+            Err(
+                failure,
+            ) => {
+                return OpenClawGatewayResponse {
+                    success:
+                        false,
+
+                    message:
+                        failure
+                            .message,
+
+                    data:
+                        None,
+
+                    raw_response:
+                        raw_json(
+                            failure
+                                .payload
+                                .as_ref(),
+                        ),
+                };
+            }
+        };
+
+    let result =
+        invoke_gateway_method(
+            &mut session,
+            &request.method,
+            request.params,
+        );
+
+    let _ =
+        session
+            .socket
+            .close(None);
+
+    match result {
+        Ok(
+            payload,
+        ) => {
+            OpenClawGatewayResponse {
+                success:
+                    true,
+
+                message:
+                    format!(
+                        "OpenClaw Gateway method {} completed successfully.",
+                        request.method,
+                    ),
+
+                raw_response:
+                    raw_json(
+                        Some(
+                            &payload,
+                        ),
+                    ),
+
+                data:
+                    Some(payload),
+            }
+        }
+
+        Err(
+            failure,
+        ) => {
+            OpenClawGatewayResponse {
+                success:
+                    false,
+
+                message:
+                    failure
+                        .message,
+
+                data:
+                    None,
+
+                raw_response:
+                    raw_json(
+                        failure
+                            .payload
+                            .as_ref(),
+                    ),
+            }
+        }
+    }
 }

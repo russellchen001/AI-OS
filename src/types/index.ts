@@ -176,7 +176,7 @@ export type McpActionResult = {
 };
 
 /* ===========================
-   OpenClaw remote servers
+   OpenClaw
 =========================== */
 
 export type OpenClawConnectionState =
@@ -185,7 +185,12 @@ export type OpenClawConnectionState =
   | "connected"
   | "unauthorized"
   | "unreachable"
+  | "pairing-required"
   | "error";
+
+export type OpenClawMode =
+  | "local"
+  | "remote";
 
 export type OpenClawServer = {
   id: string;
@@ -193,8 +198,8 @@ export type OpenClawServer = {
   serverUrl: string;
 
   /*
-   * 后端返回时只能是掩码值或空字符串，
-   * 不要把真实 Token 发送回前端列表。
+   * 后端只能返回掩码或空字符串，
+   * 不能把真实 Token 返回到前端。
    */
   gatewayToken: string;
   hasGatewayToken: boolean;
@@ -205,7 +210,13 @@ export type OpenClawServer = {
 
   connectionState: OpenClawConnectionState;
   connectionMessage: string;
+
+  version?: string;
+  gatewayId?: string;
+  latencyMs?: number;
   lastCheckedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type OpenClawServerInput = {
@@ -213,8 +224,8 @@ export type OpenClawServerInput = {
   serverUrl: string;
 
   /*
-   * 新建时填写真实 Token。
-   * 编辑时留空表示保留后端已有 Token。
+   * 新建时必须填写。
+   * 编辑时留空表示保留后端现有 Token。
    */
   gatewayToken: string;
 
@@ -233,18 +244,93 @@ export type OpenClawConnectionResult = {
   state: OpenClawConnectionState;
   message: string;
   checkedAt: string;
+
+  version?: string;
+  gatewayId?: string;
+  latencyMs?: number;
+
   server?: OpenClawServer;
 };
 
 export type OpenClawRemoteStatus = {
   connected: boolean;
+
   serverId: string;
   serverName: string;
   serverUrl: string;
-  gatewayStatus?: string;
+
+  gatewayStatus?: OpenClawConnectionState;
   version?: string;
+  gatewayId?: string;
+  latencyMs?: number;
+  checkedAt?: string;
+
   rawResponse?: string;
 };
+
+export type OpenClawDashboardSummary = {
+  configured: boolean;
+  connected: boolean;
+
+  serverId?: string;
+  serverName?: string;
+  serverUrl?: string;
+
+  state: OpenClawConnectionState;
+  message: string;
+
+  version?: string;
+  gatewayId?: string;
+  latencyMs?: number;
+  lastCheckedAt?: string;
+};
+
+export type OpenClawRuntimeConfig = {
+  mode: OpenClawMode;
+  activeServerId?: string;
+  activeServer?: OpenClawServer;
+};
+
+export type OpenClawExportDocument = {
+  schemaVersion: 1;
+  exportedAt: string;
+
+  /*
+   * 默认导出不应包含 Token。
+   * includeSecrets=true 时才允许带 Token。
+   */
+  includesSecrets: boolean;
+  servers: OpenClawServerInput[];
+};
+
+export type OpenClawExportResult = {
+  success: boolean;
+  message: string;
+  json?: string;
+};
+
+export type OpenClawImportResult = {
+  success: boolean;
+  message: string;
+  importedCount: number;
+  skippedCount: number;
+};
+
+export type OpenClawGatewayRequest = {
+  method: string;
+  params?: Record<string, unknown>;
+};
+
+export type OpenClawGatewayResponse<T = unknown> = {
+  success: boolean;
+  message: string;
+  data?: T;
+  rawResponse?: string;
+};
+
+/* ===========================
+   Shared
+=========================== */
 
 export type AppInfo = {
   name: string;

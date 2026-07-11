@@ -8,6 +8,7 @@ import type {
   AsyncStatus,
   OpenClawConnectionResult,
   OpenClawRemoteStatus,
+  OpenClawRuntimeConfig,
   OpenClawServer,
   OpenClawServerInput,
 } from "../types/index";
@@ -15,12 +16,23 @@ import type {
 type OpenClawPageProps = {
   servers: OpenClawServer[];
   activeServer: OpenClawServer | null;
+
   enabledCount: number;
   connectedCount: number;
+  autoConnectCount: number;
+  averageLatencyMs: number | null;
+
   status: AsyncStatus;
   busyServerId: string | null;
   testingServerId: string | null;
+
+  isTestingAll: boolean;
+  isImporting: boolean;
+  isExporting: boolean;
+
   remoteStatus: OpenClawRemoteStatus | null;
+  runtimeConfig: OpenClawRuntimeConfig | null;
+
   searchText: string;
   error: string;
   cardStyle: CSSProperties;
@@ -44,6 +56,10 @@ type OpenClawPageProps = {
     id: string,
   ) => void;
 
+  onDuplicate: (
+    id: string,
+  ) => Promise<OpenClawServer | null>;
+
   onToggle: (
     id: string,
     enabled: boolean,
@@ -60,6 +76,24 @@ type OpenClawPageProps = {
   onTestUnsaved: (
     server: OpenClawServerInput,
   ) => Promise<OpenClawConnectionResult>;
+
+  onTestAll: () =>
+    Promise<OpenClawConnectionResult[]>;
+
+  onCopyUrl: (
+    server: OpenClawServer,
+  ) => void;
+
+  onExport: (
+    includeSecrets: boolean,
+  ) => Promise<string>;
+
+  onImport: (
+    options: {
+      json: string;
+      replaceExisting: boolean;
+    },
+  ) => Promise<unknown>;
 };
 
 const EMPTY_FORM: OpenClawServerInput = {
@@ -73,60 +107,9 @@ const EMPTY_FORM: OpenClawServerInput = {
 function normalizeServerUrl(
   value: string,
 ): string {
-  return value.trim().replace(
-    /\/+$/,
-    "",
-  );
-}
-
-function connectionLabel(
-  server: OpenClawServer,
-): string {
-  switch (
-    server.connectionState
-  ) {
-    case "testing":
-      return "Testing";
-
-    case "connected":
-      return "Connected";
-
-    case "unauthorized":
-      return "Unauthorized";
-
-    case "unreachable":
-      return "Unreachable";
-
-    case "error":
-      return "Error";
-
-    default:
-      return "Not tested";
-  }
-}
-
-function connectionIcon(
-  server: OpenClawServer,
-): string {
-  switch (
-    server.connectionState
-  ) {
-    case "testing":
-      return "🟡";
-
-    case "connected":
-      return "🟢";
-
-    case "unauthorized":
-      return "🟠";
-
-    case "unreachable":
-    case "error":
-      return "🔴";
-
-    default:
-      return "⚪";
-  }
+  return value
+    .trim()
+    .replace(/\/+$/, "");
 }
 
 function formatDate(
@@ -150,15 +133,75 @@ function formatDate(
   return date.toLocaleString();
 }
 
+function connectionLabel(
+  server: OpenClawServer,
+): string {
+  switch (
+    server.connectionState
+  ) {
+    case "testing":
+      return "Testing";
+
+    case "connected":
+      return "Connected";
+
+    case "unauthorized":
+      return "Unauthorized";
+
+    case "unreachable":
+      return "Unreachable";
+
+    case "pairing-required":
+      return "Pairing Required";
+
+    case "error":
+      return "Error";
+
+    default:
+      return "Not Tested";
+  }
+}
+
+function connectionIcon(
+  server: OpenClawServer,
+): string {
+  switch (
+    server.connectionState
+  ) {
+    case "testing":
+      return "🟡";
+
+    case "connected":
+      return "🟢";
+
+    case "unauthorized":
+    case "pairing-required":
+      return "🟠";
+
+    case "unreachable":
+    case "error":
+      return "🔴";
+
+    default:
+      return "⚪";
+  }
+}
+
 function OpenClawPage({
   servers,
   activeServer,
   enabledCount,
   connectedCount,
+  autoConnectCount,
+  averageLatencyMs,
   status,
   busyServerId,
   testingServerId,
+  isTestingAll,
+  isImporting,
+  isExporting,
   remoteStatus,
+  runtimeConfig,
   searchText,
   error,
   cardStyle,
@@ -167,10 +210,15 @@ function OpenClawPage({
   onCreate,
   onUpdate,
   onDelete,
+  onDuplicate,
   onToggle,
   onActivate,
   onTestSaved,
   onTestUnsaved,
+  onTestAll,
+  onCopyUrl,
+  onExport,
+  onImport,
 }: OpenClawPageProps) {
   const [
     formOpen,
@@ -213,6 +261,38 @@ function OpenClawPage({
     null,
   );
 
+  const [
+    transferOpen,
+    setTransferOpen,
+  ] = useState(false);
+
+  const [
+    transferMode,
+    setTransferMode,
+  ] = useState<
+    "import" | "export"
+  >("export");
+
+  const [
+    transferJson,
+    setTransferJson,
+  ] = useState("");
+
+  const [
+    transferError,
+    setTransferError,
+  ] = useState("");
+
+  const [
+    includeSecrets,
+    setIncludeSecrets,
+  ] = useState(false);
+
+  const [
+    replaceExisting,
+    setReplaceExisting,
+  ] = useState(false);
+
   const isLoading =
     status === "loading";
 
@@ -223,7 +303,7 @@ function OpenClawPage({
   const activeStatusText =
     useMemo(() => {
       if (!activeServer) {
-        return "No active server";
+        return "No Active Server";
       }
 
       if (
@@ -241,8 +321,14 @@ function OpenClawPage({
     ]);
 
   function resetForm() {
-    setForm(EMPTY_FORM);
-    setEditingId(null);
+    setForm(
+      EMPTY_FORM,
+    );
+
+    setEditingId(
+      null,
+    );
+
     setFormError("");
     setTestMessage("");
     setShowToken(false);
@@ -250,8 +336,14 @@ function OpenClawPage({
   }
 
   function openCreateForm() {
-    setForm(EMPTY_FORM);
-    setEditingId(null);
+    setForm(
+      EMPTY_FORM,
+    );
+
+    setEditingId(
+      null,
+    );
+
     setFormError("");
     setTestMessage("");
     setShowToken(false);
@@ -266,12 +358,14 @@ function OpenClawPage({
     );
 
     setForm({
-      name: server.name,
+      name:
+        server.name,
+
       serverUrl:
         server.serverUrl,
 
-      // 留空代表保留后端已有 Token
-      gatewayToken: "",
+      gatewayToken:
+        "",
 
       enabled:
         server.enabled,
@@ -317,10 +411,14 @@ function OpenClawPage({
         new URL(serverUrl);
 
       if (
-        parsed.protocol !==
-          "http:" &&
-        parsed.protocol !==
-          "https:"
+        ![
+          "http:",
+          "https:",
+          "ws:",
+          "wss:",
+        ].includes(
+          parsed.protocol,
+        )
       ) {
         throw new Error(
           "Unsupported protocol",
@@ -328,7 +426,7 @@ function OpenClawPage({
       }
     } catch {
       setFormError(
-        "Enter a valid HTTP or HTTPS server URL.",
+        "Enter a valid HTTP, HTTPS, WS or WSS URL.",
       );
 
       return null;
@@ -370,6 +468,7 @@ function OpenClawPage({
 
     try {
       setFormError("");
+
       setTestMessage(
         "Testing connection...",
       );
@@ -383,16 +482,20 @@ function OpenClawPage({
         result.message,
       );
 
-      if (!result.success) {
+      if (
+        !result.success
+      ) {
         setFormError(
           result.message,
         );
       }
-    } catch (nextError) {
-      const message =
-        String(nextError);
+    } catch (
+      nextError
+    ) {
+      setFormError(
+        String(nextError),
+      );
 
-      setFormError(message);
       setTestMessage("");
     }
   }
@@ -420,8 +523,102 @@ function OpenClawPage({
       }
 
       resetForm();
-    } catch (nextError) {
+    } catch (
+      nextError
+    ) {
       setFormError(
+        String(nextError),
+      );
+    }
+  }
+
+  function closeTransfer() {
+    if (
+      isImporting ||
+      isExporting
+    ) {
+      return;
+    }
+
+    setTransferOpen(
+      false,
+    );
+
+    setTransferJson("");
+    setTransferError("");
+    setIncludeSecrets(false);
+    setReplaceExisting(false);
+  }
+
+  function openExport() {
+    setTransferMode(
+      "export",
+    );
+
+    setTransferJson("");
+    setTransferError("");
+    setIncludeSecrets(false);
+    setTransferOpen(true);
+  }
+
+  function openImport() {
+    setTransferMode(
+      "import",
+    );
+
+    setTransferJson("");
+    setTransferError("");
+    setReplaceExisting(false);
+    setTransferOpen(true);
+  }
+
+  async function createExport() {
+    try {
+      setTransferError("");
+
+      const json =
+        await onExport(
+          includeSecrets,
+        );
+
+      setTransferJson(
+        json,
+      );
+    } catch (
+      nextError
+    ) {
+      setTransferError(
+        String(nextError),
+      );
+    }
+  }
+
+  async function runImport() {
+    if (
+      !transferJson.trim()
+    ) {
+      setTransferError(
+        "Paste an OpenClaw export document first.",
+      );
+
+      return;
+    }
+
+    try {
+      setTransferError("");
+
+      await onImport({
+        json:
+          transferJson,
+
+        replaceExisting,
+      });
+
+      closeTransfer();
+    } catch (
+      nextError
+    ) {
+      setTransferError(
         String(nextError),
       );
     }
@@ -432,16 +629,50 @@ function OpenClawPage({
       <div className="section-header">
         <div>
           <h2>
-            OpenClaw Servers
+            OpenClaw Manager
           </h2>
 
           <p>
-            Connect AI OS to local or
-            remote OpenClaw gateways.
+            Manage local and remote
+            OpenClaw Gateway endpoints.
           </p>
         </div>
 
         <div className="openclaw-header-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={
+              isLoading ||
+              isTestingAll
+            }
+            onClick={() => {
+              void onTestAll();
+            }}
+          >
+            {isTestingAll
+              ? "Testing All..."
+              : "Test All"}
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isLoading}
+            onClick={openImport}
+          >
+            Import
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isLoading}
+            onClick={openExport}
+          >
+            Export
+          </button>
+
           <button
             type="button"
             className="secondary-button"
@@ -457,9 +688,7 @@ function OpenClawPage({
             type="button"
             className="action-button backup-button"
             disabled={isLoading}
-            onClick={
-              openCreateForm
-            }
+            onClick={openCreateForm}
           >
             ＋ Add Server
           </button>
@@ -485,19 +714,6 @@ function OpenClawPage({
           style={cardStyle}
         >
           <span>
-            Enabled
-          </span>
-
-          <strong>
-            {enabledCount}
-          </strong>
-        </div>
-
-        <div
-          className="openclaw-summary-card"
-          style={cardStyle}
-        >
-          <span>
             Connected
           </span>
 
@@ -511,11 +727,26 @@ function OpenClawPage({
           style={cardStyle}
         >
           <span>
-            Disabled
+            Auto Connect
           </span>
 
           <strong>
-            {disabledCount}
+            {autoConnectCount}
+          </strong>
+        </div>
+
+        <div
+          className="openclaw-summary-card"
+          style={cardStyle}
+        >
+          <span>
+            Average Latency
+          </span>
+
+          <strong>
+            {averageLatencyMs === null
+              ? "—"
+              : `${averageLatencyMs} ms`}
           </strong>
         </div>
       </div>
@@ -532,13 +763,13 @@ function OpenClawPage({
 
             <div>
               <h3>
-                Active OpenClaw
+                Active Gateway
               </h3>
 
               <p>
-                The active server is
-                used by AI OS remote
-                operations.
+                All unified OpenClaw
+                requests use this
+                endpoint.
               </p>
             </div>
           </div>
@@ -546,6 +777,7 @@ function OpenClawPage({
           <span
             className={[
               "openclaw-active-status",
+
               remoteStatus?.connected
                 ? "openclaw-status-connected"
                 : "",
@@ -564,7 +796,7 @@ function OpenClawPage({
           <div className="openclaw-active-details">
             <div>
               <span>
-                Name
+                Server
               </span>
 
               <strong>
@@ -574,71 +806,71 @@ function OpenClawPage({
 
             <div>
               <span>
-                Server URL
+                Runtime Mode
               </span>
 
               <strong>
-                {
-                  activeServer.serverUrl
-                }
+                {runtimeConfig?.mode
+                  ?? "Unknown"}
               </strong>
             </div>
 
             <div>
               <span>
-                Token
+                Version
               </span>
 
               <strong>
-                {activeServer
-                  .hasGatewayToken
-                  ? "Configured"
-                  : "Missing"}
+                {remoteStatus?.version
+                  ?? activeServer.version
+                  ?? "Unknown"}
               </strong>
             </div>
 
             <div>
               <span>
-                Last Checked
+                Latency
               </span>
 
               <strong>
-                {formatDate(
-                  activeServer
-                    .lastCheckedAt,
-                )}
+                {remoteStatus?.latencyMs
+                  ?? activeServer.latencyMs
+                  ?? "—"}{" "}
+                {(
+                  remoteStatus?.latencyMs
+                  ?? activeServer.latencyMs
+                ) !== undefined
+                  ? "ms"
+                  : ""}
               </strong>
             </div>
           </div>
         ) : (
           <div className="openclaw-no-active">
             No active OpenClaw server.
-            Add a server or mark an
-            existing server as active.
+            Add or enable a server to
+            continue.
           </div>
-        )}
-
-        {remoteStatus?.rawResponse && (
-          <details className="openclaw-raw-status">
-            <summary>
-              Remote Response
-            </summary>
-
-            <pre>
-              {
-                remoteStatus.rawResponse
-              }
-            </pre>
-          </details>
         )}
       </div>
 
       <div className="openclaw-toolbar">
+        <div>
+          <strong>
+            {enabledCount}
+          </strong>{" "}
+          enabled ·{" "}
+          <strong>
+            {disabledCount}
+          </strong>{" "}
+          disabled
+        </div>
+
         <input
           type="search"
           className="openclaw-search"
           value={searchText}
-          placeholder="Search OpenClaw servers..."
+          placeholder="Search name, URL, version or state..."
           onChange={(event) =>
             onSearchChange(
               event.target.value,
@@ -671,17 +903,14 @@ function OpenClawPage({
 
           <p>
             Add a local or remote
-            OpenClaw gateway using its
-            Server URL and Gateway
+            Gateway using its URL and
             Token.
           </p>
 
           <button
             type="button"
             className="action-button backup-button"
-            onClick={
-              openCreateForm
-            }
+            onClick={openCreateForm}
           >
             Add First Server
           </button>
@@ -707,11 +936,9 @@ function OpenClawPage({
                   key={server.id}
                   className={[
                     "openclaw-card",
+
                     server.active
                       ? "openclaw-card-active"
-                      : "",
-                    server.enabled
-                      ? "openclaw-card-enabled"
                       : "",
                   ]
                     .filter(Boolean)
@@ -727,9 +954,7 @@ function OpenClawPage({
                       <div>
                         <div className="openclaw-name-row">
                           <h3>
-                            {
-                              server.name
-                            }
+                            {server.name}
                           </h3>
 
                           {server.active && (
@@ -740,9 +965,7 @@ function OpenClawPage({
                         </div>
 
                         <p>
-                          {
-                            server.serverUrl
-                          }
+                          {server.serverUrl}
                         </p>
                       </div>
                     </div>
@@ -754,13 +977,10 @@ function OpenClawPage({
                           server.enabled
                         }
                         disabled={busy}
-                        onChange={(
-                          event,
-                        ) =>
+                        onChange={(event) =>
                           onToggle(
                             server.id,
-                            event.target
-                              .checked,
+                            event.target.checked,
                           )
                         }
                       />
@@ -788,8 +1008,7 @@ function OpenClawPage({
                     </span>
 
                     <small>
-                      {server
-                        .connectionMessage ||
+                      {server.connectionMessage ||
                         "Connection has not been tested."}
                     </small>
                   </div>
@@ -797,12 +1016,47 @@ function OpenClawPage({
                   <div className="openclaw-meta-grid">
                     <div>
                       <span>
+                        Version
+                      </span>
+
+                      <strong>
+                        {server.version
+                          ?? "Unknown"}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>
+                        Latency
+                      </span>
+
+                      <strong>
+                        {typeof server.latencyMs ===
+                        "number"
+                          ? `${server.latencyMs} ms`
+                          : "—"}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>
+                        Last Checked
+                      </span>
+
+                      <strong>
+                        {formatDate(
+                          server.lastCheckedAt,
+                        )}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>
                         Gateway Token
                       </span>
 
                       <strong>
-                        {server
-                          .hasGatewayToken
+                        {server.hasGatewayToken
                           ? "Configured"
                           : "Missing"}
                       </strong>
@@ -814,8 +1068,7 @@ function OpenClawPage({
                       </span>
 
                       <strong>
-                        {server
-                          .autoConnect
+                        {server.autoConnect
                           ? "On"
                           : "Off"}
                       </strong>
@@ -823,14 +1076,12 @@ function OpenClawPage({
 
                     <div>
                       <span>
-                        Last Checked
+                        Gateway ID
                       </span>
 
                       <strong>
-                        {formatDate(
-                          server
-                            .lastCheckedAt,
-                        )}
+                        {server.gatewayId
+                          ?? "Unknown"}
                       </strong>
                     </div>
                   </div>
@@ -862,15 +1113,41 @@ function OpenClawPage({
                         testing ||
                         !server.enabled
                       }
-                      onClick={() =>
-                        onTestSaved(
+                      onClick={() => {
+                        void onTestSaved(
                           server.id,
-                        )
-                      }
+                        );
+                      }}
                     >
                       {testing
                         ? "Testing..."
-                        : "Test Connection"}
+                        : "Test"}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() =>
+                        onCopyUrl(
+                          server,
+                        )
+                      }
+                    >
+                      Copy URL
+                    </button>
+
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() => {
+                        void onDuplicate(
+                          server.id,
+                        );
+                      }}
+                    >
+                      Duplicate
                     </button>
 
                     <button
@@ -940,31 +1217,12 @@ function OpenClawPage({
       )}
 
       {formOpen && (
-        <div
-          className="openclaw-modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (
-              event.target ===
-                event.currentTarget &&
-              !isLoading &&
-              testingServerId !==
-                "__new__"
-            ) {
-              resetForm();
-            }
-          }}
-        >
+        <div className="openclaw-modal-backdrop">
           <div
             className="openclaw-modal"
             style={cardStyle}
             role="dialog"
             aria-modal="true"
-            aria-label={
-              editingId
-                ? "Edit OpenClaw server"
-                : "Add OpenClaw server"
-            }
           >
             <div className="openclaw-modal-header">
               <div>
@@ -975,20 +1233,15 @@ function OpenClawPage({
                 </h3>
 
                 <p>
-                  Configure a local or
-                  remote OpenClaw
-                  gateway.
+                  Configure the Gateway
+                  endpoint and
+                  authentication.
                 </p>
               </div>
 
               <button
                 type="button"
                 className="secondary-button"
-                disabled={
-                  isLoading ||
-                  testingServerId ===
-                    "__new__"
-                }
                 onClick={resetForm}
               >
                 Close
@@ -1003,15 +1256,13 @@ function OpenClawPage({
               <input
                 type="text"
                 value={form.name}
-                disabled={isLoading}
                 placeholder="Home OpenClaw"
                 onChange={(event) =>
                   setForm(
                     (current) => ({
                       ...current,
                       name:
-                        event.target
-                          .value,
+                        event.target.value,
                     }),
                   )
                 }
@@ -1023,27 +1274,16 @@ function OpenClawPage({
                 Server URL
               </span>
 
-              <small>
-                Example:
-                http://127.0.0.1:18789
-                or
-                https://openclaw.example.com
-              </small>
-
               <input
                 type="url"
-                value={
-                  form.serverUrl
-                }
-                disabled={isLoading}
+                value={form.serverUrl}
                 placeholder="http://127.0.0.1:18789"
                 onChange={(event) =>
                   setForm(
                     (current) => ({
                       ...current,
                       serverUrl:
-                        event.target
-                          .value,
+                        event.target.value,
                     }),
                   )
                 }
@@ -1058,7 +1298,7 @@ function OpenClawPage({
               <small>
                 {editingId
                   ? "Leave blank to keep the existing Token."
-                  : "The Token is saved locally by the Rust backend."}
+                  : "The Token is stored by the Rust backend."}
               </small>
 
               <div className="openclaw-token-field">
@@ -1071,20 +1311,13 @@ function OpenClawPage({
                   value={
                     form.gatewayToken
                   }
-                  disabled={isLoading}
                   autoComplete="off"
-                  placeholder={
-                    editingId
-                      ? "Leave blank to keep existing Token"
-                      : "Paste Gateway Token"
-                  }
                   onChange={(event) =>
                     setForm(
                       (current) => ({
                         ...current,
                         gatewayToken:
-                          event.target
-                            .value,
+                          event.target.value,
                       }),
                     )
                   }
@@ -1111,14 +1344,12 @@ function OpenClawPage({
               <input
                 type="checkbox"
                 checked={form.enabled}
-                disabled={isLoading}
                 onChange={(event) =>
                   setForm(
                     (current) => ({
                       ...current,
                       enabled:
-                        event.target
-                          .checked,
+                        event.target.checked,
                     }),
                   )
                 }
@@ -1133,21 +1364,19 @@ function OpenClawPage({
                 checked={
                   form.autoConnect
                 }
-                disabled={isLoading}
                 onChange={(event) =>
                   setForm(
                     (current) => ({
                       ...current,
                       autoConnect:
-                        event.target
-                          .checked,
+                        event.target.checked,
                     }),
                   )
                 }
               />
 
               Automatically monitor this
-              server when active
+              server
             </label>
 
             {testMessage && (
@@ -1157,10 +1386,7 @@ function OpenClawPage({
             )}
 
             {formError && (
-              <div
-                className="openclaw-error"
-                role="alert"
-              >
+              <div className="openclaw-error">
                 {formError}
               </div>
             )}
@@ -1169,11 +1395,6 @@ function OpenClawPage({
               <button
                 type="button"
                 className="secondary-button"
-                disabled={
-                  isLoading ||
-                  testingServerId ===
-                    "__new__"
-                }
                 onClick={resetForm}
               >
                 Cancel
@@ -1183,11 +1404,12 @@ function OpenClawPage({
                 type="button"
                 className="secondary-button"
                 disabled={
-                  isLoading ||
                   testingServerId ===
-                    "__new__"
+                  "__new__"
                 }
-                onClick={testForm}
+                onClick={() => {
+                  void testForm();
+                }}
               >
                 {testingServerId ===
                 "__new__"
@@ -1198,19 +1420,162 @@ function OpenClawPage({
               <button
                 type="button"
                 className="action-button backup-button"
-                disabled={
-                  isLoading ||
-                  testingServerId ===
-                    "__new__"
-                }
-                onClick={submitForm}
+                disabled={isLoading}
+                onClick={() => {
+                  void submitForm();
+                }}
               >
-                {isLoading
-                  ? "Saving..."
-                  : editingId
-                    ? "Save Changes"
-                    : "Add Server"}
+                {editingId
+                  ? "Save Changes"
+                  : "Add Server"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {transferOpen && (
+        <div className="openclaw-modal-backdrop">
+          <div
+            className="openclaw-modal"
+            style={cardStyle}
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="openclaw-modal-header">
+              <div>
+                <h3>
+                  {transferMode ===
+                  "export"
+                    ? "Export Servers"
+                    : "Import Servers"}
+                </h3>
+
+                <p>
+                  {transferMode ===
+                  "export"
+                    ? "Create a portable JSON configuration."
+                    : "Paste an exported OpenClaw JSON document."}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={closeTransfer}
+              >
+                Close
+              </button>
+            </div>
+
+            {transferMode ===
+            "export" ? (
+              <>
+                <label className="openclaw-option-row">
+                  <input
+                    type="checkbox"
+                    checked={
+                      includeSecrets
+                    }
+                    onChange={(event) =>
+                      setIncludeSecrets(
+                        event.target.checked,
+                      )
+                    }
+                  />
+
+                  Include Gateway Tokens
+                  in export
+                </label>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isExporting}
+                  onClick={() => {
+                    void createExport();
+                  }}
+                >
+                  {isExporting
+                    ? "Exporting..."
+                    : "Generate JSON"}
+                </button>
+              </>
+            ) : (
+              <label className="openclaw-option-row">
+                <input
+                  type="checkbox"
+                  checked={
+                    replaceExisting
+                  }
+                  onChange={(event) =>
+                    setReplaceExisting(
+                      event.target.checked,
+                    )
+                  }
+                />
+
+                Replace all existing
+                servers
+              </label>
+            )}
+
+            <label className="setting-field">
+              <span>
+                JSON
+              </span>
+
+              <textarea
+                rows={15}
+                value={transferJson}
+                readOnly={
+                  transferMode ===
+                  "export"
+                }
+                placeholder={
+                  transferMode ===
+                  "export"
+                    ? "Click Generate JSON."
+                    : "Paste export JSON here..."
+                }
+                onChange={(event) =>
+                  setTransferJson(
+                    event.target.value,
+                  )
+                }
+              />
+            </label>
+
+            {transferError && (
+              <div className="openclaw-error">
+                {transferError}
+              </div>
+            )}
+
+            <div className="openclaw-modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={closeTransfer}
+              >
+                Cancel
+              </button>
+
+              {transferMode ===
+                "import" && (
+                <button
+                  type="button"
+                  className="action-button backup-button"
+                  disabled={isImporting}
+                  onClick={() => {
+                    void runImport();
+                  }}
+                >
+                  {isImporting
+                    ? "Importing..."
+                    : "Import Servers"}
+                </button>
+              )}
             </div>
           </div>
         </div>

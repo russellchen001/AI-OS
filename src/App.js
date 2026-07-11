@@ -53,11 +53,11 @@ function App() {
         onMessage: handleMessage,
     });
     useEffect(() => {
-        healthCheck(false);
-        refreshMetrics();
+        void healthCheck(false);
+        void refreshMetrics();
         const interval = window.setInterval(() => {
-            healthCheck(false);
-            refreshMetrics();
+            void healthCheck(false);
+            void refreshMetrics();
         }, Math.max(settings
             .refreshInterval, 2) * 1000);
         return () => {
@@ -95,26 +95,41 @@ function App() {
         backdropFilter: "blur(14px)",
     };
     return (_jsxs("div", { style: appStyle, children: [_jsx(Sidebar, { activePage: activePage, settings: settings, onPageChange: setActivePage }), _jsxs("main", { className: "main-content", children: [_jsx(Header, { isChecking: isChecking, lastUpdated: lastUpdated }), activePage ===
-                        "Dashboard" && (_jsx(DashboardPage, { services: services, metrics: metrics, cardStyle: cardStyle, runningCount: runningCount, stoppedCount: stoppedCount, unknownCount: unknownCount, allRunning: allRunning, isBusy: isBusy, isChecking: isChecking, globalAction: globalAction, serviceAction: serviceAction, openAction: openAction, onGlobalToggle: handleGlobalToggle, onStartService: startService, onStopService: stopService, onOpenService: openService, onRefreshMetrics: refreshMetrics, onHealthCheck: () => healthCheck(true), onBackup: () => setActivePage("Backup") })), activePage ===
+                        "Dashboard" && (_jsx(DashboardPage, { services: services, metrics: metrics, cardStyle: cardStyle, runningCount: runningCount, stoppedCount: stoppedCount, unknownCount: unknownCount, allRunning: allRunning, isBusy: isBusy, isChecking: isChecking, globalAction: globalAction, serviceAction: serviceAction, openAction: openAction, onGlobalToggle: handleGlobalToggle, onStartService: startService, onStopService: stopService, onOpenService: openService, onRefreshMetrics: refreshMetrics, onHealthCheck: () => {
+                            void healthCheck(true);
+                        }, onBackup: () => setActivePage("Backup") })), activePage ===
                         "Services" && (_jsx(ServicesPage, { services: services, cardStyle: cardStyle, allRunning: allRunning, isBusy: isBusy, globalAction: globalAction, serviceAction: serviceAction, openAction: openAction, onGlobalToggle: handleGlobalToggle, onStartService: startService, onStopService: stopService, onOpenService: openService })), activePage ===
                         "OpenClaw" && (_jsx(OpenClawPage, { servers: openClaw
                             .filteredServers, activeServer: openClaw
                             .activeServer, enabledCount: openClaw
                             .enabledCount, connectedCount: openClaw
-                            .connectedCount, status: openClaw.status, busyServerId: openClaw
+                            .connectedCount, autoConnectCount: openClaw
+                            .autoConnectCount, averageLatencyMs: openClaw
+                            .averageLatencyMs, status: openClaw.status, busyServerId: openClaw
                             .busyServerId, testingServerId: openClaw
-                            .testingServerId, remoteStatus: openClaw
-                            .remoteStatus, searchText: openClaw
+                            .testingServerId, isTestingAll: openClaw
+                            .isTestingAll, isImporting: openClaw
+                            .isImporting, isExporting: openClaw
+                            .isExporting, remoteStatus: openClaw
+                            .remoteStatus, runtimeConfig: openClaw
+                            .runtimeConfig, searchText: openClaw
                             .searchText, error: openClaw.error, cardStyle: cardStyle, onSearchChange: openClaw
-                            .setSearchText, onRefresh: openClaw
-                            .refreshServers, onCreate: openClaw
+                            .setSearchText, onRefresh: () => {
+                            void openClaw
+                                .refreshAllMetadata(true);
+                        }, onCreate: openClaw
                             .createServer, onUpdate: openClaw
                             .editServer, onDelete: openClaw
-                            .removeServer, onToggle: openClaw
+                            .removeServer, onDuplicate: openClaw
+                            .duplicateServer, onToggle: openClaw
                             .setServerEnabled, onActivate: openClaw
                             .activateServer, onTestSaved: openClaw
                             .testSavedServer, onTestUnsaved: openClaw
-                            .testUnsavedServer })), activePage ===
+                            .testUnsavedServer, onTestAll: openClaw
+                            .testAllServers, onCopyUrl: openClaw
+                            .copyServerUrl, onExport: openClaw
+                            .exportServers, onImport: openClaw
+                            .importServers })), activePage ===
                         "Backup" && (_jsx(BackupPage, { settings: settings, backups: backup.backups, status: backup.status, selectedBackup: backup
                             .selectedBackup, error: backup.error, cardStyle: cardStyle, onUpdateSetting: updateSetting, onCreateBackup: backup.runBackup, onRestoreBackup: (archivePath, restoreOpenClawConfig, restoreAiOsSettings) => backup.runRestore({
                             archivePath,
@@ -124,14 +139,22 @@ function App() {
                             .refreshBackups, onReveal: backup
                             .openBackupLocation, onDelete: backup
                             .removeBackup })), activePage ===
-                        "Logs" && (_jsx(LogsPage, { logs: logs.filteredLogs, selectedSource: logs.selectedSource, selectedLevel: logs.selectedLevel, searchText: logs.searchText, isLoading: logs.isLoading, isAutoRefresh: logs
+                        "Logs" && (_jsx(LogsPage, { logs: logs
+                            .filteredLogs, selectedSource: logs
+                            .selectedSource, selectedLevel: logs
+                            .selectedLevel, searchText: logs
+                            .searchText, isLoading: logs
+                            .isLoading, isAutoRefresh: logs
                             .isAutoRefresh, error: logs.error, cardStyle: cardStyle, onSourceChange: logs
                             .setSelectedSource, onLevelChange: logs
                             .setSelectedLevel, onSearchChange: logs
                             .setSearchText, onAutoRefreshChange: logs
-                            .setIsAutoRefresh, onRefresh: () => logs.refreshLogs(true), onClear: logs.removeLogs })), activePage ===
+                            .setIsAutoRefresh, onRefresh: () => {
+                            void logs.refreshLogs(true);
+                        }, onClear: logs.removeLogs })), activePage ===
                         "Models" && (_jsx(ModelsPage, { models: models
-                            .filteredModels, totalSize: models.totalSize, status: models.status, activeModel: models
+                            .filteredModels, totalSize: models
+                            .totalSize, status: models.status, activeModel: models
                             .activeModel, pullProgress: models
                             .pullProgress, error: models.error, searchText: models
                             .searchText, cardStyle: cardStyle, onSearchChange: models
@@ -139,8 +162,17 @@ function App() {
                             .refreshModels, onPull: models.pullModel, onDelete: models
                             .removeModel, onTest: models.testModel, onInspect: models
                             .inspectModel })), activePage ===
-                        "MCP" && (_jsx(McpPage, { servers: mcp.filteredServers, enabledCount: mcp.enabledCount, status: mcp.status, activeServerId: mcp.activeServerId, searchText: mcp.searchText, error: mcp.error, cardStyle: cardStyle, onSearchChange: mcp.setSearchText, onRefresh: mcp.refreshServers, onCreate: mcp.createServer, onUpdate: mcp.editServer, onToggle: mcp
-                            .setServerEnabled, onDelete: mcp.removeServer })), activePage ===
+                        "MCP" && (_jsx(McpPage, { servers: mcp
+                            .filteredServers, enabledCount: mcp
+                            .enabledCount, status: mcp.status, activeServerId: mcp
+                            .activeServerId, searchText: mcp
+                            .searchText, error: mcp.error, cardStyle: cardStyle, onSearchChange: mcp
+                            .setSearchText, onRefresh: mcp
+                            .refreshServers, onCreate: mcp
+                            .createServer, onUpdate: mcp
+                            .editServer, onToggle: mcp
+                            .setServerEnabled, onDelete: mcp
+                            .removeServer })), activePage ===
                         "Settings" && (_jsx(SettingsPage, { settings: settings, cardStyle: cardStyle, onUpdateSetting: updateSetting, onReset: resetSettings })), message && (_jsxs("section", { className: "message-panel", role: "status", children: [_jsx("span", { children: message }), _jsx("button", { type: "button", "aria-label": "Dismiss message", onClick: () => setMessage(""), children: "\u00D7" })] }))] })] }));
 }
 export default App;

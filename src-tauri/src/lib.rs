@@ -21,7 +21,7 @@ fn greet(
 ) -> String {
     format!(
         "Hello, {}! You've been greeted from Rust!",
-        name
+        name,
     )
 }
 
@@ -35,11 +35,9 @@ fn run_shell(
                 command,
             ])
             .output()
-            .map_err(
-                |error| {
-                    error.to_string()
-                },
-            )?;
+            .map_err(|error| {
+                error.to_string()
+            })?;
 
     let stdout =
         String::from_utf8_lossy(
@@ -64,7 +62,7 @@ fn run_shell(
     } else {
         Err(format!(
             "Command failed with status: {}",
-            output.status
+            output.status,
         ))
     }
 }
@@ -79,11 +77,9 @@ fn spawn_shell(
         ])
         .spawn()
         .map(|_| ())
-        .map_err(
-            |error| {
-                error.to_string()
-            },
-        )
+        .map_err(|error| {
+            error.to_string()
+        })
 }
 
 fn open_application(
@@ -102,7 +98,7 @@ fn open_application(
         format!(
             "Failed to open {}: {}",
             name,
-            error
+            error,
         )
     })
 }
@@ -120,24 +116,20 @@ fn open_url(
         format!(
             "Failed to open {}: {}",
             url,
-            error
+            error,
         )
     })
 }
 
-fn docker_is_ready()
-    -> bool
-{
+fn docker_is_ready() -> bool {
     Command::new(
         DOCKER_CLI,
     )
     .arg("info")
     .output()
-    .map(
-        |output| {
-            output.status.success()
-        },
-    )
+    .map(|output| {
+        output.status.success()
+    })
     .unwrap_or(false)
 }
 
@@ -185,7 +177,7 @@ fn find_open_webui_container()
         .map_err(|error| {
             format!(
                 "Failed to list Docker containers: {}",
-                error
+                error,
             )
         })?;
 
@@ -215,42 +207,36 @@ fn find_open_webui_container()
     let container_name =
         containers
             .lines()
-            .find_map(
-                |line| {
-                    let lower =
-                        line.to_lowercase();
+            .find_map(|line| {
+                let lower =
+                    line.to_lowercase();
 
-                    let matches =
-                        lower.contains(
-                            "open-webui",
-                        )
-                        || lower.contains(
-                            "open_webui",
-                        )
-                        || lower.contains(
-                            "openwebui",
-                        )
-                        || lower.contains(
-                            "ghcr.io/open-webui/open-webui",
-                        );
+                let matches =
+                    lower.contains(
+                        "open-webui",
+                    )
+                    || lower.contains(
+                        "open_webui",
+                    )
+                    || lower.contains(
+                        "openwebui",
+                    )
+                    || lower.contains(
+                        "ghcr.io/open-webui/open-webui",
+                    );
 
-                    if !matches {
-                        return None;
-                    }
+                if !matches {
+                    return None;
+                }
 
-                    line.split('|')
-                        .next()
-                        .map(str::trim)
-                        .filter(
-                            |name| {
-                                !name.is_empty()
-                            },
-                        )
-                        .map(
-                            str::to_string,
-                        )
-                },
-            );
+                line.split('|')
+                    .next()
+                    .map(str::trim)
+                    .filter(|name| {
+                        !name.is_empty()
+                    })
+                    .map(str::to_string)
+            });
 
     Ok(container_name)
 }
@@ -280,7 +266,7 @@ fn start_open_webui_container()
             format!(
                 "Failed to start Open WebUI container {}: {}",
                 container_name,
-                error
+                error,
             )
         })?;
 
@@ -301,7 +287,7 @@ fn start_open_webui_container()
     if output.status.success() {
         Ok(format!(
             "✅ Open WebUI started successfully: {}\nOpen http://localhost:3000",
-            container_name
+            container_name,
         ))
     } else {
         let details =
@@ -312,14 +298,14 @@ fn start_open_webui_container()
             } else {
                 format!(
                     "Exit status: {}",
-                    output.status
+                    output.status,
                 )
             };
 
         Err(format!(
             "Failed to start Open WebUI container {}: {}",
             container_name,
-            details
+            details,
         ))
     }
 }
@@ -349,7 +335,7 @@ fn stop_open_webui_container()
             format!(
                 "Failed to stop Open WebUI container {}: {}",
                 container_name,
-                error
+                error,
             )
         })?;
 
@@ -370,7 +356,7 @@ fn stop_open_webui_container()
     if output.status.success() {
         Ok(format!(
             "🛑 Open WebUI stopped successfully: {}",
-            container_name
+            container_name,
         ))
     } else {
         let details =
@@ -381,22 +367,20 @@ fn stop_open_webui_container()
             } else {
                 format!(
                     "Exit status: {}",
-                    output.status
+                    output.status,
                 )
             };
 
         Err(format!(
             "Failed to stop Open WebUI container {}: {}",
             container_name,
-            details
+            details,
         ))
     }
 }
 
 #[tauri::command]
-fn start_all()
-    -> String
-{
+fn start_all() -> String {
     let _ =
         open_application(
             "Docker",
@@ -548,7 +532,7 @@ pgrep -f "ollama serve" >/dev/null 2>&1 ||
 
         _ => Err(format!(
             "Unknown service: {}",
-            service
+            service,
         )),
     }
 }
@@ -620,7 +604,7 @@ pkill -f "ollama serve" \
                 .map_err(|error| {
                     format!(
                         "Failed to run Docker stop command: {}",
-                        error
+                        error,
                     )
                 })?;
 
@@ -652,13 +636,13 @@ pkill -f "ollama serve" \
                     } else {
                         format!(
                             "Exit status: {}",
-                            output.status
+                            output.status,
                         )
                     };
 
                 Err(format!(
                     "Docker stop command failed: {}",
-                    details
+                    details,
                 ))
             }
         }
@@ -686,7 +670,7 @@ pkill -f "Cherry Studio" \
 
         _ => Err(format!(
             "Unknown service: {}",
-            service
+            service,
         )),
     }
 }
@@ -702,13 +686,9 @@ fn open_service(
         "OpenClaw" => {
             let url =
                 openclaw_url
-                    .filter(
-                        |value| {
-                            !value
-                                .trim()
-                                .is_empty()
-                        },
-                    )
+                    .filter(|value| {
+                        !value.trim().is_empty()
+                    })
                     .unwrap_or_else(|| {
                         "http://localhost:18789"
                             .to_string()
@@ -720,20 +700,16 @@ fn open_service(
 
             Ok(format!(
                 "↗ Opened OpenClaw: {}",
-                url
+                url,
             ))
         }
 
         "Ollama" => {
             let url =
                 ollama_url
-                    .filter(
-                        |value| {
-                            !value
-                                .trim()
-                                .is_empty()
-                        },
-                    )
+                    .filter(|value| {
+                        !value.trim().is_empty()
+                    })
                     .unwrap_or_else(|| {
                         "http://localhost:11434"
                             .to_string()
@@ -745,7 +721,7 @@ fn open_service(
 
             Ok(format!(
                 "↗ Opened Ollama: {}",
-                url
+                url,
             ))
         }
 
@@ -763,13 +739,9 @@ fn open_service(
         "Open WebUI" => {
             let url =
                 open_web_ui_url
-                    .filter(
-                        |value| {
-                            !value
-                                .trim()
-                                .is_empty()
-                        },
-                    )
+                    .filter(|value| {
+                        !value.trim().is_empty()
+                    })
                     .unwrap_or_else(|| {
                         "http://localhost:3000"
                             .to_string()
@@ -781,7 +753,7 @@ fn open_service(
 
             Ok(format!(
                 "↗ Opened Open WebUI: {}",
-                url
+                url,
             ))
         }
 
@@ -798,7 +770,7 @@ fn open_service(
 
         _ => Err(format!(
             "Unknown service: {}",
-            service
+            service,
         )),
     }
 }
@@ -865,7 +837,9 @@ DISK_USED_GB=$(awk "BEGIN {
 echo "$CPU|$MEM_USED_GB|$MEM_TOTAL_GB|$DISK_USED_GB|$DISK_TOTAL_GB"
 "#;
 
-    run_shell(script)
+    run_shell(
+        script,
+    )
 }
 
 #[cfg_attr(
@@ -914,11 +888,22 @@ pub fn run() {
                 openclaw::save_openclaw_server,
                 openclaw::update_openclaw_server,
                 openclaw::delete_openclaw_server,
+                openclaw::duplicate_openclaw_server,
                 openclaw::toggle_openclaw_server,
                 openclaw::set_active_openclaw_server,
+
                 openclaw::test_openclaw_connection,
                 openclaw::test_openclaw_connection_input,
+                openclaw::test_all_openclaw_servers,
+
                 openclaw::get_active_openclaw_status,
+                openclaw::get_openclaw_dashboard_summary,
+                openclaw::get_openclaw_runtime_config,
+
+                openclaw::export_openclaw_servers,
+                openclaw::import_openclaw_servers,
+
+                openclaw::invoke_active_openclaw_gateway,
             ],
         )
         .run(
