@@ -6,6 +6,7 @@ import type {
 type SidebarProps = {
   activePage: PageName;
   settings: Settings;
+
   onPageChange: (
     page: PageName,
   ) => void;
@@ -14,26 +15,47 @@ type SidebarProps = {
 const navItems: Array<{
   name: PageName;
   icon: string;
+  label: string;
 }> = [
   {
     name: "Dashboard",
     icon: "🏠",
+    label: "Dashboard",
   },
   {
     name: "Services",
     icon: "🚀",
+    label: "Services",
+  },
+  {
+    name: "OpenClaw",
+    icon: "🦞",
+    label: "OpenClaw",
   },
   {
     name: "Backup",
     icon: "💾",
+    label: "Backup",
   },
   {
     name: "Logs",
     icon: "📜",
+    label: "Logs",
+  },
+  {
+    name: "Models",
+    icon: "🧠",
+    label: "Models",
+  },
+  {
+    name: "MCP",
+    icon: "🔌",
+    label: "MCP",
   },
   {
     name: "Settings",
     icon: "⚙️",
+    label: "Settings",
   },
 ];
 
@@ -60,37 +82,75 @@ function Sidebar({
         </div>
       </div>
 
-      <nav className="nav-list">
-        {navItems.map((item) => (
-          <button
-            key={item.name}
-            type="button"
-            className={[
-              "nav-item",
-              activePage === item.name
-                ? "nav-item-active"
-                : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            onClick={() =>
-              onPageChange(item.name)
-            }
-          >
-            <span>{item.icon}</span>
-            <span>{item.name}</span>
-          </button>
-        ))}
+      <nav
+        className="nav-list"
+        aria-label="Main navigation"
+      >
+        {navItems.map(
+          (item) => {
+            const active =
+              activePage ===
+              item.name;
+
+            return (
+              <button
+                key={item.name}
+                type="button"
+                className={[
+                  "nav-item",
+                  active
+                    ? "nav-item-active"
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                aria-current={
+                  active
+                    ? "page"
+                    : undefined
+                }
+                onClick={() =>
+                  onPageChange(
+                    item.name,
+                  )
+                }
+              >
+                <span
+                  className="nav-item-icon"
+                  aria-hidden="true"
+                >
+                  {item.icon}
+                </span>
+
+                <span>
+                  {item.label}
+                </span>
+              </button>
+            );
+          },
+        )}
       </nav>
 
-      <div className="refresh-card">
-        <div className="refresh-label">
-          Auto Refresh
+      <div className="sidebar-footer">
+        <div className="refresh-card">
+          <div className="refresh-label">
+            Auto Refresh
+          </div>
+
+          <div className="refresh-value">
+            <span
+              className="online-dot"
+              aria-hidden="true"
+            />
+
+            Every{" "}
+            {settings.refreshInterval}{" "}
+            seconds
+          </div>
         </div>
 
-        <div className="refresh-value">
-          <span className="online-dot" />
-          Every {settings.refreshInterval} seconds
+        <div className="sidebar-version">
+          AI OS v1.2.0
         </div>
       </div>
     </aside>

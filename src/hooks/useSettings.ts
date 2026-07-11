@@ -6,6 +6,7 @@ import {
 
 import {
   DEFAULT_SETTINGS,
+  STORAGE_KEYS,
 } from "../config/constants";
 
 import type {
@@ -16,18 +17,21 @@ function loadSettings(): Settings {
   try {
     const stored =
       localStorage.getItem(
-        "ai-os-settings",
+        STORAGE_KEYS.settings,
       );
 
     if (!stored) {
       return DEFAULT_SETTINGS;
     }
 
+    const parsed =
+      JSON.parse(
+        stored,
+      ) as Partial<Settings>;
+
     return {
       ...DEFAULT_SETTINGS,
-      ...(JSON.parse(
-        stored,
-      ) as Partial<Settings>),
+      ...parsed,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -48,7 +52,7 @@ function useSettings(
 
   useEffect(() => {
     localStorage.setItem(
-      "ai-os-settings",
+      STORAGE_KEYS.settings,
       JSON.stringify(settings),
     );
 
@@ -74,11 +78,31 @@ function useSettings(
       [],
     );
 
+  const mergeSettings =
+    useCallback(
+      (
+        restored:
+          Partial<Settings>,
+      ) => {
+        setSettings(
+          (current) => ({
+            ...current,
+            ...restored,
+          }),
+        );
+
+        onMessage(
+          "✅ AI OS settings restored.",
+        );
+      },
+      [onMessage],
+    );
+
   const resetSettings =
     useCallback(() => {
-      setSettings(
-        DEFAULT_SETTINGS,
-      );
+      setSettings({
+        ...DEFAULT_SETTINGS,
+      });
 
       onMessage(
         "⚙️ Settings restored to defaults.",
@@ -88,6 +112,7 @@ function useSettings(
   return {
     settings,
     updateSetting,
+    mergeSettings,
     resetSettings,
   };
 }

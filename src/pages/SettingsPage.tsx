@@ -2,6 +2,12 @@ import type {
   CSSProperties,
 } from "react";
 
+import {
+  APP_INFO,
+  LOG_LINE_LIMIT_OPTIONS,
+  REFRESH_INTERVAL_OPTIONS,
+} from "../config/constants";
+
 import type {
   Settings,
   ThemeMode,
@@ -10,12 +16,14 @@ import type {
 type SettingsPageProps = {
   settings: Settings;
   cardStyle: CSSProperties;
+
   onUpdateSetting: <
     K extends keyof Settings,
   >(
     key: K,
     value: Settings[K],
   ) => void;
+
   onReset: () => void;
 };
 
@@ -32,8 +40,9 @@ function SettingsPage({
           <h2>Settings</h2>
 
           <p>
-            Configure refresh,
-            addresses and appearance
+            Configure service URLs,
+            refresh behavior, logs,
+            backups and appearance.
           </p>
         </div>
 
@@ -46,146 +55,358 @@ function SettingsPage({
         </button>
       </div>
 
-      <div
-        className="settings-card"
-        style={cardStyle}
-      >
-        <label className="setting-field">
-          <span>
-            Auto Refresh Interval
-          </span>
+      <div className="settings-layout">
+        <div
+          className="settings-card"
+          style={cardStyle}
+        >
+          <div className="settings-group-header">
+            <div>
+              <h3>
+                General
+              </h3>
 
-          <small>
-            Minimum refresh interval
-            is 2 seconds.
-          </small>
+              <p>
+                Application behavior
+                and appearance.
+              </p>
+            </div>
 
-          <select
-            value={
-              settings.refreshInterval
-            }
-            onChange={(event) =>
-              onUpdateSetting(
-                "refreshInterval",
-                Number(
-                  event.target.value,
+            <span>⚙️</span>
+          </div>
+
+          <label className="setting-field">
+            <span>
+              Auto Refresh Interval
+            </span>
+
+            <small>
+              Controls service,
+              metrics, model and log
+              refresh frequency.
+            </small>
+
+            <select
+              value={
+                settings.refreshInterval
+              }
+              onChange={(event) =>
+                onUpdateSetting(
+                  "refreshInterval",
+                  Number(
+                    event.target.value,
+                  ),
+                )
+              }
+            >
+              {REFRESH_INTERVAL_OPTIONS.map(
+                (value) => (
+                  <option
+                    key={value}
+                    value={value}
+                  >
+                    {value} seconds
+                  </option>
                 ),
-              )
-            }
-          >
-            <option value={2}>
-              2 seconds
-            </option>
+              )}
+            </select>
+          </label>
 
-            <option value={5}>
-              5 seconds
-            </option>
+          <label className="setting-field">
+            <span>
+              Theme
+            </span>
 
-            <option value={10}>
-              10 seconds
-            </option>
+            <small>
+              Select the AI OS color
+              appearance.
+            </small>
 
-            <option value={30}>
-              30 seconds
-            </option>
+            <select
+              value={settings.theme}
+              onChange={(event) =>
+                onUpdateSetting(
+                  "theme",
+                  event.target
+                    .value as ThemeMode,
+                )
+              }
+            >
+              <option value="dark">
+                Dark
+              </option>
 
-            <option value={60}>
-              60 seconds
-            </option>
-          </select>
-        </label>
+              <option value="light">
+                Light
+              </option>
+            </select>
+          </label>
 
-        <label className="setting-field">
-          <span>OpenClaw URL</span>
+          <label className="setting-field">
+            <span>
+              Log Line Limit
+            </span>
 
-          <small>
-            Used by the Open button.
-          </small>
+            <small>
+              Maximum number of entries
+              loaded on the Logs page.
+            </small>
 
-          <input
-            type="url"
-            value={
-              settings.openClawUrl
-            }
-            onChange={(event) =>
-              onUpdateSetting(
-                "openClawUrl",
-                event.target.value,
-              )
-            }
-            placeholder="http://localhost:18789"
-          />
-        </label>
+            <select
+              value={
+                settings.logLineLimit
+              }
+              onChange={(event) =>
+                onUpdateSetting(
+                  "logLineLimit",
+                  Number(
+                    event.target.value,
+                  ),
+                )
+              }
+            >
+              {LOG_LINE_LIMIT_OPTIONS.map(
+                (value) => (
+                  <option
+                    key={value}
+                    value={value}
+                  >
+                    {value} lines
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
+        </div>
 
-        <label className="setting-field">
-          <span>Ollama URL</span>
+        <div
+          className="settings-card"
+          style={cardStyle}
+        >
+          <div className="settings-group-header">
+            <div>
+              <h3>
+                Service Addresses
+              </h3>
 
-          <small>
-            Used by the Open button.
-          </small>
+              <p>
+                URLs used by service
+                controls and Open
+                buttons.
+              </p>
+            </div>
 
-          <input
-            type="url"
-            value={settings.ollamaUrl}
-            onChange={(event) =>
-              onUpdateSetting(
-                "ollamaUrl",
-                event.target.value,
-              )
-            }
-            placeholder="http://localhost:11434"
-          />
-        </label>
+            <span>🌐</span>
+          </div>
 
-        <label className="setting-field">
-          <span>Open WebUI URL</span>
+          <label className="setting-field">
+            <span>
+              OpenClaw URL
+            </span>
 
-          <small>
-            Used by the Open button.
-          </small>
+            <input
+              type="url"
+              value={
+                settings.openClawUrl
+              }
+              placeholder="http://localhost:18789"
+              onChange={(event) =>
+                onUpdateSetting(
+                  "openClawUrl",
+                  event.target.value,
+                )
+              }
+            />
+          </label>
 
-          <input
-            type="url"
-            value={
-              settings.openWebUiUrl
-            }
-            onChange={(event) =>
-              onUpdateSetting(
-                "openWebUiUrl",
-                event.target.value,
-              )
-            }
-            placeholder="http://localhost:3000"
-          />
-        </label>
+          <label className="setting-field">
+            <span>
+              Ollama URL
+            </span>
 
-        <label className="setting-field">
-          <span>Theme</span>
+            <input
+              type="url"
+              value={
+                settings.ollamaUrl
+              }
+              placeholder="http://localhost:11434"
+              onChange={(event) =>
+                onUpdateSetting(
+                  "ollamaUrl",
+                  event.target.value,
+                )
+              }
+            />
+          </label>
 
-          <small>
-            Switch between dark and
-            light appearance.
-          </small>
+          <label className="setting-field">
+            <span>
+              Open WebUI URL
+            </span>
 
-          <select
-            value={settings.theme}
-            onChange={(event) =>
-              onUpdateSetting(
-                "theme",
-                event.target
-                  .value as ThemeMode,
-              )
-            }
-          >
-            <option value="dark">
-              Dark
-            </option>
+            <input
+              type="url"
+              value={
+                settings.openWebUiUrl
+              }
+              placeholder="http://localhost:3000"
+              onChange={(event) =>
+                onUpdateSetting(
+                  "openWebUiUrl",
+                  event.target.value,
+                )
+              }
+            />
+          </label>
+        </div>
 
-            <option value="light">
-              Light
-            </option>
-          </select>
-        </label>
+        <div
+          className="settings-card"
+          style={cardStyle}
+        >
+          <div className="settings-group-header">
+            <div>
+              <h3>
+                Backup Defaults
+              </h3>
+
+              <p>
+                Default destination
+                and included data.
+              </p>
+            </div>
+
+            <span>💾</span>
+          </div>
+
+          <label className="setting-field">
+            <span>
+              Backup Directory
+            </span>
+
+            <small>
+              Use an absolute local
+              directory path.
+            </small>
+
+            <input
+              type="text"
+              value={
+                settings.backupDirectory
+              }
+              placeholder="/Users/your-name/Backups"
+              onChange={(event) =>
+                onUpdateSetting(
+                  "backupDirectory",
+                  event.target.value,
+                )
+              }
+            />
+          </label>
+
+          <label className="settings-checkbox-row">
+            <input
+              type="checkbox"
+              checked={
+                settings
+                  .includeOpenClawConfig
+              }
+              onChange={(event) =>
+                onUpdateSetting(
+                  "includeOpenClawConfig",
+                  event.target.checked,
+                )
+              }
+            />
+
+            <span>
+              Include OpenClaw
+              configuration
+            </span>
+          </label>
+
+          <label className="settings-checkbox-row">
+            <input
+              type="checkbox"
+              checked={
+                settings
+                  .includeAiOsSettings
+              }
+              onChange={(event) =>
+                onUpdateSetting(
+                  "includeAiOsSettings",
+                  event.target.checked,
+                )
+              }
+            />
+
+            <span>
+              Include AI OS settings
+            </span>
+          </label>
+        </div>
+
+        <div
+          className="settings-card settings-about-card"
+          style={cardStyle}
+        >
+          <div className="settings-group-header">
+            <div>
+              <h3>
+                About
+              </h3>
+
+              <p>
+                Application identity
+                and release details.
+              </p>
+            </div>
+
+            <span>🤖</span>
+          </div>
+
+          <div className="settings-about-grid">
+            <div>
+              <span>
+                Name
+              </span>
+
+              <strong>
+                {APP_INFO.name}
+              </strong>
+            </div>
+
+            <div>
+              <span>
+                Version
+              </span>
+
+              <strong>
+                {APP_INFO.version}
+              </strong>
+            </div>
+
+            <div>
+              <span>
+                Identifier
+              </span>
+
+              <strong>
+                {APP_INFO.identifier}
+              </strong>
+            </div>
+
+            <div>
+              <span>
+                Description
+              </span>
+
+              <strong>
+                {APP_INFO.description}
+              </strong>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );
