@@ -1,31 +1,46 @@
+import type {
+  CSSProperties,
+} from "react";
+
 type StatCardProps = {
   title: string;
   value: number;
   icon: string;
-  tone:
-    | "blue"
-    | "green"
-    | "red"
-    | "yellow";
+  accent: string;
+  cardStyle: CSSProperties;
 };
 
 function StatCard({
   title,
   value,
   icon,
-  tone,
+  accent,
+  cardStyle,
 }: StatCardProps) {
   return (
-    <article
-      className={`stat-card stat-${tone}`}
+    <div
+      className="stat-card"
+      style={cardStyle}
     >
-      <div className="stat-header">
+      <div
+        className="stat-card-glow"
+        style={{
+          background: accent,
+        }}
+      />
+
+      <div className="stat-card-header">
         <span>{title}</span>
         <span>{icon}</span>
       </div>
 
-      <strong>{value}</strong>
-    </article>
+      <div
+        className="stat-card-value"
+        style={{ color: accent }}
+      >
+        {value}
+      </div>
+    </div>
   );
 }
 

@@ -1,41 +1,66 @@
+import type {
+  CSSProperties,
+} from "react";
+
 type MetricCardProps = {
-  label: string;
-  value: string;
-  percent: number;
+  title: string;
   icon: string;
+  value: string;
+  progress: number;
+  accent: string;
+  cardStyle: CSSProperties;
 };
 
 function MetricCard({
-  label,
-  value,
-  percent,
+  title,
   icon,
+  value,
+  progress,
+  accent,
+  cardStyle,
 }: MetricCardProps) {
-  const safePercent = Math.min(
-    Math.max(percent, 0),
+  const safeProgress = Math.min(
+    Math.max(progress, 0),
     100,
   );
 
   return (
-    <article className="metric-card">
+    <div
+      className="metric-card"
+      style={cardStyle}
+    >
       <div className="metric-header">
-        <span>{icon}</span>
-
         <div>
-          <span>{label}</span>
-          <strong>{value}</strong>
+          <span className="metric-title">
+            {title}
+          </span>
+
+          <div className="metric-value">
+            {value}
+          </div>
         </div>
+
+        <span className="metric-icon">
+          {icon}
+        </span>
       </div>
 
       <div className="metric-track">
         <div
           className="metric-progress"
           style={{
-            width: `${safePercent}%`,
+            width: `${safeProgress}%`,
+            background: accent,
+            boxShadow:
+              `0 0 14px ${accent}55`,
           }}
         />
       </div>
-    </article>
+
+      <div className="metric-percent">
+        {safeProgress.toFixed(1)}%
+      </div>
+    </div>
   );
 }
 

@@ -1,19 +1,45 @@
-import { NAV_ITEMS } from "../constants";
 import type {
   PageName,
-} from "../types";
+  Settings,
+} from "../types/index";
 
 type SidebarProps = {
   activePage: PageName;
-  refreshInterval: number;
+  settings: Settings;
   onPageChange: (
     page: PageName,
   ) => void;
 };
 
+const navItems: Array<{
+  name: PageName;
+  icon: string;
+}> = [
+  {
+    name: "Dashboard",
+    icon: "🏠",
+  },
+  {
+    name: "Services",
+    icon: "🚀",
+  },
+  {
+    name: "Backup",
+    icon: "💾",
+  },
+  {
+    name: "Logs",
+    icon: "📜",
+  },
+  {
+    name: "Settings",
+    icon: "⚙️",
+  },
+];
+
 function Sidebar({
   activePage,
-  refreshInterval,
+  settings,
   onPageChange,
 }: SidebarProps) {
   return (
@@ -24,7 +50,7 @@ function Sidebar({
         </div>
 
         <div>
-          <div className="brand-name">
+          <div className="brand-title">
             AI OS
           </div>
 
@@ -34,15 +60,19 @@ function Sidebar({
         </div>
       </div>
 
-      <nav className="navigation">
-        {NAV_ITEMS.map((item) => (
+      <nav className="nav-list">
+        {navItems.map((item) => (
           <button
             key={item.name}
-            className={`nav-item ${
+            type="button"
+            className={[
+              "nav-item",
               activePage === item.name
                 ? "nav-item-active"
-                : ""
-            }`}
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
             onClick={() =>
               onPageChange(item.name)
             }
@@ -54,19 +84,14 @@ function Sidebar({
       </nav>
 
       <div className="refresh-card">
-        <div className="refresh-title">
+        <div className="refresh-label">
           Auto Refresh
         </div>
 
         <div className="refresh-value">
-          <span className="live-dot" />
-
-          Every {refreshInterval} seconds
+          <span className="online-dot" />
+          Every {settings.refreshInterval} seconds
         </div>
-      </div>
-
-      <div className="sidebar-version">
-        Sprint 3.1 · v0.3.1
       </div>
     </aside>
   );

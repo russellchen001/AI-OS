@@ -1,85 +1,69 @@
+import type {
+  CSSProperties,
+} from "react";
+
+import type {
+  Metrics,
+  Service,
+} from "../types/index";
+
 import MetricCard from "../components/MetricCard";
-import ServiceRow from "../components/ServiceRow";
+import ServiceList from "../components/ServiceList";
 import ServiceToggle from "../components/ServiceToggle";
 import StatCard from "../components/StatCard";
 
-import type {
-  Service,
-  SystemMetrics,
-} from "../types";
-
 type DashboardPageProps = {
   services: Service[];
+  metrics: Metrics;
+  cardStyle: CSSProperties;
   runningCount: number;
   stoppedCount: number;
   unknownCount: number;
-  metrics: SystemMetrics;
-  isChecking: boolean;
+  allRunning: boolean;
   isBusy: boolean;
-  globalAction: "start" | "stop" | null;
+  isChecking: boolean;
+  globalAction:
+    | "start"
+    | "stop"
+    | null;
   serviceAction: string | null;
-  message: string;
-  onStartAll: () => void;
-  onStopAll: () => void;
+  openAction: string | null;
+  onGlobalToggle: () => void;
+  onStartService: (
+    service: string,
+  ) => void;
+  onStopService: (
+    service: string,
+  ) => void;
+  onOpenService: (
+    service: string,
+  ) => void;
+  onRefreshMetrics: () => void;
   onHealthCheck: () => void;
-  onStartService: (service: string) => void;
-  onStopService: (service: string) => void;
-  onOpenService: (service: string) => void;
   onBackup: () => void;
 };
 
 function DashboardPage({
   services,
+  metrics,
+  cardStyle,
   runningCount,
   stoppedCount,
   unknownCount,
-  metrics,
-  isChecking,
+  allRunning,
   isBusy,
+  isChecking,
   globalAction,
   serviceAction,
-  message,
-  onStartAll,
-  onStopAll,
-  onHealthCheck,
+  openAction,
+  onGlobalToggle,
   onStartService,
   onStopService,
   onOpenService,
+  onRefreshMetrics,
+  onHealthCheck,
   onBackup,
 }: DashboardPageProps) {
-  const allRunning =
-    services.length > 0 &&
-    runningCount === services.length;
-
-  const globalLoading =
-    globalAction !== null;
-
-  function handleGlobalToggle() {
-    if (isBusy) {
-      return;
-    }
-
-    if (allRunning) {
-      onStopAll();
-    } else {
-      onStartAll();
-    }
-  }
-
-  function getGlobalLabel(): string {
-    if (globalAction === "start") {
-      return "Starting All...";
-    }
-
-    if (globalAction === "stop") {
-      return "Stopping All...";
-    }
-
-    return allRunning
-      ? "All Services On"
-      : "Start All Services";
-  }
-
   return (
     <>
       <section className="stats-grid">
@@ -87,134 +71,170 @@ function DashboardPage({
           title="Total Services"
           value={services.length}
           icon="🧩"
-          tone="blue"
+          accent="#60a5fa"
+          cardStyle={cardStyle}
         />
 
         <StatCard
           title="Running"
           value={runningCount}
           icon="✅"
-          tone="green"
+          accent="#22c55e"
+          cardStyle={cardStyle}
         />
 
         <StatCard
           title="Stopped"
           value={stoppedCount}
           icon="⛔"
-          tone="red"
+          accent="#ef4444"
+          cardStyle={cardStyle}
         />
 
         <StatCard
           title="Unknown"
           value={unknownCount}
           icon="⚠️"
-          tone="yellow"
-        />
-      </section>
-
-      <section className="metrics-grid">
-        <MetricCard
-          label="CPU Usage"
-          value={`${metrics.cpuUsage.toFixed(1)}%`}
-          percent={metrics.cpuUsage}
-          icon="🖥️"
-        />
-
-        <MetricCard
-          label="Memory"
-          value={
-            metrics.memoryTotalGb > 0
-              ? `${metrics.memoryUsedGb.toFixed(
-                  1,
-                )} / ${metrics.memoryTotalGb.toFixed(
-                  1,
-                )} GB`
-              : "Waiting for data"
-          }
-          percent={
-            metrics.memoryTotalGb > 0
-              ? (metrics.memoryUsedGb /
-                  metrics.memoryTotalGb) *
-                100
-              : 0
-          }
-          icon="🧠"
-        />
-
-        <MetricCard
-          label="Disk"
-          value={
-            metrics.diskTotalGb > 0
-              ? `${metrics.diskUsedGb.toFixed(
-                  0,
-                )} / ${metrics.diskTotalGb.toFixed(
-                  0,
-                )} GB`
-              : "Waiting for data"
-          }
-          percent={
-            metrics.diskTotalGb > 0
-              ? (metrics.diskUsedGb /
-                  metrics.diskTotalGb) *
-                100
-              : 0
-          }
-          icon="💽"
+          accent="#facc15"
+          cardStyle={cardStyle}
         />
       </section>
 
       <section className="section-block">
-        <div className="section-heading">
+        <div className="section-header">
+          <div>
+            <h2>System Performance</h2>
+
+            <p>
+              Live macOS resource usage
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={onRefreshMetrics}
+          >
+            ↻ Refresh
+          </button>
+        </div>
+
+        <div className="metrics-grid">
+          <MetricCard
+            title="CPU Usage"
+            icon="🧠"
+            value={`${metrics.cpu.toFixed(
+              1,
+            )}%`}
+            progress={metrics.cpu}
+            accent="#3b82f6"
+            cardStyle={cardStyle}
+          />
+
+          <MetricCard
+            title="Memory"
+            icon="💾"
+            value={`${metrics.memoryUsed.toFixed(
+              1,
+            )} / ${metrics.memoryTotal.toFixed(
+              1,
+            )} GB`}
+            progress={
+              metrics.memoryTotal > 0
+                ? (metrics.memoryUsed /
+                    metrics.memoryTotal) *
+                  100
+                : 0
+            }
+            accent="#8b5cf6"
+            cardStyle={cardStyle}
+          />
+
+          <MetricCard
+            title="Disk"
+            icon="🗄️"
+            value={`${metrics.diskUsed.toFixed(
+              1,
+            )} / ${metrics.diskTotal.toFixed(
+              1,
+            )} GB`}
+            progress={
+              metrics.diskTotal > 0
+                ? (metrics.diskUsed /
+                    metrics.diskTotal) *
+                  100
+                : 0
+            }
+            accent="#f59e0b"
+            cardStyle={cardStyle}
+          />
+        </div>
+      </section>
+
+      <section className="section-block">
+        <div className="section-header">
           <div>
             <h2>System Status</h2>
 
             <p>
-              Use each switch to start or stop a
-              service.
+              Control your local AI
+              services
             </p>
           </div>
 
           <span className="online-count">
-            {runningCount}/{services.length} online
+            {runningCount}/
+            {services.length} services
+            online
           </span>
         </div>
 
-        <div className="service-list">
-          {services.map((service) => (
-            <ServiceRow
-              key={service.name}
-              service={service}
-              busy={isBusy}
-              serviceAction={serviceAction}
-              onStart={onStartService}
-              onStop={onStopService}
-              onOpen={onOpenService}
-            />
-          ))}
-        </div>
+        <ServiceList
+          services={services}
+          cardStyle={cardStyle}
+          isBusy={isBusy}
+          serviceAction={serviceAction}
+          openAction={openAction}
+          onStart={onStartService}
+          onStop={onStopService}
+          onOpen={onOpenService}
+        />
       </section>
 
-      <section className="global-actions">
+      <section className="bottom-actions">
         <ServiceToggle
           checked={allRunning}
           disabled={isBusy}
-          loading={globalLoading}
-          label={getGlobalLabel()}
-          onChange={handleGlobalToggle}
-          size="large"
+          loading={
+            globalAction !== null
+          }
+          large
+          label={
+            globalAction === "start"
+              ? "Starting All..."
+              : globalAction === "stop"
+                ? "Stopping All..."
+                : allRunning
+                  ? "All Services Running"
+                  : "Start All Services"
+          }
+          onChange={onGlobalToggle}
         />
 
         <button
-          className="action-button action-gray"
-          disabled={isBusy}
+          type="button"
+          className="action-button backup-button"
           onClick={onBackup}
         >
           💾 Backup
         </button>
 
         <button
-          className="action-button action-green"
-          disabled={isBusy || isChecking}
+          type="button"
+          className="action-button health-button"
+          disabled={
+            isBusy || isChecking
+          }
           onClick={onHealthCheck}
         >
           {isChecking
@@ -222,12 +242,6 @@ function DashboardPage({
             : "🩺 Health Check"}
         </button>
       </section>
-
-      {message && (
-        <section className="terminal-panel">
-          {message}
-        </section>
-      )}
     </>
   );
 }

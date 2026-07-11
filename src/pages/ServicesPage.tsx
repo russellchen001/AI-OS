@@ -1,47 +1,92 @@
-import ServiceRow from "../components/ServiceRow";
-import type { Service } from "../types";
+import type {
+  CSSProperties,
+} from "react";
+
+import type {
+  Service,
+} from "../types/index";
+
+import ServiceList from "../components/ServiceList";
+import ServiceToggle from "../components/ServiceToggle";
 
 type ServicesPageProps = {
   services: Service[];
+  cardStyle: CSSProperties;
+  allRunning: boolean;
   isBusy: boolean;
+  globalAction:
+    | "start"
+    | "stop"
+    | null;
   serviceAction: string | null;
-  onStartService: (service: string) => void;
-  onStopService: (service: string) => void;
-  onOpenService: (service: string) => void;
+  openAction: string | null;
+  onGlobalToggle: () => void;
+  onStartService: (
+    service: string,
+  ) => void;
+  onStopService: (
+    service: string,
+  ) => void;
+  onOpenService: (
+    service: string,
+  ) => void;
 };
 
 function ServicesPage({
   services,
+  cardStyle,
+  allRunning,
   isBusy,
+  globalAction,
   serviceAction,
+  openAction,
+  onGlobalToggle,
   onStartService,
   onStopService,
   onOpenService,
 }: ServicesPageProps) {
   return (
-    <section className="page-card">
-      <div className="page-title">
+    <section className="page-section">
+      <div className="section-header">
         <div>
           <h2>Services</h2>
+
           <p>
-            Use each switch to start or stop an individual service.
+            Start, stop and open each
+            local service
           </p>
         </div>
+
+        <ServiceToggle
+          checked={allRunning}
+          disabled={isBusy}
+          loading={
+            globalAction !== null
+          }
+          large
+          label={
+            globalAction === "start"
+              ? "Starting All..."
+              : globalAction === "stop"
+                ? "Stopping All..."
+                : allRunning
+                  ? "Stop All Services"
+                  : "Start All Services"
+          }
+          onChange={onGlobalToggle}
+        />
       </div>
 
-      <div className="service-list">
-        {services.map((service) => (
-          <ServiceRow
-            key={service.name}
-            service={service}
-            busy={isBusy}
-            serviceAction={serviceAction}
-            onStart={onStartService}
-            onStop={onStopService}
-            onOpen={onOpenService}
-          />
-        ))}
-      </div>
+      <ServiceList
+        services={services}
+        cardStyle={cardStyle}
+        isBusy={isBusy}
+        serviceAction={serviceAction}
+        openAction={openAction}
+        onStart={onStartService}
+        onStop={onStopService}
+        onOpen={onOpenService}
+      />
     </section>
   );
 }

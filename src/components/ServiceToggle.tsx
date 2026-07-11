@@ -1,12 +1,10 @@
-import "./ServiceToggle.css";
-
 type ServiceToggleProps = {
   checked: boolean;
   disabled?: boolean;
   loading?: boolean;
-  label?: string;
+  label: string;
+  large?: boolean;
   onChange: () => void;
-  size?: "normal" | "large";
 };
 
 function ServiceToggle({
@@ -14,24 +12,22 @@ function ServiceToggle({
   disabled = false,
   loading = false,
   label,
+  large = false,
   onChange,
-  size = "normal",
 }: ServiceToggleProps) {
-  const displayLabel =
-    label ?? (checked ? "Running" : "Stopped");
-
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
       className={[
         "service-toggle",
         checked
           ? "service-toggle-on"
           : "service-toggle-off",
-        size === "large"
+        large
           ? "service-toggle-large"
           : "",
         loading
@@ -51,7 +47,7 @@ function ServiceToggle({
       </span>
 
       <span className="service-toggle-label">
-        {displayLabel}
+        {label}
       </span>
     </button>
   );
