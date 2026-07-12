@@ -13,6 +13,7 @@ import type {
 
 type UseServicesOptions = {
   settings: Settings;
+  activeOpenClawUrl?: string;
   onMessage: (
     message: string,
   ) => void;
@@ -20,6 +21,7 @@ type UseServicesOptions = {
 
 function useServices({
   settings,
+  activeOpenClawUrl,
   onMessage,
 }: UseServicesOptions) {
   const [services, setServices] =
@@ -74,6 +76,7 @@ function useServices({
     "health_check",
     {
       openclawUrl:
+        activeOpenClawUrl ??
         settings.openClawUrl,
 
       ollamaUrl:
@@ -127,6 +130,7 @@ function useServices({
       }
     },
     [
+  activeOpenClawUrl,
   onMessage,
   settings.openClawUrl,
   settings.ollamaUrl,

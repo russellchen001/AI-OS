@@ -71,6 +71,15 @@ function App() {
     refreshMetrics,
   } = useMetrics();
 
+  const openClaw =
+  useOpenClaw({
+    refreshInterval:
+      settings.refreshInterval,
+
+    onMessage:
+      handleMessage,
+  });
+
   const {
     services,
     lastUpdated,
@@ -89,11 +98,15 @@ function App() {
     openService,
     handleGlobalToggle,
   } = useServices({
-    settings,
+  settings,
 
-    onMessage:
-      handleMessage,
-  });
+  activeOpenClawUrl:
+    openClaw.activeServer
+      ?.serverUrl,
+
+  onMessage:
+    handleMessage,
+});
 
   const backup =
     useBackup({
@@ -129,15 +142,6 @@ function App() {
 
   const mcp =
     useMcp({
-      onMessage:
-        handleMessage,
-    });
-
-  const openClaw =
-    useOpenClaw({
-      refreshInterval:
-        settings.refreshInterval,
-
       onMessage:
         handleMessage,
     });
