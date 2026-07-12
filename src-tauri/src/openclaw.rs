@@ -317,21 +317,54 @@ fn connection_failure(
    Configuration storage
 =========================== */
 
-fn config_directory() -> Result<PathBuf, String> {
-    let home =
-        dirs::home_dir().ok_or_else(|| {
-            "Unable to determine the home directory."
-                .to_string()
-        })?;
+fn legacy_config_directory() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| {
+        "Unable to determine the home directory.".to_string()
+    })?;
 
     Ok(home.join(".ai-os").join("config"))
 }
 
+fn config_directory() -> Result<PathBuf, String> {
+    let base = dirs::config_dir().ok_or_else(|| {
+        "Unable to determine the system configuration directory."
+            .to_string()
+    })?;
+
+    Ok(base.join("AI OS"))
+}
+
 fn config_file() -> Result<PathBuf, String> {
-    Ok(
-        config_directory()?
-            .join(CONFIG_FILE_NAME),
-    )
+    let directory = config_directory()?;
+
+    std::fs::create_dir_all(&directory).map_err(|error| {
+        format!(
+            "Unable to create configuration directory {}: {}",
+            directory.display(),
+            error
+        )
+    })?;
+
+    let new_path = directory.join(CONFIG_FILE_NAME);
+
+    // 首次运行时，将旧配置迁移到新目录
+    if !new_path.exists() {
+        let old_path =
+            legacy_config_directory()?.join(CONFIG_FILE_NAME);
+
+        if old_path.exists() {
+            std::fs::copy(&old_path, &new_path).map_err(|error| {
+                format!(
+                    "Unable to migrate configuration from {} to {}: {}",
+                    old_path.display(),
+                    new_path.display(),
+                    error
+                )
+            })?;
+        }
+    }
+
+    Ok(new_path)
 }
 
 fn read_servers()
