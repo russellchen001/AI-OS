@@ -70,9 +70,19 @@ function useServices({
         setIsChecking(true);
 
         const result =
-          await invoke<string>(
-            "health_check",
-          );
+  await invoke<string>(
+    "health_check",
+    {
+      openclawUrl:
+        settings.openClawUrl,
+
+      ollamaUrl:
+        settings.ollamaUrl,
+
+      openWebUiUrl:
+        settings.openWebUiUrl,
+    },
+  );
 
         if (showMessage) {
           onMessage(result);
@@ -116,7 +126,12 @@ function useServices({
         setIsChecking(false);
       }
     },
-    [onMessage],
+    [
+  onMessage,
+  settings.openClawUrl,
+  settings.ollamaUrl,
+  settings.openWebUiUrl,
+],
   );
 
   const startAll =

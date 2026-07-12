@@ -13,7 +13,11 @@ function useServices({ settings, onMessage, }) {
     const healthCheck = useCallback(async (showMessage = true) => {
         try {
             setIsChecking(true);
-            const result = await invoke("health_check");
+            const result = await invoke("health_check", {
+                openclawUrl: settings.openClawUrl,
+                ollamaUrl: settings.ollamaUrl,
+                openWebUiUrl: settings.openWebUiUrl,
+            });
             if (showMessage) {
                 onMessage(result);
             }
@@ -36,7 +40,12 @@ function useServices({ settings, onMessage, }) {
         finally {
             setIsChecking(false);
         }
-    }, [onMessage]);
+    }, [
+        onMessage,
+        settings.openClawUrl,
+        settings.ollamaUrl,
+        settings.openWebUiUrl,
+    ]);
     const startAll = useCallback(async () => {
         try {
             setGlobalAction("start");
