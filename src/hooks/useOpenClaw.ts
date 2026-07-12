@@ -404,42 +404,50 @@ function useOpenClaw({
     );
 
   const refreshActiveStatus =
-    useCallback(
-      async (
-        silent = true,
-      ) => {
+  useCallback(
+    async (
+      silent = true,
+    ) => {
+      if (
+        activeStatusRequestRef.current
+      ) {
+        return null;
+      }
+
+      activeStatusRequestRef.current =
+        true;
+
+      try {
         if (
-          activeStatusRequestRef
-            .current
+          !silent
         ) {
-          return null;
+          setError("");
         }
 
-        activeStatusRequestRef.current =
-          true;
+        let result =
+          await getActiveOpenClawStatus();
 
-        try {
-          if (
-            !silent
-          ) {
-            setError("");
-          }
+        healthFailureCountRef.current =
+          result.connected
+            ? 0
+            : healthFailureCountRef.current + 1;
 
-          const result =
-            await getActiveOpenClawStatus();
-
+        if (
+          healthFailureCountRef.current >= 3
+        ) {
           healthFailureCountRef.current =
-            result.connected
-              ? 0
-              : healthFailureCountRef.current + 1;  
+            0;
 
-          if (
-            isMountedRef.current
-          ) {
-            setRemoteStatus(
-              result,
-            );
-          }
+          const failoverResults =
+            await testAllOpenClawServers();
+
+          const availableCount =
+            failoverResults.filter(
+              (
+                item,
+              ) =>
+                item.success,
+            ).length;
 
           await Promise.allSettled([
             refreshServers(
@@ -449,50 +457,156 @@ function useOpenClaw({
             refreshRuntimeConfig(),
           ]);
 
-          return result;
-        } catch (
-          nextError
-        ) {
-          healthFailureCountRef.current += 1;
-          
-          if (
-            isMountedRef.current
-          ) {
-            setRemoteStatus(
-              null,
-            );
-          }
+          result =
+            await getActiveOpenClawStatus();
 
           if (
-            !silent
+            result.connected
           ) {
-            const message =
-              `Unable to refresh active OpenClaw status: ${errorText(
-                nextError,
-              )}`;
-
-            setError(
-              message,
-            );
+            healthFailureCountRef.current =
+              0;
 
             onMessage(
-              `❌ ${message}`,
+              `🔄 Failover completed. ${result.serverName} is now active.`,
+            );
+          } else if (
+            availableCount === 0
+          ) {
+            onMessage(
+              "⚠️ Failover could not find an available Auto Connect Gateway.",
             );
           }
-
-          return null;
-        } finally {
-          activeStatusRequestRef.current =
-            false;
         }
-      },
-      [
-        onMessage,
-        refreshDashboardSummary,
-        refreshRuntimeConfig,
-        refreshServers,
-      ],
-    );
+
+        if (
+          isMountedRef.current
+        ) {
+          setRemoteStatus(
+            result,
+          );
+        }
+
+        await Promise.allSettled([
+          refreshServers(
+            false,
+          ),
+          refreshDashboardSummary(),
+          refreshRuntimeConfig(),
+        ]);
+
+        return result;
+      } catch (
+        nextError
+      ) {
+        healthFailureCountRef.current += 1;
+
+        if (
+          healthFailureCountRef.current >= 3
+        ) {
+          healthFailureCountRef.current =
+            0;
+
+          try {
+            const failoverResults =
+              await testAllOpenClawServers();
+
+            const availableCount =
+              failoverResults.filter(
+                (
+                  item,
+                ) =>
+                  item.success,
+              ).length;
+
+            await Promise.allSettled([
+              refreshServers(
+                false,
+              ),
+              refreshDashboardSummary(),
+              refreshRuntimeConfig(),
+            ]);
+
+            const failoverStatus =
+              await getActiveOpenClawStatus();
+
+            if (
+              isMountedRef.current
+            ) {
+              setRemoteStatus(
+                failoverStatus,
+              );
+            }
+
+            if (
+              failoverStatus.connected
+            ) {
+              onMessage(
+                `🔄 Failover completed. ${failoverStatus.serverName} is now active.`,
+              );
+
+              return failoverStatus;
+            }
+
+            if (
+              availableCount === 0
+            ) {
+              onMessage(
+                "⚠️ Failover could not find an available Auto Connect Gateway.",
+              );
+            }
+          } catch (
+            failoverError
+          ) {
+            if (
+              !silent
+            ) {
+              onMessage(
+                `❌ OpenClaw failover failed: ${errorText(
+                  failoverError,
+                )}`,
+              );
+            }
+          }
+        }
+
+        if (
+          isMountedRef.current
+        ) {
+          setRemoteStatus(
+            null,
+          );
+        }
+
+        if (
+          !silent
+        ) {
+          const message =
+            `Unable to refresh active OpenClaw status: ${errorText(
+              nextError,
+            )}`;
+
+          setError(
+            message,
+          );
+
+          onMessage(
+            `❌ ${message}`,
+          );
+        }
+
+        return null;
+      } finally {
+        activeStatusRequestRef.current =
+          false;
+      }
+    },
+    [
+      onMessage,
+      refreshDashboardSummary,
+      refreshRuntimeConfig,
+      refreshServers,
+    ],
+  );
 
   useEffect(() => {
     void refreshAllMetadata(
