@@ -2436,54 +2436,73 @@ pub fn test_openclaw_connection_input(
 
 #[tauri::command]
 pub fn test_all_openclaw_servers()
-    -> Result<
-        Vec<OpenClawConnectionResult>,
-        String,
-    >
+    -> Result<Vec<OpenClawConnectionResult>, String>
 {
-    let mut servers =
-        read_servers()?;
+    let mut servers = read_servers()?;
+    let mut results = Vec::new();
 
-    let mut results =
-        Vec::new();
+    // 保存当前最佳候选：
+    // (服务器在列表中的下标, 延迟毫秒数)
+    let mut best_candidate: Option<(usize, u64)> = None;
 
-    for server in
-        servers
-            .iter_mut()
-    {
+    for (index, server) in servers.iter_mut().enumerate() {
         if !server.enabled {
             continue;
         }
 
-        let mut result =
-            test_server_connection(
-                &server
-                    .server_url,
-
-                &server
-                    .gateway_token,
-            );
+        let mut result = test_server_connection(
+            &server.server_url,
+            &server.gateway_token,
+        );
 
         apply_connection_result(
             server,
             &result,
         );
 
-        result.server =
-            Some(
-                public_server(
-                    server,
-                ),
-            );
+        // 只有同时满足以下条件的服务器才参与自动选择：
+        // 1. 已启用
+        // 2. Auto Connect 已开启
+        // 3. 连接测试成功
+        // 4. 能取得有效延迟
+        if server.auto_connect && result.success {
+            if let Some(latency_ms) = result.latency_ms {
+                let should_replace = best_candidate
+                    .map(|(_, best_latency)| {
+                        latency_ms < best_latency
+                    })
+                    .unwrap_or(true);
 
-        results.push(
-            result,
+                if should_replace {
+                    best_candidate =
+                        Some((index, latency_ms));
+                }
+            }
+        }
+
+        result.server = Some(
+            public_server(server),
         );
+
+        results.push(result);
     }
 
-    write_servers(
-        &servers,
-    )?;
+    // 找到候选服务器后，
+    // 把延迟最低的服务器设为唯一 Active。
+    // 如果没有任何可用候选，则保留原有 Active 状态。
+    if let Some((best_index, _)) = best_candidate {
+        for (index, server) in
+            servers.iter_mut().enumerate()
+        {
+            server.active =
+                index == best_index;
+        }
+
+        servers[best_index].updated_at =
+            Some(Utc::now().to_rfc3339());
+    }
+
+    write_servers(&servers)?;
 
     Ok(results)
 }
