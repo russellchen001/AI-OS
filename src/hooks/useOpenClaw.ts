@@ -207,6 +207,9 @@ function useOpenClaw({
   const activeStatusRequestRef =
     useRef(false);
 
+  const healthFailureCountRef =
+    useRef(0);
+
   useEffect(() => {
     isMountedRef.current =
       true;
@@ -425,6 +428,11 @@ function useOpenClaw({
           const result =
             await getActiveOpenClawStatus();
 
+          healthFailureCountRef.current =
+            result.connected
+              ? 0
+              : healthFailureCountRef.current + 1;  
+
           if (
             isMountedRef.current
           ) {
@@ -445,6 +453,8 @@ function useOpenClaw({
         } catch (
           nextError
         ) {
+          healthFailureCountRef.current += 1;
+          
           if (
             isMountedRef.current
           ) {
