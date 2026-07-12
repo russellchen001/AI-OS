@@ -30,7 +30,7 @@ function TopHeader({
   return (
     <header className="top-header">
       <div>
-        <h1>Russell AI OS</h1>
+        <h1>AI OS</h1>
 
         <p>
           Your Personal AI Workspace

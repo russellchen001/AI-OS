@@ -8,7 +8,7 @@ function TopHeader({ isChecking, lastUpdated, settings, onSettingsChange, }) {
                 : "dark",
         }));
     }
-    return (_jsxs("header", { className: "top-header", children: [_jsxs("div", { children: [_jsx("h1", { children: "Russell AI OS" }), _jsx("p", { children: "Your Personal AI Workspace" })] }), _jsxs("div", { className: "header-actions", children: [_jsxs("div", { className: "update-status", children: [_jsx("span", { className: `status-light ${isChecking
+    return (_jsxs("header", { className: "top-header", children: [_jsxs("div", { children: [_jsx("h1", { children: "AI OS" }), _jsx("p", { children: "Your Personal AI Workspace" })] }), _jsxs("div", { className: "header-actions", children: [_jsxs("div", { className: "update-status", children: [_jsx("span", { className: `status-light ${isChecking
                                     ? "checking"
                                     : ""}` }), isChecking
                                 ? "Checking services..."
