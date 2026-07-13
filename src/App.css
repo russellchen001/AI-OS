@@ -2248,3 +2248,94 @@ a {
   line-height: 1.45;
   opacity: 0.7;
 }
+
+/* Sprint 6.2 - MCP command preview */
+.mcp-command-preview {
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 10px;
+}
+
+.mcp-command-preview code {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.82;
+  cursor: help;
+}
+
+/* Sprint 6.2 - Dashboard footer control alignment */
+.service-toggle-large,
+.action-button.backup-button,
+.action-button.health-button {
+  box-sizing: border-box;
+  height: 42px;
+  min-height: 42px;
+  margin: 0;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.service-toggle-large {
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.action-button.backup-button,
+.action-button.health-button {
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* Dashboard footer controls — final unified size */
+.service-toggle-large,
+.action-button.backup-button,
+.action-button.health-button {
+  box-sizing: border-box !important;
+  width: 220px !important;
+  min-width: 220px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  padding: 0 18px !important;
+  margin: 0 !important;
+  border-radius: 999px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  font-size: 14px !important;
+  line-height: 1 !important;
+}
+
+.service-toggle-large .service-toggle-label {
+  font-size: 14px !important;
+  line-height: 1 !important;
+}
+
+/* Dashboard footer vertical alignment */
+.bottom-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bottom-actions > * {
+  flex-shrink: 0;
+  align-self: center;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}

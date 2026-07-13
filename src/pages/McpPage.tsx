@@ -649,7 +649,14 @@ function McpPage({
                     server.args
                       .length > 0 && (
                       <div className="mcp-command-preview">
-                        <code>
+                        <code
+                          title={[
+                            server.command,
+                            ...server.args,
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                        >
                           {server.command}{" "}
                           {server.args.join(
                             " ",
