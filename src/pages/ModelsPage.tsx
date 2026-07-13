@@ -498,17 +498,30 @@ function ModelsPage({
           style={cardStyle}
         >
           <span>
-            🧠
+            {searchText.trim() ? "🔍" : "🧠"}
           </span>
 
           <h3>
-            No models installed
+            {searchText.trim()
+              ? `No models match "${searchText.trim()}"`
+              : "No models installed"}
           </h3>
 
           <p>
-            Download a model to begin
-            using local AI.
+            {searchText.trim()
+              ? "Try another search term or clear the current search."
+              : "Download a model to begin using local AI."}
           </p>
+
+          {searchText.trim() && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => onSearchChange("")}
+            >
+              Clear Search
+            </button>
+          )}
         </div>
       ) : (
         <div className="models-grid">
