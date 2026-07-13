@@ -397,7 +397,7 @@ pub fn create_backup(
     let manifest =
         BackupManifest {
             version:
-                "1.2.0".to_string(),
+                "1.0.0".to_string(),
 
             created_at:
                 Utc::now()

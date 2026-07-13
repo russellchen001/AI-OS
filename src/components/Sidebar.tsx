@@ -150,7 +150,7 @@ function Sidebar({
         </div>
 
         <div className="sidebar-version">
-          AI OS v1.2.0
+          AI OS v1.0.0
         </div>
       </div>
     </aside>
