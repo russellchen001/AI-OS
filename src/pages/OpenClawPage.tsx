@@ -4,6 +4,7 @@ import {
   type CSSProperties,
 } from "react";
 
+import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   AsyncStatus,
   OpenClawConnectionResult,
@@ -927,10 +928,6 @@ function OpenClawPage({
                 testingServerId ===
                 server.id;
 
-              const deleting =
-                confirmDelete ===
-                server.id;
-
               return (
                 <article
                   key={server.id}
@@ -1163,51 +1160,18 @@ function OpenClawPage({
                       Edit
                     </button>
 
-                    {deleting ? (
-                      <>
-                        <button
-                          type="button"
-                          className="danger-button"
-                          disabled={busy}
-                          onClick={() => {
-                            onDelete(
-                              server.id,
-                            );
-
-                            setConfirmDelete(
-                              null,
-                            );
-                          }}
-                        >
-                          Confirm
-                        </button>
-
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() =>
-                            setConfirmDelete(
-                              null,
-                            )
-                          }
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="danger-button"
-                        disabled={busy}
-                        onClick={() =>
-                          setConfirmDelete(
-                            server.id,
-                          )
-                        }
-                      >
-                        Delete
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={busy}
+                      onClick={() =>
+                        setConfirmDelete(
+                          server.id,
+                        )
+                      }
+                    >
+                      Delete
+                    </button>
                   </div>
                 </article>
               );
@@ -1580,6 +1544,39 @@ function OpenClawPage({
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title="Delete OpenClaw server?"
+        message={
+          confirmDelete
+            ? `This will permanently delete "${
+                servers.find(
+                  (server) =>
+                    server.id ===
+                    confirmDelete,
+                )?.name ??
+                "this server"
+              }". This action cannot be undone.`
+            : ""
+        }
+        confirmLabel="Confirm Delete"
+        busy={
+          confirmDelete !== null &&
+          busyServerId ===
+            confirmDelete
+        }
+        onCancel={() =>
+          setConfirmDelete(null)
+        }
+        onConfirm={() => {
+          if (!confirmDelete) {
+            return;
+          }
+
+          onDelete(confirmDelete);
+          setConfirmDelete(null);
+        }}
+      />
     </section>
   );
 }

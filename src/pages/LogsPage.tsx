@@ -5,6 +5,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import ConfirmDialog from "../components/ConfirmDialog";
 
 import type {
   LogEntry,
@@ -396,53 +397,21 @@ function LogsPage({
             Auto scroll
           </label>
 
-          {confirmClear ? (
-            <div className="logs-clear-confirmation">
-              <button
-                type="button"
-                className="danger-button"
-                disabled={
-                  isLoading
-                }
-                onClick={() => {
-                  onClear();
-                  setConfirmClear(
-                    false,
-                  );
-                }}
-              >
-                Confirm Clear
-              </button>
-
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() =>
-                  setConfirmClear(
-                    false,
-                  )
-                }
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              className="danger-button"
-              disabled={
-                isLoading ||
-                logs.length === 0
-              }
-              onClick={() =>
-                setConfirmClear(
-                  true,
-                )
-              }
-            >
-              Clear Logs
-            </button>
-          )}
+          <button
+            type="button"
+            className="danger-button"
+            disabled={
+              isLoading ||
+              logs.length === 0
+            }
+            onClick={() =>
+              setConfirmClear(
+                true,
+              )
+            }
+          >
+            Clear Logs
+          </button>
         </div>
 
         {error && (
@@ -525,6 +494,20 @@ function LogsPage({
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear all logs?"
+        message="This will permanently remove all current log entries. This action cannot be undone."
+        confirmLabel="Confirm Clear"
+        busy={isLoading}
+        onCancel={() =>
+          setConfirmClear(false)
+        }
+        onConfirm={() => {
+          onClear();
+          setConfirmClear(false);
+        }}
+      />
     </section>
   );
 }

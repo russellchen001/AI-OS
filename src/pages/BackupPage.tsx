@@ -4,6 +4,7 @@ import {
   type CSSProperties,
 } from "react";
 
+import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   BackupRecord,
   BackupStatus,
@@ -585,7 +586,7 @@ function BackupPage({
                             );
                           }}
                         >
-                          Confirm
+                          Confirm Delete
                         </button>
 
                         <button
@@ -625,6 +626,40 @@ function BackupPage({
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmingDelete !== null}
+        title="Delete backup?"
+        message={
+          confirmingDelete
+            ? `This will permanently delete "${
+                backups.find(
+                  (backup) =>
+                    backup.path ===
+                    confirmingDelete,
+                )?.fileName ??
+                "this backup"
+              }". This action cannot be undone.`
+            : ""
+        }
+        confirmLabel="Confirm Delete"
+        busy={
+          confirmingDelete !== null &&
+          selectedBackup ===
+            confirmingDelete
+        }
+        onCancel={() =>
+          setConfirmingDelete(null)
+        }
+        onConfirm={() => {
+          if (!confirmingDelete) {
+            return;
+          }
+
+          onDelete(confirmingDelete);
+          setConfirmingDelete(null);
+        }}
+      />
     </section>
   );
 }

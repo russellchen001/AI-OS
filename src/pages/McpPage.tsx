@@ -4,6 +4,7 @@ import {
   type CSSProperties,
 } from "react";
 
+import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   AsyncStatus,
   McpServer,
@@ -526,10 +527,6 @@ function McpPage({
                 activeServerId ===
                 server.id;
 
-              const deleting =
-                confirmDelete ===
-                server.id;
-
               return (
                 <article
                   key={server.id}
@@ -679,51 +676,18 @@ function McpPage({
                       Edit
                     </button>
 
-                    {deleting ? (
-                      <>
-                        <button
-                          type="button"
-                          className="danger-button"
-                          disabled={busy}
-                          onClick={() => {
-                            onDelete(
-                              server.id,
-                            );
-
-                            setConfirmDelete(
-                              null,
-                            );
-                          }}
-                        >
-                          Confirm
-                        </button>
-
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() =>
-                            setConfirmDelete(
-                              null,
-                            )
-                          }
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="danger-button"
-                        disabled={busy}
-                        onClick={() =>
-                          setConfirmDelete(
-                            server.id,
-                          )
-                        }
-                      >
-                        Delete
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={busy}
+                      onClick={() =>
+                        setConfirmDelete(
+                          server.id,
+                        )
+                      }
+                    >
+                      Delete
+                    </button>
                   </div>
                 </article>
               );
@@ -1055,6 +1019,39 @@ function McpPage({
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title="Delete MCP server?"
+        message={
+          confirmDelete
+            ? `This will permanently delete "${
+                servers.find(
+                  (server) =>
+                    server.id ===
+                    confirmDelete,
+                )?.name ??
+                "this server"
+              }". This action cannot be undone.`
+            : ""
+        }
+        confirmLabel="Confirm Delete"
+        busy={
+          confirmDelete !== null &&
+          activeServerId ===
+            confirmDelete
+        }
+        onCancel={() =>
+          setConfirmDelete(null)
+        }
+        onConfirm={() => {
+          if (!confirmDelete) {
+            return;
+          }
+
+          onDelete(confirmDelete);
+          setConfirmDelete(null);
+        }}
+      />
     </section>
   );
 }
