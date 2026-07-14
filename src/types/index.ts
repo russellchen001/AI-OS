@@ -54,6 +54,7 @@ export type Metrics = {
 export type BackupStatus =
   | "idle"
   | "creating"
+  | "cancelling"
   | "restoring"
   | "success"
   | "error";
@@ -67,6 +68,7 @@ export type BackupRecord = {
 };
 
 export type CreateBackupRequest = {
+  operationId: string;
   destinationDirectory: string;
   includeOpenClawConfig: boolean;
   includeAiOsSettings: boolean;

@@ -65,3 +65,13 @@ export async function deleteBackup(
     },
   );
 }
+export async function cancelBackup(
+  operationId: string,
+): Promise<void> {
+  await invoke<void>(
+    "cancel_backup",
+    {
+      operationId,
+    },
+  );
+}

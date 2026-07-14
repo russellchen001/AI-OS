@@ -29,6 +29,7 @@ type BackupPageProps = {
   ) => void;
 
   onCreateBackup: () => void;
+  onCancelBackup: () => void;
 
   onRestoreBackup: (
     archivePath: string,
@@ -107,6 +108,7 @@ function BackupPage({
   cardStyle,
   onUpdateSetting,
   onCreateBackup,
+  onCancelBackup,
   onRestoreBackup,
   onRefresh,
   onReveal,
@@ -132,6 +134,9 @@ function BackupPage({
   const isCreating =
     status === "creating";
 
+  const isCancelling =
+    status === "cancelling";
+
   const isRestoring =
     status === "restoring";
 
@@ -141,7 +146,9 @@ function BackupPage({
   ] = useState(0);
 
   const operationActive =
-    isCreating || isRestoring;
+    isCreating ||
+    isCancelling ||
+    isRestoring;
 
   useEffect(() => {
     if (!operationActive) {
@@ -255,6 +262,7 @@ function BackupPage({
               placeholder="/Users/your-name/Backups"
               disabled={
                 isCreating ||
+                isCancelling ||
                 isRestoring
               }
               onChange={(
@@ -346,6 +354,7 @@ function BackupPage({
             className="action-button backup-button backup-primary-button"
             disabled={
               isCreating ||
+              isCancelling ||
               isRestoring
             }
             onClick={
@@ -365,9 +374,11 @@ function BackupPage({
             >
               <div className="backup-progress-heading">
                 <span>
-                  {isCreating
-                    ? "Creating backup archive…"
-                    : "Restoring backup archive…"}
+                  {isCancelling
+                    ? "Cancelling backup…"
+                    : isCreating
+                      ? "Creating backup archive…"
+                      : "Restoring backup archive…"}
                 </span>
 
                 <strong>
@@ -385,6 +396,21 @@ function BackupPage({
               <small>
                 Keep AI OS open until this operation finishes.
               </small>
+
+              {(isCreating ||
+                isCancelling) && (
+                <button
+                  type="button"
+                  className="danger-button backup-cancel-button"
+                  disabled={isCancelling}
+                  onClick={onCancelBackup}
+                >
+                  {isCancelling
+                    ? "Cancelling..."
+                    : "Cancel Backup"}
+                </button>
+              )}
+
             </div>
           )}
 

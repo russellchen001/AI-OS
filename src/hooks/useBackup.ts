@@ -9,6 +9,7 @@ import {
 } from "../config/constants";
 
 import {
+  cancelBackup,
   createBackup,
   deleteBackup,
   listBackups,
@@ -87,6 +88,13 @@ function useBackup({
     error,
     setError,
   ] = useState("");
+
+  const [
+    backupOperationId,
+    setBackupOperationId,
+  ] = useState<string | null>(
+    null,
+  );
 
   const saveHistory =
     useCallback(
@@ -172,12 +180,20 @@ function useBackup({
         return;
       }
 
+      const operationId =
+        crypto.randomUUID();
+
+      setBackupOperationId(
+        operationId,
+      );
+
       try {
         setStatus("creating");
         setError("");
 
         const result =
           await createBackup({
+            operationId,
             destinationDirectory:
               destination,
 
@@ -211,15 +227,34 @@ function useBackup({
 
         await refreshBackups();
       } catch (nextError) {
-        const message =
-          `Backup failed: ${String(
-            nextError,
-          )}`;
+        const rawMessage =
+          String(nextError);
 
-        setStatus("error");
-        setError(message);
-        onMessage(
-          `❌ ${message}`,
+        if (
+          rawMessage
+            .toLowerCase()
+            .includes(
+              "cancelled by user",
+            )
+        ) {
+          setStatus("idle");
+          setError("");
+          onMessage(
+            "ℹ️ Backup cancelled.",
+          );
+        } else {
+          const message =
+            `Backup failed: ${rawMessage}`;
+
+          setStatus("error");
+          setError(message);
+          onMessage(
+            `❌ ${message}`,
+          );
+        }
+      } finally {
+        setBackupOperationId(
+          null,
         );
       }
     }, [
@@ -368,15 +403,47 @@ function useBackup({
       ],
     );
 
+  const cancelCurrentBackup =
+    useCallback(async () => {
+      if (!backupOperationId) {
+        return;
+      }
+
+      setStatus("cancelling");
+
+      try {
+        await cancelBackup(
+          backupOperationId,
+        );
+
+        onMessage(
+          "ℹ️ Cancelling backup…",
+        );
+      } catch (nextError) {
+        setStatus("creating");
+
+        onMessage(
+          `❌ Unable to cancel backup: ${String(
+            nextError,
+          )}`,
+        );
+      }
+    }, [
+      backupOperationId,
+      onMessage,
+    ]);
+
   return {
     status,
     backups,
     selectedBackup,
+    backupOperationId,
     error,
     isBusy:
       status === "creating" ||
       status === "restoring",
     runBackup,
+    cancelCurrentBackup,
     runRestore,
     refreshBackups,
     openBackupLocation,

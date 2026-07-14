@@ -2637,3 +2637,8 @@ a {
     align-self: flex-end;
   }
 }
+
+.backup-cancel-button {
+  justify-self: start;
+  margin-top: 2px;
+}

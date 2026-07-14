@@ -561,6 +561,9 @@ function App() {
             onCreateBackup={
               backup.runBackup
             }
+            onCancelBackup={
+              backup.cancelCurrentBackup
+            }
             onRestoreBackup={(
               archivePath,
               restoreOpenClawConfig,

@@ -10,12 +10,7 @@ fn command_success(command: &str) -> bool {
 
 fn curl_success(url: &str) -> bool {
     Command::new("curl")
-        .args([
-            "-fsS",
-            "--max-time",
-            "3",
-            url,
-        ])
+        .args(["-fsS", "--max-time", "3", url])
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -37,29 +32,19 @@ pub fn health_check(
 ) -> String {
     let openclaw_url = openclaw_url
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            "http://localhost:18789".to_string()
-        });
+        .unwrap_or_else(|| "http://localhost:18789".to_string());
 
     let ollama_base = ollama_url
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            "http://localhost:11434".to_string()
-        });
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
 
     let open_web_ui_url = open_web_ui_url
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            "http://localhost:3000".to_string()
-        });
+        .unwrap_or_else(|| "http://localhost:3000".to_string());
 
-    let ollama_tags_url = format!(
-        "{}/api/tags",
-        ollama_base.trim_end_matches('/'),
-    );
+    let ollama_tags_url = format!("{}/api/tags", ollama_base.trim_end_matches('/'),);
 
-    let openclaw_running =
-        curl_success(&openclaw_url)
+    let openclaw_running = curl_success(&openclaw_url)
         || command_success(
             r#"
 launchctl print gui/$(id -u)/ai.openclaw.gateway >/dev/null 2>&1 ||
@@ -67,11 +52,8 @@ pgrep -f "openclaw" >/dev/null 2>&1
 "#,
         );
 
-    let ollama_running =
-        curl_success(&ollama_tags_url)
-        || command_success(
-            r#"pgrep -f "ollama serve" >/dev/null 2>&1"#,
-        );
+    let ollama_running = curl_success(&ollama_tags_url)
+        || command_success(r#"pgrep -f "ollama serve" >/dev/null 2>&1"#);
 
     let docker_running = command_success(
         r#"
@@ -80,8 +62,7 @@ pgrep -f "openclaw" >/dev/null 2>&1
 "#,
     );
 
-    let open_webui_running =
-        curl_success(&open_web_ui_url)
+    let open_webui_running = curl_success(&open_web_ui_url)
         || command_success(
             r#"
 "/Applications/Docker.app/Contents/Resources/bin/docker" ps \
