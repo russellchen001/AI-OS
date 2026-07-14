@@ -4,6 +4,7 @@ import {
   type CSSProperties,
 } from "react";
 
+import InlineAlert from "../components/InlineAlert";
 import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   AsyncStatus,
@@ -281,6 +282,16 @@ function McpPage({
     setFormOpen(true);
   }
 
+  const isFormValid =
+    form.name.trim().length > 0 &&
+    (form.transport === "stdio"
+      ? Boolean(
+          form.command?.trim(),
+        )
+      : Boolean(
+          form.url?.trim(),
+        ));
+
   async function submitForm() {
     const name =
       form.name.trim();
@@ -481,14 +492,7 @@ function McpPage({
         />
       </div>
 
-      {error && (
-        <div
-          className="mcp-error"
-          role="alert"
-        >
-          {error}
-        </div>
-      )}
+      <InlineAlert message={error} />
 
       {servers.length === 0 ? (
         <div
@@ -757,11 +761,13 @@ function McpPage({
                 <input
                   type="text"
                   value={form.name}
+                  aria-invalid={
+                    formOpen &&
+                    !form.name.trim()
+                  }
                   disabled={isLoading}
                   placeholder="Filesystem"
-                  onChange={(
-                    event,
-                  ) =>
+                  onChange={(event) => {
                     setForm(
                       (current) => ({
                         ...current,
@@ -769,8 +775,10 @@ function McpPage({
                           event.target
                             .value,
                       }),
-                    )
-                  }
+                    );
+
+                    setFormError("");
+                  }}
                 />
               </label>
 
@@ -784,9 +792,7 @@ function McpPage({
                     form.transport
                   }
                   disabled={isLoading}
-                  onChange={(
-                    event,
-                  ) =>
+                  onChange={(event) => {
                     setForm(
                       (current) => ({
                         ...current,
@@ -794,8 +800,10 @@ function McpPage({
                           event.target
                             .value as McpTransport,
                       }),
-                    )
-                  }
+                    );
+
+                    setFormError("");
+                  }}
                 >
                   <option value="stdio">
                     stdio
@@ -853,13 +861,17 @@ function McpPage({
                       form.command ??
                       ""
                     }
+                    aria-invalid={
+                      formOpen &&
+                      form.transport ===
+                        "stdio" &&
+                      !form.command?.trim()
+                    }
                     disabled={
                       isLoading
                     }
                     placeholder="npx"
-                    onChange={(
-                      event,
-                    ) =>
+                    onChange={(event) => {
                       setForm(
                         (
                           current,
@@ -869,8 +881,10 @@ function McpPage({
                             event.target
                               .value,
                         }),
-                      )
-                    }
+                      );
+
+                      setFormError("");
+                    }}
                   />
                 </label>
 
@@ -880,8 +894,10 @@ function McpPage({
                   </span>
 
                   <small>
-                    Enter one argument
-                    per line.
+                    Enter one argument per line.
+                    Example: <code>-y</code>,{" "}
+                    <code>@modelcontextprotocol/server-filesystem</code>,
+                    or a local directory path.
                   </small>
 
                   <textarea
@@ -913,11 +929,13 @@ function McpPage({
                   value={
                     form.url ?? ""
                   }
+                  aria-invalid={
+                    formOpen &&
+                    !form.url?.trim()
+                  }
                   disabled={isLoading}
                   placeholder="http://localhost:3001/mcp"
-                  onChange={(
-                    event,
-                  ) =>
+                  onChange={(event) => {
                     setForm(
                       (current) => ({
                         ...current,
@@ -925,8 +943,10 @@ function McpPage({
                           event.target
                             .value,
                       }),
-                    )
-                  }
+                    );
+
+                    setFormError("");
+                  }}
                 />
               </label>
             )}
@@ -937,9 +957,10 @@ function McpPage({
               </span>
 
               <small>
-                Enter one KEY=value
-                pair per line. Secrets
-                are stored locally.
+                Enter one <code>KEY=value</code> pair per line.
+                Example: <code>API_KEY=your-key</code>.
+                Values are stored locally; avoid sharing exported
+                configurations that contain secrets.
               </small>
 
               <textarea
@@ -984,14 +1005,7 @@ function McpPage({
               Enable this server
             </label>
 
-            {formError && (
-              <div
-                className="mcp-error"
-                role="alert"
-              >
-                {formError}
-              </div>
-            )}
+            <InlineAlert message={formError} />
 
             <div className="mcp-modal-actions">
               <button
@@ -1006,7 +1020,10 @@ function McpPage({
               <button
                 type="button"
                 className="action-button backup-button"
-                disabled={isLoading}
+                disabled={
+                  isLoading ||
+                  !isFormValid
+                }
                 onClick={submitForm}
               >
                 {isLoading

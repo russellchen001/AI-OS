@@ -4,6 +4,7 @@ import {
   type CSSProperties,
 } from "react";
 
+import InlineAlert from "../components/InlineAlert";
 import ConfirmDialog from "../components/ConfirmDialog";
 import {
   POPULAR_OLLAMA_MODELS,
@@ -456,14 +457,7 @@ function ModelsPage({
             </div>
           )}
 
-        {error && (
-          <div
-            className="models-error"
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
+        <InlineAlert message={error} />
       </div>
 
       <div className="section-header models-list-header">
@@ -758,14 +752,7 @@ function ModelsPage({
               </div>
             )}
 
-            {modalError && (
-              <div
-                className="models-error"
-                role="alert"
-              >
-                {modalError}
-              </div>
-            )}
+            <InlineAlert message={modalError} />
           </div>
         </div>
       )}

@@ -7,6 +7,7 @@ import {
 } from "react";
 import ConfirmDialog from "../components/ConfirmDialog";
 
+import InlineAlert from "../components/InlineAlert";
 import type {
   LogEntry,
   LogLevel,
@@ -414,14 +415,7 @@ function LogsPage({
           </button>
         </div>
 
-        {error && (
-          <div
-            className="logs-error"
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
+        <InlineAlert message={error} />
 
         <div
           ref={logContainerRef}
@@ -485,9 +479,37 @@ function LogsPage({
                     {entry.level}
                   </span>
 
-                  <pre className="log-message">
-                    {entry.message}
-                  </pre>
+                  <div className="log-message-cell">
+                    <details className="log-message-details">
+                      <summary>
+                        <span className="log-message-preview">
+                          {entry.message}
+                        </span>
+
+                        <span className="log-message-toggle">
+                          View
+                        </span>
+                      </summary>
+
+                      <pre className="log-message">
+                        {entry.message}
+                      </pre>
+                    </details>
+
+                    <button
+                      type="button"
+                      className="log-copy-button"
+                      aria-label={`Copy log from ${entry.source}`}
+                      title="Copy log message"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(
+                          entry.message,
+                        );
+                      }}
+                    >
+                      Copy
+                    </button>
+                  </div>
                 </article>
               ),
             )

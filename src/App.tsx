@@ -40,22 +40,71 @@ function App() {
     "Dashboard",
   );
 
+  type ToastType =
+    | "success"
+    | "error"
+    | "warning"
+    | "info";
+
+  type ToastMessage = {
+    text: string;
+    type: ToastType;
+  };
+
   const [
     message,
     setMessage,
-  ] = useState("");
+  ] = useState<ToastMessage | null>(
+    null,
+  );
 
   const handleMessage =
     useCallback(
       (
         nextMessage: string,
       ) => {
-        setMessage(
-          nextMessage,
-        );
+        const normalized =
+          nextMessage.toLowerCase();
+
+        const type: ToastType =
+          normalized.includes("error") ||
+          normalized.includes("failed") ||
+          normalized.includes("unable")
+            ? "error"
+            : normalized.includes("warning") ||
+                normalized.includes("warn")
+              ? "warning"
+              : normalized.includes("success") ||
+                  normalized.includes("saved") ||
+                  normalized.includes("created") ||
+                  normalized.includes("updated") ||
+                  normalized.includes("deleted") ||
+                  normalized.includes("completed")
+                ? "success"
+                : "info";
+
+        setMessage({
+          text: nextMessage,
+          type,
+        });
       },
       [],
     );
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+
+    const timeoutId =
+      window.setTimeout(() => {
+        setMessage(null);
+      }, 4500);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [message]);
 
   const {
     settings,
@@ -734,16 +783,14 @@ function App() {
             role="status"
           >
             <span>
-              {message}
+              {message.text}
             </span>
 
             <button
               type="button"
               aria-label="Dismiss message"
               onClick={() =>
-                setMessage(
-                  "",
-                )
+                setMessage(null)
               }
             >
               ×

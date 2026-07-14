@@ -55,3 +55,31 @@
     width: 100%;
   }
 }
+
+.confirm-dialog-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: confirm-dialog-spin 650ms linear infinite;
+}
+
+.confirm-dialog-actions .danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+@keyframes confirm-dialog-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.confirm-dialog-actions button:focus-visible {
+  outline: 3px solid rgba(96, 165, 250, 0.75);
+  outline-offset: 3px;
+}

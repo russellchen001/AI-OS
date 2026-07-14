@@ -4,6 +4,7 @@ import {
   type CSSProperties,
 } from "react";
 
+import InlineAlert from "../components/InlineAlert";
 import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   AsyncStatus,
@@ -501,6 +502,12 @@ function OpenClawPage({
     }
   }
 
+  const isFormValid =
+    form.name.trim().length > 0 &&
+    normalizeServerUrl(
+      form.serverUrl,
+    ).length > 0;
+
   async function submitForm() {
     const payload =
       validateForm();
@@ -880,14 +887,7 @@ function OpenClawPage({
         />
       </div>
 
-      {error && (
-        <div
-          className="openclaw-error"
-          role="alert"
-        >
-          {error}
-        </div>
-      )}
+      <InlineAlert message={error} />
 
       {servers.length === 0 ? (
         <div
@@ -1220,16 +1220,22 @@ function OpenClawPage({
               <input
                 type="text"
                 value={form.name}
+                aria-invalid={
+                  formOpen &&
+                  !form.name.trim()
+                }
                 placeholder="Home OpenClaw"
-                onChange={(event) =>
+                onChange={(event) => {
                   setForm(
                     (current) => ({
                       ...current,
                       name:
                         event.target.value,
                     }),
-                  )
-                }
+                  );
+
+                  setFormError("");
+                }}
               />
             </label>
 
@@ -1384,7 +1390,10 @@ function OpenClawPage({
               <button
                 type="button"
                 className="action-button backup-button"
-                disabled={isLoading}
+                disabled={
+                  isLoading ||
+                  !isFormValid
+                }
                 onClick={() => {
                   void submitForm();
                 }}

@@ -417,6 +417,14 @@ function useOpenClaw({
       activeStatusRequestRef.current =
         true;
 
+      const hasActiveAutoConnectServer =
+        servers.some(
+          (server) =>
+            server.active &&
+            server.enabled &&
+            server.autoConnect,
+        );
+
       try {
         if (
           !silent
@@ -470,6 +478,7 @@ function useOpenClaw({
               `🔄 Failover completed. ${result.serverName} is now active.`,
             );
           } else if (
+            hasActiveAutoConnectServer &&
             availableCount === 0
           ) {
             onMessage(
@@ -548,6 +557,7 @@ function useOpenClaw({
             }
 
             if (
+              hasActiveAutoConnectServer &&
               availableCount === 0
             ) {
               onMessage(
