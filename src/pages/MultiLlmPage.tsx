@@ -325,7 +325,12 @@ function MultiLlmPage({
       >
     >({});
 
-  useEffect(() => {
+  
+  const healthCheckIds =
+    useRef<Set<string>>(
+      new Set(),
+    );
+useEffect(() => {
     setProviderRuntime((current) => {
       const next = {
         ...current,
@@ -425,10 +430,20 @@ function MultiLlmPage({
             return;
           }
 
+          if (
+            healthCheckIds.current.has(
+              payload.operationId,
+            )
+          ) {
+            return;
+          }
+
           setOutputs((current) => ({
             ...current,
             [payload.providerId]:
-              (current[payload.providerId] ?? "") +
+              (current[
+                payload.providerId
+              ] ?? "") +
               payload.text,
           }));
         },
@@ -449,6 +464,24 @@ function MultiLlmPage({
             payload.providerId
           ];
 
+          const wasHealthCheck =
+            healthCheckIds.current.delete(
+              payload.operationId,
+            );
+
+          if (wasHealthCheck) {
+            if (!payload.cancelled) {
+              setProviderRuntime(
+                (current) => ({
+                  ...current,
+                  [payload.providerId]:
+                    readyRuntime(),
+                }),
+              );
+            }
+            return;
+          }
+
           setStatuses((current) => ({
             ...current,
             [payload.providerId]:
@@ -461,13 +494,8 @@ function MultiLlmPage({
             setProviderRuntime(
               (current) => ({
                 ...current,
-                [payload.providerId]: {
-                  status: "ready",
-                  message:
-                    "Provider responded successfully",
-                  lastCheckedAt:
-                    Date.now(),
-                },
+                [payload.providerId]:
+                  readyRuntime(),
               }),
             );
           }
@@ -489,16 +517,10 @@ function MultiLlmPage({
             payload.providerId
           ];
 
-          setStatuses((current) => ({
-            ...current,
-            [payload.providerId]: "error",
-          }));
-
-          setOutputs((current) => ({
-            ...current,
-            [payload.providerId]:
-              `Request failed: ${payload.message}`,
-          }));
+          const wasHealthCheck =
+            healthCheckIds.current.delete(
+              payload.operationId,
+            );
 
           setProviderRuntime(
             (current) => ({
@@ -509,10 +531,25 @@ function MultiLlmPage({
                 ),
             }),
           );
+
+          if (wasHealthCheck) {
+            return;
+          }
+
+          setStatuses((current) => ({
+            ...current,
+            [payload.providerId]:
+              "error",
+          }));
+
+          setOutputs((current) => ({
+            ...current,
+            [payload.providerId]:
+              `Request failed: ${payload.message}`,
+          }));
         },
       );
     };
-
     void install();
 
     return () => {
