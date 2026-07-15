@@ -3,6 +3,7 @@ mod health;
 mod logs;
 mod mcp;
 mod models;
+mod multillm;
 mod openclaw;
 mod stop;
 
@@ -561,6 +562,8 @@ pub fn run() {
             models::delete_ollama_model,
             models::run_ollama_model,
             models::show_ollama_model,
+            multillm::start_multillm_stream,
+            multillm::cancel_multillm_stream,
             mcp::list_mcp_servers,
             mcp::save_mcp_server,
             mcp::update_mcp_server,

@@ -53,6 +53,11 @@ const navItems: Array<{
     label: "MCP",
   },
   {
+    name: "MultiLLM",
+    icon: "🧩",
+    label: "MultiLLM",
+  },
+  {
     name: "Settings",
     icon: "⚙️",
     label: "Settings",

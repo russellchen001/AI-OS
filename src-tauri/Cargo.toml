@@ -31,6 +31,11 @@ tungstenite = {
 }
 
 url = "2"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["rt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
 
 [profile.dev]
 incremental = true

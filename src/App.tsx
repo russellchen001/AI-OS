@@ -15,6 +15,7 @@ import DashboardPage from "./pages/DashboardPage";
 import LogsPage from "./pages/LogsPage";
 import McpPage from "./pages/McpPage";
 import ModelsPage from "./pages/ModelsPage";
+import MultiLlmPage from "./pages/MultiLlmPage";
 import OpenClawPage from "./pages/OpenClawPage";
 import ServicesPage from "./pages/ServicesPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -758,6 +759,18 @@ function App() {
             onDelete={
               mcp
                 .removeServer
+            }
+          />
+        )}
+
+        {activePage ===
+          "MultiLLM" && (
+          <MultiLlmPage
+            cardStyle={
+              cardStyle
+            }
+            onMessage={
+              handleMessage
             }
           />
         )}

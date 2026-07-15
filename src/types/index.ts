@@ -25,6 +25,7 @@ export type PageName =
   | "Logs"
   | "Models"
   | "MCP"
+  | "MultiLLM"
   | "Settings";
 
 export type ThemeMode =
