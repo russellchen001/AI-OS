@@ -14,6 +14,16 @@ import {
   startMultiLlmStream,
 } from "../services/multillm";
 
+import {
+  canRouteToProvider,
+  checkingRuntime,
+  classifyProviderError,
+  createProviderRuntime,
+  healthLabel,
+  readyRuntime,
+  type ProviderRuntime,
+} from "../services/providerRuntime";
+
 type ProviderId =
   | "chatgpt"
   | "grok"
@@ -33,21 +43,6 @@ type ProviderConfig = {
   apiKey: string;
   persona: string;
   maxTokens: number;
-};
-
-type ProviderHealth =
-  | "unknown"
-  | "ready"
-  | "checking"
-  | "missing-key"
-  | "quota"
-  | "offline"
-  | "error";
-
-type ProviderHealthInfo = {
-  status: ProviderHealth;
-  message: string;
-  lastCheckedAt?: number;
 };
 
 type ProviderStatus =
@@ -235,103 +230,6 @@ function loadProviders():
   }
 }
 
-function initialProviderHealth(
-  provider: ProviderConfig,
-): ProviderHealthInfo {
-  if (!provider.enabled) {
-    return {
-      status: "error",
-      message: "Disabled",
-    };
-  }
-
-  if (
-    provider.id !== "ollama" &&
-    !provider.apiKey.trim()
-  ) {
-    return {
-      status: "missing-key",
-      message: "Missing API key",
-    };
-  }
-
-  if (provider.id === "ollama") {
-    return {
-      status: "ready",
-      message: "Local provider ready",
-    };
-  }
-
-  return {
-    status: "unknown",
-    message: "Not checked yet",
-  };
-}
-
-function classifyProviderError(
-  message: string,
-): ProviderHealthInfo {
-  const normalized =
-    message.toLowerCase();
-
-  if (
-    normalized.includes("402") ||
-    normalized.includes(
-      "insufficient balance",
-    ) ||
-    normalized.includes(
-      "insufficient_balance",
-    ) ||
-    normalized.includes(
-      "insufficient quota",
-    ) ||
-    normalized.includes(
-      "insufficient_quota",
-    ) ||
-    normalized.includes("credit balance")
-  ) {
-    return {
-      status: "quota",
-      message:
-        "Insufficient quota or balance",
-      lastCheckedAt: Date.now(),
-    };
-  }
-
-  if (
-    normalized.includes("429") ||
-    normalized.includes("rate limit")
-  ) {
-    return {
-      status: "quota",
-      message: "Rate limit exceeded",
-      lastCheckedAt: Date.now(),
-    };
-  }
-
-  if (
-    normalized.includes(
-      "connection refused",
-    ) ||
-    normalized.includes("network") ||
-    normalized.includes("offline") ||
-    normalized.includes("timed out") ||
-    normalized.includes("timeout")
-  ) {
-    return {
-      status: "offline",
-      message: "Provider unavailable",
-      lastCheckedAt: Date.now(),
-    };
-  }
-
-  return {
-    status: "error",
-    message: "Provider request failed",
-    lastCheckedAt: Date.now(),
-  };
-}
-
 function MultiLlmPage({
   cardStyle,
   onMessage,
@@ -392,27 +290,27 @@ function MultiLlmPage({
   >({});
 
   const [
-    providerHealth,
-    setProviderHealth,
+    providerRuntime,
+    setProviderRuntime,
   ] = useState<
     Partial<
       Record<
         ProviderId,
-        ProviderHealthInfo
+        ProviderRuntime
       >
     >
   >(() =>
     Object.fromEntries(
       providers.map((provider) => [
         provider.id,
-        initialProviderHealth(
+        createProviderRuntime(
           provider,
         ),
       ]),
     ) as Partial<
       Record<
         ProviderId,
-        ProviderHealthInfo
+        ProviderRuntime
       >
     >,
   );
@@ -428,7 +326,7 @@ function MultiLlmPage({
     >({});
 
   useEffect(() => {
-    setProviderHealth((current) => {
+    setProviderRuntime((current) => {
       const next = {
         ...current,
       };
@@ -445,7 +343,7 @@ function MultiLlmPage({
           )
         ) {
           next[provider.id] =
-            initialProviderHealth(
+            createProviderRuntime(
               provider,
             );
           continue;
@@ -453,11 +351,11 @@ function MultiLlmPage({
 
         if (
           !existing ||
-          existing.status ===
+          existing.health ===
             "missing-key"
         ) {
           next[provider.id] =
-            initialProviderHealth(
+            createProviderRuntime(
               provider,
             );
         }
@@ -560,7 +458,7 @@ function MultiLlmPage({
           }));
 
           if (!payload.cancelled) {
-            setProviderHealth(
+            setProviderRuntime(
               (current) => ({
                 ...current,
                 [payload.providerId]: {
@@ -602,7 +500,7 @@ function MultiLlmPage({
               `Request failed: ${payload.message}`,
           }));
 
-          setProviderHealth(
+          setProviderRuntime(
             (current) => ({
               ...current,
               [payload.providerId]:
@@ -694,7 +592,7 @@ function MultiLlmPage({
 
       for (
         const provider
-        of availableProviders
+        of configuredProviders
       ) {
         nextOutputs[
           provider.id
@@ -711,7 +609,7 @@ function MultiLlmPage({
           provider.id
         ] = operationId;
 
-        setProviderHealth(
+        setProviderRuntime(
           (current) => ({
             ...current,
             [provider.id]: {
@@ -944,9 +842,9 @@ function MultiLlmPage({
         configuredProviders.filter(
           (provider) => {
             const health =
-              providerHealth[
+              providerRuntime[
                 provider.id
-              ]?.status;
+              ]?.health;
 
             return (
               health !== "quota" &&
@@ -1562,42 +1460,42 @@ function MultiLlmPage({
                       className={[
                         "provider-health",
                         `provider-health-${
-                          providerHealth[
+                          providerRuntime[
                             provider.id
-                          ]?.status ??
+                          ]?.health ??
                           "unknown"
                         }`,
                       ].join(" ")}
                       title={
-                        providerHealth[
+                        providerRuntime[
                           provider.id
                         ]?.message
                       }
                     >
                       {
-                        providerHealth[
+                        providerRuntime[
                           provider.id
-                        ]?.status ===
+                        ]?.health ===
                         "checking"
                           ? "Checking"
-                          : providerHealth[
+                          : providerRuntime[
                                 provider.id
-                              ]?.status ===
+                              ]?.health ===
                               "missing-key"
                             ? "Missing key"
-                            : providerHealth[
+                            : providerRuntime[
                                   provider.id
-                                ]?.status ===
+                                ]?.health ===
                                 "quota"
                               ? "No quota"
-                              : providerHealth[
+                              : providerRuntime[
                                     provider.id
-                                  ]?.status ===
+                                  ]?.health ===
                                   "offline"
                                 ? "Offline"
-                                : providerHealth[
+                                : providerRuntime[
                                       provider.id
-                                    ]?.status ===
+                                    ]?.health ===
                                     "error"
                                   ? "Error"
                                   : "Ready"
