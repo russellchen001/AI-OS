@@ -2798,3 +2798,64 @@ a {
     margin-left: 0;
   }
 }
+
+.multillm-router-result {
+  max-width: 960px;
+}
+
+.multillm-router-empty {
+  padding: 24px;
+  color: #94a3b8;
+}
+
+.multillm-router-empty strong {
+  display: block;
+  margin-bottom: 8px;
+  color: inherit;
+  font-size: 1rem;
+}
+
+.multillm-router-empty p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.provider-health {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 10px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(100, 116, 139, 0.18);
+  color: #94a3b8;
+  font-size: 0.68rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.provider-health-ready {
+  background: rgba(16, 185, 129, 0.14);
+  color: #34d399;
+}
+
+.provider-health-checking {
+  background: rgba(59, 130, 246, 0.14);
+  color: #60a5fa;
+}
+
+.provider-health-missing-key {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+}
+
+.provider-health-quota,
+.provider-health-error,
+.provider-health-offline {
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+}
+
+.provider-health-unknown {
+  background: rgba(100, 116, 139, 0.18);
+  color: #94a3b8;
+}

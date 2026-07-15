@@ -35,6 +35,21 @@ type ProviderConfig = {
   maxTokens: number;
 };
 
+type ProviderHealth =
+  | "unknown"
+  | "ready"
+  | "checking"
+  | "missing-key"
+  | "quota"
+  | "offline"
+  | "error";
+
+type ProviderHealthInfo = {
+  status: ProviderHealth;
+  message: string;
+  lastCheckedAt?: number;
+};
+
 type ProviderStatus =
   | "idle"
   | "running"
@@ -220,6 +235,103 @@ function loadProviders():
   }
 }
 
+function initialProviderHealth(
+  provider: ProviderConfig,
+): ProviderHealthInfo {
+  if (!provider.enabled) {
+    return {
+      status: "error",
+      message: "Disabled",
+    };
+  }
+
+  if (
+    provider.id !== "ollama" &&
+    !provider.apiKey.trim()
+  ) {
+    return {
+      status: "missing-key",
+      message: "Missing API key",
+    };
+  }
+
+  if (provider.id === "ollama") {
+    return {
+      status: "ready",
+      message: "Local provider ready",
+    };
+  }
+
+  return {
+    status: "unknown",
+    message: "Not checked yet",
+  };
+}
+
+function classifyProviderError(
+  message: string,
+): ProviderHealthInfo {
+  const normalized =
+    message.toLowerCase();
+
+  if (
+    normalized.includes("402") ||
+    normalized.includes(
+      "insufficient balance",
+    ) ||
+    normalized.includes(
+      "insufficient_balance",
+    ) ||
+    normalized.includes(
+      "insufficient quota",
+    ) ||
+    normalized.includes(
+      "insufficient_quota",
+    ) ||
+    normalized.includes("credit balance")
+  ) {
+    return {
+      status: "quota",
+      message:
+        "Insufficient quota or balance",
+      lastCheckedAt: Date.now(),
+    };
+  }
+
+  if (
+    normalized.includes("429") ||
+    normalized.includes("rate limit")
+  ) {
+    return {
+      status: "quota",
+      message: "Rate limit exceeded",
+      lastCheckedAt: Date.now(),
+    };
+  }
+
+  if (
+    normalized.includes(
+      "connection refused",
+    ) ||
+    normalized.includes("network") ||
+    normalized.includes("offline") ||
+    normalized.includes("timed out") ||
+    normalized.includes("timeout")
+  ) {
+    return {
+      status: "offline",
+      message: "Provider unavailable",
+      lastCheckedAt: Date.now(),
+    };
+  }
+
+  return {
+    status: "error",
+    message: "Provider request failed",
+    lastCheckedAt: Date.now(),
+  };
+}
+
 function MultiLlmPage({
   cardStyle,
   onMessage,
@@ -228,7 +340,7 @@ function MultiLlmPage({
     activeTab,
     setActiveTab,
   ] = useState<
-    "compare" | "providers"
+    "compare" | "router" | "providers"
   >("compare");
 
   const [
@@ -249,6 +361,23 @@ function MultiLlmPage({
   ] = useState(false);
 
   const [
+    routerPrompt,
+    setRouterPrompt,
+  ] = useState("");
+
+  const [
+    routedProviderId,
+    setRoutedProviderId,
+  ] = useState<ProviderId | null>(
+    null,
+  );
+
+  const [
+    routedCategory,
+    setRoutedCategory,
+  ] = useState("");
+
+  const [
     outputs,
     setOutputs,
   ] = useState<
@@ -262,6 +391,32 @@ function MultiLlmPage({
     Record<string, ProviderStatus>
   >({});
 
+  const [
+    providerHealth,
+    setProviderHealth,
+  ] = useState<
+    Partial<
+      Record<
+        ProviderId,
+        ProviderHealthInfo
+      >
+    >
+  >(() =>
+    Object.fromEntries(
+      providers.map((provider) => [
+        provider.id,
+        initialProviderHealth(
+          provider,
+        ),
+      ]),
+    ) as Partial<
+      Record<
+        ProviderId,
+        ProviderHealthInfo
+      >
+    >,
+  );
+
   const operationIds =
     useRef<
       Partial<
@@ -271,6 +426,46 @@ function MultiLlmPage({
         >
       >
     >({});
+
+  useEffect(() => {
+    setProviderHealth((current) => {
+      const next = {
+        ...current,
+      };
+
+      for (const provider of providers) {
+        const existing =
+          current[provider.id];
+
+        if (
+          !provider.enabled ||
+          (
+            provider.id !== "ollama" &&
+            !provider.apiKey.trim()
+          )
+        ) {
+          next[provider.id] =
+            initialProviderHealth(
+              provider,
+            );
+          continue;
+        }
+
+        if (
+          !existing ||
+          existing.status ===
+            "missing-key"
+        ) {
+          next[provider.id] =
+            initialProviderHealth(
+              provider,
+            );
+        }
+      }
+
+      return next;
+    });
+  }, [providers]);
 
   const configuredProviders =
     useMemo(
@@ -363,6 +558,21 @@ function MultiLlmPage({
                 ? "cancelled"
                 : "done",
           }));
+
+          if (!payload.cancelled) {
+            setProviderHealth(
+              (current) => ({
+                ...current,
+                [payload.providerId]: {
+                  status: "ready",
+                  message:
+                    "Provider responded successfully",
+                  lastCheckedAt:
+                    Date.now(),
+                },
+              }),
+            );
+          }
         },
       );
 
@@ -391,6 +601,16 @@ function MultiLlmPage({
             [payload.providerId]:
               `Request failed: ${payload.message}`,
           }));
+
+          setProviderHealth(
+            (current) => ({
+              ...current,
+              [payload.providerId]:
+                classifyProviderError(
+                  payload.message,
+                ),
+            }),
+          );
         },
       );
     };
@@ -474,7 +694,7 @@ function MultiLlmPage({
 
       for (
         const provider
-        of configuredProviders
+        of availableProviders
       ) {
         nextOutputs[
           provider.id
@@ -490,6 +710,19 @@ function MultiLlmPage({
         operationIds.current[
           provider.id
         ] = operationId;
+
+        setProviderHealth(
+          (current) => ({
+            ...current,
+            [provider.id]: {
+              status: "checking",
+              message:
+                "Checking provider",
+              lastCheckedAt:
+                Date.now(),
+            },
+          }),
+        );
 
         const messages = [
           ...(usePersona &&
@@ -568,6 +801,305 @@ function MultiLlmPage({
       );
     };
 
+  const classifyRoute = (
+    value: string,
+  ): {
+    category: string;
+    preferred: ProviderId[];
+  } => {
+    const normalized =
+      value.toLowerCase();
+
+    if (
+      /code|coding|program|debug|bug|typescript|javascript|python|rust|sql|api|docker|git/.test(
+        normalized,
+      )
+    ) {
+      return {
+        category:
+          "Software Development",
+        preferred: [
+          "claude",
+          "chatgpt",
+          "deepseek",
+          "ollama",
+        ],
+      };
+    }
+
+    if (
+      /math|calculate|solve|equation|proof|logic|reasoning|probability|algebra|geometry|calculus|integral|derivative|matrix|polynomial|quadratic|factor|simplify/.test(
+        normalized,
+      ) ||
+      /[0-9x-y]\s*[\+\-\*\/=]\s*[0-9x-y]/i.test(
+        value,
+      ) ||
+      /[²³√∫∑π∞]/.test(
+        value,
+      )
+    ) {
+      return {
+        category:
+          "Mathematics",
+        preferred: [
+          "deepseek",
+          "chatgpt",
+          "ollama",
+        ],
+      };
+    }
+
+    if (
+      /write|story|poem|creative|rewrite|marketing|slogan|copywriting/.test(
+        normalized,
+      )
+    ) {
+      return {
+        category:
+          "Creative Writing",
+        preferred: [
+          "chatgpt",
+          "claude",
+          "gemini",
+          "ollama",
+        ],
+      };
+    }
+
+    if (
+      /latest|today|news|current|recent|weather|stock|score/.test(
+        normalized,
+      )
+    ) {
+      return {
+        category:
+          "Current Information",
+        preferred: [
+          "grok",
+          "gemini",
+          "chatgpt",
+          "ollama",
+        ],
+      };
+    }
+
+    if (
+      value.length > 1500 ||
+      /summarize|summary|analyze|document|long text|report/.test(
+        normalized,
+      )
+    ) {
+      return {
+        category:
+          "Long-form Analysis",
+        preferred: [
+          "gemini",
+          "claude",
+          "chatgpt",
+          "ollama",
+        ],
+      };
+    }
+
+    return {
+      category:
+        "General Question",
+      preferred: [
+        "chatgpt",
+        "ollama",
+        "gemini",
+        "claude",
+        "deepseek",
+        "grok",
+      ],
+    };
+  };
+
+  const sendRouted =
+    async () => {
+      const text =
+        routerPrompt.trim();
+
+      if (!text || isBusy) {
+        return;
+      }
+
+      if (
+        configuredProviders.length ===
+        0
+      ) {
+        onMessage(
+          "Unable to route request: configure at least one provider.",
+        );
+        setActiveTab(
+          "providers",
+        );
+        return;
+      }
+
+      const route =
+        classifyRoute(text);
+
+      const healthyProviders =
+        configuredProviders.filter(
+          (provider) => {
+            const health =
+              providerHealth[
+                provider.id
+              ]?.status;
+
+            return (
+              health !== "quota" &&
+              health !== "offline" &&
+              health !==
+                "missing-key" &&
+              health !== "error"
+            );
+          },
+        );
+
+      const availableProviders =
+        healthyProviders.length > 0
+          ? healthyProviders
+          : configuredProviders;
+
+      const orderedProviders =
+        route.preferred
+          .map((id) =>
+            availableProviders.find(
+              (provider) =>
+                provider.id === id,
+            ),
+          )
+          .filter(
+            (
+              provider,
+            ): provider is ProviderConfig =>
+              Boolean(provider),
+          );
+
+      for (
+        const provider
+        of configuredProviders
+      ) {
+        if (
+          !orderedProviders.some(
+            (item) =>
+              item.id ===
+              provider.id,
+          )
+        ) {
+          orderedProviders.push(
+            provider,
+          );
+        }
+      }
+
+      let lastError = "";
+
+      for (
+        let index = 0;
+        index <
+        orderedProviders.length;
+        index += 1
+      ) {
+        const provider =
+          orderedProviders[index];
+
+        const operationId =
+          crypto.randomUUID();
+
+        operationIds.current[
+          provider.id
+        ] = operationId;
+
+        setRoutedProviderId(
+          provider.id,
+        );
+
+        setRoutedCategory(
+          route.category,
+        );
+
+        setOutputs((current) => ({
+          ...current,
+          [provider.id]:
+            index === 0
+              ? ""
+              : `Previous provider was unavailable. Trying ${provider.label}…\n\n`,
+        }));
+
+        setStatuses((current) => ({
+          ...current,
+          [provider.id]:
+            "running",
+        }));
+
+        const messages = [
+          {
+            role:
+              "system" as const,
+            content:
+              "Provide the best possible answer for the detected task category. Be accurate, practical, and clear.",
+          },
+          {
+            role:
+              "user" as const,
+            content: text,
+          },
+        ];
+
+        try {
+          await startMultiLlmStream({
+            operationId,
+            providerId:
+              provider.id,
+            baseUrl:
+              provider.baseUrl,
+            apiKey:
+              provider.apiKey,
+            model:
+              provider.model,
+            messages,
+            maxTokens:
+              provider.maxTokens,
+          });
+
+          return;
+        } catch (error) {
+          lastError =
+            String(error);
+
+          delete operationIds.current[
+            provider.id
+          ];
+
+          setStatuses(
+            (current) => ({
+              ...current,
+              [provider.id]:
+                "error",
+            }),
+          );
+
+          const nextProvider =
+            orderedProviders[
+              index + 1
+            ];
+
+          if (nextProvider) {
+            onMessage(
+              `${provider.label} failed. Falling back to ${nextProvider.label}.`,
+            );
+          }
+        }
+      }
+
+      onMessage(
+        `All routed providers failed. ${lastError}`,
+      );
+    };
+
   const stopAll =
     async () => {
       const activeEntries =
@@ -642,6 +1174,23 @@ function MultiLlmPage({
             }
           >
             ⚡ Compare
+          </button>
+
+          <button
+            type="button"
+            className={
+              activeTab ===
+              "router"
+                ? "action-button"
+                : "secondary-button"
+            }
+            onClick={() =>
+              setActiveTab(
+                "router",
+              )
+            }
+          >
+            🧭 Smart Router
           </button>
 
           <button
@@ -844,6 +1393,149 @@ function MultiLlmPage({
       )}
 
       {activeTab ===
+        "router" && (
+        <>
+          <div
+            className="settings-card multillm-compose"
+            style={cardStyle}
+          >
+            <textarea
+              value={
+                routerPrompt
+              }
+              placeholder="Describe your task. Smart Router will select the most suitable available provider."
+              disabled={isBusy}
+              onChange={(event) =>
+                setRouterPrompt(
+                  event.target.value,
+                )
+              }
+              onKeyDown={(event) => {
+                if (
+                  event.key ===
+                    "Enter" &&
+                  (event.metaKey ||
+                    event.ctrlKey)
+                ) {
+                  event.preventDefault();
+                  void sendRouted();
+                }
+              }}
+            />
+
+            <div className="multillm-compose-actions">
+              <span className="multillm-provider-count">
+                {
+                  configuredProviders.length
+                }{" "}
+                provider(s) available
+              </span>
+
+              <button
+                type="button"
+                className="action-button"
+                disabled={
+                  isBusy ||
+                  !routerPrompt.trim()
+                }
+                onClick={() => {
+                  void sendRouted();
+                }}
+              >
+                🧭 Route and Send
+              </button>
+
+              <button
+                type="button"
+                className="danger-button"
+                disabled={!isBusy}
+                onClick={() => {
+                  void stopAll();
+                }}
+              >
+                ⏹ Stop
+              </button>
+            </div>
+          </div>
+
+          {routedProviderId ? (
+            <article
+              className="settings-card multillm-result-card multillm-router-result"
+              style={{
+                ...cardStyle,
+                borderTop:
+                  `3px solid ${
+                    providers.find(
+                      (provider) =>
+                        provider.id ===
+                        routedProviderId,
+                    )?.color ??
+                    "#64748b"
+                  }`,
+              }}
+            >
+              <header className="multillm-result-header">
+                <div>
+                  <strong>
+                    {
+                      providers.find(
+                        (provider) =>
+                          provider.id ===
+                          routedProviderId,
+                      )?.icon
+                    }{" "}
+                    {
+                      providers.find(
+                        (provider) =>
+                          provider.id ===
+                          routedProviderId,
+                      )?.label
+                    }
+                  </strong>
+
+                  <small>
+                    Routed as:{" "}
+                    {routedCategory}
+                  </small>
+                </div>
+
+                <span className="multillm-status">
+                  {
+                    statuses[
+                      routedProviderId
+                    ] ?? "idle"
+                  }
+                </span>
+              </header>
+
+              <div className="multillm-output">
+                {outputs[
+                  routedProviderId
+                ] ||
+                  "Waiting for the routed response."}
+              </div>
+            </article>
+          ) : (
+            <div
+              className="settings-card multillm-router-empty"
+              style={cardStyle}
+            >
+              <strong>
+                Smart Router is ready
+              </strong>
+              <p>
+                It currently uses local,
+                deterministic routing
+                rules and automatically
+                falls back to any
+                configured provider.
+              </p>
+            </div>
+          )}
+        </>
+      )}
+
+      {activeTab ===
         "providers" && (
         <div className="multillm-provider-list">
           {providers.map(
@@ -865,6 +1557,52 @@ function MultiLlmPage({
                     {
                       provider.label
                     }
+
+                    <span
+                      className={[
+                        "provider-health",
+                        `provider-health-${
+                          providerHealth[
+                            provider.id
+                          ]?.status ??
+                          "unknown"
+                        }`,
+                      ].join(" ")}
+                      title={
+                        providerHealth[
+                          provider.id
+                        ]?.message
+                      }
+                    >
+                      {
+                        providerHealth[
+                          provider.id
+                        ]?.status ===
+                        "checking"
+                          ? "Checking"
+                          : providerHealth[
+                                provider.id
+                              ]?.status ===
+                              "missing-key"
+                            ? "Missing key"
+                            : providerHealth[
+                                  provider.id
+                                ]?.status ===
+                                "quota"
+                              ? "No quota"
+                              : providerHealth[
+                                    provider.id
+                                  ]?.status ===
+                                  "offline"
+                                ? "Offline"
+                                : providerHealth[
+                                      provider.id
+                                    ]?.status ===
+                                    "error"
+                                  ? "Error"
+                                  : "Ready"
+                      }
+                    </span>
                   </h3>
 
                   <label>
