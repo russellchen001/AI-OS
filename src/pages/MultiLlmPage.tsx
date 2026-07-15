@@ -330,6 +330,11 @@ function MultiLlmPage({
     useRef<Set<string>>(
       new Set(),
     );
+
+  const healthCheckOutputs =
+    useRef<Map<string, string>>(
+      new Map(),
+    );
 useEffect(() => {
     setProviderRuntime((current) => {
       const next = {
@@ -435,6 +440,15 @@ useEffect(() => {
               payload.operationId,
             )
           ) {
+            const current =
+              healthCheckOutputs.current.get(
+                payload.operationId,
+              ) ?? "";
+
+            healthCheckOutputs.current.set(
+              payload.operationId,
+              current + payload.text,
+            );
             return;
           }
 
@@ -470,7 +484,43 @@ useEffect(() => {
             );
 
           if (wasHealthCheck) {
-            if (!payload.cancelled) {
+            const response =
+              healthCheckOutputs.current
+                .get(
+                  payload.operationId,
+                )
+                ?.trim() ?? "";
+
+            healthCheckOutputs.current.delete(
+              payload.operationId,
+            );
+
+            if (payload.cancelled) {
+              setProviderRuntime(
+                (current) => ({
+                  ...current,
+                  [payload.providerId]:
+                    classifyProviderError(
+                      "Health check cancelled",
+                    ),
+                }),
+              );
+              return;
+            }
+
+            const normalized =
+              response
+                .replace(
+                  /[`*_#]/g,
+                  "",
+                )
+                .trim();
+
+            if (
+              /^ok[.!]?$/i.test(
+                normalized,
+              )
+            ) {
               setProviderRuntime(
                 (current) => ({
                   ...current,
@@ -478,7 +528,19 @@ useEffect(() => {
                     readyRuntime(),
                 }),
               );
+            } else {
+              setProviderRuntime(
+                (current) => ({
+                  ...current,
+                  [payload.providerId]:
+                    classifyProviderError(
+                      response ||
+                        "Empty health-check response",
+                    ),
+                }),
+              );
             }
+
             return;
           }
 
@@ -521,6 +583,10 @@ useEffect(() => {
             healthCheckIds.current.delete(
               payload.operationId,
             );
+
+          healthCheckOutputs.current.delete(
+            payload.operationId,
+          );
 
           setProviderRuntime(
             (current) => ({
@@ -915,7 +981,7 @@ useEffect(() => {
 
       for (
         const provider
-        of configuredProviders
+        of availableProviders
       ) {
         if (
           !orderedProviders.some(
@@ -1032,6 +1098,118 @@ useEffect(() => {
 
       onMessage(
         `All routed providers failed. ${lastError}`,
+      );
+    };
+
+  const checkProviders =
+    async () => {
+      if (isBusy) {
+        return;
+      }
+
+      const candidates =
+        providers.filter(
+          (provider) =>
+            provider.enabled &&
+            (
+              provider.id ===
+                "ollama" ||
+              provider.apiKey.trim()
+            ),
+        );
+
+      setProviderRuntime(
+        Object.fromEntries(
+          providers.map(
+            (provider) => [
+              provider.id,
+              createProviderRuntime(
+                provider,
+              ),
+            ],
+          ),
+        ) as Record<
+          ProviderId,
+          ProviderRuntime
+        >,
+      );
+
+      if (candidates.length === 0) {
+        onMessage(
+          "No configured providers to check.",
+        );
+        return;
+      }
+
+      for (const provider of candidates) {
+        const operationId =
+          crypto.randomUUID();
+
+        operationIds.current[
+          provider.id
+        ] = operationId;
+
+        healthCheckIds.current.add(
+          operationId,
+        );
+
+        healthCheckOutputs.current.set(
+          operationId,
+          "",
+        );
+
+        setProviderRuntime(
+          (current) => ({
+            ...current,
+            [provider.id]:
+              checkingRuntime(),
+          }),
+        );
+
+        try {
+          await startMultiLlmStream({
+            operationId,
+            providerId:
+              provider.id,
+            baseUrl:
+              provider.baseUrl,
+            apiKey:
+              provider.apiKey,
+            model:
+              provider.model,
+            messages: [
+              {
+                role:
+                  "user" as const,
+                content:
+                  "Reply with OK only.",
+              },
+            ],
+            maxTokens: 8,
+          });
+        } catch (error) {
+          healthCheckIds.current.delete(
+            operationId,
+          );
+
+          delete operationIds.current[
+            provider.id
+          ];
+
+          setProviderRuntime(
+            (current) => ({
+              ...current,
+              [provider.id]:
+                classifyProviderError(
+                  error,
+                ),
+            }),
+          );
+        }
+      }
+
+      onMessage(
+        "Provider health check completed.",
       );
     };
 
@@ -1473,6 +1651,29 @@ useEffect(() => {
       {activeTab ===
         "providers" && (
         <div className="multillm-provider-list">
+          <div className="multillm-provider-toolbar">
+            <div>
+              <strong>
+                Provider Health
+              </strong>
+              <span>
+                Check availability,
+                quota, and connectivity.
+              </span>
+            </div>
+
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={isBusy}
+              onClick={() => {
+                void checkProviders();
+              }}
+            >
+              🩺 Check Providers
+            </button>
+          </div>
+
           {providers.map(
             (provider) => (
               <article
@@ -1510,32 +1711,11 @@ useEffect(() => {
                       }
                     >
                       {
-                        providerRuntime[
-                          provider.id
-                        ]?.health ===
-                        "checking"
-                          ? "Checking"
-                          : providerRuntime[
-                                provider.id
-                              ]?.health ===
-                              "missing-key"
-                            ? "Missing key"
-                            : providerRuntime[
-                                  provider.id
-                                ]?.health ===
-                                "quota"
-                              ? "No quota"
-                              : providerRuntime[
-                                    provider.id
-                                  ]?.health ===
-                                  "offline"
-                                ? "Offline"
-                                : providerRuntime[
-                                      provider.id
-                                    ]?.health ===
-                                    "error"
-                                  ? "Error"
-                                  : "Ready"
+                        healthLabel(
+                          providerRuntime[
+                            provider.id
+                          ],
+                        )
                       }
                     </span>
                   </h3>
