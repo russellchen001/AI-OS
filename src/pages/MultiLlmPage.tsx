@@ -22,6 +22,7 @@ import {
 import MarkdownRenderer from "../components/MarkdownRenderer";
 
 import {
+  classifyHistoryCategory,
   deleteHistory,
   loadHistory,
   saveHistory,
@@ -432,6 +433,7 @@ function MultiLlmPage({
         createdAt:
           active.createdAt,
         updatedAt: Date.now(),
+        lastOpenedAt: Date.now(),
         mode: "router",
         title:
           active.prompt.length > 60
@@ -443,7 +445,12 @@ function MultiLlmPage({
         prompt: active.prompt,
         routedProviderId:
           active.providerId,
+        category:
+          classifyHistoryCategory(
+            active.prompt,
+          ),
         favorite: false,
+        pinned: false,
         tags: [],
         responses:
           active.responses,
@@ -485,6 +492,7 @@ function MultiLlmPage({
         createdAt:
           active.createdAt,
         updatedAt: Date.now(),
+        lastOpenedAt: Date.now(),
         mode: "compare",
         title:
           active.prompt.length > 60
@@ -494,7 +502,12 @@ function MultiLlmPage({
               )}…`
             : active.prompt,
         prompt: active.prompt,
+        category:
+          classifyHistoryCategory(
+            active.prompt,
+          ),
         favorite: false,
+        pinned: false,
         tags: [],
         responses:
           active.responses,
@@ -630,6 +643,57 @@ useEffect(() => {
       history,
       historySearch,
     ]);
+
+  const historyStatistics =
+    useMemo(() => {
+      const providerUsage:
+        Record<string, number> = {};
+
+      let compareCount = 0;
+      let routerCount = 0;
+      let pinnedCount = 0;
+      let favoriteCount = 0;
+
+      for (const record of history) {
+        if (record.mode === "compare") {
+          compareCount += 1;
+        } else {
+          routerCount += 1;
+        }
+
+        if (record.pinned) {
+          pinnedCount += 1;
+        }
+
+        if (record.favorite) {
+          favoriteCount += 1;
+        }
+
+        for (
+          const providerId
+          of Object.keys(
+            record.responses,
+          )
+        ) {
+          providerUsage[providerId] =
+            (providerUsage[providerId] ?? 0) + 1;
+        }
+      }
+
+      return {
+        compareCount,
+        routerCount,
+        pinnedCount,
+        favoriteCount,
+        providerUsage:
+          Object.entries(
+            providerUsage,
+          ).sort(
+            ([, left], [, right]) =>
+              right - left,
+          ),
+      };
+    }, [history]);
 
   const isBusy =
     Object.values(
@@ -1192,6 +1256,21 @@ useEffect(() => {
         ),
         "application/json;charset=utf-8",
       );
+    };
+
+  const toggleHistoryPinned =
+    (id: string) => {
+      const next =
+        updateHistory(
+          id,
+          (record) => ({
+            ...record,
+            pinned:
+              !record.pinned,
+          }),
+        );
+
+      setHistory(next);
     };
 
   const toggleHistoryFavorite =
@@ -2356,7 +2435,7 @@ useEffect(() => {
               <input
                 type="search"
                 value={historySearch}
-                placeholder="Search…  (or provider:ollama)"
+                placeholder="Search...  tag:rust  category:coding  provider:ollama"
                 onChange={(event) =>
                   setHistorySearch(
                     event.target.value,
@@ -2377,6 +2456,85 @@ useEffect(() => {
               )}
             </div>
 
+            <div className="multillm-history-statistics">
+              <div className="multillm-history-stat-card">
+                <span>Compare</span>
+                <strong>
+                  {historyStatistics.compareCount}
+                </strong>
+              </div>
+
+              <div className="multillm-history-stat-card">
+                <span>Router</span>
+                <strong>
+                  {historyStatistics.routerCount}
+                </strong>
+              </div>
+
+              <div className="multillm-history-stat-card">
+                <span>Pinned</span>
+                <strong>
+                  {historyStatistics.pinnedCount}
+                </strong>
+              </div>
+
+              <div className="multillm-history-stat-card">
+                <span>Favorites</span>
+                <strong>
+                  {historyStatistics.favoriteCount}
+                </strong>
+              </div>
+            </div>
+
+            {historyStatistics.providerUsage.length > 0 && (
+              <div className="multillm-history-provider-stats">
+                <strong className="multillm-history-provider-stats-title">
+                  Provider Usage
+                </strong>
+
+                {historyStatistics.providerUsage.map(
+                  ([providerId, count]) => (
+                    <div
+                      key={providerId}
+                      className="multillm-history-provider-stat"
+                    >
+                      <div className="multillm-history-provider-stat-label">
+                        <span>
+                          {providerId}
+                        </span>
+
+                        <strong>
+                          {count}
+                        </strong>
+                      </div>
+
+                      <div className="multillm-history-provider-bar">
+                        <span
+                          style={{
+                            width: `${
+                              Math.max(
+                                8,
+                                Math.round(
+                                  (
+                                    count /
+                                    (
+                                      historyStatistics
+                                        .providerUsage[0]?.[1] ??
+                                      1
+                                    )
+                                  ) * 100,
+                                ),
+                              )
+                            }%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ),
+                )}
+              </div>
+            )}
+
             {history.length === 0 ? (
               <p className="multillm-history-empty">
                 No saved conversations yet.
@@ -2392,6 +2550,9 @@ useEffect(() => {
                   key={record.id}
                   className={[
                     "multillm-history-item",
+                    record.pinned
+                      ? "multillm-history-item-pinned"
+                      : "",
                     selectedHistoryId ===
                     record.id
                       ? "multillm-history-item-active"
@@ -2453,16 +2614,53 @@ useEffect(() => {
                       </strong>
                     )}
 
-                    <span>
-                      {record.mode ===
-                      "compare"
-                        ? "Compare"
-                        : "Smart Router"}
-                      {" · "}
-                      {new Date(
-                        record.createdAt,
-                      ).toLocaleString()}
+                    <span className="multillm-history-item-meta">
+                      <span
+                        className={[
+                          "history-category-badge",
+                          `history-category-${record.category}`,
+                        ].join(" ")}
+                      >
+                        {record.category}
+                      </span>
+
+                      <span>
+                        {record.mode ===
+                        "compare"
+                          ? "Compare"
+                          : "Smart Router"}
+                        {" · "}
+                        {new Date(
+                          record.createdAt,
+                        ).toLocaleString()}
+                      </span>
                     </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={[
+                      "multillm-history-pin",
+                      record.pinned
+                        ? "multillm-history-pin-active"
+                        : "",
+                    ].join(" ")}
+                    title={
+                      record.pinned
+                        ? "Unpin conversation"
+                        : "Pin conversation"
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+
+                      toggleHistoryPinned(
+                        record.id,
+                      );
+                    }}
+                  >
+                    {record.pinned
+                      ? "📌"
+                      : "📍"}
                   </button>
 
                   <button

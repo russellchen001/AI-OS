@@ -1,5 +1,6 @@
 import type {
   ConversationRecord,
+  HistoryCategory,
   HistoryProviderId,
 } from "../types/history";
 
@@ -27,6 +28,43 @@ function createTitle(
     : value;
 }
 
+export function classifyHistoryCategory(
+  value: string,
+): HistoryCategory {
+  const normalized =
+    value.toLowerCase();
+
+  if (
+    /code|coding|program|debug|typescript|javascript|python|rust|java|golang|sql|api|docker|git|react|css|html/.test(
+      normalized,
+    )
+  ) {
+    return "coding";
+  }
+
+  if (
+    /write|writing|rewrite|story|poem|blog|article|marketing|copywriting|slogan|email|essay/.test(
+      normalized,
+    )
+  ) {
+    return "writing";
+  }
+
+  if (
+    /math|calculate|solve|equation|proof|algebra|geometry|calculus|integral|derivative|matrix|probability/.test(
+      normalized,
+    ) ||
+    /[0-9x-y]\s*[\+\-\*\/=]\s*[0-9x-y]/i.test(
+      value,
+    ) ||
+    /[²³√∫∑π∞]/.test(value)
+  ) {
+    return "math";
+  }
+
+  return "general";
+}
+
 function normalizeRecord(
   record: StoredConversation,
 ): ConversationRecord {
@@ -36,11 +74,28 @@ function normalizeRecord(
       ? record.createdAt
       : Date.now();
 
+  const updatedAt =
+    typeof record.updatedAt ===
+    "number"
+      ? record.updatedAt
+      : createdAt;
+
   const prompt =
     typeof record.prompt ===
     "string"
       ? record.prompt
       : "";
+
+  const category:
+    HistoryCategory =
+    record.category === "coding" ||
+    record.category === "writing" ||
+    record.category === "math" ||
+    record.category === "general"
+      ? record.category
+      : classifyHistoryCategory(
+          prompt,
+        );
 
   return {
     id:
@@ -48,11 +103,12 @@ function normalizeRecord(
         ? record.id
         : crypto.randomUUID(),
     createdAt,
-    updatedAt:
-      typeof record.updatedAt ===
+    updatedAt,
+    lastOpenedAt:
+      typeof record.lastOpenedAt ===
       "number"
-        ? record.updatedAt
-        : createdAt,
+        ? record.lastOpenedAt
+        : updatedAt,
     mode:
       record.mode === "router"
         ? "router"
@@ -66,14 +122,27 @@ function normalizeRecord(
     prompt,
     routedProviderId:
       record.routedProviderId,
+    category,
     favorite:
       record.favorite ?? false,
+    pinned:
+      record.pinned ?? false,
     tags: Array.isArray(record.tags)
-      ? record.tags.filter(
-          (
-            tag,
-          ): tag is string =>
-            typeof tag === "string",
+      ? Array.from(
+          new Set(
+            record.tags
+              .filter(
+                (
+                  tag,
+                ): tag is string =>
+                  typeof tag ===
+                  "string",
+              )
+              .map((tag) =>
+                tag.trim(),
+              )
+              .filter(Boolean),
+          ),
         )
       : [],
     responses:
@@ -107,7 +176,6 @@ export function loadHistory():
         ),
       );
 
-    // Persist migrated records.
     saveHistory(normalized);
 
     return normalized;
