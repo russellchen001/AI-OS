@@ -10,6 +10,12 @@ import {
   type UnlistenFn,
 } from "@tauri-apps/api/event";
 import {
+  save,
+} from "@tauri-apps/plugin-dialog";
+import {
+  writeTextFile,
+} from "@tauri-apps/plugin-fs";
+import {
   cancelMultiLlmStream,
   startMultiLlmStream,
 } from "../services/multillm";
@@ -19,6 +25,7 @@ import {
   deleteHistory,
   loadHistory,
   saveHistory,
+  updateHistory,
 } from "../services/history";
 import type {
   ConversationRecord,
@@ -270,6 +277,23 @@ function MultiLlmPage({
   ] = useState<string | null>(
     null,
   );
+  const [
+    historySearch,
+    setHistorySearch,
+  ] = useState("");
+
+
+  const [
+    editingHistoryId,
+    setEditingHistoryId,
+  ] = useState<string | null>(
+    null,
+  );
+
+  const [
+    historyTitleDraft,
+    setHistoryTitleDraft,
+  ] = useState("");
 
   const [
     prompt,
@@ -373,6 +397,75 @@ function MultiLlmPage({
     useRef<
       ActiveCompareHistory | null
     >(null);
+
+
+  type ActiveRouterHistory = {
+    id: string;
+    createdAt: number;
+    prompt: string;
+    providerId?: ProviderId;
+    responses: Partial<
+      Record<ProviderId, string>
+    >;
+    saved: boolean;
+  };
+
+  const activeRouterHistory =
+    useRef<
+      ActiveRouterHistory | null
+    >(null);
+
+  const saveRouterHistory =
+    () => {
+      const active =
+        activeRouterHistory.current;
+
+      if (!active || active.saved) {
+        return;
+      }
+
+      active.saved = true;
+
+      const record:
+        ConversationRecord = {
+        id: active.id,
+        createdAt:
+          active.createdAt,
+        updatedAt: Date.now(),
+        mode: "router",
+        title:
+          active.prompt.length > 60
+            ? `${active.prompt.slice(
+                0,
+                60,
+              )}…`
+            : active.prompt,
+        prompt: active.prompt,
+        routedProviderId:
+          active.providerId,
+        favorite: false,
+        tags: [],
+        responses:
+          active.responses,
+      };
+
+      activeRouterHistory.current =
+        null;
+
+      setHistory((current) => {
+        const next = [
+          record,
+          ...current,
+        ].slice(0, 100);
+
+        saveHistory(next);
+        return next;
+      });
+
+      setSelectedHistoryId(
+        record.id,
+      );
+    };
 
   const saveCompletedCompareHistory =
     () => {
@@ -478,6 +571,66 @@ useEffect(() => {
       [providers],
     );
 
+  const filteredHistory =
+    useMemo(() => {
+      const query =
+        historySearch
+          .trim()
+          .toLowerCase();
+
+      const sortedHistory = [
+        ...history,
+      ].sort(
+        (left, right) =>
+          Number(right.favorite) -
+          Number(left.favorite),
+      );
+
+      if (!query) {
+        return sortedHistory;
+      }
+
+      if (query.startsWith("provider:")) {
+        const provider =
+          query
+            .replace(
+              "provider:",
+              "",
+            )
+            .trim();
+
+        return sortedHistory.filter(
+          (record) =>
+            Object.keys(
+              record.responses,
+            ).some(
+              (id) =>
+                id.toLowerCase() ===
+                provider,
+            ),
+        );
+      }
+
+      return sortedHistory.filter(
+        (record) =>
+          record.title
+            .toLowerCase()
+            .includes(query) ||
+          record.prompt
+            .toLowerCase()
+            .includes(query) ||
+          record.tags.some(
+            (tag) =>
+              tag
+                .toLowerCase()
+                .includes(query),
+          ),
+      );
+    }, [
+      history,
+      historySearch,
+    ]);
+
   const isBusy =
     Object.values(
       statuses,
@@ -554,6 +707,23 @@ useEffect(() => {
             ] =
               (
                 activeHistory.responses[
+                  payload.providerId
+                ] ?? ""
+              ) + payload.text;
+          }
+
+          const activeRouter =
+            activeRouterHistory.current;
+
+          if (
+            activeRouter?.providerId ===
+            payload.providerId
+          ) {
+            activeRouter.responses[
+              payload.providerId
+            ] =
+              (
+                activeRouter.responses[
                   payload.providerId
                 ] ?? ""
               ) + payload.text;
@@ -686,6 +856,17 @@ useEffect(() => {
             saveCompletedCompareHistory();
           }
 
+          const activeRouter =
+            activeRouterHistory.current;
+
+          if (
+            activeRouter?.providerId ===
+              payload.providerId &&
+            !payload.cancelled
+          ) {
+            saveRouterHistory();
+          }
+
           if (!payload.cancelled) {
             setProviderRuntime(
               (current) => ({
@@ -745,6 +926,18 @@ useEffect(() => {
           const errorOutput =
             `Request failed: ${payload.message}`;
 
+          const activeRouter =
+            activeRouterHistory.current;
+
+          if (
+            activeRouter?.providerId ===
+            payload.providerId
+          ) {
+            activeRouter.responses[
+              payload.providerId
+            ] = errorOutput;
+          }
+
           const activeHistory =
             activeCompareHistory.current;
 
@@ -803,6 +996,218 @@ useEffect(() => {
         ),
     );
   };
+
+  const startRenamingHistory =
+    (
+      id: string,
+      title: string,
+    ) => {
+      setEditingHistoryId(id);
+      setHistoryTitleDraft(title);
+    };
+
+  const saveHistoryTitle =
+    (id: string) => {
+      const title =
+        historyTitleDraft.trim();
+
+      if (!title) {
+        return;
+      }
+
+      const next =
+        updateHistory(
+          id,
+          (record) => ({
+            ...record,
+            title,
+          }),
+        );
+
+      setHistory(next);
+      setEditingHistoryId(null);
+      setHistoryTitleDraft("");
+    };
+
+  const downloadHistoryFile =
+    async (
+      filename: string,
+      content: string,
+      mimeType: string,
+    ) => {
+      try {
+        const extension =
+          filename
+            .split(".")
+            .pop() ?? "txt";
+
+        const filePath =
+          await save({
+            defaultPath: filename,
+            filters: [
+              {
+                name:
+                  mimeType.includes(
+                    "json",
+                  )
+                    ? "JSON"
+                    : "Markdown",
+                extensions: [
+                  extension,
+                ],
+              },
+            ],
+          });
+
+        if (!filePath) {
+          return;
+        }
+
+        await writeTextFile(
+          filePath,
+          content,
+        );
+
+        onMessage(
+          `Exported to ${filePath}`,
+        );
+      } catch (error) {
+        console.error(
+          "History export failed:",
+          error,
+        );
+
+        onMessage(
+          `Export failed: ${String(
+            error,
+          )}`,
+        );
+      }
+    };
+
+  const createHistoryFilename =
+    (
+      record: ConversationRecord,
+      extension: string,
+    ) => {
+      const safeTitle =
+        record.title
+          .trim()
+          .replace(
+            /[^a-zA-Z0-9\u4e00-\u9fff_-]+/g,
+            "-",
+          )
+          .replace(
+            /^-+|-+$/g,
+            "",
+          )
+          .slice(0, 80) ||
+        "conversation";
+
+      return `${safeTitle}.${extension}`;
+    };
+
+  const exportHistoryMarkdown =
+    async (
+      record: ConversationRecord,
+    ) => {
+      const responses =
+        Object.entries(
+          record.responses,
+        )
+          .map(
+            ([
+              providerId,
+              response,
+            ]) =>
+              [
+                `## ${providerId}`,
+                "",
+                response ||
+                  "_No response._",
+              ].join("\n"),
+          )
+          .join(
+            "\n\n---\n\n",
+          );
+
+      const markdown =
+        [
+          `# ${record.title}`,
+          "",
+          `- Mode: ${
+            record.mode ===
+            "compare"
+              ? "Compare"
+              : "Smart Router"
+          }`,
+          `- Created: ${new Date(
+            record.createdAt,
+          ).toLocaleString()}`,
+          record.routedProviderId
+            ? `- Routed Provider: ${record.routedProviderId}`
+            : "",
+          "",
+          "## Question",
+          "",
+          record.prompt,
+          "",
+          "---",
+          "",
+          "## Responses",
+          "",
+          responses ||
+            "_No responses._",
+          "",
+        ]
+          .filter(
+            (line) =>
+              line !== "",
+          )
+          .join("\n");
+
+      await downloadHistoryFile(
+        createHistoryFilename(
+          record,
+          "md",
+        ),
+        markdown,
+        "text/markdown;charset=utf-8",
+      );
+    };
+
+  const exportHistoryJson =
+    async (
+      record: ConversationRecord,
+    ) => {
+      await downloadHistoryFile(
+        createHistoryFilename(
+          record,
+          "json",
+        ),
+        JSON.stringify(
+          record,
+          null,
+          2,
+        ),
+        "application/json;charset=utf-8",
+      );
+    };
+
+  const toggleHistoryFavorite =
+    (id: string) => {
+      const next =
+        updateHistory(
+          id,
+          (record) => ({
+            ...record,
+            favorite:
+              !record.favorite,
+          }),
+        );
+
+      setHistory(next);
+    };
 
   const removeHistoryRecord =
     (id: string) => {
@@ -1145,6 +1550,14 @@ useEffect(() => {
       const route =
         classifyRoute(text);
 
+      activeRouterHistory.current = {
+        id: crypto.randomUUID(),
+        createdAt: Date.now(),
+        prompt: text,
+        responses: {},
+        saved: false,
+      };
+
       const healthyProviders =
         configuredProviders.filter(
           (provider) => {
@@ -1218,6 +1631,18 @@ useEffect(() => {
           provider.id
         ] = operationId;
 
+        if (
+          activeRouterHistory.current
+        ) {
+          activeRouterHistory.current
+            .providerId = provider.id;
+
+          activeRouterHistory.current
+            .responses[
+              provider.id
+            ] = "";
+        }
+
         setRoutedProviderId(
           provider.id,
         );
@@ -1275,6 +1700,18 @@ useEffect(() => {
           lastError =
             String(error);
 
+          const errorOutput =
+            `Request failed: ${lastError}`;
+
+          if (
+            activeRouterHistory.current
+          ) {
+            activeRouterHistory.current
+              .responses[
+                provider.id
+              ] = errorOutput;
+          }
+
           delete operationIds.current[
             provider.id
           ];
@@ -1299,6 +1736,8 @@ useEffect(() => {
           }
         }
       }
+
+      saveRouterHistory();
 
       onMessage(
         `All routed providers failed. ${lastError}`,
@@ -1889,7 +2328,9 @@ useEffect(() => {
                   Conversation History
                 </strong>
                 <span>
-                  {history.length} saved conversation(s)
+                  {historySearch.trim()
+                    ? `${filteredHistory.length} result(s)`
+                    : `${history.length} saved conversation(s)`}
                 </span>
               </div>
 
@@ -1911,12 +2352,42 @@ useEffect(() => {
               </button>
             </div>
 
+            <div className="multillm-history-search">
+              <input
+                type="search"
+                value={historySearch}
+                placeholder="Search…  (or provider:ollama)"
+                onChange={(event) =>
+                  setHistorySearch(
+                    event.target.value,
+                  )
+                }
+              />
+
+              {historySearch && (
+                <button
+                  type="button"
+                  title="Clear search"
+                  onClick={() =>
+                    setHistorySearch("")
+                  }
+                >
+                  ×
+                </button>
+              )}
+            </div>
+
             {history.length === 0 ? (
               <p className="multillm-history-empty">
                 No saved conversations yet.
               </p>
+            ) : filteredHistory.length ===
+              0 ? (
+              <p className="multillm-history-empty">
+                No matching conversations.
+              </p>
             ) : (
-              history.map((record) => (
+              filteredHistory.map((record) => (
                 <div
                   key={record.id}
                   className={[
@@ -1936,12 +2407,51 @@ useEffect(() => {
                       )
                     }
                   >
-                    <strong>
-                      {record.favorite
-                        ? "⭐ "
-                        : ""}
-                      {record.title}
-                    </strong>
+                    {editingHistoryId ===
+                    record.id ? (
+                      <input
+                        className="multillm-history-title-input"
+                        value={
+                          historyTitleDraft
+                        }
+                        autoFocus
+                        onClick={(event) =>
+                          event.stopPropagation()
+                        }
+                        onChange={(event) =>
+                          setHistoryTitleDraft(
+                            event.target.value,
+                          )
+                        }
+                        onKeyDown={(event) => {
+                          if (
+                            event.key ===
+                            "Enter"
+                          ) {
+                            event.preventDefault();
+                            saveHistoryTitle(
+                              record.id,
+                            );
+                          }
+
+                          if (
+                            event.key ===
+                            "Escape"
+                          ) {
+                            setEditingHistoryId(
+                              null,
+                            );
+                          }
+                        }}
+                      />
+                    ) : (
+                      <strong>
+                        {record.favorite
+                          ? "⭐ "
+                          : ""}
+                        {record.title}
+                      </strong>
+                    )}
 
                     <span>
                       {record.mode ===
@@ -1953,6 +2463,65 @@ useEffect(() => {
                         record.createdAt,
                       ).toLocaleString()}
                     </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={[
+                      "multillm-history-favorite",
+                      record.favorite
+                        ? "multillm-history-favorite-active"
+                        : "",
+                    ].join(" ")}
+                    title={
+                      record.favorite
+                        ? "Remove from favorites"
+                        : "Add to favorites"
+                    }
+                    aria-label={
+                      record.favorite
+                        ? `Unfavorite ${record.title}`
+                        : `Favorite ${record.title}`
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleHistoryFavorite(
+                        record.id,
+                      );
+                    }}
+                  >
+                    {record.favorite
+                      ? "★"
+                      : "☆"}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="multillm-history-rename"
+                    title="Rename conversation"
+                    aria-label={`Rename ${record.title}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+
+                      if (
+                        editingHistoryId ===
+                        record.id
+                      ) {
+                        saveHistoryTitle(
+                          record.id,
+                        );
+                      } else {
+                        startRenamingHistory(
+                          record.id,
+                          record.title,
+                        );
+                      }
+                    }}
+                  >
+                    {editingHistoryId ===
+                    record.id
+                      ? "✓"
+                      : "✏️"}
                   </button>
 
                   <button
@@ -1997,18 +2566,46 @@ useEffect(() => {
               return (
                 <>
                   <header>
-                    <span>
-                      {record.mode ===
-                      "compare"
-                        ? "Compare"
-                        : "Smart Router"}
-                    </span>
+                    <div className="multillm-history-detail-meta">
+                      <span>
+                        {record.mode ===
+                        "compare"
+                          ? "Compare"
+                          : "Smart Router"}
+                      </span>
 
-                    <time>
-                      {new Date(
-                        record.createdAt,
-                      ).toLocaleString()}
-                    </time>
+                      <time>
+                        {new Date(
+                          record.createdAt,
+                        ).toLocaleString()}
+                      </time>
+                    </div>
+
+                    <div className="multillm-history-export-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() =>
+                          void exportHistoryMarkdown(
+                            record,
+                          )
+                        }
+                      >
+                        Export Markdown
+                      </button>
+
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() =>
+                          void exportHistoryJson(
+                            record,
+                          )
+                        }
+                      >
+                        Export JSON
+                      </button>
+                    </div>
                   </header>
 
                   <div className="multillm-history-question">

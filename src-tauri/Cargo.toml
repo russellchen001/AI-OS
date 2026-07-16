@@ -36,6 +36,8 @@ futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 
 [profile.dev]
 incremental = true
