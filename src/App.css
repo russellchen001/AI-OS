@@ -3038,3 +3038,50 @@ a {
   overflow-x: auto;
   overflow-y: hidden;
 }
+
+.markdown-code-block {
+  max-width: 100%;
+  margin: 1em 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  background: #0d1117;
+  overflow: hidden;
+}
+
+.markdown-code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(30, 41, 59, 0.82);
+}
+
+.markdown-code-toolbar span {
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.markdown-code-toolbar button {
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 9px;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 0.72rem;
+}
+
+.markdown-code-toolbar button:hover {
+  background: rgba(148, 163, 184, 0.14);
+  color: #ffffff;
+}
+
+.markdown-code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}

@@ -734,7 +734,7 @@ useEffect(() => {
                   role:
                     "system" as const,
                   content:
-                    `Follow this response style: ${provider.persona}`,
+                    `Follow this response style: ${provider.persona}. When writing fenced code blocks, always include the language identifier, such as \`\`\`python or \`\`\`typescript.`,
                 },
               ]
             : []),
@@ -1042,7 +1042,7 @@ useEffect(() => {
             role:
               "system" as const,
             content:
-              "Provide the best possible answer for the detected task category. Be accurate, practical, and clear.",
+              "Provide the best possible answer for the detected task category. Be accurate, practical, and clear. When writing fenced code blocks, always include the language identifier, such as ```python or ```typescript.",
           },
           {
             role:
