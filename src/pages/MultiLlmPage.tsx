@@ -16,6 +16,13 @@ import {
 import MarkdownRenderer from "../components/MarkdownRenderer";
 
 import {
+  loadHistory,
+  saveHistory,
+} from "../services/history";
+import type {
+  ConversationRecord,
+} from "../types/history";
+import {
   canRouteToProvider,
   checkingRuntime,
   classifyProviderError,
@@ -239,7 +246,7 @@ function MultiLlmPage({
     activeTab,
     setActiveTab,
   ] = useState<
-    "compare" | "router" | "providers"
+    "compare" | "router" | "providers" | "history"
   >("compare");
 
   const [
@@ -247,6 +254,20 @@ function MultiLlmPage({
     setProviders,
   ] = useState<ProviderConfig[]>(
     loadProviders,
+  );
+
+  const [
+    history,
+    setHistory,
+  ] = useState<
+    ConversationRecord[]
+  >(loadHistory);
+
+  const [
+    selectedHistoryId,
+    setSelectedHistoryId,
+  ] = useState<string | null>(
+    null,
   );
 
   const [
@@ -336,6 +357,62 @@ function MultiLlmPage({
     useRef<Map<string, string>>(
       new Map(),
     );
+
+  type ActiveCompareHistory = {
+    id: string;
+    createdAt: number;
+    prompt: string;
+    responses: Partial<
+      Record<ProviderId, string>
+    >;
+    pending: Set<ProviderId>;
+  };
+
+  const activeCompareHistory =
+    useRef<
+      ActiveCompareHistory | null
+    >(null);
+
+  const saveCompletedCompareHistory =
+    () => {
+      const active =
+        activeCompareHistory.current;
+
+      if (
+        !active ||
+        active.pending.size > 0
+      ) {
+        return;
+      }
+
+      const record:
+        ConversationRecord = {
+        id: active.id,
+        createdAt:
+          active.createdAt,
+        mode: "compare",
+        prompt: active.prompt,
+        responses:
+          active.responses,
+      };
+
+      activeCompareHistory.current =
+        null;
+
+      setHistory((current) => {
+        const next = [
+          record,
+          ...current,
+        ].slice(0, 100);
+
+        saveHistory(next);
+        return next;
+      });
+
+      setSelectedHistoryId(
+        record.id,
+      );
+    };
 useEffect(() => {
     setProviderRuntime((current) => {
       const next = {
@@ -453,6 +530,24 @@ useEffect(() => {
             return;
           }
 
+          const activeHistory =
+            activeCompareHistory.current;
+
+          if (
+            activeHistory?.pending.has(
+              payload.providerId,
+            )
+          ) {
+            activeHistory.responses[
+              payload.providerId
+            ] =
+              (
+                activeHistory.responses[
+                  payload.providerId
+                ] ?? ""
+              ) + payload.text;
+          }
+
           setOutputs((current) => ({
             ...current,
             [payload.providerId]:
@@ -553,6 +648,33 @@ useEffect(() => {
                 : "done",
           }));
 
+          const activeHistory =
+            activeCompareHistory.current;
+
+          if (
+            activeHistory?.pending.has(
+              payload.providerId,
+            )
+          ) {
+            activeHistory.pending.delete(
+              payload.providerId,
+            );
+
+            if (
+              payload.cancelled &&
+              !activeHistory.responses[
+                payload.providerId
+              ]
+            ) {
+              activeHistory.responses[
+                payload.providerId
+              ] =
+                "Request cancelled.";
+            }
+
+            saveCompletedCompareHistory();
+          }
+
           if (!payload.cancelled) {
             setProviderRuntime(
               (current) => ({
@@ -609,10 +731,32 @@ useEffect(() => {
               "error",
           }));
 
+          const errorOutput =
+            `Request failed: ${payload.message}`;
+
+          const activeHistory =
+            activeCompareHistory.current;
+
+          if (
+            activeHistory?.pending.has(
+              payload.providerId,
+            )
+          ) {
+            activeHistory.responses[
+              payload.providerId
+            ] = errorOutput;
+
+            activeHistory.pending.delete(
+              payload.providerId,
+            );
+
+            saveCompletedCompareHistory();
+          }
+
           setOutputs((current) => ({
             ...current,
             [payload.providerId]:
-              `Request failed: ${payload.message}`,
+              errorOutput,
           }));
         },
       );
@@ -685,6 +829,19 @@ useEffect(() => {
         return;
       }
 
+      activeCompareHistory.current = {
+        id: crypto.randomUUID(),
+        createdAt: Date.now(),
+        prompt: text,
+        responses: {},
+        pending: new Set(
+          configuredProviders.map(
+            (provider) =>
+              provider.id,
+          ),
+        ),
+      };
+
       const nextOutputs:
         Record<string, string> = {};
 
@@ -716,13 +873,8 @@ useEffect(() => {
         setProviderRuntime(
           (current) => ({
             ...current,
-            [provider.id]: {
-              status: "checking",
-              message:
-                "Checking provider",
-              lastCheckedAt:
-                Date.now(),
-            },
+            [provider.id]:
+              checkingRuntime(),
           }),
         );
 
@@ -781,13 +933,35 @@ useEffect(() => {
               }),
             );
 
+            const errorOutput =
+              `Request failed: ${String(
+                error,
+              )}`;
+
+            const activeHistory =
+              activeCompareHistory.current;
+
+            if (
+              activeHistory?.pending.has(
+                provider.id,
+              )
+            ) {
+              activeHistory.responses[
+                provider.id
+              ] = errorOutput;
+
+              activeHistory.pending.delete(
+                provider.id,
+              );
+
+              saveCompletedCompareHistory();
+            }
+
             setOutputs(
               (current) => ({
                 ...current,
                 [provider.id]:
-                  `Request failed: ${String(
-                    error,
-                  )}`,
+                  errorOutput,
               }),
             );
           },
@@ -1323,6 +1497,22 @@ useEffect(() => {
           >
             🔑 Providers
           </button>
+          <button
+            type="button"
+            className={
+              activeTab ===
+              "history"
+                ? "action-button"
+                : "secondary-button"
+            }
+            onClick={() =>
+              setActiveTab(
+                "history",
+              )
+            }
+          >
+            🕘 History
+          </button>
         </div>
       </div>
 
@@ -1655,6 +1845,161 @@ useEffect(() => {
             </div>
           )}
         </>
+      )}
+
+      {activeTab ===
+        "history" && (
+        <div className="multillm-history-layout">
+          <aside
+            className="settings-card multillm-history-list"
+            style={cardStyle}
+          >
+            <div className="multillm-history-heading">
+              <div>
+                <strong>
+                  Conversation History
+                </strong>
+                <span>
+                  {history.length} saved conversation(s)
+                </span>
+              </div>
+
+              <button
+                type="button"
+                className="danger-button"
+                disabled={
+                  history.length === 0
+                }
+                onClick={() => {
+                  setHistory([]);
+                  setSelectedHistoryId(
+                    null,
+                  );
+                  saveHistory([]);
+                }}
+              >
+                Clear
+              </button>
+            </div>
+
+            {history.length === 0 ? (
+              <p className="multillm-history-empty">
+                No saved conversations yet.
+              </p>
+            ) : (
+              history.map((record) => (
+                <button
+                  key={record.id}
+                  type="button"
+                  className={[
+                    "multillm-history-item",
+                    selectedHistoryId ===
+                    record.id
+                      ? "multillm-history-item-active"
+                      : "",
+                  ].join(" ")}
+                  onClick={() =>
+                    setSelectedHistoryId(
+                      record.id,
+                    )
+                  }
+                >
+                  <strong>
+                    {record.prompt}
+                  </strong>
+
+                  <span>
+                    {record.mode ===
+                    "compare"
+                      ? "Compare"
+                      : "Smart Router"}
+                    {" · "}
+                    {new Date(
+                      record.createdAt,
+                    ).toLocaleString()}
+                  </span>
+                </button>
+              ))
+            )}
+          </aside>
+
+          <section
+            className="settings-card multillm-history-detail"
+            style={cardStyle}
+          >
+            {(() => {
+              const record =
+                history.find(
+                  (item) =>
+                    item.id ===
+                    selectedHistoryId,
+                ) ??
+                history[0];
+
+              if (!record) {
+                return (
+                  <div className="multillm-history-empty">
+                    Select a saved conversation.
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  <header>
+                    <span>
+                      {record.mode ===
+                      "compare"
+                        ? "Compare"
+                        : "Smart Router"}
+                    </span>
+
+                    <time>
+                      {new Date(
+                        record.createdAt,
+                      ).toLocaleString()}
+                    </time>
+                  </header>
+
+                  <div className="multillm-history-question">
+                    <strong>
+                      Question
+                    </strong>
+                    <p>
+                      {record.prompt}
+                    </p>
+                  </div>
+
+                  <div className="multillm-history-responses">
+                    {Object.entries(
+                      record.responses,
+                    ).map(
+                      ([
+                        providerId,
+                        response,
+                      ]) => (
+                        <article
+                          key={providerId}
+                        >
+                          <strong>
+                            {providerId}
+                          </strong>
+
+                          <MarkdownRenderer
+                            content={
+                              response ?? ""
+                            }
+                            fallback="No response."
+                          />
+                        </article>
+                      ),
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+          </section>
+        </div>
       )}
 
       {activeTab ===
