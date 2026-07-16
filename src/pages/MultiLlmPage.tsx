@@ -16,6 +16,7 @@ import {
 import MarkdownRenderer from "../components/MarkdownRenderer";
 
 import {
+  deleteHistory,
   loadHistory,
   saveHistory,
 } from "../services/history";
@@ -390,8 +391,18 @@ function MultiLlmPage({
         id: active.id,
         createdAt:
           active.createdAt,
+        updatedAt: Date.now(),
         mode: "compare",
+        title:
+          active.prompt.length > 60
+            ? `${active.prompt.slice(
+                0,
+                60,
+              )}…`
+            : active.prompt,
         prompt: active.prompt,
+        favorite: false,
+        tags: [],
         responses:
           active.responses,
       };
@@ -792,6 +803,24 @@ useEffect(() => {
         ),
     );
   };
+
+  const removeHistoryRecord =
+    (id: string) => {
+      const next =
+        deleteHistory(id);
+
+      setHistory(next);
+
+      setSelectedHistoryId(
+        (current) => {
+          if (current !== id) {
+            return current;
+          }
+
+          return next[0]?.id ?? null;
+        },
+      );
+    };
 
   const saveProviders =
     () => {
@@ -1888,9 +1917,8 @@ useEffect(() => {
               </p>
             ) : (
               history.map((record) => (
-                <button
+                <div
                   key={record.id}
-                  type="button"
                   className={[
                     "multillm-history-item",
                     selectedHistoryId ===
@@ -1898,27 +1926,49 @@ useEffect(() => {
                       ? "multillm-history-item-active"
                       : "",
                   ].join(" ")}
-                  onClick={() =>
-                    setSelectedHistoryId(
-                      record.id,
-                    )
-                  }
                 >
-                  <strong>
-                    {record.prompt}
-                  </strong>
+                  <button
+                    type="button"
+                    className="multillm-history-select"
+                    onClick={() =>
+                      setSelectedHistoryId(
+                        record.id,
+                      )
+                    }
+                  >
+                    <strong>
+                      {record.favorite
+                        ? "⭐ "
+                        : ""}
+                      {record.title}
+                    </strong>
 
-                  <span>
-                    {record.mode ===
-                    "compare"
-                      ? "Compare"
-                      : "Smart Router"}
-                    {" · "}
-                    {new Date(
-                      record.createdAt,
-                    ).toLocaleString()}
-                  </span>
-                </button>
+                    <span>
+                      {record.mode ===
+                      "compare"
+                        ? "Compare"
+                        : "Smart Router"}
+                      {" · "}
+                      {new Date(
+                        record.createdAt,
+                      ).toLocaleString()}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="multillm-history-delete"
+                    title="Delete conversation"
+                    aria-label={`Delete ${record.title}`}
+                    onClick={() =>
+                      removeHistoryRecord(
+                        record.id,
+                      )
+                    }
+                  >
+                    🗑
+                  </button>
+                </div>
               ))
             )}
           </aside>

@@ -3376,3 +3376,45 @@ a {
     grid-template-columns: 1fr;
   }
 }
+
+.multillm-history-item {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.multillm-history-select {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.multillm-history-select strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.multillm-history-delete {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 7px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.multillm-history-delete:hover {
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+}
