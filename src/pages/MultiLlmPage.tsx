@@ -13,6 +13,7 @@ import {
   cancelMultiLlmStream,
   startMultiLlmStream,
 } from "../services/multillm";
+import MarkdownRenderer from "../components/MarkdownRenderer";
 
 import {
   canRouteToProvider,
@@ -1486,16 +1487,20 @@ useEffect(() => {
                     </header>
 
                     <div className="multillm-output">
-                      {outputs[
-                        provider.id
-                      ] ||
-                        (provider.id ===
-                          "ollama" ||
-                        provider
-                          .apiKey
-                          .trim()
-                          ? "Waiting for a prompt."
-                          : "Configure this provider in the Providers tab.")}
+                      <MarkdownRenderer
+                        content={
+                          outputs[
+                            provider.id
+                          ] ?? ""
+                        }
+                        fallback={
+                          provider.id ===
+                            "ollama" ||
+                          provider.apiKey.trim()
+                            ? "Waiting for a prompt."
+                            : "Configure this provider in the Providers tab."
+                        }
+                      />
                     </div>
                   </article>
                 );
@@ -1622,10 +1627,14 @@ useEffect(() => {
               </header>
 
               <div className="multillm-output">
-                {outputs[
-                  routedProviderId
-                ] ||
-                  "Waiting for the routed response."}
+                <MarkdownRenderer
+                  content={
+                    outputs[
+                      routedProviderId
+                    ] ?? ""
+                  }
+                  fallback="Waiting for the routed response."
+                />
               </div>
             </article>
           ) : (
