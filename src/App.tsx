@@ -17,6 +17,7 @@ import McpPage from "./pages/McpPage";
 import ModelsPage from "./pages/ModelsPage";
 import MultiLlmPage from "./pages/MultiLlmPage";
 import PromptLibraryPage from "./pages/PromptLibraryPage";
+import ArtifactsPage from "./pages/ArtifactsPage";
 import OpenClawPage from "./pages/OpenClawPage";
 import ServicesPage from "./pages/ServicesPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -810,6 +811,18 @@ function App() {
                   : "Prompt loaded into Smart Router.",
               );
             }}
+          />
+        )}
+
+        {activePage ===
+          "Artifacts" && (
+          <ArtifactsPage
+            cardStyle={
+              cardStyle
+            }
+            onMessage={
+              handleMessage
+            }
           />
         )}
 

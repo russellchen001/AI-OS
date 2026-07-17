@@ -63,6 +63,11 @@ const navItems: Array<{
     label: "Prompts",
   },
   {
+    name: "Artifacts",
+    icon: "🧱",
+    label: "Artifacts",
+  },
+  {
     name: "Settings",
     icon: "⚙️",
     label: "Settings",

@@ -10,6 +10,9 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import ProviderErrorCard from "./ProviderErrorCard";
+import {
+  createArtifact,
+} from "../services/artifacts";
 
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
@@ -222,16 +225,32 @@ function CodeBlock({
           {language}
         </span>
 
-        <button
-          type="button"
-          onClick={() => {
-            void copyCode();
-          }}
-        >
-          {copied
-            ? "✓ Copied"
-            : "Copy"}
-        </button>
+        <div className="markdown-code-actions">
+          <button
+            type="button"
+            onClick={() => {
+              createArtifact({
+                language,
+                content: code,
+                source:
+                  "MultiLLM",
+              });
+            }}
+          >
+            Save Artifact
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              void copyCode();
+            }}
+          >
+            {copied
+              ? "✓ Copied"
+              : "Copy"}
+          </button>
+        </div>
       </div>
 
       <pre>
