@@ -68,6 +68,11 @@ const navItems: Array<{
     label: "Artifacts",
   },
   {
+    name: "AI Council",
+    icon: "🏛",
+    label: "AI Council",
+  },
+  {
     name: "Settings",
     icon: "⚙️",
     label: "Settings",

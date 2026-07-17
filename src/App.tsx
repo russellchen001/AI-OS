@@ -18,6 +18,7 @@ import ModelsPage from "./pages/ModelsPage";
 import MultiLlmPage from "./pages/MultiLlmPage";
 import PromptLibraryPage from "./pages/PromptLibraryPage";
 import ArtifactsPage from "./pages/ArtifactsPage";
+import AiCouncilPage from "./pages/AiCouncilPage";
 import OpenClawPage from "./pages/OpenClawPage";
 import ServicesPage from "./pages/ServicesPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -817,6 +818,18 @@ function App() {
         {activePage ===
           "Artifacts" && (
           <ArtifactsPage
+            cardStyle={
+              cardStyle
+            }
+            onMessage={
+              handleMessage
+            }
+          />
+        )}
+
+        {activePage ===
+          "AI Council" && (
+          <AiCouncilPage
             cardStyle={
               cardStyle
             }

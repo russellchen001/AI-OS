@@ -28,6 +28,7 @@ export type PageName =
   | "MultiLLM"
   | "Prompt Library"
   | "Artifacts"
+  | "AI Council"
   | "Settings";
 
 export type ThemeMode =
