@@ -58,11 +58,6 @@ const navItems: Array<{
     label: "MultiLLM",
   },
   {
-    name: "Prompt Library",
-    icon: "📚",
-    label: "Prompts",
-  },
-  {
     name: "Settings",
     icon: "⚙️",
     label: "Settings",

@@ -322,59 +322,6 @@ function MultiLlmPage({
     routedCategory,
     setRoutedCategory,
   ] = useState("");
-  useEffect(() => {
-    const raw =
-      localStorage.getItem(
-        "ai-os.prompt-library.pending.v1",
-      );
-
-    if (!raw) {
-      return;
-    }
-
-    try {
-      const pending =
-        JSON.parse(raw) as {
-          content?: unknown;
-          target?: unknown;
-        };
-
-      if (
-        typeof pending.content !==
-        "string"
-      ) {
-        return;
-      }
-
-      if (
-        pending.target ===
-        "router"
-      ) {
-        setRouterPrompt(
-          pending.content,
-        );
-        setActiveTab(
-          "router",
-        );
-      } else {
-        setPrompt(
-          pending.content,
-        );
-        setActiveTab(
-          "compare",
-        );
-      }
-    } catch (error) {
-      console.error(
-        "Unable to load Prompt Library handoff:",
-        error,
-      );
-    } finally {
-      localStorage.removeItem(
-        "ai-os.prompt-library.pending.v1",
-      );
-    }
-  }, []);
 
   const [
     outputs,

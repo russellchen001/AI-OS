@@ -26,7 +26,7 @@ export type PageName =
   | "Models"
   | "MCP"
   | "MultiLLM"
-  | "Settings"  | "Prompt Library";
+  | "Settings";
 
 export type ThemeMode =
   | "dark"
