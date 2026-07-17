@@ -16,6 +16,9 @@ import {
 } from "@tauri-apps/plugin-fs";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import {
+  useDialog,
+} from "../components/DialogProvider";
+import {
   cancelMultiLlmStream,
   startMultiLlmStream,
   type MultiLlmMessage,
@@ -147,6 +150,9 @@ function AiCouncilPage({
   cardStyle,
   onMessage,
 }: AiCouncilPageProps) {
+  const dialog =
+    useDialog();
+
   const [
     providers,
   ] = useState<

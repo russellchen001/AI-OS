@@ -7,6 +7,7 @@ import {
 } from "react-dom/client";
 
 import App from "./App";
+import { DialogProvider } from "./components/DialogProvider";
 
 import "./App.css";
 
@@ -25,6 +26,8 @@ createRoot(
   rootElement,
 ).render(
   <StrictMode>
-    <App />
+    <DialogProvider>
+        <App />
+      </DialogProvider>
   </StrictMode>,
 );

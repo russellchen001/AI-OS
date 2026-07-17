@@ -107,11 +107,15 @@ function App() {
   };
 
   const [
-    message,
-    setMessage,
-  ] = useState<ToastMessage | null>(
-    null,
-  );
+    messages,
+    setMessages,
+  ] = useState<
+    Array<
+      ToastMessage & {
+        id: string;
+      }
+    >
+  >([]);
 
   const handleMessage =
     useCallback(
@@ -134,32 +138,45 @@ function App() {
                   normalized.includes("created") ||
                   normalized.includes("updated") ||
                   normalized.includes("deleted") ||
-                  normalized.includes("completed")
+                  normalized.includes("completed") ||
+                  normalized.includes("exported") ||
+                  normalized.includes("imported") ||
+                  normalized.includes("moved")
                 ? "success"
                 : "info";
 
-        setMessage({
-          text: nextMessage,
-          type,
-        });
+        const id =
+          crypto.randomUUID();
+
+        setMessages(
+          (current) => [
+            ...current,
+            {
+              id,
+              text:
+                nextMessage,
+              type,
+            },
+          ].slice(-4),
+        );
+
+        window.setTimeout(
+          () => {
+            setMessages(
+              (current) =>
+                current.filter(
+                  (item) =>
+                    item.id !==
+                    id,
+                ),
+            );
+          },
+          4500,
+        );
       },
       [],
     );
 
-  useEffect(() => {
-    if (!message) {
-      return;
-    }
-
-    const timeoutId =
-      window.setTimeout(() => {
-        setMessage(null);
-      }, 4500);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [message]);
 
   const {
     settings,
@@ -913,45 +930,67 @@ function App() {
           />
         )}
 
-        {message && (
-          <section
-            className={[
-              "message-panel",
-              `message-panel-${message.type}`,
-            ].join(" ")}
-            role={
-              message.type === "error"
-                ? "alert"
-                : "status"
-            }
-          >
-            <span
-              className="message-panel-icon"
-              aria-hidden="true"
-            >
-              {message.type === "success"
-                ? "✓"
-                : message.type === "error"
-                  ? "!"
-                  : message.type === "warning"
-                    ? "⚠"
-                    : "i"}
-            </span>
+        {messages.length > 0 && (
+          <div className="message-stack">
+            {messages.map(
+              (message) => (
+                <section
+                  key={
+                    message.id
+                  }
+                  className={[
+                    "message-panel",
+                    `message-panel-${message.type}`,
+                  ].join(" ")}
+                  role={
+                    message.type ===
+                    "error"
+                      ? "alert"
+                      : "status"
+                  }
+                >
+                  <span
+                    className="message-panel-icon"
+                    aria-hidden="true"
+                  >
+                    {message.type ===
+                    "success"
+                      ? "✓"
+                      : message.type ===
+                          "error"
+                        ? "!"
+                        : message.type ===
+                            "warning"
+                          ? "⚠"
+                          : "i"}
+                  </span>
 
-            <span className="message-panel-text">
-              {message.text}
-            </span>
+                  <span className="message-panel-text">
+                    {
+                      message.text
+                    }
+                  </span>
 
-            <button
-              type="button"
-              aria-label="Dismiss message"
-              onClick={() =>
-                setMessage(null)
-              }
-            >
-              ×
-            </button>
-          </section>
+                  <button
+                    type="button"
+                    aria-label="Dismiss message"
+                    onClick={() =>
+                      setMessages(
+                        (current) =>
+                          current.filter(
+                            (item) =>
+                              item.id !==
+                              message.id,
+                          ),
+                      )
+                    }
+                  >
+                    ×
+                  </button>
+                </section>
+              ),
+            )}
+          </div>
         )}
         <CommandPalette
           open={

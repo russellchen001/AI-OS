@@ -18,6 +18,9 @@ import JSZip from "jszip";
 import mermaid from "mermaid";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import {
+  useDialog,
+} from "../components/DialogProvider";
+import {
   addTagsToArtifacts,
   createArtifactProject,
   deleteArtifact,
@@ -265,6 +268,9 @@ function ArtifactsPage({
   cardStyle,
   onMessage,
 }: ArtifactsPageProps) {
+  const dialog =
+    useDialog();
+
   const [
     projects,
     setProjects,
@@ -1185,9 +1191,18 @@ function ArtifactsPage({
         }
 
         const replace =
-          window.confirm(
-            "Replace the current Workspace?\n\nChoose Cancel to merge imported data.",
-          );
+          await dialog.confirm({
+            title:
+              "Import Workspace",
+            message:
+              "Replace the current Workspace? Choose Cancel to merge imported projects and Artifacts instead.",
+            confirmLabel:
+              "Replace Workspace",
+            cancelLabel:
+              "Merge",
+            tone:
+              "warning",
+          });
 
         const nextProjects =
           replace
@@ -1329,7 +1344,7 @@ function ArtifactsPage({
     };
 
   const batchMove =
-    () => {
+    async () => {
       if (
         selectedIds.size ===
         0
@@ -1338,18 +1353,32 @@ function ArtifactsPage({
       }
 
       const destination =
-        window.prompt(
-          [
-            "Move selected Artifacts to which project ID?",
-            "",
-            ...projects.map(
-              (project) =>
-                `${project.title}: ${project.id}`,
+        await dialog.select({
+          title:
+            "Move Artifacts",
+          message:
+            `Choose a destination for ${selectedIds.size} selected Artifact(s).`,
+          confirmLabel:
+            "Move",
+          options:
+            projects.map(
+              (project) => ({
+                value:
+                  project.id,
+                label:
+                  project.title,
+                description:
+                  `${artifacts.filter(
+                    (artifact) =>
+                      artifact.projectId ===
+                      project.id,
+                  ).length} file(s)`,
+              }),
             ),
-          ].join("\n"),
-          selectedProjectId ??
-            "",
-        );
+          initialValue:
+            selectedProjectId ??
+            projects[0]?.id,
+        });
 
       if (
         !destination ||
@@ -1384,7 +1413,7 @@ function ArtifactsPage({
     };
 
   const batchTag =
-    () => {
+    async () => {
       if (
         selectedIds.size ===
         0
@@ -1393,9 +1422,17 @@ function ArtifactsPage({
       }
 
       const value =
-        window.prompt(
-          "Tags to add, separated by commas:",
-        );
+        await dialog.prompt({
+          title:
+            "Add Tags",
+          message:
+            `Add tags to ${selectedIds.size} selected Artifact(s). Separate multiple tags with commas.`,
+          placeholder:
+            "frontend, database, draft",
+          confirmLabel:
+            "Add Tags",
+          required: true,
+        });
 
       if (!value) {
         return;
@@ -1416,14 +1453,27 @@ function ArtifactsPage({
     };
 
   const batchDelete =
-    () => {
+    async () => {
       if (
         selectedIds.size ===
-          0 ||
-        !window.confirm(
-          `Delete ${selectedIds.size} selected Artifact(s)?`,
-        )
+        0
       ) {
+        return;
+      }
+
+      const confirmed =
+        await dialog.confirm({
+          title:
+            "Delete Artifacts",
+          message:
+            `Delete ${selectedIds.size} selected Artifact(s)? This cannot be undone.`,
+          confirmLabel:
+            "Delete Artifacts",
+          tone:
+            "danger",
+        });
+
+      if (!confirmed) {
         return;
       }
 

@@ -5805,3 +5805,29 @@ a {
     display: none;
   }
 }
+
+/* ===== Toast Queue v1.7.0 ===== */
+
+.message-stack {
+  position: fixed;
+  z-index: 105000;
+  right: 20px;
+  bottom: 20px;
+  display: grid;
+  width: min(430px, calc(100vw - 32px));
+  gap: 9px;
+}
+
+.message-stack .message-panel {
+  position: static;
+  width: 100%;
+  margin: 0;
+}
+
+@media (max-width: 620px) {
+  .message-stack {
+    right: 12px;
+    bottom: 12px;
+    width: calc(100vw - 24px);
+  }
+}

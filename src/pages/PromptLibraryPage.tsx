@@ -26,6 +26,9 @@ import type {
   PromptTemplate,
 } from "../types/promptLibrary";
 
+import {
+  useDialog,
+} from "../components/DialogProvider";
 type PromptLibraryPageProps = {
   cardStyle: CSSProperties;
   onMessage: (
@@ -74,6 +77,9 @@ function PromptLibraryPage({
   onMessage,
   onUsePrompt,
 }: PromptLibraryPageProps) {
+  const dialog =
+    useDialog();
+
   const [
     prompts,
     setPrompts,

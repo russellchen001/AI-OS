@@ -1,0 +1,162 @@
+.unified-dialog-backdrop {
+  position: fixed;
+  z-index: 110000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(2, 6, 23, 0.74);
+  backdrop-filter: blur(7px);
+}
+
+.unified-dialog {
+  width: min(500px, 100%);
+  overflow: hidden;
+  border: 1px solid rgba(96, 165, 250, 0.32);
+  border-radius: 16px;
+  padding: 22px;
+  background:
+    linear-gradient(
+      150deg,
+      rgba(30, 41, 59, 0.99),
+      rgba(2, 6, 23, 0.99)
+    );
+  box-shadow:
+    0 28px 90px rgba(0, 0, 0, 0.62);
+}
+
+.unified-dialog-danger {
+  border-color: rgba(239, 68, 68, 0.48);
+}
+
+.unified-dialog-warning {
+  border-color: rgba(245, 158, 11, 0.46);
+}
+
+.unified-dialog-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.unified-dialog-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.15);
+  color: #93c5fd;
+  font-weight: 800;
+}
+
+.unified-dialog-danger
+.unified-dialog-icon {
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+}
+
+.unified-dialog-warning
+.unified-dialog-icon {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+}
+
+.unified-dialog h2 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 1.08rem;
+}
+
+.unified-dialog p {
+  margin: 7px 0 0;
+  color: #94a3b8;
+  line-height: 1.55;
+  white-space: pre-line;
+}
+
+.unified-dialog-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.unified-dialog-field input {
+  width: 100%;
+  border: 1px solid rgba(96, 165, 250, 0.55);
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: rgba(2, 6, 23, 0.72);
+  color: #f8fafc;
+  outline: none;
+}
+
+.unified-dialog-field input:focus {
+  border-color: #60a5fa;
+  box-shadow:
+    0 0 0 3px
+    rgba(59, 130, 246, 0.16);
+}
+
+.unified-dialog-error {
+  color: #fca5a5;
+  font-size: 0.7rem;
+}
+
+.unified-dialog-options {
+  display: grid;
+  gap: 7px;
+  max-height: 360px;
+  margin-top: 18px;
+  overflow-y: auto;
+}
+
+.unified-dialog-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 9px;
+  padding: 9px 10px;
+  background: rgba(15, 23, 42, 0.32);
+  cursor: pointer;
+}
+
+.unified-dialog-option-selected {
+  border-color: rgba(96, 165, 250, 0.66);
+  background: rgba(59, 130, 246, 0.13);
+}
+
+.unified-dialog-option > span {
+  display: grid;
+  gap: 2px;
+}
+
+.unified-dialog-option strong {
+  color: #e2e8f0;
+  font-size: 0.78rem;
+}
+
+.unified-dialog-option small {
+  color: #64748b;
+  font-size: 0.65rem;
+}
+
+.unified-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 22px;
+}
+
+@media (max-width: 560px) {
+  .unified-dialog-actions {
+    flex-direction: column-reverse;
+  }
+
+  .unified-dialog-actions button {
+    width: 100%;
+  }
+}
