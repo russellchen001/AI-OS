@@ -538,12 +538,33 @@ function ArtifactsPage({
     };
 
   useEffect(() => {
+    const openCreateProject =
+      () => {
+        setCreatingProject(
+          true,
+        );
+
+        setNewProjectTitle(
+          "",
+        );
+      };
+
+    window.addEventListener(
+      "ai-os:create-artifact-project",
+      openCreateProject,
+    );
+
     window.addEventListener(
       "ai-os:artifact-created",
       refresh,
     );
 
     return () => {
+      window.removeEventListener(
+        "ai-os:create-artifact-project",
+        openCreateProject,
+      );
+
       window.removeEventListener(
         "ai-os:artifact-created",
         refresh,

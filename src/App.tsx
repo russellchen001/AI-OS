@@ -9,6 +9,7 @@ import "./App.css";
 
 import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
+import CommandPalette from "./components/CommandPalette";
 
 import BackupPage from "./pages/BackupPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -43,6 +44,56 @@ function App() {
   ] = useState<PageName>(
     "Dashboard",
   );
+  const [
+    commandPaletteOpen,
+    setCommandPaletteOpen,
+  ] = useState(false);
+
+  useEffect(() => {
+    const handleCommandPaletteShortcut =
+      (event: KeyboardEvent) => {
+        if (
+          (
+            event.metaKey ||
+            event.ctrlKey
+          ) &&
+          event.key.toLowerCase() ===
+            "k"
+        ) {
+          event.preventDefault();
+
+          setCommandPaletteOpen(
+            (current) =>
+              !current,
+          );
+          return;
+        }
+
+        if (
+          event.key ===
+            "Escape" &&
+          commandPaletteOpen
+        ) {
+          setCommandPaletteOpen(
+            false,
+          );
+        }
+      };
+
+    window.addEventListener(
+      "keydown",
+      handleCommandPaletteShortcut,
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleCommandPaletteShortcut,
+      );
+    };
+  }, [
+    commandPaletteOpen,
+  ]);
 
   type ToastType =
     | "success"
@@ -289,6 +340,11 @@ function App() {
         }
         onPageChange={
           setActivePage
+        }
+        onOpenCommandPalette={() =>
+          setCommandPaletteOpen(
+            true,
+          )
         }
       />
 
@@ -859,10 +915,30 @@ function App() {
 
         {message && (
           <section
-            className="message-panel"
-            role="status"
+            className={[
+              "message-panel",
+              `message-panel-${message.type}`,
+            ].join(" ")}
+            role={
+              message.type === "error"
+                ? "alert"
+                : "status"
+            }
           >
-            <span>
+            <span
+              className="message-panel-icon"
+              aria-hidden="true"
+            >
+              {message.type === "success"
+                ? "✓"
+                : message.type === "error"
+                  ? "!"
+                  : message.type === "warning"
+                    ? "⚠"
+                    : "i"}
+            </span>
+
+            <span className="message-panel-text">
               {message.text}
             </span>
 
@@ -877,6 +953,25 @@ function App() {
             </button>
           </section>
         )}
+        <CommandPalette
+          open={
+            commandPaletteOpen
+          }
+          activePage={
+            activePage
+          }
+          onClose={() =>
+            setCommandPaletteOpen(
+              false,
+            )
+          }
+          onPageChange={
+            setActivePage
+          }
+          onMessage={
+            handleMessage
+          }
+        />
       </main>
     </div>
   );

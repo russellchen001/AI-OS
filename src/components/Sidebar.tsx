@@ -10,6 +10,8 @@ type SidebarProps = {
   onPageChange: (
     page: PageName,
   ) => void;
+  onOpenCommandPalette:
+    () => void;
 };
 
 const navItems: Array<{
@@ -83,6 +85,7 @@ function Sidebar({
   activePage,
   settings,
   onPageChange,
+  onOpenCommandPalette,
 }: SidebarProps) {
   return (
     <aside className="sidebar">
@@ -151,6 +154,19 @@ function Sidebar({
         )}
       </nav>
 
+      <button
+        type="button"
+        className="sidebar-command-button"
+        onClick={
+          onOpenCommandPalette
+        }
+      >
+        <span>
+          ⌕ Commands
+        </span>
+        <kbd>⌘K</kbd>
+      </button>
+
       <div className="sidebar-footer">
         <div className="refresh-card">
           <div className="refresh-label">
@@ -170,7 +186,7 @@ function Sidebar({
         </div>
 
         <div className="sidebar-version">
-          AI OS v1.0.0
+          AI OS v1.6.0
         </div>
       </div>
     </aside>
