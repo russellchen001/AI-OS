@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Runtime logs
+openclaw.log
+*.log
+
+# Local source backups
+*.bak
+*.prompt-library.bak

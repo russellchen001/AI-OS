@@ -1,9 +1,12 @@
 import {
+  useEffect,
   useMemo,
   useState,
   type CSSProperties,
 } from "react";
 
+import InlineAlert from "../components/InlineAlert";
+import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   BackupRecord,
   BackupStatus,
@@ -26,6 +29,7 @@ type BackupPageProps = {
   ) => void;
 
   onCreateBackup: () => void;
+  onCancelBackup: () => void;
 
   onRestoreBackup: (
     archivePath: string,
@@ -104,6 +108,7 @@ function BackupPage({
   cardStyle,
   onUpdateSetting,
   onCreateBackup,
+  onCancelBackup,
   onRestoreBackup,
   onRefresh,
   onReveal,
@@ -129,8 +134,46 @@ function BackupPage({
   const isCreating =
     status === "creating";
 
+  const isCancelling =
+    status === "cancelling";
+
   const isRestoring =
     status === "restoring";
+
+  const [
+    elapsedSeconds,
+    setElapsedSeconds,
+  ] = useState(0);
+
+  const operationActive =
+    isCreating ||
+    isCancelling ||
+    isRestoring;
+
+  useEffect(() => {
+    if (!operationActive) {
+      setElapsedSeconds(0);
+      return undefined;
+    }
+
+    const startedAt = Date.now();
+
+    setElapsedSeconds(0);
+
+    const intervalId =
+      window.setInterval(() => {
+        setElapsedSeconds(
+          Math.floor(
+            (Date.now() - startedAt) /
+              1000,
+          ),
+        );
+      }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [operationActive]);
 
   const totalSize =
     useMemo(
@@ -219,6 +262,7 @@ function BackupPage({
               placeholder="/Users/your-name/Backups"
               disabled={
                 isCreating ||
+                isCancelling ||
                 isRestoring
               }
               onChange={(
@@ -310,6 +354,7 @@ function BackupPage({
             className="action-button backup-button backup-primary-button"
             disabled={
               isCreating ||
+              isCancelling ||
               isRestoring
             }
             onClick={
@@ -321,14 +366,55 @@ function BackupPage({
               : "💾 Create Backup"}
           </button>
 
-          {error && (
+          {operationActive && (
             <div
-              className="backup-error"
-              role="alert"
+              className="backup-progress"
+              role="status"
+              aria-live="polite"
             >
-              {error}
+              <div className="backup-progress-heading">
+                <span>
+                  {isCancelling
+                    ? "Cancelling backup…"
+                    : isCreating
+                      ? "Creating backup archive…"
+                      : "Restoring backup archive…"}
+                </span>
+
+                <strong>
+                  {elapsedSeconds}s
+                </strong>
+              </div>
+
+              <div
+                className="backup-progress-track"
+                aria-hidden="true"
+              >
+                <span className="backup-progress-bar" />
+              </div>
+
+              <small>
+                Keep AI OS open until this operation finishes.
+              </small>
+
+              {(isCreating ||
+                isCancelling) && (
+                <button
+                  type="button"
+                  className="danger-button backup-cancel-button"
+                  disabled={isCancelling}
+                  onClick={onCancelBackup}
+                >
+                  {isCancelling
+                    ? "Cancelling..."
+                    : "Cancel Backup"}
+                </button>
+              )}
+
             </div>
           )}
+
+          <InlineAlert message={error} />
         </div>
 
         <div
@@ -585,7 +671,7 @@ function BackupPage({
                             );
                           }}
                         >
-                          Confirm
+                          Confirm Delete
                         </button>
 
                         <button
@@ -625,6 +711,40 @@ function BackupPage({
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmingDelete !== null}
+        title="Delete backup?"
+        message={
+          confirmingDelete
+            ? `This will permanently delete "${
+                backups.find(
+                  (backup) =>
+                    backup.path ===
+                    confirmingDelete,
+                )?.fileName ??
+                "this backup"
+              }". This action cannot be undone.`
+            : ""
+        }
+        confirmLabel="Confirm Delete"
+        busy={
+          confirmingDelete !== null &&
+          selectedBackup ===
+            confirmingDelete
+        }
+        onCancel={() =>
+          setConfirmingDelete(null)
+        }
+        onConfirm={() => {
+          if (!confirmingDelete) {
+            return;
+          }
+
+          onDelete(confirmingDelete);
+          setConfirmingDelete(null);
+        }}
+      />
     </section>
   );
 }

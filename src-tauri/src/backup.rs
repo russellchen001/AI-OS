@@ -1,71 +1,107 @@
-use chrono::{
-    DateTime,
-    Local,
-    Utc,
-};
+use chrono::{DateTime, Local, Utc};
 
-use flate2::{
-    read::GzDecoder,
-    write::GzEncoder,
-    Compression,
-};
+use flate2::read::GzDecoder;
 
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use serde::{Deserialize, Serialize};
 
 use std::{
-    fs::{
-        self,
-        File,
-    },
-    io::{
-        Read,
-        Write,
-    },
-    path::{
-        Path,
-        PathBuf,
-    },
-    process::Command,
+    collections::{HashMap, HashSet},
+    fs::{self, File},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::{Mutex, OnceLock},
 };
 
-use tar::{
-    Archive,
-    Builder,
-};
+use std::os::unix::fs::symlink;
+use tar::Archive;
 
 use tempfile::tempdir;
 
-const BACKUP_PREFIX: &str =
-    "ai-os-backup-";
+const BACKUP_PREFIX: &str = "ai-os-backup-";
 
-const BACKUP_SUFFIX: &str =
-    ".tar.gz";
+const BACKUP_SUFFIX: &str = ".tar.gz";
 
-const SETTINGS_FILE: &str =
-    "ai-os-settings.json";
+const SETTINGS_FILE: &str = "ai-os-settings.json";
 
-const MANIFEST_FILE: &str =
-    "backup-manifest.json";
+const MANIFEST_FILE: &str = "backup-manifest.json";
 
-#[derive(
-    Debug,
-    Deserialize,
-)]
+static CANCELLED_BACKUPS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct RunningBackup {
+    pid: u32,
+}
+
+static RUNNING_BACKUPS: OnceLock<Mutex<HashMap<String, RunningBackup>>> = OnceLock::new();
+
+fn cancelled_backups() -> &'static Mutex<HashSet<String>> {
+    CANCELLED_BACKUPS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn running_backups() -> &'static Mutex<HashMap<String, RunningBackup>> {
+    RUNNING_BACKUPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn is_backup_cancelled(operation_id: &str) -> bool {
+    cancelled_backups()
+        .lock()
+        .map(|cancelled| cancelled.contains(operation_id))
+        .unwrap_or(false)
+}
+
+fn clear_backup_cancelled(operation_id: &str) {
+    if let Ok(mut cancelled) = cancelled_backups().lock() {
+        cancelled.remove(operation_id);
+    }
+}
+
+#[tauri::command]
+pub fn cancel_backup(operation_id: String) -> Result<(), String> {
+    if operation_id.trim().is_empty() {
+        return Err("Backup operation ID is required.".to_string());
+    }
+
+    cancelled_backups()
+        .lock()
+        .map_err(|_| "Unable to access backup cancellation state.".to_string())?
+        .insert(operation_id.clone());
+
+    let running = running_backups()
+        .lock()
+        .map_err(|_| "Unable to access running backup state.".to_string())?
+        .get(&operation_id)
+        .cloned();
+
+    if let Some(running) = running {
+        let status = Command::new("/bin/kill")
+            .arg("-TERM")
+            .arg(running.pid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| format!("Unable to stop backup process: {}", error))?;
+
+        if !status.success() {
+            return Err("Unable to stop backup process.".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateBackupRequest {
+    pub operation_id: String,
     pub destination_directory: String,
     pub include_open_claw_config: bool,
     pub include_ai_os_settings: bool,
     pub settings_json: String,
 }
 
-#[derive(
-    Debug,
-    Deserialize,
-)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreBackupRequest {
     pub archive_path: String,
@@ -73,31 +109,20 @@ pub struct RestoreBackupRequest {
     pub restore_ai_os_settings: bool,
 }
 
-#[derive(
-    Debug,
-    Serialize,
-)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupResult {
     pub success: bool,
     pub message: String,
 
-    #[serde(
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub archive_path: Option<String>,
 
-    #[serde(
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub restored_settings_json:
-        Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restored_settings_json: Option<String>,
 }
 
-#[derive(
-    Debug,
-    Serialize,
-)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupRecord {
     pub id: String,
@@ -107,26 +132,20 @@ pub struct BackupRecord {
     pub size_bytes: u64,
 }
 
-#[derive(
-    Debug,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupManifest {
     version: String,
     created_at: String,
     includes_open_claw_config: bool,
     includes_ai_os_settings: bool,
-    open_claw_sources:
-        Vec<String>,
+    open_claw_sources: Vec<String>,
 }
 
 fn success(
     message: impl Into<String>,
     archive_path: Option<String>,
-    restored_settings_json:
-        Option<String>,
+    restored_settings_json: Option<String>,
 ) -> BackupResult {
     BackupResult {
         success: true,
@@ -136,9 +155,7 @@ fn success(
     }
 }
 
-fn failure(
-    message: impl Into<String>,
-) -> BackupResult {
+fn failure(message: impl Into<String>) -> BackupResult {
     BackupResult {
         success: false,
         message: message.into(),
@@ -147,25 +164,15 @@ fn failure(
     }
 }
 
-fn expand_home(
-    value: &str,
-) -> PathBuf {
-    let trimmed =
-        value.trim();
+fn expand_home(value: &str) -> PathBuf {
+    let trimmed = value.trim();
 
     if trimmed == "~" {
-        return dirs::home_dir()
-            .unwrap_or_else(|| {
-                PathBuf::from(trimmed)
-            });
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(trimmed));
     }
 
-    if let Some(rest) =
-        trimmed.strip_prefix("~/")
-    {
-        if let Some(home) =
-            dirs::home_dir()
-        {
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
     }
@@ -173,149 +180,57 @@ fn expand_home(
     PathBuf::from(trimmed)
 }
 
-fn open_claw_candidates()
-    -> Vec<(
-        &'static str,
-        PathBuf,
-    )>
-{
-    let Some(home) =
-        dirs::home_dir()
-    else {
+fn open_claw_candidates() -> Vec<(&'static str, PathBuf)> {
+    let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
 
     vec![
-        (
-            "dot-openclaw",
-            home.join(".openclaw"),
-        ),
+        ("dot-openclaw", home.join(".openclaw")),
         (
             "application-support-openclaw",
-            home.join(
-                "Library/Application Support/OpenClaw",
-            ),
+            home.join("Library/Application Support/OpenClaw"),
         ),
         (
             "launch-agent",
-            home.join(
-                "Library/LaunchAgents/ai.openclaw.gateway.plist",
-            ),
+            home.join("Library/LaunchAgents/ai.openclaw.gateway.plist"),
         ),
     ]
 }
 
-fn append_path(
-    builder:
-        &mut Builder<GzEncoder<File>>,
-    source: &Path,
-    archive_name: &Path,
-) -> Result<(), String> {
-    if source.is_dir() {
-        builder
-            .append_dir_all(
-                archive_name,
-                source,
-            )
-            .map_err(|error| {
-                format!(
-                    "Unable to archive {}: {}",
-                    source.display(),
-                    error
-                )
-            })?;
-    } else if source.is_file() {
-        builder
-            .append_path_with_name(
-                source,
-                archive_name,
-            )
-            .map_err(|error| {
-                format!(
-                    "Unable to archive {}: {}",
-                    source.display(),
-                    error
-                )
-            })?;
-    }
-
-    Ok(())
-}
-
-fn write_text_file(
-    path: &Path,
-    contents: &str,
-) -> Result<(), String> {
-    if let Some(parent) =
-        path.parent()
-    {
+fn write_text_file(path: &Path, contents: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|error| {
-                format!(
-                    "Unable to create {}: {}",
-                    parent.display(),
-                    error
-                )
-            })?;
+            .map_err(|error| format!("Unable to create {}: {}", parent.display(), error))?;
     }
 
-    let mut file =
-        File::create(path)
-            .map_err(|error| {
-                format!(
-                    "Unable to create {}: {}",
-                    path.display(),
-                    error
-                )
-            })?;
+    let mut file = File::create(path)
+        .map_err(|error| format!("Unable to create {}: {}", path.display(), error))?;
 
-    file.write_all(
-        contents.as_bytes(),
-    )
-    .map_err(|error| {
-        format!(
-            "Unable to write {}: {}",
-            path.display(),
-            error
-        )
-    })
+    file.write_all(contents.as_bytes())
+        .map_err(|error| format!("Unable to write {}: {}", path.display(), error))
 }
 
 #[tauri::command]
-pub fn create_backup(
-    request: CreateBackupRequest,
-) -> BackupResult {
-    let destination =
-        expand_home(
-            &request
-                .destination_directory,
-        );
+pub async fn create_backup(request: CreateBackupRequest) -> BackupResult {
+    match tauri::async_runtime::spawn_blocking(move || create_backup_blocking(request)).await {
+        Ok(result) => result,
+        Err(error) => failure(format!("Backup task failed: {}", error)),
+    }
+}
 
-    if request
-        .destination_directory
-        .trim()
-        .is_empty()
-    {
-        return failure(
-            "Backup directory is required.",
-        );
+fn create_backup_blocking(request: CreateBackupRequest) -> BackupResult {
+    let destination = expand_home(&request.destination_directory);
+
+    if request.destination_directory.trim().is_empty() {
+        return failure("Backup directory is required.");
     }
 
-    if !request
-        .include_open_claw_config
-        && !request
-            .include_ai_os_settings
-    {
-        return failure(
-            "Select at least one item to back up.",
-        );
+    if !request.include_open_claw_config && !request.include_ai_os_settings {
+        return failure("Select at least one item to back up.");
     }
 
-    if let Err(error) =
-        fs::create_dir_all(
-            &destination,
-        )
-    {
+    if let Err(error) = fs::create_dir_all(&destination) {
         return failure(format!(
             "Unable to create backup directory {}: {}",
             destination.display(),
@@ -323,366 +238,203 @@ pub fn create_backup(
         ));
     }
 
-    let timestamp =
-        Local::now().format(
-            "%Y%m%d-%H%M%S",
-        );
+    let timestamp = Local::now().format("%Y%m%d-%H%M%S");
 
-    let file_name = format!(
-        "{}{}{}",
-        BACKUP_PREFIX,
-        timestamp,
-        BACKUP_SUFFIX,
-    );
+    let file_name = format!("{}{}{}", BACKUP_PREFIX, timestamp, BACKUP_SUFFIX,);
 
-    let archive_path =
-        destination.join(file_name);
+    let archive_path = destination.join(file_name);
 
-    let staging =
-        match tempdir() {
-            Ok(value) => value,
+    let staging = match tempdir() {
+        Ok(value) => value,
+        Err(error) => {
+            return failure(format!("Unable to create temporary directory: {}", error));
+        }
+    };
 
-            Err(error) => {
-                return failure(
-                    format!(
-                        "Unable to create temporary directory: {}",
-                        error
-                    ),
-                );
-            }
-        };
+    if request.include_ai_os_settings {
+        let settings_path = staging.path().join(SETTINGS_FILE);
 
-    let mut included_sources =
-        Vec::new();
-
-    if request
-        .include_ai_os_settings
-    {
-        let settings_path =
-            staging
-                .path()
-                .join(SETTINGS_FILE);
-
-        if let Err(error) =
-            write_text_file(
-                &settings_path,
-                &request
-                    .settings_json,
-            )
-        {
+        if let Err(error) = write_text_file(&settings_path, &request.settings_json) {
             return failure(error);
         }
     }
 
-    let candidates =
-        open_claw_candidates();
+    let candidates = open_claw_candidates();
 
-    if request
-        .include_open_claw_config
-    {
-        for (
-            archive_name,
-            source,
-        ) in &candidates
-        {
-            if source.exists() {
-                included_sources.push(
-                    archive_name
-                        .to_string(),
-                );
-            }
+    let mut included_sources = Vec::new();
+
+    if request.include_open_claw_config {
+        let openclaw_staging = staging.path().join("openclaw");
+
+        if let Err(error) = fs::create_dir_all(&openclaw_staging) {
+            return failure(format!(
+                "Unable to create OpenClaw staging directory: {}",
+                error
+            ));
         }
-    }
 
-    let manifest =
-        BackupManifest {
-            version:
-                "1.2.0".to_string(),
-
-            created_at:
-                Utc::now()
-                    .to_rfc3339(),
-
-            includes_open_claw_config:
-                request
-                    .include_open_claw_config,
-
-            includes_ai_os_settings:
-                request
-                    .include_ai_os_settings,
-
-            open_claw_sources:
-                included_sources,
-        };
-
-    let manifest_json =
-        match serde_json::to_string_pretty(
-            &manifest,
-        ) {
-            Ok(value) => value,
-
-            Err(error) => {
-                return failure(
-                    format!(
-                        "Unable to create backup manifest: {}",
-                        error
-                    ),
-                );
-            }
-        };
-
-    if let Err(error) =
-        write_text_file(
-            &staging
-                .path()
-                .join(MANIFEST_FILE),
-            &manifest_json,
-        )
-    {
-        return failure(error);
-    }
-
-    let output =
-        match File::create(
-            &archive_path,
-        ) {
-            Ok(file) => file,
-
-            Err(error) => {
-                return failure(
-                    format!(
-                        "Unable to create archive {}: {}",
-                        archive_path.display(),
-                        error
-                    ),
-                );
-            }
-        };
-
-    let encoder =
-        GzEncoder::new(
-            output,
-            Compression::default(),
-        );
-
-    let mut builder =
-        Builder::new(encoder);
-
-    if let Err(error) =
-        append_path(
-            &mut builder,
-            &staging
-                .path()
-                .join(MANIFEST_FILE),
-            Path::new(MANIFEST_FILE),
-        )
-    {
-        let _ =
-            fs::remove_file(
-                &archive_path,
-            );
-
-        return failure(error);
-    }
-
-    if request
-        .include_ai_os_settings
-    {
-        if let Err(error) =
-            append_path(
-                &mut builder,
-                &staging
-                    .path()
-                    .join(
-                        SETTINGS_FILE,
-                    ),
-                Path::new(
-                    SETTINGS_FILE,
-                ),
-            )
-        {
-            let _ =
-                fs::remove_file(
-                    &archive_path,
-                );
-
-            return failure(error);
-        }
-    }
-
-    if request
-        .include_open_claw_config
-    {
-        for (
-            archive_name,
-            source,
-        ) in candidates
-        {
+        for (archive_name, source) in &candidates {
             if !source.exists() {
                 continue;
             }
 
-            let target =
-                PathBuf::from(
-                    "openclaw",
-                )
-                .join(
-                    archive_name,
-                );
+            included_sources.push(archive_name.to_string());
 
-            if let Err(error) =
-                append_path(
-                    &mut builder,
-                    &source,
-                    &target,
-                )
-            {
-                let _ =
-                    fs::remove_file(
-                        &archive_path,
-                    );
+            let link_path = openclaw_staging.join(archive_name);
 
-                return failure(error);
+            if let Err(error) = symlink(source, &link_path) {
+                return failure(format!("Unable to stage {}: {}", source.display(), error));
             }
         }
     }
 
-    if let Err(error) =
-        builder.finish()
-    {
-        let _ =
-            fs::remove_file(
-                &archive_path,
-            );
+    let manifest = BackupManifest {
+        version: "1.0.0".to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        includes_open_claw_config: request.include_open_claw_config,
+        includes_ai_os_settings: request.include_ai_os_settings,
+        open_claw_sources: included_sources,
+    };
 
-        return failure(
-            format!(
-                "Unable to finish backup archive: {}",
-                error
-            ),
-        );
+    let manifest_json = match serde_json::to_string_pretty(&manifest) {
+        Ok(value) => value,
+        Err(error) => {
+            return failure(format!("Unable to create backup manifest: {}", error));
+        }
+    };
+
+    if let Err(error) = write_text_file(&staging.path().join(MANIFEST_FILE), &manifest_json) {
+        return failure(error);
+    }
+
+    if is_backup_cancelled(&request.operation_id) {
+        clear_backup_cancelled(&request.operation_id);
+
+        return failure("Backup cancelled by user.");
+    }
+
+    let mut child = match Command::new("/usr/bin/tar")
+        .arg("-c")
+        .arg("-z")
+        .arg("-h")
+        .arg("-f")
+        .arg(&archive_path)
+        .arg("-C")
+        .arg(staging.path())
+        .arg(".")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return failure(format!("Unable to start backup process: {}", error));
+        }
+    };
+
+    let pid = child.id();
+
+    if let Ok(mut running) = running_backups().lock() {
+        running.insert(request.operation_id.clone(), RunningBackup { pid });
+    }
+
+    // Handle a cancellation request that arrived
+    // immediately after the process was spawned.
+    if is_backup_cancelled(&request.operation_id) {
+        let _ = child.kill();
+    }
+
+    let output = child.wait_with_output();
+
+    if let Ok(mut running) = running_backups().lock() {
+        running.remove(&request.operation_id);
+    }
+
+    let cancelled = is_backup_cancelled(&request.operation_id);
+
+    clear_backup_cancelled(&request.operation_id);
+
+    if cancelled {
+        let _ = fs::remove_file(&archive_path);
+
+        return failure("Backup cancelled by user.");
+    }
+
+    let output = match output {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = fs::remove_file(&archive_path);
+
+            return failure(format!("Backup process failed: {}", error));
+        }
+    };
+
+    if !output.status.success() {
+        let _ = fs::remove_file(&archive_path);
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+        return failure(if stderr.is_empty() {
+            "Backup process exited unsuccessfully.".to_string()
+        } else {
+            format!("Backup process failed: {}", stderr)
+        });
     }
 
     success(
-        format!(
-            "Backup created successfully: {}",
-            archive_path.display(),
-        ),
-        Some(
-            archive_path
-                .to_string_lossy()
-                .to_string(),
-        ),
+        format!("Backup created successfully: {}", archive_path.display(),),
+        Some(archive_path.to_string_lossy().to_string()),
         None,
     )
 }
 
-fn copy_recursively(
-    source: &Path,
-    destination: &Path,
-) -> Result<(), String> {
+fn copy_recursively(source: &Path, destination: &Path) -> Result<(), String> {
     if source.is_file() {
-        if let Some(parent) =
-            destination.parent()
-        {
+        if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)
-                .map_err(|error| {
-                    format!(
-                        "Unable to create {}: {}",
-                        parent.display(),
-                        error
-                    )
-                })?;
+                .map_err(|error| format!("Unable to create {}: {}", parent.display(), error))?;
         }
 
-        fs::copy(
-            source,
-            destination,
-        )
-        .map_err(|error| {
-            format!(
-                "Unable to restore {}: {}",
-                destination.display(),
-                error
-            )
-        })?;
+        fs::copy(source, destination)
+            .map_err(|error| format!("Unable to restore {}: {}", destination.display(), error))?;
 
         return Ok(());
     }
 
-    fs::create_dir_all(
-        destination,
-    )
-    .map_err(|error| {
-        format!(
-            "Unable to create {}: {}",
-            destination.display(),
-            error
-        )
-    })?;
+    fs::create_dir_all(destination)
+        .map_err(|error| format!("Unable to create {}: {}", destination.display(), error))?;
 
-    for entry in
-        fs::read_dir(source)
-            .map_err(|error| {
-                format!(
-                    "Unable to read {}: {}",
-                    source.display(),
-                    error
-                )
-            })?
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("Unable to read {}: {}", source.display(), error))?
     {
-        let entry =
-            entry.map_err(
-                |error| {
-                    error.to_string()
-                },
-            )?;
+        let entry = entry.map_err(|error| error.to_string())?;
 
-        copy_recursively(
-            &entry.path(),
-            &destination.join(
-                entry.file_name(),
-            ),
-        )?;
+        copy_recursively(&entry.path(), &destination.join(entry.file_name()))?;
     }
 
     Ok(())
 }
 
-fn restore_open_claw(
-    extracted_root: &Path,
-) -> Result<usize, String> {
-    let source_root =
-        extracted_root
-            .join("openclaw");
+fn restore_open_claw(extracted_root: &Path) -> Result<usize, String> {
+    let source_root = extracted_root.join("openclaw");
 
     if !source_root.exists() {
         return Ok(0);
     }
 
-    let candidates =
-        open_claw_candidates();
+    let candidates = open_claw_candidates();
 
     let mut restored = 0;
 
-    for (
-        archive_name,
-        destination,
-    ) in candidates
-    {
-        let source =
-            source_root.join(
-                archive_name,
-            );
+    for (archive_name, destination) in candidates {
+        let source = source_root.join(archive_name);
 
         if !source.exists() {
             continue;
         }
 
-        copy_recursively(
-            &source,
-            &destination,
-        )?;
+        copy_recursively(&source, &destination)?;
 
         restored += 1;
     }
@@ -691,13 +443,8 @@ fn restore_open_claw(
 }
 
 #[tauri::command]
-pub fn restore_backup(
-    request: RestoreBackupRequest,
-) -> BackupResult {
-    let archive_path =
-        expand_home(
-            &request.archive_path,
-        );
+pub fn restore_backup(request: RestoreBackupRequest) -> BackupResult {
+    let archive_path = expand_home(&request.archive_path);
 
     if !archive_path.is_file() {
         return failure(format!(
@@ -706,88 +453,44 @@ pub fn restore_backup(
         ));
     }
 
-    if !request
-        .restore_open_claw_config
-        && !request
-            .restore_ai_os_settings
-    {
-        return failure(
-            "Select at least one item to restore.",
-        );
+    if !request.restore_open_claw_config && !request.restore_ai_os_settings {
+        return failure("Select at least one item to restore.");
     }
 
-    let temporary =
-        match tempdir() {
-            Ok(value) => value,
+    let temporary = match tempdir() {
+        Ok(value) => value,
 
-            Err(error) => {
-                return failure(
-                    format!(
-                        "Unable to create restore directory: {}",
-                        error
-                    ),
-                );
-            }
-        };
+        Err(error) => {
+            return failure(format!("Unable to create restore directory: {}", error));
+        }
+    };
 
-    let file =
-        match File::open(
-            &archive_path,
-        ) {
-            Ok(value) => value,
+    let file = match File::open(&archive_path) {
+        Ok(value) => value,
 
-            Err(error) => {
-                return failure(
-                    format!(
-                        "Unable to open backup archive: {}",
-                        error
-                    ),
-                );
-            }
-        };
+        Err(error) => {
+            return failure(format!("Unable to open backup archive: {}", error));
+        }
+    };
 
-    let decoder =
-        GzDecoder::new(file);
+    let decoder = GzDecoder::new(file);
 
-    let mut archive =
-        Archive::new(decoder);
+    let mut archive = Archive::new(decoder);
 
-    if let Err(error) =
-        archive.unpack(
-            temporary.path(),
-        )
-    {
-        return failure(
-            format!(
-                "Unable to extract backup archive: {}",
-                error
-            ),
-        );
+    if let Err(error) = archive.unpack(temporary.path()) {
+        return failure(format!("Unable to extract backup archive: {}", error));
     }
 
-    let mut restored_parts =
-        Vec::new();
+    let mut restored_parts = Vec::new();
 
-    if request
-        .restore_open_claw_config
-    {
-        match restore_open_claw(
-            temporary.path(),
-        ) {
+    if request.restore_open_claw_config {
+        match restore_open_claw(temporary.path()) {
             Ok(count) if count > 0 => {
-                restored_parts.push(
-                    format!(
-                        "{} OpenClaw item(s)",
-                        count
-                    ),
-                );
+                restored_parts.push(format!("{} OpenClaw item(s)", count));
             }
 
             Ok(_) => {
-                restored_parts.push(
-                    "no OpenClaw files were present"
-                        .to_string(),
-                );
+                restored_parts.push("no OpenClaw files were present".to_string());
             }
 
             Err(error) => {
@@ -796,91 +499,46 @@ pub fn restore_backup(
         }
     }
 
-    let restored_settings_json =
-        if request
-            .restore_ai_os_settings
-        {
-            let settings_path =
-                temporary
-                    .path()
-                    .join(
-                        SETTINGS_FILE,
-                    );
+    let restored_settings_json = if request.restore_ai_os_settings {
+        let settings_path = temporary.path().join(SETTINGS_FILE);
 
-            if settings_path.is_file() {
-                let mut value =
-                    String::new();
+        if settings_path.is_file() {
+            let mut value = String::new();
 
-                let mut file =
-                    match File::open(
-                        &settings_path,
-                    ) {
-                        Ok(file) => file,
+            let mut file = match File::open(&settings_path) {
+                Ok(file) => file,
 
-                        Err(error) => {
-                            return failure(
-                                format!(
-                                    "Unable to open restored settings: {}",
-                                    error
-                                ),
-                            );
-                        }
-                    };
-
-                if let Err(error) =
-                    file.read_to_string(
-                        &mut value,
-                    )
-                {
-                    return failure(
-                        format!(
-                            "Unable to read restored settings: {}",
-                            error
-                        ),
-                    );
+                Err(error) => {
+                    return failure(format!("Unable to open restored settings: {}", error));
                 }
+            };
 
-                restored_parts.push(
-                    "AI OS settings"
-                        .to_string(),
-                );
-
-                Some(value)
-            } else {
-                restored_parts.push(
-                    "no AI OS settings were present"
-                        .to_string(),
-                );
-
-                None
+            if let Err(error) = file.read_to_string(&mut value) {
+                return failure(format!("Unable to read restored settings: {}", error));
             }
+
+            restored_parts.push("AI OS settings".to_string());
+
+            Some(value)
         } else {
+            restored_parts.push("no AI OS settings were present".to_string());
+
             None
-        };
+        }
+    } else {
+        None
+    };
 
     success(
-        format!(
-            "Restore completed: {}.",
-            restored_parts.join(", "),
-        ),
-        Some(
-            archive_path
-                .to_string_lossy()
-                .to_string(),
-        ),
+        format!("Restore completed: {}.", restored_parts.join(", "),),
+        Some(archive_path.to_string_lossy().to_string()),
         restored_settings_json,
     )
 }
 
 #[tauri::command]
-pub fn list_backups(
-    directory: String,
-) -> Result<
-    Vec<BackupRecord>,
-    String,
-> {
-    let directory =
-        expand_home(&directory);
+pub fn list_backups(directory: String) -> Result<Vec<BackupRecord>, String> {
+    let directory = expand_home(&directory);
 
     if !directory.exists() {
         return Ok(Vec::new());
@@ -893,149 +551,70 @@ pub fn list_backups(
         ));
     }
 
-    let mut records =
-        Vec::new();
+    let mut records = Vec::new();
 
-    for entry in
-        fs::read_dir(&directory)
-            .map_err(|error| {
-                format!(
-                    "Unable to read backup directory: {}",
-                    error
-                )
-            })?
+    for entry in fs::read_dir(&directory)
+        .map_err(|error| format!("Unable to read backup directory: {}", error))?
     {
-        let entry =
-            entry.map_err(
-                |error| {
-                    error.to_string()
-                },
-            )?;
+        let entry = entry.map_err(|error| error.to_string())?;
 
-        let path =
-            entry.path();
+        let path = entry.path();
 
         if !path.is_file() {
             continue;
         }
 
-        let Some(file_name) =
-            path.file_name()
-                .and_then(
-                    |value| {
-                        value.to_str()
-                    },
-                )
-        else {
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
 
-        if !file_name
-            .starts_with(
-                BACKUP_PREFIX,
-            )
-            || !file_name
-                .ends_with(
-                    BACKUP_SUFFIX,
-                )
-        {
+        if !file_name.starts_with(BACKUP_PREFIX) || !file_name.ends_with(BACKUP_SUFFIX) {
             continue;
         }
 
-        let metadata =
-            entry.metadata()
-                .map_err(
-                    |error| {
-                        error.to_string()
-                    },
-                )?;
+        let metadata = entry.metadata().map_err(|error| error.to_string())?;
 
-        let modified =
-            metadata.modified()
-                .ok()
-                .map(
-                    DateTime::<Utc>::from,
-                )
-                .map(
-                    |date| {
-                        date.to_rfc3339()
-                    },
-                )
-                .unwrap_or_else(
-                    || {
-                        Utc::now()
-                            .to_rfc3339()
-                    },
-                );
+        let modified = metadata
+            .modified()
+            .ok()
+            .map(DateTime::<Utc>::from)
+            .map(|date| date.to_rfc3339())
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
 
-        records.push(
-            BackupRecord {
-                id:
-                    path.to_string_lossy()
-                        .to_string(),
+        records.push(BackupRecord {
+            id: path.to_string_lossy().to_string(),
 
-                file_name:
-                    file_name.to_string(),
+            file_name: file_name.to_string(),
 
-                path:
-                    path.to_string_lossy()
-                        .to_string(),
+            path: path.to_string_lossy().to_string(),
 
-                created_at:
-                    modified,
+            created_at: modified,
 
-                size_bytes:
-                    metadata.len(),
-            },
-        );
+            size_bytes: metadata.len(),
+        });
     }
 
-    records.sort_by(
-        |left, right| {
-            right.created_at.cmp(
-                &left.created_at,
-            )
-        },
-    );
+    records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
 
     Ok(records)
 }
 
 #[tauri::command]
-pub fn reveal_backup(
-    archive_path: String,
-) -> Result<String, String> {
-    let archive_path =
-        expand_home(
-            &archive_path,
-        );
+pub fn reveal_backup(archive_path: String) -> Result<String, String> {
+    let archive_path = expand_home(&archive_path);
 
     if !archive_path.exists() {
-        return Err(format!(
-            "Backup does not exist: {}",
-            archive_path.display(),
-        ));
+        return Err(format!("Backup does not exist: {}", archive_path.display(),));
     }
 
-    let status =
-        Command::new(
-            "/usr/bin/open",
-        )
+    let status = Command::new("/usr/bin/open")
         .arg("-R")
         .arg(&archive_path)
         .status()
-        .map_err(|error| {
-            format!(
-                "Unable to reveal backup: {}",
-                error
-            )
-        })?;
+        .map_err(|error| format!("Unable to reveal backup: {}", error))?;
 
     if !status.success() {
-        return Err(format!(
-            "Finder returned status {}",
-            status
-        ));
+        return Err(format!("Finder returned status {}", status));
     }
 
     Ok(format!(
@@ -1045,68 +624,27 @@ pub fn reveal_backup(
 }
 
 #[tauri::command]
-pub fn delete_backup(
-    archive_path: String,
-) -> Result<String, String> {
-    let archive_path =
-        expand_home(
-            &archive_path,
-        );
+pub fn delete_backup(archive_path: String) -> Result<String, String> {
+    let archive_path = expand_home(&archive_path);
 
     if !archive_path.exists() {
-        return Err(format!(
-            "Backup does not exist: {}",
-            archive_path.display(),
-        ));
+        return Err(format!("Backup does not exist: {}", archive_path.display(),));
     }
 
     if !archive_path.is_file() {
-        return Err(
-            "Only backup archive files can be deleted."
-                .to_string(),
-        );
+        return Err("Only backup archive files can be deleted.".to_string());
     }
 
-    let Some(file_name) =
-        archive_path
-            .file_name()
-            .and_then(
-                |value| value.to_str(),
-            )
-    else {
-        return Err(
-            "Invalid backup filename."
-                .to_string(),
-        );
+    let Some(file_name) = archive_path.file_name().and_then(|value| value.to_str()) else {
+        return Err("Invalid backup filename.".to_string());
     };
 
-    if !file_name
-        .starts_with(
-            BACKUP_PREFIX,
-        )
-        || !file_name
-            .ends_with(
-                BACKUP_SUFFIX,
-            )
-    {
-        return Err(
-            "Refusing to delete a file that is not an AI OS backup."
-                .to_string(),
-        );
+    if !file_name.starts_with(BACKUP_PREFIX) || !file_name.ends_with(BACKUP_SUFFIX) {
+        return Err("Refusing to delete a file that is not an AI OS backup.".to_string());
     }
 
-    fs::remove_file(
-        &archive_path,
-    )
-    .map_err(|error| {
-        format!(
-            "Unable to delete backup: {}",
-            error
-        )
-    })?;
+    fs::remove_file(&archive_path)
+        .map_err(|error| format!("Unable to delete backup: {}", error))?;
 
-    Ok(format!(
-        "Backup deleted: {}",
-        file_name,
-    ))
+    Ok(format!("Backup deleted: {}", file_name,))
 }

@@ -8,6 +8,14 @@ fn command_success(command: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn curl_success(url: &str) -> bool {
+    Command::new("curl")
+        .args(["-fsS", "--max-time", "3", url])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn status_icon(running: bool) -> &'static str {
     if running {
         "🟢"
@@ -17,21 +25,35 @@ fn status_icon(running: bool) -> &'static str {
 }
 
 #[tauri::command]
-pub fn health_check() -> String {
-    let openclaw_running = command_success(
-        r#"
-curl -fsS http://localhost:18789 >/dev/null 2>&1 ||
+pub fn health_check(
+    openclaw_url: Option<String>,
+    ollama_url: Option<String>,
+    open_web_ui_url: Option<String>,
+) -> String {
+    let openclaw_url = openclaw_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://localhost:18789".to_string());
+
+    let ollama_base = ollama_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+    let open_web_ui_url = open_web_ui_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://localhost:3000".to_string());
+
+    let ollama_tags_url = format!("{}/api/tags", ollama_base.trim_end_matches('/'),);
+
+    let openclaw_running = curl_success(&openclaw_url)
+        || command_success(
+            r#"
 launchctl print gui/$(id -u)/ai.openclaw.gateway >/dev/null 2>&1 ||
 pgrep -f "openclaw" >/dev/null 2>&1
 "#,
-    );
+        );
 
-    let ollama_running = command_success(
-        r#"
-curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1 ||
-pgrep -f "ollama serve" >/dev/null 2>&1
-"#,
-    );
+    let ollama_running = curl_success(&ollama_tags_url)
+        || command_success(r#"pgrep -f "ollama serve" >/dev/null 2>&1"#);
 
     let docker_running = command_success(
         r#"
@@ -40,15 +62,14 @@ pgrep -f "ollama serve" >/dev/null 2>&1
 "#,
     );
 
-    let open_webui_running = command_success(
-        r#"
-curl -fsS http://localhost:3000 >/dev/null 2>&1 ||
-curl -fsS http://localhost:8080 >/dev/null 2>&1 ||
+    let open_webui_running = curl_success(&open_web_ui_url)
+        || command_success(
+            r#"
 "/Applications/Docker.app/Contents/Resources/bin/docker" ps \
 --format '{{.Names}}' 2>/dev/null |
 grep -Ei 'open[-_]?webui' >/dev/null
 "#,
-    );
+        );
 
     let cherry_running = command_success(
         r#"

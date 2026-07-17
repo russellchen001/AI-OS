@@ -1,10 +1,7 @@
 use std::process::Command;
 
 fn run_shell(command: &str) -> (bool, String) {
-    match Command::new("/bin/sh")
-        .args(["-c", command])
-        .output()
-    {
+    match Command::new("/bin/sh").args(["-c", command]).output() {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -50,10 +47,26 @@ Ollama: {}\n\
 Cherry Studio: {}\n\
 Docker: {}\n\n\
 Docker command output:\n{}",
-        if openclaw_ok { "Stopped" } else { "Failed / already stopped" },
-        if ollama_ok { "Stopped" } else { "Failed / already stopped" },
-        if cherry_ok { "Stopped" } else { "Failed / already stopped" },
-        if docker_ok { "Command succeeded" } else { "Command failed" },
+        if openclaw_ok {
+            "Stopped"
+        } else {
+            "Failed / already stopped"
+        },
+        if ollama_ok {
+            "Stopped"
+        } else {
+            "Failed / already stopped"
+        },
+        if cherry_ok {
+            "Stopped"
+        } else {
+            "Failed / already stopped"
+        },
+        if docker_ok {
+            "Command succeeded"
+        } else {
+            "Command failed"
+        },
         if docker_output.is_empty() {
             "(no output)"
         } else {

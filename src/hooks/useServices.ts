@@ -13,6 +13,7 @@ import type {
 
 type UseServicesOptions = {
   settings: Settings;
+  activeOpenClawUrl?: string;
   onMessage: (
     message: string,
   ) => void;
@@ -20,6 +21,7 @@ type UseServicesOptions = {
 
 function useServices({
   settings,
+  activeOpenClawUrl,
   onMessage,
 }: UseServicesOptions) {
   const [services, setServices] =
@@ -70,9 +72,20 @@ function useServices({
         setIsChecking(true);
 
         const result =
-          await invoke<string>(
-            "health_check",
-          );
+  await invoke<string>(
+    "health_check",
+    {
+      openclawUrl:
+        activeOpenClawUrl ??
+        settings.openClawUrl,
+
+      ollamaUrl:
+        settings.ollamaUrl,
+
+      openWebUiUrl:
+        settings.openWebUiUrl,
+    },
+  );
 
         if (showMessage) {
           onMessage(result);
@@ -116,7 +129,13 @@ function useServices({
         setIsChecking(false);
       }
     },
-    [onMessage],
+    [
+  activeOpenClawUrl,
+  onMessage,
+  settings.openClawUrl,
+  settings.ollamaUrl,
+  settings.openWebUiUrl,
+],
   );
 
   const startAll =

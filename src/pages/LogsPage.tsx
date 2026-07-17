@@ -5,7 +5,9 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import ConfirmDialog from "../components/ConfirmDialog";
 
+import InlineAlert from "../components/InlineAlert";
 import type {
   LogEntry,
   LogLevel,
@@ -396,63 +398,24 @@ function LogsPage({
             Auto scroll
           </label>
 
-          {confirmClear ? (
-            <div className="logs-clear-confirmation">
-              <button
-                type="button"
-                className="danger-button"
-                disabled={
-                  isLoading
-                }
-                onClick={() => {
-                  onClear();
-                  setConfirmClear(
-                    false,
-                  );
-                }}
-              >
-                Confirm Clear
-              </button>
-
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() =>
-                  setConfirmClear(
-                    false,
-                  )
-                }
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              className="danger-button"
-              disabled={
-                isLoading ||
-                logs.length === 0
-              }
-              onClick={() =>
-                setConfirmClear(
-                  true,
-                )
-              }
-            >
-              Clear Logs
-            </button>
-          )}
+          <button
+            type="button"
+            className="danger-button"
+            disabled={
+              isLoading ||
+              logs.length === 0
+            }
+            onClick={() =>
+              setConfirmClear(
+                true,
+              )
+            }
+          >
+            Clear Logs
+          </button>
         </div>
 
-        {error && (
-          <div
-            className="logs-error"
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
+        <InlineAlert message={error} />
 
         <div
           ref={logContainerRef}
@@ -516,15 +479,57 @@ function LogsPage({
                     {entry.level}
                   </span>
 
-                  <pre className="log-message">
-                    {entry.message}
-                  </pre>
+                  <div className="log-message-cell">
+                    <details className="log-message-details">
+                      <summary>
+                        <span className="log-message-preview">
+                          {entry.message}
+                        </span>
+
+                        <span className="log-message-toggle">
+                          View
+                        </span>
+                      </summary>
+
+                      <pre className="log-message">
+                        {entry.message}
+                      </pre>
+                    </details>
+
+                    <button
+                      type="button"
+                      className="log-copy-button"
+                      aria-label={`Copy log from ${entry.source}`}
+                      title="Copy log message"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(
+                          entry.message,
+                        );
+                      }}
+                    >
+                      Copy
+                    </button>
+                  </div>
                 </article>
               ),
             )
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear all logs?"
+        message="This will permanently remove all current log entries. This action cannot be undone."
+        confirmLabel="Confirm Clear"
+        busy={isLoading}
+        onCancel={() =>
+          setConfirmClear(false)
+        }
+        onConfirm={() => {
+          onClear();
+          setConfirmClear(false);
+        }}
+      />
     </section>
   );
 }

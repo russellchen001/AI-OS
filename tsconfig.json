@@ -16,6 +16,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
 
+    "noEmit": true,
+
     "skipLibCheck": true,
 
     "forceConsistentCasingInFileNames": true

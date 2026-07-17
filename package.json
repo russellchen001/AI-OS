@@ -1,7 +1,7 @@
 {
   "name": "ai-os",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.0.0",
   "description": "AI OS Personal AI Workspace",
   "author": "Russell Chen",
   "type": "module",
@@ -15,9 +15,18 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-fs": "^2.5.1",
     "@tauri-apps/plugin-opener": "^2",
+    "highlight.js": "^11.11.1",
+    "katex": "^0.17.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

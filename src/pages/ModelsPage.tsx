@@ -4,6 +4,8 @@ import {
   type CSSProperties,
 } from "react";
 
+import InlineAlert from "../components/InlineAlert";
+import ConfirmDialog from "../components/ConfirmDialog";
 import {
   POPULAR_OLLAMA_MODELS,
 } from "../config/constants";
@@ -455,14 +457,7 @@ function ModelsPage({
             </div>
           )}
 
-        {error && (
-          <div
-            className="models-error"
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
+        <InlineAlert message={error} />
       </div>
 
       <div className="section-header models-list-header">
@@ -498,17 +493,30 @@ function ModelsPage({
           style={cardStyle}
         >
           <span>
-            🧠
+            {searchText.trim() ? "🔍" : "🧠"}
           </span>
 
           <h3>
-            No models installed
+            {searchText.trim()
+              ? `No models match "${searchText.trim()}"`
+              : "No models installed"}
           </h3>
 
           <p>
-            Download a model to begin
-            using local AI.
+            {searchText.trim()
+              ? "Try another search term or clear the current search."
+              : "Download a model to begin using local AI."}
           </p>
+
+          {searchText.trim() && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => onSearchChange("")}
+            >
+              Clear Search
+            </button>
+          )}
         </div>
       ) : (
         <div className="models-grid">
@@ -516,10 +524,6 @@ function ModelsPage({
             (model) => {
               const busy =
                 activeModel ===
-                model.name;
-
-              const deleting =
-                confirmDelete ===
                 model.name;
 
               return (
@@ -611,55 +615,18 @@ function ModelsPage({
                         : "Test"}
                     </button>
 
-                    {deleting ? (
-                      <>
-                        <button
-                          type="button"
-                          className="danger-button"
-                          disabled={
-                            busy
-                          }
-                          onClick={() => {
-                            onDelete(
-                              model.name,
-                            );
-
-                            setConfirmDelete(
-                              null,
-                            );
-                          }}
-                        >
-                          Confirm
-                        </button>
-
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() =>
-                            setConfirmDelete(
-                              null,
-                            )
-                          }
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="danger-button"
-                        disabled={
-                          isBusy
-                        }
-                        onClick={() =>
-                          setConfirmDelete(
-                            model.name,
-                          )
-                        }
-                      >
-                        Delete
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={isBusy}
+                      onClick={() =>
+                        setConfirmDelete(
+                          model.name,
+                        )
+                      }
+                    >
+                      Delete
+                    </button>
                   </div>
                 </article>
               );
@@ -785,17 +752,36 @@ function ModelsPage({
               </div>
             )}
 
-            {modalError && (
-              <div
-                className="models-error"
-                role="alert"
-              >
-                {modalError}
-              </div>
-            )}
+            <InlineAlert message={modalError} />
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title="Delete model?"
+        message={
+          confirmDelete
+            ? `This will permanently delete "${confirmDelete}". This action cannot be undone.`
+            : ""
+        }
+        confirmLabel="Confirm Delete"
+        busy={
+          confirmDelete !== null &&
+          status === "deleting" &&
+          activeModel === confirmDelete
+        }
+        onCancel={() =>
+          setConfirmDelete(null)
+        }
+        onConfirm={() => {
+          if (!confirmDelete) {
+            return;
+          }
+
+          onDelete(confirmDelete);
+          setConfirmDelete(null);
+        }}
+      />
     </section>
   );
 }

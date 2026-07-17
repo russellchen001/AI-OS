@@ -96,11 +96,11 @@
 
 .service-toggle-large {
   min-width: 180px;
-  height: 48px;
+  height: 42px;
   justify-content: center;
   gap: 12px;
   padding: 0 18px;
-  border-radius: 12px;
+  border-radius: 999px;
 }
 
 .service-toggle-large .service-toggle-track {

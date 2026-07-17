@@ -15,6 +15,8 @@ import DashboardPage from "./pages/DashboardPage";
 import LogsPage from "./pages/LogsPage";
 import McpPage from "./pages/McpPage";
 import ModelsPage from "./pages/ModelsPage";
+import MultiLlmPage from "./pages/MultiLlmPage";
+import PromptLibraryPage from "./pages/PromptLibraryPage";
 import OpenClawPage from "./pages/OpenClawPage";
 import ServicesPage from "./pages/ServicesPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -40,22 +42,71 @@ function App() {
     "Dashboard",
   );
 
+  type ToastType =
+    | "success"
+    | "error"
+    | "warning"
+    | "info";
+
+  type ToastMessage = {
+    text: string;
+    type: ToastType;
+  };
+
   const [
     message,
     setMessage,
-  ] = useState("");
+  ] = useState<ToastMessage | null>(
+    null,
+  );
 
   const handleMessage =
     useCallback(
       (
         nextMessage: string,
       ) => {
-        setMessage(
-          nextMessage,
-        );
+        const normalized =
+          nextMessage.toLowerCase();
+
+        const type: ToastType =
+          normalized.includes("error") ||
+          normalized.includes("failed") ||
+          normalized.includes("unable")
+            ? "error"
+            : normalized.includes("warning") ||
+                normalized.includes("warn")
+              ? "warning"
+              : normalized.includes("success") ||
+                  normalized.includes("saved") ||
+                  normalized.includes("created") ||
+                  normalized.includes("updated") ||
+                  normalized.includes("deleted") ||
+                  normalized.includes("completed")
+                ? "success"
+                : "info";
+
+        setMessage({
+          text: nextMessage,
+          type,
+        });
       },
       [],
     );
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+
+    const timeoutId =
+      window.setTimeout(() => {
+        setMessage(null);
+      }, 4500);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [message]);
 
   const {
     settings,
@@ -70,6 +121,15 @@ function App() {
     metrics,
     refreshMetrics,
   } = useMetrics();
+
+  const openClaw =
+  useOpenClaw({
+    refreshInterval:
+      settings.refreshInterval,
+
+    onMessage:
+      handleMessage,
+  });
 
   const {
     services,
@@ -89,11 +149,15 @@ function App() {
     openService,
     handleGlobalToggle,
   } = useServices({
-    settings,
+  settings,
 
-    onMessage:
-      handleMessage,
-  });
+  activeOpenClawUrl:
+    openClaw.activeServer
+      ?.serverUrl,
+
+  onMessage:
+    handleMessage,
+});
 
   const backup =
     useBackup({
@@ -133,27 +197,21 @@ function App() {
         handleMessage,
     });
 
-  const openClaw =
-    useOpenClaw({
-      refreshInterval:
-        settings.refreshInterval,
-
-      onMessage:
-        handleMessage,
-    });
-
   useEffect(() => {
-    healthCheck(false);
-    refreshMetrics();
+    void healthCheck(
+      false,
+    );
+
+    void refreshMetrics();
 
     const interval =
       window.setInterval(
         () => {
-          healthCheck(
+          void healthCheck(
             false,
           );
 
-          refreshMetrics();
+          void refreshMetrics();
         },
         Math.max(
           settings
@@ -296,11 +354,11 @@ function App() {
             onRefreshMetrics={
               refreshMetrics
             }
-            onHealthCheck={() =>
-              healthCheck(
+            onHealthCheck={() => {
+              void healthCheck(
                 true,
-              )
-            }
+              );
+            }}
             onBackup={() =>
               setActivePage(
                 "Backup",
@@ -367,6 +425,14 @@ function App() {
               openClaw
                 .connectedCount
             }
+            autoConnectCount={
+              openClaw
+                .autoConnectCount
+            }
+            averageLatencyMs={
+              openClaw
+                .averageLatencyMs
+            }
             status={
               openClaw.status
             }
@@ -378,9 +444,25 @@ function App() {
               openClaw
                 .testingServerId
             }
+            isTestingAll={
+              openClaw
+                .isTestingAll
+            }
+            isImporting={
+              openClaw
+                .isImporting
+            }
+            isExporting={
+              openClaw
+                .isExporting
+            }
             remoteStatus={
               openClaw
                 .remoteStatus
+            }
+            runtimeConfig={
+              openClaw
+                .runtimeConfig
             }
             searchText={
               openClaw
@@ -396,10 +478,12 @@ function App() {
               openClaw
                 .setSearchText
             }
-            onRefresh={
-              openClaw
-                .refreshServers
-            }
+            onRefresh={() => {
+              void openClaw
+                .refreshAllMetadata(
+                  true,
+                );
+            }}
             onCreate={
               openClaw
                 .createServer
@@ -411,6 +495,10 @@ function App() {
             onDelete={
               openClaw
                 .removeServer
+            }
+            onDuplicate={
+              openClaw
+                .duplicateServer
             }
             onToggle={
               openClaw
@@ -427,6 +515,22 @@ function App() {
             onTestUnsaved={
               openClaw
                 .testUnsavedServer
+            }
+            onTestAll={
+              openClaw
+                .testAllServers
+            }
+            onCopyUrl={
+              openClaw
+                .copyServerUrl
+            }
+            onExport={
+              openClaw
+                .exportServers
+            }
+            onImport={
+              openClaw
+                .importServers
             }
           />
         )}
@@ -459,6 +563,9 @@ function App() {
             onCreateBackup={
               backup.runBackup
             }
+            onCancelBackup={
+              backup.cancelCurrentBackup
+            }
             onRestoreBackup={(
               archivePath,
               restoreOpenClawConfig,
@@ -466,9 +573,7 @@ function App() {
             ) =>
               backup.runRestore({
                 archivePath,
-
                 restoreOpenClawConfig,
-
                 restoreAiOsSettings,
               })
             }
@@ -491,19 +596,24 @@ function App() {
           "Logs" && (
           <LogsPage
             logs={
-              logs.filteredLogs
+              logs
+                .filteredLogs
             }
             selectedSource={
-              logs.selectedSource
+              logs
+                .selectedSource
             }
             selectedLevel={
-              logs.selectedLevel
+              logs
+                .selectedLevel
             }
             searchText={
-              logs.searchText
+              logs
+                .searchText
             }
             isLoading={
-              logs.isLoading
+              logs
+                .isLoading
             }
             isAutoRefresh={
               logs
@@ -531,11 +641,11 @@ function App() {
               logs
                 .setIsAutoRefresh
             }
-            onRefresh={() =>
-              logs.refreshLogs(
+            onRefresh={() => {
+              void logs.refreshLogs(
                 true,
-              )
-            }
+              );
+            }}
             onClear={
               logs.removeLogs
             }
@@ -550,7 +660,8 @@ function App() {
                 .filteredModels
             }
             totalSize={
-              models.totalSize
+              models
+                .totalSize
             }
             status={
               models.status
@@ -602,19 +713,23 @@ function App() {
           "MCP" && (
           <McpPage
             servers={
-              mcp.filteredServers
+              mcp
+                .filteredServers
             }
             enabledCount={
-              mcp.enabledCount
+              mcp
+                .enabledCount
             }
             status={
               mcp.status
             }
             activeServerId={
-              mcp.activeServerId
+              mcp
+                .activeServerId
             }
             searchText={
-              mcp.searchText
+              mcp
+                .searchText
             }
             error={
               mcp.error
@@ -623,24 +738,78 @@ function App() {
               cardStyle
             }
             onSearchChange={
-              mcp.setSearchText
+              mcp
+                .setSearchText
             }
             onRefresh={
-              mcp.refreshServers
+              mcp
+                .refreshServers
             }
             onCreate={
-              mcp.createServer
+              mcp
+                .createServer
             }
             onUpdate={
-              mcp.editServer
+              mcp
+                .editServer
             }
             onToggle={
               mcp
                 .setServerEnabled
             }
             onDelete={
-              mcp.removeServer
+              mcp
+                .removeServer
             }
+          />
+        )}
+
+        {activePage ===
+          "MultiLLM" && (
+          <MultiLlmPage
+            cardStyle={
+              cardStyle
+            }
+            onMessage={
+              handleMessage
+            }
+          />
+        )}
+
+        {activePage ===
+          "Prompt Library" && (
+          <PromptLibraryPage
+            cardStyle={
+              cardStyle
+            }
+            onMessage={
+              handleMessage
+            }
+            onUsePrompt={(
+              content,
+              target,
+            ) => {
+              localStorage.setItem(
+                "ai-os.prompt-library.pending.v1",
+                JSON.stringify({
+                  content,
+                  target,
+                  createdAt:
+                    Date.now(),
+                }),
+              );
+
+              setActivePage(
+                "MultiLLM",
+              );
+
+              handleMessage(
+                target ===
+                "compare"
+                  ? "Prompt loaded into MultiLLM Compare."
+                  : "Prompt loaded into Smart Router.",
+              );
+            }}
           />
         )}
 
@@ -668,16 +837,14 @@ function App() {
             role="status"
           >
             <span>
-              {message}
+              {message.text}
             </span>
 
             <button
               type="button"
               aria-label="Dismiss message"
               onClick={() =>
-                setMessage(
-                  "",
-                )
+                setMessage(null)
               }
             >
               ×
