@@ -13,6 +13,9 @@ import ProviderErrorCard from "./ProviderErrorCard";
 import {
   createArtifact,
 } from "../services/artifacts";
+import type {
+  ArtifactSource,
+} from "../types/artifact";
 
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
@@ -20,6 +23,8 @@ import "highlight.js/styles/github-dark.css";
 type MarkdownRendererProps = {
   content: string;
   fallback?: string;
+  artifactSource?: ArtifactSource;
+  artifactProvider?: string;
 };
 
 type CodeBlockProps =
@@ -27,6 +32,8 @@ type CodeBlockProps =
     inline?: boolean;
     className?: string;
     children?: React.ReactNode;
+    artifactSource?: ArtifactSource;
+    artifactProvider?: string;
   };
 
 function extractText(
@@ -132,6 +139,33 @@ function detectCodeLanguage(
   ) {
     return "sql";
   }
+  if (
+    /^\s*\[package\]/m.test(
+      value,
+    ) ||
+    /^\s*\[dependencies\]/m.test(
+      value,
+    )
+  ) {
+    return "toml";
+  }
+
+  if (
+    /^\s*[\w-]+:\s*.+$/m.test(
+      value,
+    ) &&
+    !/^\s*[{[]/.test(value)
+  ) {
+    return "yaml";
+  }
+
+  if (
+    /^\s*(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram)\b/m.test(
+      value,
+    )
+  ) {
+    return "mermaid";
+  }
 
   if (
     /^\s*[{[]/.test(value) &&
@@ -171,6 +205,8 @@ function CodeBlock({
   inline,
   className,
   children,
+  artifactSource = "MultiLLM",
+  artifactProvider,
   ...props
 }: CodeBlockProps) {
   const [copied, setCopied] =
@@ -233,7 +269,9 @@ function CodeBlock({
                 language,
                 content: code,
                 source:
-                  "MultiLLM",
+                  artifactSource,
+                provider:
+                  artifactProvider,
               });
             }}
           >
@@ -268,6 +306,8 @@ function CodeBlock({
 export default function MarkdownRenderer({
   content,
   fallback = "",
+  artifactSource = "MultiLLM",
+  artifactProvider,
 }: MarkdownRendererProps) {
   const value =
     content.trim().length > 0
@@ -298,7 +338,17 @@ export default function MarkdownRenderer({
           rehypeHighlight,
         ]}
         components={{
-          code: CodeBlock,
+          code: (props) => (
+            <CodeBlock
+              {...props}
+              artifactSource={
+                artifactSource
+              }
+              artifactProvider={
+                artifactProvider
+              }
+            />
+          ),
         }}
       >
         {value}

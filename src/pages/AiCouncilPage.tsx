@@ -1650,6 +1650,10 @@ function AiCouncilPage({
 
                       <div className="council-step-output">
                         <MarkdownRenderer
+                          artifactSource="Council"
+                          artifactProvider={
+                            step.providerId
+                          }
                           content={
                             step.output ||
                             step.error ||
@@ -1718,6 +1722,14 @@ function AiCouncilPage({
 
               <div className="council-final-content">
                 <MarkdownRenderer
+                  artifactSource="Council"
+                  artifactProvider={
+                    steps.find(
+                      (step) =>
+                        step.role ===
+                        "judge",
+                    )?.providerId
+                  }
                   content={
                     finalAnswer
                   }
