@@ -2278,6 +2278,7 @@ useEffect(() => {
 
                     <div className="multillm-output">
                       <MarkdownRenderer
+                        artifactSource="Compare"
                         content={
                           outputs[
                             provider.id
@@ -2418,6 +2419,7 @@ useEffect(() => {
 
               <div className="multillm-output">
                 <MarkdownRenderer
+                        artifactSource="Router"
                   content={
                     outputs[
                       routedProviderId
@@ -2884,6 +2886,7 @@ useEffect(() => {
                           </strong>
 
                           <MarkdownRenderer
+                        artifactSource="MultiLLM"
                             content={
                               response ?? ""
                             }
