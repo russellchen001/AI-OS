@@ -18,6 +18,23 @@ Scope:
 
 Completion requires all existing legacy commands to remain registered and the current Dashboard, Services, and Settings composition to remain unchanged.
 
+### Completion Status
+
+- **M1A:** Completed
+- **M1B:** Not started
+- **M1C:** Not started
+- **Completion date:** 2026-07-18
+- **Implementation commits:** `0e44d67478b2a2ce56bbcf1afbb4d38caf0bf599`, `381d85278eb419c9dd8daf7e72099dc6324c89a0`, `d3f4c66ee697276a1855d165d902bac35a785a8b`
+- **Validation completed:** TypeScript type-check, production frontend build, Rust formatting check, Rust compilation check, Rust tests, and Clippy for all targets
+- **Compatibility:** No UI migration, lifecycle implementation, or stored-data migration was performed
+
+Binding follow-ups:
+
+1. Remote Ollama and Open WebUI endpoints must not receive local lifecycle capabilities.
+2. Open WebUI must distinguish Docker dependency failure from a confirmed missing container before lifecycle operations.
+3. `useRuntimes` refresh concurrency is deferred to M1C.
+4. OpenClaw stale-observation presentation is deferred to M1C.
+
 ## M1B — Lifecycle Operations, Progress, and Cancellation
 
 Deferred scope:
