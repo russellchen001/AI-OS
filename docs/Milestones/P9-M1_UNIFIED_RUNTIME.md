@@ -115,6 +115,49 @@ AI-OS derives Docker Desktop ownership from the exact current-user `$HOME/.docke
 
 Plan preparation rejects remote local-lifecycle requests and statically unsupported actions before native ownership or dependency inspection, then collects only facts required by the requested runtime and action. Only the verified macOS launchctl service-not-found exit establishes `NotLoaded`; every other nonzero exit, spawn failure, timeout, or internal wait failure is `InspectionFailed` and cannot authorize bootstrap or a stopped no-op. Debug output for requests, plans, commands, endpoints, verification, and planning contexts is structural and cannot reveal tokens, full URLs, query or fragment data, user paths, Docker sockets, launch plists, or raw arguments.
 
+#### Completion Status
+
+- **P9-M1B2A:** Completed
+- **P9-M1B2B:** Not started
+- **P9-M1C:** Not started
+- **Completion date:** 2026-07-19
+- **Implementation commits:** `754399eb2af13a3983ca6984e73cbf0e8c36370b`, `f83a1b66f534a37f81f1856f713f71dc88ebc2bb`, `efac039856fb8119f91cee7cd83561cbb158339c`, `c9526225a4d524ac2737c67f95a3ee70461a1c0a`, `f1793dc396347495ff0c1faaf7b891a83a599d7c`
+- **Automated validation:** 70 Rust tests passed; TypeScript type-check and production build passed
+- **Native smoke test:** `PASS_WITH_DOCKER_SKIPPED`; missing launch-service exit code 113 confirmed; existing OpenClaw service observed `Loaded`; Docker Desktop was not running, so Docker info validation was skipped under the approved rules
+- **Repository integrity:** Clean after validation
+
+Final architecture guarantees:
+
+1. Execution inputs are frozen into typed plans.
+2. Remote lifecycle requests are rejected before local ownership or dependency inspection.
+3. OpenClaw lifecycle success verifies launch-service state only.
+4. OpenClaw lifecycle success does not imply Gateway health or readiness.
+5. OpenClaw lifecycle plans retain no Gateway token.
+6. Docker and Open WebUI management use the exact AI-OS-derived local Docker Desktop socket.
+7. Docker contexts and remote Docker environment selectors are not inherited.
+8. Open WebUI never starts Docker automatically.
+9. Ollama start and stop are limited to verified Homebrew ownership rules.
+10. No broad process-name killing is used.
+11. Request, plan, endpoint, path, and native-command Debug output is redacted.
+12. Native command and verification waits are bounded.
+13. No lifecycle IPC was registered.
+14. No Tauri managed operation state was registered.
+15. No runtime events were emitted.
+16. No operation-manager execution wiring was added.
+17. No legacy lifecycle command was changed or delegated.
+18. No UI migration or stored-data migration occurred.
+19. No dependency was added.
+
+Binding P9-M1B2B requirements:
+
+1. Operation-conflict IPC rejection must atomically include the existing operation ID or snapshot.
+2. Canonical IPC must enforce a bounded active-operation acceptance policy, especially for open operations.
+3. Endpoint and ownership context must be accepted and frozen before background execution.
+4. M1B2B must connect lifecycle execution to the existing operation manager without redesigning its state machine.
+5. Runtime events must carry the canonical operation snapshot and revision.
+6. Lifecycle completion and status health/readiness refresh must remain separate.
+7. Legacy UI and command migration remains P9-M1C.
+
 ## M1C — Frontend Migration and Compatibility Cleanup
 
 Deferred scope:
