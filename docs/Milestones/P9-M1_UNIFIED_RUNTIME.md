@@ -63,10 +63,24 @@ M1B1 operations are intentionally process-local. Active operations are never evi
 
 `request_cancellation` is the exclusive entry into `cancelling`, and non-cancellable operations cannot enter `cancelling` or `cancelled`. Cancelling represents an in-progress request rather than a guaranteed outcome; a completion race may finish as succeeded, failed, or cancelled.
 
+#### Completion Status
+
+- **P9-M1B1:** Completed
+- **P9-M1B2:** Not started
+- **P9-M1C:** Not started
+- **Completion date:** 2026-07-19
+- **Implementation commits:** `778bf646cae1455767b7c78ca812a498fb14e3af`, `fa969942ff321c578f205964321da9e1c1a515d0`
+- **Validation completed:** TypeScript type-check, production frontend build, Rust formatting check, Rust compilation check, Rust tests, Clippy for all targets, and Git whitespace validation
+- **Rust tests:** 43 passed
+- **Implementation boundary:** No lifecycle execution, lifecycle IPC registration, managed Tauri state registration, event emission, legacy command changes, UI migration, stored-data migration, or dependency addition was performed
+
 Binding M1B2 follow-ups:
 
 1. Operation-conflict IPC rejection must atomically include the existing operation ID or snapshot.
-2. Canonical IPC exposure must apply a bounded active-operation acceptance policy, especially to open operations that do not reserve lifecycle slots.
+2. Canonical IPC exposure must enforce a bounded active-operation acceptance policy, especially for open operations.
+3. Endpoint context must be explicitly provided and frozen into the accepted execution plan for Ollama and Open WebUI.
+4. Remote endpoints must never receive local lifecycle operations.
+5. M1B must not automatically start Docker for Open WebUI.
 
 ## M1C — Frontend Migration and Compatibility Cleanup
 
