@@ -24,6 +24,8 @@ The manager enforces these invariants:
 - Start, stop, and restart reserve one lifecycle slot per runtime; open does not.
 - The lifecycle slot is released exactly once when its operation becomes terminal.
 - Cancellation requests return typed unsupported, too-late, and not-found errors and are idempotent once cancelling or cancelled.
+- `request_cancellation` exclusively owns entry into `cancelling`; general transitions cannot bypass its authorization check, and operations with `cancellable: false` can never enter `cancelling` or `cancelled`.
+- `cancelling` records that cancellation was requested, not that interruption is guaranteed. A completion race may terminate it as `succeeded`, `failed`, or `cancelled`, and the first accepted terminal transition is final.
 
 Operations are process-local and are not persisted. Active operations are never evicted. Terminal operations are retained for 30 minutes and capped at 200 entries, with expired terminal entries removed before enforcing the cap. Cleanup occurs during creation, lookup, cancellation requests, and terminal transitions.
 
@@ -36,6 +38,11 @@ The manager uses a mutex around short in-memory state mutations. No lock may be 
 ## M1B1 Boundary
 
 This decision defines contracts and state management only. M1B1 does not register managed state or lifecycle IPC, emit events, execute runtime actions, delegate legacy commands, or integrate with the UI. Those integrations require later independently reviewable M1B increments.
+
+Binding M1B2 follow-ups:
+
+1. An operation-conflict IPC rejection must atomically include the existing operation ID or snapshot.
+2. Canonical IPC exposure must enforce a bounded active-operation acceptance policy, especially for open operations that do not reserve lifecycle slots.
 
 ## Consequences
 

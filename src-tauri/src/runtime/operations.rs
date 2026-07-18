@@ -148,6 +148,10 @@ impl RuntimeOperationManager {
         error: Option<NormalizedRuntimeError>,
         now: DateTime<Utc>,
     ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        if state == RuntimeOperationState::Cancelling {
+            return Err(unsupported_transition());
+        }
+
         let mut store = self.lock_store()?;
         apply_transition(&mut store, operation_id, state, result, error, now)?;
         cleanup(&mut store, now);
@@ -288,6 +292,7 @@ fn legal_transition(current: RuntimeOperationState, next: RuntimeOperationState)
             | (Running, Succeeded)
             | (Running, Failed)
             | (Cancelling, Cancelled)
+            | (Cancelling, Succeeded)
             | (Cancelling, Failed)
     )
 }
@@ -546,6 +551,222 @@ mod tests {
             .request_cancellation_at(&queued.operation_id, time(4))
             .unwrap();
         assert_eq!(cancelled, repeated_terminal);
+        assert!(manager
+            .transition_at(
+                &queued.operation_id,
+                RuntimeOperationState::Succeeded,
+                Some(result()),
+                None,
+                time(5),
+            )
+            .is_err());
+        manager
+            .create_operation_at(
+                "future-runtime",
+                RuntimeOperationAction::Stop,
+                false,
+                time(5),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn direct_cancelling_transition_cannot_bypass_authorization() {
+        let manager = RuntimeOperationManager::default();
+        let queued = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        let queued_before = manager
+            .get_operation_at(&queued.operation_id, time(0))
+            .unwrap();
+
+        assert!(manager
+            .transition_at(
+                &queued.operation_id,
+                RuntimeOperationState::Cancelling,
+                None,
+                None,
+                time(1),
+            )
+            .is_err());
+        assert_eq!(
+            manager
+                .get_operation_at(&queued.operation_id, time(1))
+                .unwrap(),
+            queued_before
+        );
+        assert_eq!(
+            manager
+                .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(1))
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::OperationConflict
+        );
+
+        let running = manager
+            .transition_at(
+                &queued.operation_id,
+                RuntimeOperationState::Running,
+                None,
+                None,
+                time(2),
+            )
+            .unwrap();
+        let running = manager
+            .update_progress_at(
+                &running.operation_id,
+                RuntimeOperationProgress {
+                    phase: "executing".to_string(),
+                    completed_units: None,
+                    total_units: None,
+                    message: "Runtime operation is running.".to_string(),
+                },
+                time(3),
+            )
+            .unwrap();
+
+        assert!(manager
+            .transition_at(
+                &running.operation_id,
+                RuntimeOperationState::Cancelling,
+                None,
+                None,
+                time(4),
+            )
+            .is_err());
+        assert_eq!(
+            manager
+                .get_operation_at(&running.operation_id, time(4))
+                .unwrap(),
+            running
+        );
+        assert_eq!(
+            manager
+                .create_operation_at("ollama", RuntimeOperationAction::Restart, false, time(4))
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::OperationConflict
+        );
+    }
+
+    #[test]
+    fn request_cancellation_is_the_only_authorized_entry_to_cancelling() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, true, time(0))
+            .unwrap();
+        assert!(manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Cancelling,
+                None,
+                None,
+                time(1),
+            )
+            .is_err());
+
+        let cancelling = manager
+            .request_cancellation_at(&operation.operation_id, time(1))
+            .unwrap();
+        assert_eq!(cancelling.state, RuntimeOperationState::Cancelling);
+        assert_eq!(cancelling.revision, 2);
+    }
+
+    #[test]
+    fn cancelling_may_race_to_succeeded_and_releases_slot_once() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, true, time(0))
+            .unwrap();
+        manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Running,
+                None,
+                None,
+                time(1),
+            )
+            .unwrap();
+        let cancelling = manager
+            .request_cancellation_at(&operation.operation_id, time(2))
+            .unwrap();
+        let succeeded = manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Succeeded,
+                Some(result()),
+                None,
+                time(3),
+            )
+            .unwrap();
+
+        assert_eq!(succeeded.revision, cancelling.revision + 1);
+        assert!(succeeded.completed_at.is_some());
+        assert!(!succeeded.cancellable);
+        for state in [
+            RuntimeOperationState::Cancelled,
+            RuntimeOperationState::Failed,
+        ] {
+            assert!(manager
+                .transition_at(&operation.operation_id, state, None, None, time(4))
+                .is_err());
+        }
+        assert_eq!(
+            manager
+                .get_operation_at(&operation.operation_id, time(4))
+                .unwrap()
+                .revision,
+            succeeded.revision
+        );
+        manager
+            .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(4))
+            .unwrap();
+    }
+
+    #[test]
+    fn cancelling_may_race_to_failed_and_releases_slot_once() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at(
+                "docker-desktop",
+                RuntimeOperationAction::Stop,
+                true,
+                time(0),
+            )
+            .unwrap();
+        manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Running,
+                None,
+                None,
+                time(1),
+            )
+            .unwrap();
+        let cancelling = manager
+            .request_cancellation_at(&operation.operation_id, time(2))
+            .unwrap();
+        let failed = manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Failed,
+                None,
+                Some(failure()),
+                time(3),
+            )
+            .unwrap();
+
+        assert_eq!(failed.revision, cancelling.revision + 1);
+        assert!(failed.completed_at.is_some());
+        assert!(!failed.cancellable);
+        manager
+            .create_operation_at(
+                "docker-desktop",
+                RuntimeOperationAction::Start,
+                false,
+                time(4),
+            )
+            .unwrap();
     }
 
     #[test]

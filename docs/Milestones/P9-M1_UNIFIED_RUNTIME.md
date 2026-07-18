@@ -61,6 +61,13 @@ Foundation scope:
 
 M1B1 operations are intentionally process-local. Active operations are never evicted; terminal operations are retained for 30 minutes with a maximum of 200 retained terminal snapshots.
 
+`request_cancellation` is the exclusive entry into `cancelling`, and non-cancellable operations cannot enter `cancelling` or `cancelled`. Cancelling represents an in-progress request rather than a guaranteed outcome; a completion race may finish as succeeded, failed, or cancelled.
+
+Binding M1B2 follow-ups:
+
+1. Operation-conflict IPC rejection must atomically include the existing operation ID or snapshot.
+2. Canonical IPC exposure must apply a bounded active-operation acceptance policy, especially to open operations that do not reserve lifecycle slots.
+
 ## M1C — Frontend Migration and Compatibility Cleanup
 
 Deferred scope:
