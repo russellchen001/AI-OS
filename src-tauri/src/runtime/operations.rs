@@ -4,12 +4,29 @@ use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
 use super::models::{
-    NormalizedRuntimeError, RuntimeErrorCode, RuntimeOperationAction, RuntimeOperationProgress,
-    RuntimeOperationResult, RuntimeOperationSnapshot, RuntimeOperationState,
+    NormalizedRuntimeError, RuntimeErrorCode, RuntimeOperationAction, RuntimeOperationAdmission,
+    RuntimeOperationProgress, RuntimeOperationResult, RuntimeOperationSnapshot,
+    RuntimeOperationState,
 };
 
 const TERMINAL_RETENTION_MINUTES: i64 = 30;
 const MAX_TERMINAL_OPERATIONS: usize = 200;
+pub(crate) const MAX_ACTIVE_OPERATIONS: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeOperationProgressUpdate {
+    Applied(RuntimeOperationSnapshot),
+    Unchanged(RuntimeOperationSnapshot),
+}
+
+impl RuntimeOperationProgressUpdate {
+    #[allow(dead_code)]
+    pub fn operation(&self) -> &RuntimeOperationSnapshot {
+        match self {
+            Self::Applied(operation) | Self::Unchanged(operation) => operation,
+        }
+    }
+}
 
 #[derive(Default)]
 struct OperationStore {
@@ -33,13 +50,30 @@ impl Default for RuntimeOperationManager {
 
 #[allow(dead_code)]
 impl RuntimeOperationManager {
+    pub fn admit_operation(
+        &self,
+        runtime_id: &str,
+        action: RuntimeOperationAction,
+        cancellable: bool,
+    ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
+        self.admit_operation_at(runtime_id, action, cancellable, Utc::now())
+    }
+
     pub fn create_operation(
         &self,
         runtime_id: &str,
         action: RuntimeOperationAction,
         cancellable: bool,
     ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
-        self.create_operation_at(runtime_id, action, cancellable, Utc::now())
+        match self.admit_operation(runtime_id, action, cancellable)? {
+            RuntimeOperationAdmission::Accepted { operation } => Ok(operation),
+            RuntimeOperationAdmission::Conflict { .. } => Err(safe_error(
+                RuntimeErrorCode::OperationConflict,
+                "A lifecycle operation is already active for this runtime.",
+                true,
+            )),
+            RuntimeOperationAdmission::Rejected { error } => Err(error),
+        }
     }
 
     pub fn get_operation(
@@ -63,7 +97,7 @@ impl RuntimeOperationManager {
         &self,
         operation_id: &str,
         progress: RuntimeOperationProgress,
-    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+    ) -> Result<RuntimeOperationProgressUpdate, NormalizedRuntimeError> {
         self.update_progress_at(operation_id, progress, Utc::now())
     }
 
@@ -81,23 +115,53 @@ impl RuntimeOperationManager {
         cancellable: bool,
         now: DateTime<Utc>,
     ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
-        if runtime_id.trim().is_empty() {
-            return Err(safe_error(
-                RuntimeErrorCode::RuntimeNotFound,
-                "Runtime was not found.",
-                false,
-            ));
+        match self.admit_operation_at(runtime_id, action, cancellable, now)? {
+            RuntimeOperationAdmission::Accepted { operation } => Ok(operation),
+            RuntimeOperationAdmission::Conflict { .. } => Err(safe_error(
+                RuntimeErrorCode::OperationConflict,
+                "A lifecycle operation is already active for this runtime.",
+                true,
+            )),
+            RuntimeOperationAdmission::Rejected { error } => Err(error),
+        }
+    }
+
+    fn admit_operation_at(
+        &self,
+        runtime_id: &str,
+        action: RuntimeOperationAction,
+        cancellable: bool,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
+        if !is_canonical_runtime_id(runtime_id) {
+            return Err(operation_runtime_not_found());
         }
 
         let mut store = self.lock_store()?;
         cleanup(&mut store, now);
 
-        if action.reserves_lifecycle_slot() && store.lifecycle_slots.contains_key(runtime_id) {
-            return Err(safe_error(
-                RuntimeErrorCode::OperationConflict,
-                "A lifecycle operation is already active for this runtime.",
-                true,
-            ));
+        if action.reserves_lifecycle_slot() {
+            if let Some(operation_id) = store.lifecycle_slots.get(runtime_id).cloned() {
+                let conflict = store.operations.get(&operation_id).filter(|snapshot| {
+                    snapshot.runtime_id == runtime_id
+                        && snapshot.action.reserves_lifecycle_slot()
+                        && !snapshot.state.is_terminal()
+                });
+                if let Some(existing_operation) = conflict.cloned() {
+                    return Ok(RuntimeOperationAdmission::Conflict { existing_operation });
+                }
+                store.lifecycle_slots.remove(runtime_id);
+            }
+        }
+
+        if active_operation_count(&store) >= MAX_ACTIVE_OPERATIONS {
+            return Ok(RuntimeOperationAdmission::Rejected {
+                error: safe_error(
+                    RuntimeErrorCode::OperationCapacityExceeded,
+                    "Runtime operation capacity has been reached.",
+                    true,
+                ),
+            });
         }
 
         let operation_id = Uuid::new_v4().to_string();
@@ -127,7 +191,9 @@ impl RuntimeOperationManager {
                 .insert(runtime_id.to_string(), operation_id);
         }
 
-        Ok(snapshot)
+        Ok(RuntimeOperationAdmission::Accepted {
+            operation: snapshot,
+        })
     }
 
     fn get_operation_at(
@@ -163,7 +229,7 @@ impl RuntimeOperationManager {
         operation_id: &str,
         progress: RuntimeOperationProgress,
         now: DateTime<Utc>,
-    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+    ) -> Result<RuntimeOperationProgressUpdate, NormalizedRuntimeError> {
         let mut store = self.lock_store()?;
         cleanup(&mut store, now);
         let snapshot = store
@@ -175,10 +241,14 @@ impl RuntimeOperationManager {
             return Err(unsupported_transition());
         }
 
+        if snapshot.progress.as_ref() == Some(&progress) {
+            return Ok(RuntimeOperationProgressUpdate::Unchanged(snapshot.clone()));
+        }
+
         snapshot.progress = Some(progress);
         snapshot.updated_at = now.to_rfc3339();
         snapshot.revision += 1;
-        Ok(snapshot.clone())
+        Ok(RuntimeOperationProgressUpdate::Applied(snapshot.clone()))
     }
 
     fn request_cancellation_at(
@@ -372,6 +442,29 @@ fn find_operation(
         .ok_or_else(operation_not_found)
 }
 
+fn active_operation_count(store: &OperationStore) -> usize {
+    store
+        .operations
+        .values()
+        .filter(|snapshot| !snapshot.state.is_terminal())
+        .count()
+}
+
+fn is_canonical_runtime_id(runtime_id: &str) -> bool {
+    matches!(
+        runtime_id,
+        "openclaw" | "ollama" | "docker-desktop" | "open-webui" | "cherry-studio"
+    )
+}
+
+fn operation_runtime_not_found() -> NormalizedRuntimeError {
+    safe_error(
+        RuntimeErrorCode::RuntimeNotFound,
+        "Runtime was not found.",
+        false,
+    )
+}
+
 fn operation_not_found() -> NormalizedRuntimeError {
     safe_error(
         RuntimeErrorCode::OperationNotFound,
@@ -522,12 +615,7 @@ mod tests {
     fn cancelling_path_is_legal_and_repeated_cancellation_is_idempotent() {
         let manager = RuntimeOperationManager::default();
         let queued = manager
-            .create_operation_at(
-                "future-runtime",
-                RuntimeOperationAction::Start,
-                true,
-                time(0),
-            )
+            .create_operation_at("ollama", RuntimeOperationAction::Start, true, time(0))
             .unwrap();
         let cancelling = manager
             .request_cancellation_at(&queued.operation_id, time(1))
@@ -561,12 +649,7 @@ mod tests {
             )
             .is_err());
         manager
-            .create_operation_at(
-                "future-runtime",
-                RuntimeOperationAction::Stop,
-                false,
-                time(5),
-            )
+            .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(5))
             .unwrap();
     }
 
@@ -627,7 +710,7 @@ mod tests {
 
         assert!(manager
             .transition_at(
-                &running.operation_id,
+                &running.operation().operation_id,
                 RuntimeOperationState::Cancelling,
                 None,
                 None,
@@ -636,9 +719,9 @@ mod tests {
             .is_err());
         assert_eq!(
             manager
-                .get_operation_at(&running.operation_id, time(4))
+                .get_operation_at(&running.operation().operation_id, time(4))
                 .unwrap(),
-            running
+            running.operation().clone()
         );
         assert_eq!(
             manager
@@ -887,7 +970,7 @@ mod tests {
                 time(1),
             )
             .unwrap();
-        assert_eq!(progress.revision, 2);
+        assert_eq!(progress.operation().revision, 2);
         assert!(manager
             .transition_at(
                 &operation.operation_id,
@@ -1048,7 +1131,7 @@ mod tests {
         for index in 0..=MAX_TERMINAL_OPERATIONS {
             let operation = manager
                 .create_operation_at(
-                    &format!("runtime-{index}"),
+                    "ollama",
                     RuntimeOperationAction::Start,
                     false,
                     time_milliseconds(index as i64),
@@ -1075,6 +1158,359 @@ mod tests {
         assert!(manager
             .get_operation_at(&last_id, time_milliseconds(MAX_TERMINAL_OPERATIONS as i64),)
             .is_ok());
+    }
+
+    fn accepted(admission: RuntimeOperationAdmission) -> RuntimeOperationSnapshot {
+        match admission {
+            RuntimeOperationAdmission::Accepted { operation } => operation,
+            other => panic!("expected accepted admission, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn admission_returns_atomic_conflict_snapshot_before_capacity() {
+        let manager = RuntimeOperationManager::default();
+        let first = accepted(
+            manager
+                .admit_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+                .unwrap(),
+        );
+        for runtime in ["openclaw", "docker-desktop", "open-webui", "cherry-studio"] {
+            for _ in 0..3 {
+                accepted(
+                    manager
+                        .admit_operation_at(runtime, RuntimeOperationAction::Open, false, time(0))
+                        .unwrap(),
+                );
+            }
+        }
+        for _ in 0..3 {
+            accepted(
+                manager
+                    .admit_operation_at("ollama", RuntimeOperationAction::Open, false, time(0))
+                    .unwrap(),
+            );
+        }
+
+        let conflict = manager
+            .admit_operation_at("ollama", RuntimeOperationAction::Stop, false, time(0))
+            .unwrap();
+        assert_eq!(
+            conflict,
+            RuntimeOperationAdmission::Conflict {
+                existing_operation: first.clone(),
+            }
+        );
+        assert_eq!(first.revision, 1);
+    }
+
+    #[test]
+    fn open_counts_toward_capacity_without_reserving_lifecycle_slot() {
+        let manager = RuntimeOperationManager::default();
+        for index in 0..MAX_ACTIVE_OPERATIONS {
+            let runtime = if index % 2 == 0 {
+                "ollama"
+            } else {
+                "open-webui"
+            };
+            assert!(matches!(
+                manager
+                    .admit_operation_at(runtime, RuntimeOperationAction::Open, false, time(0))
+                    .unwrap(),
+                RuntimeOperationAdmission::Accepted { .. }
+            ));
+        }
+        assert!(manager.store.lock().unwrap().lifecycle_slots.is_empty());
+        let rejected = manager
+            .admit_operation_at(
+                "docker-desktop",
+                RuntimeOperationAction::Open,
+                false,
+                time(0),
+            )
+            .unwrap();
+        match rejected {
+            RuntimeOperationAdmission::Rejected { error } => {
+                assert_eq!(error.code, RuntimeErrorCode::OperationCapacityExceeded);
+                assert!(error.retryable);
+            }
+            other => panic!("expected capacity rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn terminal_transition_releases_capacity_immediately() {
+        let manager = RuntimeOperationManager::default();
+        let mut operations = Vec::new();
+        for _ in 0..MAX_ACTIVE_OPERATIONS {
+            operations.push(accepted(
+                manager
+                    .admit_operation_at("ollama", RuntimeOperationAction::Open, false, time(0))
+                    .unwrap(),
+            ));
+        }
+        manager
+            .transition_at(
+                &operations[0].operation_id,
+                RuntimeOperationState::Failed,
+                None,
+                Some(failure()),
+                time(1),
+            )
+            .unwrap();
+        assert!(matches!(
+            manager
+                .admit_operation_at(
+                    "docker-desktop",
+                    RuntimeOperationAction::Open,
+                    false,
+                    time(1),
+                )
+                .unwrap(),
+            RuntimeOperationAdmission::Accepted { .. }
+        ));
+    }
+
+    #[test]
+    fn stale_lifecycle_slots_are_repaired_under_admission_lock() {
+        for stale_kind in ["missing", "terminal", "wrong-runtime"] {
+            let manager = RuntimeOperationManager::default();
+            {
+                let mut store = manager.store.lock().unwrap();
+                match stale_kind {
+                    "missing" => {
+                        store
+                            .lifecycle_slots
+                            .insert("ollama".to_string(), "missing".to_string());
+                    }
+                    "terminal" => {
+                        let operation = RuntimeOperationSnapshot {
+                            operation_id: "terminal".to_string(),
+                            runtime_id: "ollama".to_string(),
+                            action: RuntimeOperationAction::Start,
+                            state: RuntimeOperationState::Failed,
+                            revision: 2,
+                            accepted_at: time(0).to_rfc3339(),
+                            started_at: None,
+                            updated_at: time(0).to_rfc3339(),
+                            completed_at: Some(time(0).to_rfc3339()),
+                            progress: None,
+                            cancellable: false,
+                            result: None,
+                            error: Some(failure()),
+                        };
+                        store.operations.insert("terminal".to_string(), operation);
+                        store
+                            .lifecycle_slots
+                            .insert("ollama".to_string(), "terminal".to_string());
+                    }
+                    "wrong-runtime" => {
+                        let operation = RuntimeOperationSnapshot {
+                            operation_id: "wrong".to_string(),
+                            runtime_id: "openclaw".to_string(),
+                            action: RuntimeOperationAction::Start,
+                            state: RuntimeOperationState::Queued,
+                            revision: 1,
+                            accepted_at: time(0).to_rfc3339(),
+                            started_at: None,
+                            updated_at: time(0).to_rfc3339(),
+                            completed_at: None,
+                            progress: None,
+                            cancellable: false,
+                            result: None,
+                            error: None,
+                        };
+                        store.operations.insert("wrong".to_string(), operation);
+                        store
+                            .lifecycle_slots
+                            .insert("ollama".to_string(), "wrong".to_string());
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            let operation = accepted(
+                manager
+                    .admit_operation_at("ollama", RuntimeOperationAction::Stop, false, time(1))
+                    .unwrap(),
+            );
+            assert_eq!(
+                manager.store.lock().unwrap().lifecycle_slots.get("ollama"),
+                Some(&operation.operation_id)
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_progress_is_explicitly_unchanged() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        let value = RuntimeOperationProgress {
+            phase: "validating".to_string(),
+            completed_units: None,
+            total_units: None,
+            message: "Validating runtime operation.".to_string(),
+        };
+        let applied = manager
+            .update_progress_at(&operation.operation_id, value.clone(), time(1))
+            .unwrap();
+        let unchanged = manager
+            .update_progress_at(&operation.operation_id, value, time(2))
+            .unwrap();
+        assert!(matches!(
+            applied,
+            RuntimeOperationProgressUpdate::Applied(_)
+        ));
+        assert!(matches!(
+            unchanged,
+            RuntimeOperationProgressUpdate::Unchanged(_)
+        ));
+        assert_eq!(applied.operation().revision, operation.revision + 1);
+        assert_eq!(unchanged.operation().revision, applied.operation().revision);
+        assert_eq!(
+            unchanged.operation().updated_at,
+            applied.operation().updated_at
+        );
+        manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Failed,
+                None,
+                Some(failure()),
+                time(3),
+            )
+            .unwrap();
+        assert!(manager
+            .update_progress_at(
+                &operation.operation_id,
+                RuntimeOperationProgress {
+                    phase: "complete".to_string(),
+                    completed_units: None,
+                    total_units: None,
+                    message: "Complete.".to_string(),
+                },
+                time(4),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn concurrent_lifecycle_admission_has_one_owner_and_atomic_conflicts() {
+        let manager = Arc::new(RuntimeOperationManager::default());
+        let barrier = Arc::new(Barrier::new(9));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                manager
+                    .admit_operation("ollama", RuntimeOperationAction::Start, false)
+                    .unwrap()
+            }));
+        }
+        barrier.wait();
+        let admissions = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        let accepted = admissions
+            .iter()
+            .find_map(|admission| match admission {
+                RuntimeOperationAdmission::Accepted { operation } => Some(operation),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            admissions
+                .iter()
+                .filter(|admission| matches!(admission, RuntimeOperationAdmission::Accepted { .. }))
+                .count(),
+            1
+        );
+        assert!(admissions.iter().all(|admission| match admission {
+            RuntimeOperationAdmission::Accepted { operation }
+            | RuntimeOperationAdmission::Conflict {
+                existing_operation: operation,
+            } => operation.operation_id == accepted.operation_id,
+            RuntimeOperationAdmission::Rejected { .. } => false,
+        }));
+        assert_eq!(
+            manager.store.lock().unwrap().lifecycle_slots.get("ollama"),
+            Some(&accepted.operation_id)
+        );
+    }
+
+    #[test]
+    fn concurrent_open_admission_never_exceeds_global_capacity() {
+        let manager = Arc::new(RuntimeOperationManager::default());
+        let barrier = Arc::new(Barrier::new(33));
+        let mut handles = Vec::new();
+        for index in 0..32 {
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                let runtime = if index % 2 == 0 {
+                    "ollama"
+                } else {
+                    "open-webui"
+                };
+                manager
+                    .admit_operation(runtime, RuntimeOperationAction::Open, false)
+                    .unwrap()
+            }));
+        }
+        barrier.wait();
+        let accepted_count = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|admission| matches!(admission, RuntimeOperationAdmission::Accepted { .. }))
+            .count();
+        assert_eq!(accepted_count, MAX_ACTIVE_OPERATIONS);
+        assert_eq!(
+            active_operation_count(&manager.store.lock().unwrap()),
+            MAX_ACTIVE_OPERATIONS
+        );
+    }
+
+    #[test]
+    fn admission_serialization_is_canonical_and_contains_no_execution_details() {
+        let manager = RuntimeOperationManager::default();
+        let accepted = manager
+            .admit_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        let conflict = manager
+            .admit_operation_at("ollama", RuntimeOperationAction::Stop, false, time(0))
+            .unwrap();
+        let accepted_json = serde_json::to_value(&accepted).unwrap();
+        let conflict_json = serde_json::to_value(&conflict).unwrap();
+        assert_eq!(accepted_json["status"], "accepted");
+        assert_eq!(conflict_json["status"], "conflict");
+        assert!(conflict_json.get("existingOperation").is_some());
+
+        let capacity = RuntimeOperationAdmission::Rejected {
+            error: safe_error(
+                RuntimeErrorCode::OperationCapacityExceeded,
+                "Runtime operation capacity has been reached.",
+                true,
+            ),
+        };
+        let capacity_json = serde_json::to_value(capacity).unwrap();
+        assert_eq!(capacity_json["status"], "rejected");
+        assert_eq!(
+            capacity_json["error"]["code"],
+            "operation-capacity-exceeded"
+        );
+        assert_eq!(capacity_json["error"]["retryable"], true);
+
+        let serialized = format!("{accepted_json}{conflict_json}{capacity_json}");
+        for forbidden in [
+            "plan", "url", "token", "path", "command", "stdout", "stderr",
+        ] {
+            assert!(!serialized.to_ascii_lowercase().contains(forbidden));
+        }
     }
 
     #[test]

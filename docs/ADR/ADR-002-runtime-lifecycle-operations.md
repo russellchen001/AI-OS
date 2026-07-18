@@ -1,6 +1,6 @@
 # ADR-002: Runtime Lifecycle Operations
 
-- **Status:** Accepted through P9-M1B2A
+- **Status:** Accepted through P9-M1B2B1
 - **Date:** 2026-07-19
 - **Decision owners:** AI-OS
 
@@ -71,6 +71,16 @@ Request, execution-plan, and planning-context Debug implementations expose only 
 Docker container state is explicit: `running`, `exited`, `created`, `paused`, `restarting`, `removing`, `dead`, and unknown states are classified independently. Only `exited` and `created` are approved as stopped. Transitional, dead, and unknown states reject management plans. Readiness probes use a slower interval than child-process polling, and both remain governed by total elapsed-time deadlines. No-op plans revalidate readiness or stopped state before succeeding.
 
 P9-M1B2A supplies internal planning, native execution, bounded verification, progress, dependency classification, and safe error primitives only. It does not register lifecycle IPC or managed Tauri state, emit events, execute through the operation manager, change legacy commands, or integrate with frontend code.
+
+## M1B2B1 Admission and Managed-State Boundary
+
+AI-OS manages exactly one `RuntimeExecutionState`, which contains exactly one shared `Arc<RuntimeOperationManager>`. The manager remains the only operation store; managed state contains no plans, task map, status cache, or duplicate snapshots.
+
+Admission is one locked accepted/conflict/rejected decision. Every queued, running, or cancelling operation counts toward a global limit of 16, including open operations. Open does not reserve a lifecycle slot; start, stop, and restart reserve one slot per runtime. Conflict detection precedes capacity rejection and clones the exact existing canonical snapshot under the same lock. Missing, terminal, mismatched-runtime, and otherwise invalid lifecycle-slot references are removed under that lock before admission continues. Capacity rejection uses the distinct retryable `operation-capacity-exceeded` error.
+
+Progress mutation explicitly returns `Applied` for a distinct update and `Unchanged` for a byte-for-byte duplicate. Only `Applied` changes `updatedAt` and increments revision. M1B2B2 may therefore emit only meaningful progress changes without inferring mutation from snapshot values.
+
+M1B2B1 registers managed state only. It adds no lifecycle IPC, execution supervisor, plan wiring, runtime event emission, frontend service wrapper, or UI integration. Those remain M1B2B2 and M1B2B3 work.
 
 ## Consequences
 

@@ -1,4 +1,5 @@
 mod adapters;
+pub(crate) mod executor;
 pub(crate) mod lifecycle;
 pub mod models;
 pub mod operations;

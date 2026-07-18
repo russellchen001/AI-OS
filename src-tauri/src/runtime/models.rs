@@ -91,6 +91,7 @@ pub enum RuntimeErrorCode {
     OperationNotFound,
     UnsupportedOperation,
     OperationConflict,
+    OperationCapacityExceeded,
     CancellationUnsupported,
     CancellationTooLate,
     OperationFailed,
@@ -211,6 +212,21 @@ pub struct RuntimeOperationSnapshot {
     pub cancellable: bool,
     pub result: Option<RuntimeOperationResult>,
     pub error: Option<NormalizedRuntimeError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum RuntimeOperationAdmission {
+    Accepted {
+        operation: RuntimeOperationSnapshot,
+    },
+    Conflict {
+        #[serde(rename = "existingOperation")]
+        existing_operation: RuntimeOperationSnapshot,
+    },
+    Rejected {
+        error: NormalizedRuntimeError,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

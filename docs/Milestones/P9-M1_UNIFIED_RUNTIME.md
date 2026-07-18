@@ -158,6 +158,21 @@ Binding P9-M1B2B requirements:
 6. Lifecycle completion and status health/readiness refresh must remain separate.
 7. Legacy UI and command migration remains P9-M1C.
 
+### M1B2B1 — Bounded Admission, Managed State, and Contracts
+
+Implementation scope:
+
+- Atomic tagged accepted/conflict/rejected admission with the exact conflict snapshot captured under one manager lock
+- Global limit of 16 queued, running, or cancelling operations, including open
+- Per-runtime lifecycle exclusion without an open-operation lifecycle slot
+- Stale lifecycle-slot repair under the admission lock
+- Distinct retryable `operation-capacity-exceeded` error
+- Explicit progress `Applied` and `Unchanged` mutation outcomes
+- One managed `RuntimeExecutionState` containing one shared `Arc<RuntimeOperationManager>`
+- Rust and TypeScript admission-contract parity and concurrency/serialization tests
+
+M1B2B1 is intentionally separate from execution. It registers no lifecycle IPC, runs no frozen plan, emits no runtime operation event, and adds no frontend service wrapper or UI integration. M1B2B2 execution/IPC/events, M1B2B3 frontend wrappers/integration validation, and M1C migration remain unimplemented.
+
 ## M1C — Frontend Migration and Compatibility Cleanup
 
 Deferred scope:

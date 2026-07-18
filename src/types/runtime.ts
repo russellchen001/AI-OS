@@ -63,6 +63,7 @@ export type RuntimeErrorCode =
   | "operation-not-found"
   | "unsupported-operation"
   | "operation-conflict"
+  | "operation-capacity-exceeded"
   | "cancellation-unsupported"
   | "cancellation-too-late"
   | "operation-failed"
@@ -151,6 +152,20 @@ export type RuntimeOperationSnapshot = {
   result: RuntimeOperationResult | null;
   error: NormalizedRuntimeError | null;
 };
+
+export type RuntimeOperationAdmission =
+  | {
+      status: "accepted";
+      operation: RuntimeOperationSnapshot;
+    }
+  | {
+      status: "conflict";
+      existingOperation: RuntimeOperationSnapshot;
+    }
+  | {
+      status: "rejected";
+      error: NormalizedRuntimeError;
+    };
 
 export type RuntimeOperationEvent = {
   version: 1;
