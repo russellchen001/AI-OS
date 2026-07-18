@@ -89,8 +89,12 @@ Implementation scope:
 - Immutable, typed, AI-OS-owned lifecycle execution plans
 - Shared location classification, typed OpenClaw gateway validation, and strict browser URL validation
 - Request-specific frozen OpenClaw, Ollama, Docker, Open WebUI, or Cherry Studio context
+- Atomic `prepare_execution_plan` validation, action-specific collection, freezing, and planning
 - Explicit ordered native commands, argument arrays, and typed no-op plans without shell interpolation
 - Total-deadline command, readiness, and stopped-state verification primitives
+- Frozen-profile OpenClaw connection verification with redacted secret handling
+- Explicit local Docker Desktop socket binding and per-command environment isolation
+- Typed Docker container states with safe transitional-state rejection
 - Stable internal progress phases without Tauri event emission
 - Safe normalized dependency, location, container, and timeout errors
 - Pure tests for planning, command construction, dependency classification, and security boundaries
@@ -104,6 +108,8 @@ Runtime policy:
 - Cherry Studio supports start, stop, and open through fixed macOS application primitives; restart is unsupported.
 
 M1B2A does not register lifecycle IPC or managed state, emit operation events, connect execution to the operation manager, delegate legacy commands, migrate UI, add dependencies, or change stored data. Canonical IPC exposure and operation-manager integration remain deferred to M1B2B.
+
+Final safety rules require fresh verification of frozen OpenClaw profiles, verified no-op revalidation, separate child-process and readiness polling intervals, and bounded timeout cleanup that never waits indefinitely after a failed kill attempt. Docker inspection failures never degrade into ordinary stopped, missing, or local-daemon-unavailable facts.
 
 ## M1C — Frontend Migration and Compatibility Cleanup
 

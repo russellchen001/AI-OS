@@ -2,6 +2,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::Path,
     process::{Child, Command, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -28,7 +29,17 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(350);
+const CLEANUP_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
+const DOCKER_DESKTOP_CONTEXT: &str = "desktop-linux";
+const DOCKER_DESKTOP_SOCKET_SUFFIX: &str = "/.docker/run/docker.sock";
+const DOCKER_ENV_REMOVALS: &[&str] = &[
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_CERT_PATH",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ValidatedEndpoint {
@@ -125,7 +136,7 @@ pub(crate) struct RuntimeLifecycleRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OllamaInstallation {
+enum OllamaInstallation {
     NotInstalled,
     HomebrewFormulaInstalled { brew_path: &'static str },
     HomebrewServiceManaged { brew_path: &'static str },
@@ -133,52 +144,90 @@ pub(crate) enum OllamaInstallation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OpenWebUiDependency {
+enum OpenWebUiDependency {
     DockerNotInstalled,
     DockerInstalledStopped,
     DockerProcessPresentDaemonUnavailable,
     DockerInspectionFailed,
     ContainerMissing,
-    ContainerStopped { id: String },
-    ContainerRunning { id: String },
-    ContainerRunningEndpointUnavailable { id: String },
-    ContainerReady { id: String },
+    ContainerStopped {
+        id: String,
+    },
+    ContainerRunning {
+        id: String,
+    },
+    ContainerRunningEndpointUnavailable {
+        id: String,
+    },
+    ContainerReady {
+        id: String,
+    },
+    ContainerUnsupported {
+        id: String,
+        state: DockerContainerState,
+    },
     ContainerAmbiguous,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OpenClawContext {
-    gateway: OpenClawGatewayEndpoint,
-    launchctl_domain: String,
-    service_loaded: bool,
-    bootstrap_plist: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DockerContainerState {
+    Running,
+    Exited,
+    Created,
+    Paused,
+    Restarting,
+    Removing,
+    Dead,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OllamaContext {
+enum OpenClawContext {
+    Open {
+        gateway: OpenClawGatewayEndpoint,
+    },
+    Manage {
+        profile: openclaw::FrozenOpenClawProfile,
+        gateway: OpenClawGatewayEndpoint,
+        launchctl_domain: String,
+        service_loaded: bool,
+        bootstrap_plist: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OllamaContext {
     endpoint: ValidatedEndpoint,
     installation: OllamaInstallation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct DockerContext;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalDockerTarget {
+    host: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OpenWebUiContext {
+struct DockerContext {
+    target: LocalDockerTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OpenWebUiContext {
     Open {
         endpoint: ValidatedEndpoint,
     },
     Manage {
         endpoint: ValidatedEndpoint,
         dependency: OpenWebUiDependency,
+        target: Option<LocalDockerTarget>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct CherryContext;
+struct CherryContext;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RuntimePlanningContext {
+enum RuntimePlanningContext {
     OpenClaw(OpenClawContext),
     Ollama(OllamaContext),
     Docker(DockerContext),
@@ -187,9 +236,15 @@ pub(crate) enum RuntimePlanningContext {
 }
 
 trait ContextSource {
-    fn openclaw(&self) -> Result<OpenClawContext, NormalizedRuntimeError>;
-    fn ollama(&self, endpoint: ValidatedEndpoint) -> OllamaContext;
-    fn docker(&self) -> DockerContext;
+    fn openclaw(
+        &self,
+        action: RuntimeOperationAction,
+    ) -> Result<OpenClawContext, NormalizedRuntimeError>;
+    fn ollama(&self, endpoint: ValidatedEndpoint, inspect_ownership: bool) -> OllamaContext;
+    fn docker(
+        &self,
+        action: RuntimeOperationAction,
+    ) -> Result<DockerContext, NormalizedRuntimeError>;
     fn open_webui(&self, endpoint: ValidatedEndpoint, inspect_dependency: bool)
         -> OpenWebUiContext;
     fn cherry(&self) -> CherryContext;
@@ -198,19 +253,31 @@ trait ContextSource {
 struct NativeContextSource;
 
 impl ContextSource for NativeContextSource {
-    fn openclaw(&self) -> Result<OpenClawContext, NormalizedRuntimeError> {
-        collect_openclaw_context()
+    fn openclaw(
+        &self,
+        action: RuntimeOperationAction,
+    ) -> Result<OpenClawContext, NormalizedRuntimeError> {
+        collect_openclaw_context(action)
     }
 
-    fn ollama(&self, endpoint: ValidatedEndpoint) -> OllamaContext {
+    fn ollama(&self, endpoint: ValidatedEndpoint, inspect_ownership: bool) -> OllamaContext {
         OllamaContext {
             endpoint,
-            installation: detect_ollama_installation(),
+            installation: if inspect_ownership {
+                detect_ollama_installation()
+            } else {
+                OllamaInstallation::OtherInstallation
+            },
         }
     }
 
-    fn docker(&self) -> DockerContext {
-        DockerContext
+    fn docker(
+        &self,
+        _action: RuntimeOperationAction,
+    ) -> Result<DockerContext, NormalizedRuntimeError> {
+        Ok(DockerContext {
+            target: expected_local_docker_target()?,
+        })
     }
 
     fn open_webui(
@@ -219,10 +286,11 @@ impl ContextSource for NativeContextSource {
         inspect_dependency: bool,
     ) -> OpenWebUiContext {
         if inspect_dependency {
-            let dependency = inspect_open_webui_dependency(&endpoint);
+            let (dependency, target) = inspect_open_webui_dependency(&endpoint);
             OpenWebUiContext::Manage {
                 endpoint,
                 dependency,
+                target,
             }
         } else {
             OpenWebUiContext::Open { endpoint }
@@ -234,12 +302,20 @@ impl ContextSource for NativeContextSource {
     }
 }
 
-// M1B2B will call this request-specific collector before accepting execution.
+// M1B2B will use this single entry point so context cannot be mixed across requests.
 #[allow(dead_code)]
-pub(crate) fn collect_context_for(
+pub(crate) fn prepare_execution_plan(
     request: &RuntimeLifecycleRequest,
-) -> Result<RuntimePlanningContext, NormalizedRuntimeError> {
-    collect_context_with(request, &NativeContextSource)
+) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
+    prepare_with_source(request, &NativeContextSource)
+}
+
+fn prepare_with_source(
+    request: &RuntimeLifecycleRequest,
+    source: &impl ContextSource,
+) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
+    let context = collect_context_with(request, source)?;
+    build_execution_plan(request, context)
 }
 
 fn collect_context_with(
@@ -247,12 +323,19 @@ fn collect_context_with(
     source: &impl ContextSource,
 ) -> Result<RuntimePlanningContext, NormalizedRuntimeError> {
     match request.runtime_id.as_str() {
-        "openclaw" => source.openclaw().map(RuntimePlanningContext::OpenClaw),
+        "openclaw" => source
+            .openclaw(request.action)
+            .map(RuntimePlanningContext::OpenClaw),
         "ollama" => {
             let endpoint = explicit_endpoint(request)?;
-            Ok(RuntimePlanningContext::Ollama(source.ollama(endpoint)))
+            Ok(RuntimePlanningContext::Ollama(source.ollama(
+                endpoint,
+                request.action != RuntimeOperationAction::Open,
+            )))
         }
-        "docker-desktop" => Ok(RuntimePlanningContext::Docker(source.docker())),
+        "docker-desktop" => source
+            .docker(request.action)
+            .map(RuntimePlanningContext::Docker),
         "open-webui" => {
             let endpoint = explicit_endpoint(request)?;
             Ok(RuntimePlanningContext::OpenWebUi(source.open_webui(
@@ -276,11 +359,21 @@ fn explicit_endpoint(
     )
 }
 
-fn collect_openclaw_context() -> Result<OpenClawContext, NormalizedRuntimeError> {
-    let endpoint = openclaw::active_runtime_endpoint()
+fn collect_openclaw_context(
+    action: RuntimeOperationAction,
+) -> Result<OpenClawContext, NormalizedRuntimeError> {
+    if action == RuntimeOperationAction::Open {
+        let endpoint = openclaw::active_runtime_endpoint()
+            .map_err(|_| configuration_unavailable())?
+            .ok_or_else(configuration_unavailable)?;
+        return Ok(OpenClawContext::Open {
+            gateway: classify_openclaw_gateway(&endpoint)?,
+        });
+    }
+    let profile = openclaw::active_runtime_profile()
         .map_err(|_| configuration_unavailable())?
         .ok_or_else(configuration_unavailable)?;
-    let gateway = classify_openclaw_gateway(&endpoint)?;
+    let gateway = classify_openclaw_gateway(profile.server_url())?;
     let launchctl_domain = current_launchctl_domain()?;
     let target = format!("{launchctl_domain}/{OPENCLAW_SERVICE}");
     let service_loaded =
@@ -289,7 +382,8 @@ fn collect_openclaw_context() -> Result<OpenClawContext, NormalizedRuntimeError>
         .map(|home| home.join("Library/LaunchAgents/ai.openclaw.gateway.plist"))
         .filter(|path| path.is_file())
         .map(|path| path.to_string_lossy().into_owned());
-    Ok(OpenClawContext {
+    Ok(OpenClawContext::Manage {
+        profile,
         gateway,
         launchctl_domain,
         service_loaded,
@@ -344,38 +438,58 @@ fn homebrew_service_managed(output: &str) -> bool {
     })
 }
 
-fn inspect_open_webui_dependency(endpoint: &ValidatedEndpoint) -> OpenWebUiDependency {
-    let docker_process_running = probe_status(
+fn inspect_open_webui_dependency(
+    endpoint: &ValidatedEndpoint,
+) -> (OpenWebUiDependency, Option<LocalDockerTarget>) {
+    let first_process = probe_status(
         PGREP,
         &["-f", "/Docker.app/Contents/MacOS/Docker"],
         PROBE_TIMEOUT,
-    )
-    .unwrap_or(false)
-        || probe_status(PGREP, &["-x", "Docker Desktop"], PROBE_TIMEOUT).unwrap_or(false);
+    );
+    let second_process = probe_status(PGREP, &["-x", "Docker Desktop"], PROBE_TIMEOUT);
+    let docker_process_running = match (first_process, second_process) {
+        (Ok(first), Ok(second)) => first || second,
+        _ => return (OpenWebUiDependency::DockerInspectionFailed, None),
+    };
     let docker_installed = docker_process_running || Path::new("/Applications/Docker.app").exists();
-    let daemon_ready = probe_status(DOCKER_CLI, &["info"], PROBE_TIMEOUT).unwrap_or(false);
-    if !docker_installed || !daemon_ready {
-        return classify_open_webui_inspection(
-            docker_installed,
-            docker_process_running,
-            daemon_ready,
-            false,
-            &[],
+    if !docker_installed {
+        return (
+            classify_open_webui_inspection(false, false, false, false, &[], None),
             None,
         );
     }
-    let output = capture_command(
-        DOCKER_CLI,
-        &[
-            "ps",
-            "-a",
-            "--format",
-            "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}",
-        ],
+    if !docker_process_running {
+        return (OpenWebUiDependency::DockerInstalledStopped, None);
+    }
+    let target = match establish_local_docker_target() {
+        Ok(target) => target,
+        Err(_) => return (OpenWebUiDependency::DockerInspectionFailed, None),
+    };
+    let daemon_ready = match probe_native_status(&docker_command(&target, ["info"]), PROBE_TIMEOUT)
+    {
+        Ok(ready) => ready,
+        Err(_) => return (OpenWebUiDependency::DockerInspectionFailed, Some(target)),
+    };
+    if !daemon_ready {
+        return (
+            OpenWebUiDependency::DockerProcessPresentDaemonUnavailable,
+            Some(target),
+        );
+    }
+    let output = capture_native_command(
+        &docker_command(
+            &target,
+            [
+                "ps",
+                "-a",
+                "--format",
+                "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}",
+            ],
+        ),
         PROBE_TIMEOUT,
     );
     let Ok(output) = output else {
-        return OpenWebUiDependency::DockerInspectionFailed;
+        return (OpenWebUiDependency::DockerInspectionFailed, Some(target));
     };
     let candidates = output
         .lines()
@@ -387,17 +501,60 @@ fn inspect_open_webui_dependency(endpoint: &ValidatedEndpoint) -> OpenWebUiDepen
         PROBE_TIMEOUT,
     )
     .ok();
-    classify_open_webui_inspection(
-        true,
-        docker_process_running,
-        true,
-        true,
-        &candidates,
-        endpoint_ready,
+    (
+        classify_open_webui_inspection(
+            true,
+            docker_process_running,
+            true,
+            true,
+            &candidates,
+            endpoint_ready,
+        ),
+        Some(target),
     )
 }
 
-fn parse_open_webui_candidate(line: &str) -> Option<(String, bool)> {
+fn establish_local_docker_target() -> Result<LocalDockerTarget, NormalizedRuntimeError> {
+    let command = NativeCommand::new(
+        DOCKER_CLI,
+        [
+            "context",
+            "inspect",
+            DOCKER_DESKTOP_CONTEXT,
+            "--format",
+            "{{.Endpoints.docker.Host}}",
+        ],
+    )
+    .with_env_removals(DOCKER_ENV_REMOVALS);
+    let endpoint = capture_native_command(&command, PROBE_TIMEOUT)?;
+    let endpoint = endpoint.trim();
+    if endpoint.starts_with("unix://") && endpoint.ends_with(DOCKER_DESKTOP_SOCKET_SUFFIX) {
+        Ok(LocalDockerTarget {
+            host: endpoint.to_string(),
+        })
+    } else {
+        Err(error(
+            RuntimeErrorCode::DependencyUnavailable,
+            "The local Docker Desktop target could not be verified.",
+            true,
+        ))
+    }
+}
+
+fn expected_local_docker_target() -> Result<LocalDockerTarget, NormalizedRuntimeError> {
+    let home = dirs::home_dir().ok_or_else(|| {
+        error(
+            RuntimeErrorCode::DependencyUnavailable,
+            "The local Docker Desktop target could not be determined.",
+            true,
+        )
+    })?;
+    Ok(LocalDockerTarget {
+        host: format!("unix://{}", home.join(".docker/run/docker.sock").display()),
+    })
+}
+
+fn parse_open_webui_candidate(line: &str) -> Option<(String, DockerContainerState)> {
     let fields = line.split('\t').collect::<Vec<_>>();
     if fields.len() != 4 {
         return None;
@@ -411,13 +568,27 @@ fn parse_open_webui_candidate(line: &str) -> Option<(String, bool)> {
     }
     validate_container_id(fields[0])
         .ok()
-        .map(|id| (id, fields[3].eq_ignore_ascii_case("running")))
+        .map(|id| (id, parse_container_state(fields[3])))
+}
+
+fn parse_container_state(value: &str) -> DockerContainerState {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "running" => DockerContainerState::Running,
+        "exited" => DockerContainerState::Exited,
+        "created" => DockerContainerState::Created,
+        "paused" => DockerContainerState::Paused,
+        "restarting" => DockerContainerState::Restarting,
+        "removing" => DockerContainerState::Removing,
+        "dead" => DockerContainerState::Dead,
+        _ => DockerContainerState::Unknown,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeCommand {
     program: &'static str,
     args: Vec<String>,
+    env_remove: Vec<&'static str>,
 }
 
 impl NativeCommand {
@@ -425,8 +596,23 @@ impl NativeCommand {
         Self {
             program,
             args: args.into_iter().map(Into::into).collect(),
+            env_remove: Vec::new(),
         }
     }
+
+    fn with_env_removals(mut self, names: &[&'static str]) -> Self {
+        self.env_remove = names.to_vec();
+        self
+    }
+}
+
+fn docker_command(
+    target: &LocalDockerTarget,
+    args: impl IntoIterator<Item = impl Into<String>>,
+) -> NativeCommand {
+    let mut command_args = vec!["--host".to_string(), target.host.clone()];
+    command_args.extend(args.into_iter().map(Into::into));
+    NativeCommand::new(DOCKER_CLI, command_args).with_env_removals(DOCKER_ENV_REMOVALS)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,13 +620,19 @@ enum Verification {
     None,
     HttpReady(ValidatedEndpoint),
     HttpStopped(ValidatedEndpoint),
-    DockerReady,
-    DockerStopped,
+    DockerReady(LocalDockerTarget),
+    DockerStopped(LocalDockerTarget),
     ProcessPresent(&'static str),
     ProcessAbsent(&'static str),
-    OpenClawReady { service_target: String },
+    OpenClawReady {
+        service_target: String,
+        profile: openclaw::FrozenOpenClawProfile,
+    },
     LaunchServiceStopped(String),
-    ContainerStopped(String),
+    ContainerStopped {
+        id: String,
+        target: LocalDockerTarget,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -504,9 +696,7 @@ pub(crate) struct RuntimeExecutionPlan {
     progress: Vec<RuntimeOperationProgress>,
 }
 
-// M1B2B will connect validated plans to the operation manager.
-#[allow(dead_code)]
-pub(crate) fn build_execution_plan(
+fn build_execution_plan(
     request: &RuntimeLifecycleRequest,
     context: RuntimePlanningContext,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
@@ -515,7 +705,9 @@ pub(crate) fn build_execution_plan(
             plan_openclaw(request.action, context)
         }
         ("ollama", RuntimePlanningContext::Ollama(context)) => plan_ollama(request.action, context),
-        ("docker-desktop", RuntimePlanningContext::Docker(_)) => plan_docker(request.action),
+        ("docker-desktop", RuntimePlanningContext::Docker(context)) => {
+            plan_docker(request.action, context)
+        }
         ("open-webui", RuntimePlanningContext::OpenWebUi(context)) => {
             plan_open_webui(request.action, context)
         }
@@ -532,12 +724,25 @@ fn plan_openclaw(
     action: RuntimeOperationAction,
     context: OpenClawContext,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
-    let location = context.gateway.location;
+    let (gateway, managed) = match context {
+        OpenClawContext::Open { gateway } => (gateway, None),
+        OpenClawContext::Manage {
+            profile,
+            gateway,
+            launchctl_domain,
+            service_loaded,
+            bootstrap_plist,
+        } => (
+            gateway,
+            Some((profile, launchctl_domain, service_loaded, bootstrap_plist)),
+        ),
+    };
+    let location = gateway.location;
     if location == RuntimeLocation::Remote {
         if action != RuntimeOperationAction::Open {
             return Err(invalid_location());
         }
-        let endpoint = context.gateway.browser_endpoint()?;
+        let endpoint = gateway.browser_endpoint()?;
         let commands = vec![open_url(&endpoint)];
         return Ok(plan(
             "openclaw",
@@ -548,12 +753,27 @@ fn plan_openclaw(
         ));
     }
 
-    let service_target = format!("{}/{}", context.launchctl_domain, OPENCLAW_SERVICE);
+    if action == RuntimeOperationAction::Open {
+        let endpoint = gateway.browser_endpoint()?;
+        return Ok(plan(
+            "openclaw",
+            action,
+            location,
+            RuntimeAdapterPlan::OpenClawLocal {
+                commands: vec![open_url(&endpoint)],
+                verification: Verification::None,
+            },
+            &["validating", "opening", "complete"],
+        ));
+    }
+    let (profile, launchctl_domain, service_loaded, bootstrap_plist) =
+        managed.ok_or_else(invalid_configuration)?;
+    let service_target = format!("{launchctl_domain}/{OPENCLAW_SERVICE}");
     let (commands, verification, phases) = match action {
         RuntimeOperationAction::Start => {
             let mut commands = Vec::new();
-            if !context.service_loaded {
-                let plist = context.bootstrap_plist.ok_or_else(|| {
+            if !service_loaded {
+                let plist = bootstrap_plist.ok_or_else(|| {
                     error(
                         RuntimeErrorCode::ConfigurationUnavailable,
                         "The OpenClaw launch service is not installed.",
@@ -562,11 +782,7 @@ fn plan_openclaw(
                 })?;
                 commands.push(NativeCommand::new(
                     LAUNCHCTL,
-                    [
-                        "bootstrap",
-                        context.launchctl_domain.as_str(),
-                        plist.as_str(),
-                    ],
+                    ["bootstrap", launchctl_domain.as_str(), plist.as_str()],
                 ));
             }
             commands.push(NativeCommand::new(
@@ -575,7 +791,10 @@ fn plan_openclaw(
             ));
             (
                 commands,
-                Verification::OpenClawReady { service_target },
+                Verification::OpenClawReady {
+                    service_target,
+                    profile,
+                },
                 &[
                     "validating",
                     "starting-application",
@@ -584,6 +803,11 @@ fn plan_openclaw(
                 ][..],
             )
         }
+        RuntimeOperationAction::Stop if !service_loaded => (
+            Vec::new(),
+            Verification::LaunchServiceStopped(service_target),
+            &["validating", "verifying", "complete"][..],
+        ),
         RuntimeOperationAction::Stop => (
             vec![NativeCommand::new(
                 LAUNCHCTL,
@@ -592,14 +816,7 @@ fn plan_openclaw(
             Verification::LaunchServiceStopped(service_target),
             &["validating", "stopping-service", "verifying", "complete"][..],
         ),
-        RuntimeOperationAction::Open => {
-            let endpoint = context.gateway.browser_endpoint()?;
-            (
-                vec![open_url(&endpoint)],
-                Verification::None,
-                &["validating", "opening", "complete"][..],
-            )
-        }
+        RuntimeOperationAction::Open => unreachable!(),
         RuntimeOperationAction::Restart => return Err(unsupported()),
     };
     Ok(plan(
@@ -712,11 +929,12 @@ fn ollama_tags_endpoint(
 
 fn plan_docker(
     action: RuntimeOperationAction,
+    context: DockerContext,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
     let (commands, verification, phases) = match action {
         RuntimeOperationAction::Start => (
             vec![NativeCommand::new(OPEN, ["-a", "Docker"])],
-            Verification::DockerReady,
+            Verification::DockerReady(context.target.clone()),
             &[
                 "validating",
                 "starting-application",
@@ -725,8 +943,8 @@ fn plan_docker(
             ][..],
         ),
         RuntimeOperationAction::Stop => (
-            vec![NativeCommand::new(DOCKER_CLI, ["desktop", "stop"])],
-            Verification::DockerStopped,
+            vec![docker_command(&context.target, ["desktop", "stop"])],
+            Verification::DockerStopped(context.target.clone()),
             &["validating", "stopping-service", "verifying", "complete"][..],
         ),
         RuntimeOperationAction::Open => (
@@ -752,7 +970,7 @@ fn plan_open_webui(
     action: RuntimeOperationAction,
     context: OpenWebUiContext,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
-    let (endpoint, dependency) = match context {
+    let (endpoint, dependency, target) = match context {
         OpenWebUiContext::Open { endpoint } => {
             if action != RuntimeOperationAction::Open {
                 return Err(invalid_configuration());
@@ -775,7 +993,8 @@ fn plan_open_webui(
         OpenWebUiContext::Manage {
             endpoint,
             dependency,
-        } => (endpoint, dependency),
+            target,
+        } => (endpoint, dependency, target),
     };
     if endpoint.location() == RuntimeLocation::Remote {
         return Err(invalid_location());
@@ -807,11 +1026,23 @@ fn plan_open_webui(
             "Multiple Open WebUI containers were found.",
             false,
         )),
+        OpenWebUiDependency::ContainerUnsupported { .. } => Some(error(
+            RuntimeErrorCode::UnsupportedOperation,
+            "The Open WebUI container is in an unsupported state.",
+            true,
+        )),
         _ => None,
     };
     if let Some(error) = rejected {
         return Err(error);
     }
+    let target = target.ok_or_else(|| {
+        error(
+            RuntimeErrorCode::ProbeFailed,
+            "The local Docker Desktop target was not verified.",
+            true,
+        )
+    })?;
 
     let (id, running, ready) = match dependency {
         OpenWebUiDependency::ContainerStopped { id } => (validate_container_id(&id)?, false, false),
@@ -828,7 +1059,7 @@ fn plan_open_webui(
             RuntimeAdapterPlan::OpenWebUiContainer {
                 endpoint: endpoint.clone(),
                 container_id: id.clone(),
-                commands: vec![NativeCommand::new(DOCKER_CLI, ["start", id.as_str()])],
+                commands: vec![docker_command(&target, ["start", id.as_str()])],
                 verification: Verification::HttpReady(endpoint),
             },
             &[
@@ -841,9 +1072,9 @@ fn plan_open_webui(
         ),
         RuntimeOperationAction::Start if ready => (
             RuntimeAdapterPlan::OpenWebUiNoOp {
-                endpoint,
+                endpoint: endpoint.clone(),
                 container_id: id,
-                verification: Verification::None,
+                verification: Verification::HttpReady(endpoint),
             },
             &["validating", "verifying", "complete"][..],
         ),
@@ -858,8 +1089,11 @@ fn plan_open_webui(
         RuntimeOperationAction::Stop if !running => (
             RuntimeAdapterPlan::OpenWebUiNoOp {
                 endpoint,
-                container_id: id,
-                verification: Verification::None,
+                container_id: id.clone(),
+                verification: Verification::ContainerStopped {
+                    id,
+                    target: target.clone(),
+                },
             },
             &["validating", "verifying", "complete"][..],
         ),
@@ -867,8 +1101,11 @@ fn plan_open_webui(
             RuntimeAdapterPlan::OpenWebUiContainer {
                 endpoint,
                 container_id: id.clone(),
-                commands: vec![NativeCommand::new(DOCKER_CLI, ["stop", id.as_str()])],
-                verification: Verification::ContainerStopped(id),
+                commands: vec![docker_command(&target, ["stop", id.as_str()])],
+                verification: Verification::ContainerStopped {
+                    id,
+                    target: target.clone(),
+                },
             },
             &[
                 "validating",
@@ -882,7 +1119,7 @@ fn plan_open_webui(
             RuntimeAdapterPlan::OpenWebUiContainer {
                 endpoint: endpoint.clone(),
                 container_id: id.clone(),
-                commands: vec![NativeCommand::new(DOCKER_CLI, ["restart", id.as_str()])],
+                commands: vec![docker_command(&target, ["restart", id.as_str()])],
                 verification: Verification::HttpReady(endpoint),
             },
             &[
@@ -1083,8 +1320,12 @@ fn run_native_command(
     command: &NativeCommand,
     timeout: Duration,
 ) -> Result<(), NormalizedRuntimeError> {
-    let mut child = Command::new(command.program)
-        .args(&command.args)
+    let mut process = Command::new(command.program);
+    process.args(&command.args);
+    for name in &command.env_remove {
+        process.env_remove(name);
+    }
+    let mut child = process
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1105,8 +1346,17 @@ fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<bool, Normaliz
             return Ok(status.success());
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            if child.kill().is_ok() {
+                let cleanup_deadline = Instant::now() + CLEANUP_TIMEOUT;
+                while Instant::now() < cleanup_deadline {
+                    match child.try_wait() {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) => thread::sleep(POLL_INTERVAL),
+                    }
+                }
+            } else {
+                let _ = child.try_wait();
+            }
             return Err(command_timeout());
         }
         thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
@@ -1139,17 +1389,60 @@ fn capture_command(
     Ok(output)
 }
 
+fn capture_native_command(
+    command: &NativeCommand,
+    timeout: Duration,
+) -> Result<String, NormalizedRuntimeError> {
+    let mut file = tempfile::tempfile().map_err(|_| operation_failed())?;
+    let stdout = file.try_clone().map_err(|_| operation_failed())?;
+    let mut process = Command::new(command.program);
+    process.args(&command.args);
+    for name in &command.env_remove {
+        process.env_remove(name);
+    }
+    let mut child = process
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| operation_failed())?;
+    if !wait_for_child(&mut child, timeout)? {
+        return Err(operation_failed());
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| operation_failed())?;
+    let mut output = String::new();
+    file.take(MAX_CAPTURE_BYTES)
+        .read_to_string(&mut output)
+        .map_err(|_| operation_failed())?;
+    Ok(output)
+}
+
 fn probe_status(
     program: &str,
     args: &[&str],
     timeout: Duration,
 ) -> Result<bool, NormalizedRuntimeError> {
     let command = NativeCommand::new(program_path(program)?, args.iter().copied());
-    match run_native_command(&command, timeout) {
-        Ok(()) => Ok(true),
-        Err(error) if error.code == RuntimeErrorCode::OperationFailed => Ok(false),
-        Err(error) => Err(error),
+    probe_native_status(&command, timeout)
+}
+
+fn probe_native_status(
+    command: &NativeCommand,
+    timeout: Duration,
+) -> Result<bool, NormalizedRuntimeError> {
+    let mut process = Command::new(command.program);
+    process.args(&command.args);
+    for name in &command.env_remove {
+        process.env_remove(name);
     }
+    let mut child = process
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| operation_failed())?;
+    wait_for_child(&mut child, timeout)
 }
 
 fn program_path(program: &str) -> Result<&'static str, NormalizedRuntimeError> {
@@ -1193,7 +1486,7 @@ fn verify_with_deadline(
         if remaining.is_zero() {
             return Err(readiness_timeout());
         }
-        thread::sleep(POLL_INTERVAL.min(remaining));
+        thread::sleep(READINESS_POLL_INTERVAL.min(remaining));
     }
 }
 
@@ -1213,50 +1506,88 @@ fn verification_satisfied(
             &["-fsS", "--max-time", "2", endpoint.as_str()],
             probe_timeout,
         )?),
-        Verification::DockerReady => probe_status(DOCKER_CLI, &["info"], probe_timeout),
-        Verification::DockerStopped => Ok(!probe_status(DOCKER_CLI, &["info"], probe_timeout)?),
+        Verification::DockerReady(target) => {
+            probe_native_status(&docker_command(target, ["info"]), probe_timeout)
+        }
+        Verification::DockerStopped(target) => Ok(!probe_native_status(
+            &docker_command(target, ["info"]),
+            probe_timeout,
+        )?),
         Verification::ProcessPresent(name) => probe_status(PGREP, &["-x", name], probe_timeout),
         Verification::ProcessAbsent(name) => {
             Ok(!probe_status(PGREP, &["-x", name], probe_timeout)?)
         }
-        Verification::OpenClawReady { service_target } => {
+        Verification::OpenClawReady {
+            service_target,
+            profile,
+        } => {
             let loaded = probe_status(LAUNCHCTL, &["print", service_target], probe_timeout)?;
-            let connected = openclaw::runtime_snapshot()
-                .map(|snapshot| snapshot.connection_state == "connected")
-                .unwrap_or(false);
-            Ok(loaded && connected)
+            if !loaded {
+                return Ok(false);
+            }
+            map_frozen_openclaw_probe(probe_frozen_openclaw(profile.clone(), probe_timeout)?)
         }
         Verification::LaunchServiceStopped(target) => {
             Ok(!probe_status(LAUNCHCTL, &["print", target], probe_timeout)?)
         }
-        Verification::ContainerStopped(id) => {
-            Ok(docker_container_running(id, probe_timeout)? == Some(false))
-        }
+        Verification::ContainerStopped { id, target } => Ok(matches!(
+            docker_container_state(target, id, probe_timeout)?,
+            Some(DockerContainerState::Exited | DockerContainerState::Created)
+        )),
     }
 }
 
-fn docker_container_running(
-    id: &str,
-    timeout: Duration,
-) -> Result<Option<bool>, NormalizedRuntimeError> {
-    let output = capture_command(
-        DOCKER_CLI,
-        &["inspect", "--format", "{{.State.Running}}", id],
-        timeout,
-    )?;
-    Ok(match output.trim() {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
-    })
+fn map_frozen_openclaw_probe(
+    probe: openclaw::FrozenOpenClawProbe,
+) -> Result<bool, NormalizedRuntimeError> {
+    match probe {
+        openclaw::FrozenOpenClawProbe::Connected => Ok(true),
+        openclaw::FrozenOpenClawProbe::AuthenticationRequired => Err(error(
+            RuntimeErrorCode::AuthenticationRequired,
+            "OpenClaw authentication is required.",
+            false,
+        )),
+        openclaw::FrozenOpenClawProbe::PairingRequired => Err(error(
+            RuntimeErrorCode::PairingRequired,
+            "OpenClaw pairing is required.",
+            false,
+        )),
+        openclaw::FrozenOpenClawProbe::Unavailable => Ok(false),
+    }
 }
 
-pub(crate) fn classify_open_webui_inspection(
+fn probe_frozen_openclaw(
+    profile: openclaw::FrozenOpenClawProfile,
+    timeout: Duration,
+) -> Result<openclaw::FrozenOpenClawProbe, NormalizedRuntimeError> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = sender.send(openclaw::test_frozen_runtime_profile(&profile));
+    });
+    receiver
+        .recv_timeout(timeout)
+        .map_err(|_| readiness_timeout())
+}
+
+fn docker_container_state(
+    target: &LocalDockerTarget,
+    id: &str,
+    timeout: Duration,
+) -> Result<Option<DockerContainerState>, NormalizedRuntimeError> {
+    let output = capture_native_command(
+        &docker_command(target, ["inspect", "--format", "{{.State.Status}}", id]),
+        timeout,
+    )?;
+    let state = parse_container_state(output.trim());
+    Ok((state != DockerContainerState::Unknown).then_some(state))
+}
+
+fn classify_open_webui_inspection(
     docker_installed: bool,
     docker_process_running: bool,
     daemon_ready: bool,
     inspection_succeeded: bool,
-    candidates: &[(String, bool)],
+    candidates: &[(String, DockerContainerState)],
     endpoint_ready: Option<bool>,
 ) -> OpenWebUiDependency {
     if !docker_installed {
@@ -1274,14 +1605,22 @@ pub(crate) fn classify_open_webui_inspection(
     }
     match candidates {
         [] => OpenWebUiDependency::ContainerMissing,
-        [(id, false)] => OpenWebUiDependency::ContainerStopped { id: id.clone() },
-        [(id, true)] if endpoint_ready == Some(true) => {
+        [(id, DockerContainerState::Exited | DockerContainerState::Created)] => {
+            OpenWebUiDependency::ContainerStopped { id: id.clone() }
+        }
+        [(id, DockerContainerState::Running)] if endpoint_ready == Some(true) => {
             OpenWebUiDependency::ContainerReady { id: id.clone() }
         }
-        [(id, true)] if endpoint_ready == Some(false) => {
+        [(id, DockerContainerState::Running)] if endpoint_ready == Some(false) => {
             OpenWebUiDependency::ContainerRunningEndpointUnavailable { id: id.clone() }
         }
-        [(id, true)] => OpenWebUiDependency::ContainerRunning { id: id.clone() },
+        [(id, DockerContainerState::Running)] => {
+            OpenWebUiDependency::ContainerRunning { id: id.clone() }
+        }
+        [(id, state)] => OpenWebUiDependency::ContainerUnsupported {
+            id: id.clone(),
+            state: *state,
+        },
         _ => OpenWebUiDependency::ContainerAmbiguous,
     }
 }
@@ -1382,8 +1721,15 @@ mod tests {
         classify_endpoint(value).unwrap()
     }
 
+    fn docker_target() -> LocalDockerTarget {
+        LocalDockerTarget {
+            host: "unix:///Users/test/.docker/run/docker.sock".to_string(),
+        }
+    }
+
     fn openclaw_context(value: &str, loaded: bool) -> OpenClawContext {
-        OpenClawContext {
+        OpenClawContext::Manage {
+            profile: openclaw::frozen_runtime_profile_for_test("profile-1", value, "secret-token"),
             gateway: classify_openclaw_gateway(value).unwrap(),
             launchctl_domain: "gui/501".to_string(),
             service_loaded: loaded,
@@ -1412,6 +1758,7 @@ mod tests {
             OpenWebUiContext::Manage {
                 endpoint: endpoint("http://localhost:3000"),
                 dependency,
+                target: Some(docker_target()),
             }
         }
     }
@@ -1524,9 +1871,12 @@ mod tests {
 
     struct RecordingSource {
         openclaw_calls: Cell<u32>,
+        openclaw_service_inspections: Cell<u32>,
         ollama_calls: Cell<u32>,
+        ollama_ownership_inspections: Cell<u32>,
         docker_calls: Cell<u32>,
         webui_calls: Cell<u32>,
+        webui_dependency_inspections: Cell<u32>,
         cherry_calls: Cell<u32>,
     }
 
@@ -1534,31 +1884,54 @@ mod tests {
         fn new() -> Self {
             Self {
                 openclaw_calls: Cell::new(0),
+                openclaw_service_inspections: Cell::new(0),
                 ollama_calls: Cell::new(0),
+                ollama_ownership_inspections: Cell::new(0),
                 docker_calls: Cell::new(0),
                 webui_calls: Cell::new(0),
+                webui_dependency_inspections: Cell::new(0),
                 cherry_calls: Cell::new(0),
             }
         }
     }
 
     impl ContextSource for RecordingSource {
-        fn openclaw(&self) -> Result<OpenClawContext, NormalizedRuntimeError> {
+        fn openclaw(
+            &self,
+            action: RuntimeOperationAction,
+        ) -> Result<OpenClawContext, NormalizedRuntimeError> {
             self.openclaw_calls.set(self.openclaw_calls.get() + 1);
-            Err(configuration_unavailable())
+            if action == RuntimeOperationAction::Open {
+                Ok(OpenClawContext::Open {
+                    gateway: classify_openclaw_gateway("ws://localhost:18789").unwrap(),
+                })
+            } else {
+                self.openclaw_service_inspections
+                    .set(self.openclaw_service_inspections.get() + 1);
+                Err(configuration_unavailable())
+            }
         }
 
-        fn ollama(&self, endpoint: ValidatedEndpoint) -> OllamaContext {
+        fn ollama(&self, endpoint: ValidatedEndpoint, inspect_ownership: bool) -> OllamaContext {
             self.ollama_calls.set(self.ollama_calls.get() + 1);
+            if inspect_ownership {
+                self.ollama_ownership_inspections
+                    .set(self.ollama_ownership_inspections.get() + 1);
+            }
             OllamaContext {
                 endpoint,
                 installation: OllamaInstallation::OtherInstallation,
             }
         }
 
-        fn docker(&self) -> DockerContext {
+        fn docker(
+            &self,
+            _action: RuntimeOperationAction,
+        ) -> Result<DockerContext, NormalizedRuntimeError> {
             self.docker_calls.set(self.docker_calls.get() + 1);
-            DockerContext
+            Ok(DockerContext {
+                target: docker_target(),
+            })
         }
 
         fn open_webui(
@@ -1567,10 +1940,16 @@ mod tests {
             inspect_dependency: bool,
         ) -> OpenWebUiContext {
             self.webui_calls.set(self.webui_calls.get() + 1);
-            assert!(inspect_dependency);
-            OpenWebUiContext::Manage {
-                endpoint,
-                dependency: OpenWebUiDependency::ContainerMissing,
+            if inspect_dependency {
+                self.webui_dependency_inspections
+                    .set(self.webui_dependency_inspections.get() + 1);
+                OpenWebUiContext::Manage {
+                    endpoint,
+                    dependency: OpenWebUiDependency::ContainerMissing,
+                    target: Some(docker_target()),
+                }
+            } else {
+                OpenWebUiContext::Open { endpoint }
             }
         }
 
@@ -1608,6 +1987,77 @@ mod tests {
         .is_ok());
         assert_eq!(source.ollama_calls.get(), 1);
         assert_eq!(source.webui_calls.get(), 0);
+    }
+
+    #[test]
+    fn atomic_preparation_keeps_open_actions_free_of_ownership_inspection() {
+        let source = RecordingSource::new();
+        let openclaw = request("openclaw", RuntimeOperationAction::Open, None);
+        assert!(prepare_with_source(&openclaw, &source).is_ok());
+        let ollama = request(
+            "ollama",
+            RuntimeOperationAction::Open,
+            Some("http://localhost:11434"),
+        );
+        assert!(prepare_with_source(&ollama, &source).is_ok());
+        let webui = request(
+            "open-webui",
+            RuntimeOperationAction::Open,
+            Some("http://localhost:3000"),
+        );
+        assert!(prepare_with_source(&webui, &source).is_ok());
+        assert_eq!(source.openclaw_service_inspections.get(), 0);
+        assert_eq!(source.ollama_ownership_inspections.get(), 0);
+        assert_eq!(source.webui_dependency_inspections.get(), 0);
+
+        let mismatched = build_execution_plan(
+            &request("cherry-studio", RuntimeOperationAction::Open, None),
+            RuntimePlanningContext::Docker(DockerContext {
+                target: docker_target(),
+            }),
+        );
+        assert_eq!(
+            mismatched.unwrap_err().code,
+            RuntimeErrorCode::InvalidConfiguration
+        );
+    }
+
+    #[test]
+    fn frozen_openclaw_plan_redacts_secret_and_never_uses_historical_snapshot() {
+        let plan = build(
+            "openclaw",
+            RuntimeOperationAction::Start,
+            RuntimePlanningContext::OpenClaw(openclaw_context("ws://localhost:18789", true)),
+        )
+        .unwrap();
+        let verification = commands_and_verification(&plan.adapter).1;
+        match verification {
+            Verification::OpenClawReady { profile, .. } => {
+                assert_eq!(profile.server_url(), "ws://localhost:18789");
+                let debug = format!("{profile:?}");
+                assert!(debug.contains("[redacted]"));
+                assert!(!debug.contains("secret-token"));
+            }
+            _ => panic!("expected frozen OpenClaw verification"),
+        }
+        let source = include_str!("lifecycle.rs");
+        let forbidden = ["openclaw::", "runtime_snapshot()"].concat();
+        assert!(!source.contains(&forbidden));
+        for (probe, code) in [
+            (
+                openclaw::FrozenOpenClawProbe::AuthenticationRequired,
+                RuntimeErrorCode::AuthenticationRequired,
+            ),
+            (
+                openclaw::FrozenOpenClawProbe::PairingRequired,
+                RuntimeErrorCode::PairingRequired,
+            ),
+        ] {
+            let error = map_frozen_openclaw_probe(probe).unwrap_err();
+            assert_eq!(error.code, code);
+            assert!(!error.message.contains("token"));
+            assert!(!error.message.contains("secret"));
+        }
     }
 
     #[test]
@@ -1680,7 +2130,10 @@ mod tests {
             let commands = commands_and_verification(&plan.adapter).0;
             assert_eq!(commands.len(), expected_commands, "state {state}");
             if let Some(command) = commands.first() {
-                assert_eq!(command.args, vec!["start", CONTAINER_ID]);
+                assert_eq!(
+                    command.args[command.args.len() - 2..],
+                    ["start", CONTAINER_ID]
+                );
             }
         }
     }
@@ -1698,7 +2151,8 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                commands_and_verification(&stop.adapter).0[0].args[0],
+                commands_and_verification(&stop.adapter).0[0].args
+                    [commands_and_verification(&stop.adapter).0[0].args.len() - 2],
                 "stop"
             );
             let restart = build(
@@ -1711,7 +2165,8 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                commands_and_verification(&restart.adapter).0[0].args[0],
+                commands_and_verification(&restart.adapter).0[0].args
+                    [commands_and_verification(&restart.adapter).0[0].args.len() - 2],
                 "restart"
             );
         }
@@ -1741,6 +2196,132 @@ mod tests {
     }
 
     #[test]
+    fn docker_commands_bind_one_frozen_local_host_and_clear_remote_selectors() {
+        let target = docker_target();
+        for args in [
+            vec!["info"],
+            vec!["ps", "-a"],
+            vec!["inspect", CONTAINER_ID],
+            vec!["start", CONTAINER_ID],
+            vec!["stop", CONTAINER_ID],
+            vec!["restart", CONTAINER_ID],
+        ] {
+            let command = docker_command(&target, args);
+            assert_eq!(command.program, DOCKER_CLI);
+            assert_eq!(command.args[0], "--host");
+            assert_eq!(command.args[1], target.host);
+            assert_eq!(command.env_remove, DOCKER_ENV_REMOVALS);
+            assert!(!command.args.iter().any(|arg| arg.starts_with("tcp://")));
+        }
+        let unverified = OpenWebUiContext::Manage {
+            endpoint: endpoint("http://localhost:3000"),
+            dependency: dependency("running"),
+            target: None,
+        };
+        assert!(build(
+            "open-webui",
+            RuntimeOperationAction::Stop,
+            RuntimePlanningContext::OpenWebUi(unverified)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn container_states_are_explicit_and_transitional_states_are_never_stopped() {
+        let states = [
+            ("running", DockerContainerState::Running),
+            ("exited", DockerContainerState::Exited),
+            ("created", DockerContainerState::Created),
+            ("paused", DockerContainerState::Paused),
+            ("restarting", DockerContainerState::Restarting),
+            ("removing", DockerContainerState::Removing),
+            ("dead", DockerContainerState::Dead),
+            ("unexpected", DockerContainerState::Unknown),
+        ];
+        for (raw, expected) in states {
+            assert_eq!(parse_container_state(raw), expected);
+        }
+        for state in [
+            DockerContainerState::Paused,
+            DockerContainerState::Restarting,
+            DockerContainerState::Removing,
+            DockerContainerState::Dead,
+            DockerContainerState::Unknown,
+        ] {
+            let classified = classify_open_webui_inspection(
+                true,
+                true,
+                true,
+                true,
+                &[(CONTAINER_ID.to_string(), state)],
+                None,
+            );
+            assert!(matches!(
+                classified,
+                OpenWebUiDependency::ContainerUnsupported { .. }
+            ));
+            let context = OpenWebUiContext::Manage {
+                endpoint: endpoint("http://localhost:3000"),
+                dependency: classified,
+                target: Some(docker_target()),
+            };
+            assert!(build(
+                "open-webui",
+                RuntimeOperationAction::Start,
+                RuntimePlanningContext::OpenWebUi(context)
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn no_op_plans_revalidate_the_frozen_fact() {
+        let ready_start = build(
+            "open-webui",
+            RuntimeOperationAction::Start,
+            RuntimePlanningContext::OpenWebUi(webui_context(
+                RuntimeOperationAction::Start,
+                dependency("ready"),
+            )),
+        )
+        .unwrap();
+        assert!(commands_and_verification(&ready_start.adapter).0.is_empty());
+        assert!(matches!(
+            commands_and_verification(&ready_start.adapter).1,
+            Verification::HttpReady(_)
+        ));
+        let stopped_stop = build(
+            "open-webui",
+            RuntimeOperationAction::Stop,
+            RuntimePlanningContext::OpenWebUi(webui_context(
+                RuntimeOperationAction::Stop,
+                dependency("stopped"),
+            )),
+        )
+        .unwrap();
+        assert!(commands_and_verification(&stopped_stop.adapter)
+            .0
+            .is_empty());
+        assert!(matches!(
+            commands_and_verification(&stopped_stop.adapter).1,
+            Verification::ContainerStopped { .. }
+        ));
+        let openclaw_stop = build(
+            "openclaw",
+            RuntimeOperationAction::Stop,
+            RuntimePlanningContext::OpenClaw(openclaw_context("ws://localhost:18789", false)),
+        )
+        .unwrap();
+        assert!(commands_and_verification(&openclaw_stop.adapter)
+            .0
+            .is_empty());
+        assert!(matches!(
+            commands_and_verification(&openclaw_stop.adapter).1,
+            Verification::LaunchServiceStopped(_)
+        ));
+    }
+
+    #[test]
     fn dependency_inspection_failure_never_maps_to_missing() {
         assert_eq!(
             classify_open_webui_inspection(true, true, true, false, &[], None),
@@ -1750,6 +2331,10 @@ mod tests {
             classify_open_webui_inspection(true, true, true, true, &[], None),
             OpenWebUiDependency::ContainerMissing
         );
+        let missing_binary = NativeCommand::new("/definitely/missing/docker", ["info"])
+            .with_env_removals(DOCKER_ENV_REMOVALS);
+        let error = probe_native_status(&missing_binary, Duration::from_millis(10)).unwrap_err();
+        assert_eq!(error.code, RuntimeErrorCode::OperationFailed);
     }
 
     #[test]
@@ -1781,6 +2366,7 @@ mod tests {
             dependency: OpenWebUiDependency::ContainerRunning {
                 id: "invalid".to_string(),
             },
+            target: Some(docker_target()),
         };
         assert!(build(
             "open-webui",
@@ -1875,11 +2461,25 @@ mod tests {
     }
 
     #[test]
+    fn readiness_polling_uses_a_bounded_low_frequency() {
+        let probes = Cell::new(0_u32);
+        let started = Instant::now();
+        let _ = verify_with_deadline(Duration::from_millis(720), |_| {
+            probes.set(probes.get() + 1);
+            Ok(false)
+        });
+        assert!(started.elapsed() >= Duration::from_millis(700));
+        assert!(probes.get() <= 4, "probe count was {}", probes.get());
+    }
+
+    #[test]
     fn dead_code_allowances_are_narrow_entry_point_annotations() {
         let source = include_str!("lifecycle.rs");
         let broad = ["#![allow(", "dead_code)]"].concat();
         let narrow = ["#[allow(", "dead_code)]"].concat();
         assert!(!source.contains(&broad));
-        assert_eq!(source.matches(&narrow).count(), 3);
+        assert_eq!(source.matches(&narrow).count(), 2);
+        let blocking_wait = ["child.", "wait()"].concat();
+        assert!(!source.contains(&blocking_wait));
     }
 }

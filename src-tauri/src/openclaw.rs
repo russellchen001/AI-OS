@@ -409,7 +409,52 @@ pub(crate) fn runtime_snapshot() -> Result<OpenClawRuntimeSnapshot, String> {
     })
 }
 
-pub(crate) fn active_runtime_endpoint() -> Result<Option<String>, String> {
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct FrozenOpenClawProfile {
+    id: String,
+    server_url: String,
+    gateway_token: String,
+}
+
+impl std::fmt::Debug for FrozenOpenClawProfile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FrozenOpenClawProfile")
+            .field("id", &self.id)
+            .field("server_url", &self.server_url)
+            .field("gateway_token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl FrozenOpenClawProfile {
+    pub(crate) fn server_url(&self) -> &str {
+        &self.server_url
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn frozen_runtime_profile_for_test(
+    id: &str,
+    server_url: &str,
+    gateway_token: &str,
+) -> FrozenOpenClawProfile {
+    FrozenOpenClawProfile {
+        id: id.to_string(),
+        server_url: server_url.to_string(),
+        gateway_token: gateway_token.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrozenOpenClawProbe {
+    Connected,
+    AuthenticationRequired,
+    PairingRequired,
+    Unavailable,
+}
+
+pub(crate) fn active_runtime_profile() -> Result<Option<FrozenOpenClawProfile>, String> {
     let current_path = config_directory()?.join(CONFIG_FILE_NAME);
     let legacy_path = legacy_config_directory()?.join(CONFIG_FILE_NAME);
     let servers = if current_path.exists() {
@@ -423,7 +468,40 @@ pub(crate) fn active_runtime_endpoint() -> Result<Option<String>, String> {
     Ok(servers
         .into_iter()
         .find(|server| server.active && server.enabled)
+        .map(|server| FrozenOpenClawProfile {
+            id: server.id,
+            server_url: server.server_url,
+            gateway_token: server.gateway_token,
+        }))
+}
+
+pub(crate) fn active_runtime_endpoint() -> Result<Option<String>, String> {
+    let current_path = config_directory()?.join(CONFIG_FILE_NAME);
+    let legacy_path = legacy_config_directory()?.join(CONFIG_FILE_NAME);
+    let servers = if current_path.exists() {
+        read_servers_at(&current_path)?
+    } else if legacy_path.exists() {
+        read_servers_at(&legacy_path)?
+    } else {
+        Vec::new()
+    };
+    Ok(servers
+        .into_iter()
+        .find(|server| server.active && server.enabled)
         .map(|server| server.server_url))
+}
+
+pub(crate) fn test_frozen_runtime_profile(profile: &FrozenOpenClawProfile) -> FrozenOpenClawProbe {
+    let result = test_server_connection(&profile.server_url, &profile.gateway_token);
+    if result.success {
+        FrozenOpenClawProbe::Connected
+    } else {
+        match result.state.as_str() {
+            "unauthorized" => FrozenOpenClawProbe::AuthenticationRequired,
+            "pairing-required" => FrozenOpenClawProbe::PairingRequired,
+            _ => FrozenOpenClawProbe::Unavailable,
+        }
+    }
 }
 
 fn classify_runtime_location(server_url: &str) -> OpenClawRuntimeLocation {
