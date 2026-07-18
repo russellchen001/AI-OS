@@ -95,6 +95,12 @@ pub enum RuntimeErrorCode {
     CancellationTooLate,
     OperationFailed,
     OperationTaskFailed,
+    DependencyUnavailable,
+    DependencyNotInstalled,
+    InvalidRuntimeLocation,
+    ContainerNotFound,
+    ContainerAmbiguous,
+    ReadinessTimeout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

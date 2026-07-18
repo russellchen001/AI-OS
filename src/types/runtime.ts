@@ -66,7 +66,13 @@ export type RuntimeErrorCode =
   | "cancellation-unsupported"
   | "cancellation-too-late"
   | "operation-failed"
-  | "operation-task-failed";
+  | "operation-task-failed"
+  | "dependency-unavailable"
+  | "dependency-not-installed"
+  | "invalid-runtime-location"
+  | "container-not-found"
+  | "container-ambiguous"
+  | "readiness-timeout";
 
 export type NormalizedRuntimeError = {
   code: RuntimeErrorCode;

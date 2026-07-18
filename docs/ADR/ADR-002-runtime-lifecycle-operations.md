@@ -1,6 +1,6 @@
 # ADR-002: Runtime Lifecycle Operations
 
-- **Status:** Accepted for P9-M1B1
+- **Status:** Accepted through P9-M1B2A
 - **Date:** 2026-07-19
 - **Decision owners:** AI-OS
 
@@ -43,6 +43,18 @@ Binding M1B2 follow-ups:
 
 1. An operation-conflict IPC rejection must atomically include the existing operation ID or snapshot.
 2. Canonical IPC exposure must enforce a bounded active-operation acceptance policy, especially for open operations that do not reserve lifecycle slots.
+
+## M1B2A Execution-Plan Boundary
+
+Every native lifecycle action must first produce an immutable AI-OS-owned execution plan. Plan validation freezes the runtime ID, action, effective location, explicit endpoint context, adapter variant, executable and argument array, verification strategy, and stable progress phases before execution begins. Plans contain no arbitrary metadata, credentials, raw configuration, unrestricted process output, or shell command strings.
+
+Ollama and Open WebUI require explicit HTTP or HTTPS endpoints. Localhost and loopback addresses are local; other valid hosts are remote. Embedded credentials, hostless URLs, and non-network or executable schemes are rejected. OpenClaw derives its endpoint exclusively from the active native profile rather than accepting a request override. Existing OpenClaw status classification remains compatible with WebSocket profiles, while native open actions require a separately validated HTTP or HTTPS endpoint.
+
+Remote endpoints support only `open`. Local lifecycle commands use fixed executable paths and argument arrays: the OpenClaw launch service identifier, a verified Homebrew Ollama service, Docker Desktop's fixed application and CLI paths, a confirmed Open WebUI container ID, and Cherry Studio's fixed application name and static graceful-quit script. No adapter supports cancellation in this increment, and broad process-name killing is forbidden.
+
+Open WebUI planning distinguishes Docker installation, process, daemon inspection, container existence, container running state, and endpoint readiness. A missing container can be concluded only after a successful daemon inspection. Docker is never started automatically for an Open WebUI operation, and ambiguous container candidates are rejected.
+
+P9-M1B2A supplies internal planning, native execution, bounded verification, progress, dependency classification, and safe error primitives only. It does not register lifecycle IPC or managed Tauri state, emit events, execute through the operation manager, change legacy commands, or integrate with frontend code.
 
 ## Consequences
 

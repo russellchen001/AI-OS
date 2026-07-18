@@ -11,7 +11,9 @@ use std::{
 
 use tungstenite::{connect, stream::MaybeTlsStream, Error as WebSocketError, Message, WebSocket};
 
-use url::{Host, Url};
+use url::Url;
+
+use crate::runtime::{lifecycle, models::RuntimeLocation};
 
 const CONFIG_FILE_NAME: &str = "openclaw-servers.json";
 
@@ -407,18 +409,28 @@ pub(crate) fn runtime_snapshot() -> Result<OpenClawRuntimeSnapshot, String> {
     })
 }
 
-fn classify_runtime_location(server_url: &str) -> OpenClawRuntimeLocation {
-    let Ok(url) = Url::parse(server_url) else {
-        return OpenClawRuntimeLocation::Invalid;
+pub(crate) fn active_runtime_endpoint() -> Result<Option<String>, String> {
+    let current_path = config_directory()?.join(CONFIG_FILE_NAME);
+    let legacy_path = legacy_config_directory()?.join(CONFIG_FILE_NAME);
+    let servers = if current_path.exists() {
+        read_servers_at(&current_path)?
+    } else if legacy_path.exists() {
+        read_servers_at(&legacy_path)?
+    } else {
+        Vec::new()
     };
-    match url.host() {
-        Some(Host::Domain(host)) if host.eq_ignore_ascii_case("localhost") => {
-            OpenClawRuntimeLocation::Local
-        }
-        Some(Host::Ipv4(address)) if address.is_loopback() => OpenClawRuntimeLocation::Local,
-        Some(Host::Ipv6(address)) if address.is_loopback() => OpenClawRuntimeLocation::Local,
-        Some(_) => OpenClawRuntimeLocation::Remote,
-        None => OpenClawRuntimeLocation::Invalid,
+
+    Ok(servers
+        .into_iter()
+        .find(|server| server.active && server.enabled)
+        .map(|server| server.server_url))
+}
+
+fn classify_runtime_location(server_url: &str) -> OpenClawRuntimeLocation {
+    match lifecycle::classify_runtime_url(server_url) {
+        Some(RuntimeLocation::Local) => OpenClawRuntimeLocation::Local,
+        Some(RuntimeLocation::Remote) => OpenClawRuntimeLocation::Remote,
+        _ => OpenClawRuntimeLocation::Invalid,
     }
 }
 

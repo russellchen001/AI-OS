@@ -82,6 +82,29 @@ Binding M1B2 follow-ups:
 4. Remote endpoints must never receive local lifecycle operations.
 5. M1B must not automatically start Docker for Open WebUI.
 
+### M1B2A — Execution Plans and Native Adapters
+
+Implementation scope:
+
+- Immutable, typed, AI-OS-owned lifecycle execution plans
+- Shared endpoint location classification with strict HTTP/HTTPS lifecycle validation
+- Frozen OpenClaw active-profile, Ollama ownership, and Open WebUI dependency context
+- Explicit native commands and argument arrays without shell interpolation
+- Bounded readiness and stopped-state verification primitives
+- Stable internal progress phases without Tauri event emission
+- Safe normalized dependency, location, container, and timeout errors
+- Pure tests for planning, command construction, dependency classification, and security boundaries
+
+Runtime policy:
+
+- OpenClaw supports local start, stop, and open; remote profiles support open only; restart is unsupported.
+- Ollama supports local start and stop only when verified as Homebrew-managed; remote endpoints support open only; restart is unsupported.
+- Docker Desktop supports start, stop, and open; restart is unsupported.
+- Open WebUI supports local start, stop, restart, and open using a confirmed container ID; remote endpoints support open only; Docker is never started automatically.
+- Cherry Studio supports start, stop, and open through fixed macOS application primitives; restart is unsupported.
+
+M1B2A does not register lifecycle IPC or managed state, emit operation events, connect execution to the operation manager, delegate legacy commands, migrate UI, add dependencies, or change stored data. Canonical IPC exposure and operation-manager integration remain deferred to M1B2B.
+
 ## M1C — Frontend Migration and Compatibility Cleanup
 
 Deferred scope:
