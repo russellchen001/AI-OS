@@ -11,7 +11,7 @@ use std::{
 
 use tungstenite::{connect, stream::MaybeTlsStream, Error as WebSocketError, Message, WebSocket};
 
-use url::Url;
+use url::{Host, Url};
 
 const CONFIG_FILE_NAME: &str = "openclaw-servers.json";
 
@@ -65,8 +65,16 @@ struct StoredOpenClawServer {
 #[derive(Debug, Clone)]
 pub(crate) struct OpenClawRuntimeSnapshot {
     pub configured: bool,
-    pub remote: bool,
+    pub location: OpenClawRuntimeLocation,
     pub connection_state: String,
+    pub last_checked_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenClawRuntimeLocation {
+    Local,
+    Remote,
+    Invalid,
 }
 
 fn default_connection_state() -> String {
@@ -381,26 +389,75 @@ pub(crate) fn runtime_snapshot() -> Result<OpenClawRuntimeSnapshot, String> {
     else {
         return Ok(OpenClawRuntimeSnapshot {
             configured: false,
-            remote: false,
+            location: OpenClawRuntimeLocation::Invalid,
             connection_state: "unknown".to_string(),
+            last_checked_at: None,
         });
     };
 
-    let remote = Url::parse(&active.server_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_string))
-        .map(|host| host != "127.0.0.1" && host != "localhost" && host != "::1")
-        .unwrap_or(false);
-
     Ok(OpenClawRuntimeSnapshot {
         configured: true,
-        remote,
+        location: classify_runtime_location(&active.server_url),
         connection_state: if active.connection_state.trim().is_empty() {
             "unknown".to_string()
         } else {
             active.connection_state.clone()
         },
+        last_checked_at: active.last_checked_at.clone(),
     })
+}
+
+fn classify_runtime_location(server_url: &str) -> OpenClawRuntimeLocation {
+    let Ok(url) = Url::parse(server_url) else {
+        return OpenClawRuntimeLocation::Invalid;
+    };
+    match url.host() {
+        Some(Host::Domain(host)) if host.eq_ignore_ascii_case("localhost") => {
+            OpenClawRuntimeLocation::Local
+        }
+        Some(Host::Ipv4(address)) if address.is_loopback() => OpenClawRuntimeLocation::Local,
+        Some(Host::Ipv6(address)) if address.is_loopback() => OpenClawRuntimeLocation::Local,
+        Some(_) => OpenClawRuntimeLocation::Remote,
+        None => OpenClawRuntimeLocation::Invalid,
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_localhost_and_loopback_addresses_as_local() {
+        for url in [
+            "http://localhost:18789",
+            "http://127.0.0.1:18789",
+            "http://127.12.34.56:18789",
+            "http://[::1]:18789",
+        ] {
+            assert_eq!(
+                classify_runtime_location(url),
+                OpenClawRuntimeLocation::Local
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_valid_non_loopback_hostname_as_remote() {
+        assert_eq!(
+            classify_runtime_location("https://gateway.example.com"),
+            OpenClawRuntimeLocation::Remote
+        );
+    }
+
+    #[test]
+    fn classifies_invalid_or_hostless_url_as_invalid() {
+        for url in ["not a url", "file:///tmp/openclaw.sock"] {
+            assert_eq!(
+                classify_runtime_location(url),
+                OpenClawRuntimeLocation::Invalid
+            );
+        }
+    }
 }
 
 fn write_servers(servers: &[StoredOpenClawServer]) -> Result<(), String> {

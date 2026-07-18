@@ -10,8 +10,12 @@ pub fn list_runtimes() -> Vec<RuntimeDefinition> {
 }
 
 #[tauri::command]
-pub fn get_runtime_statuses(request: Option<RuntimeStatusRequest>) -> Vec<RuntimeStatus> {
-    adapters::statuses(request.unwrap_or_default())
+pub async fn get_runtime_statuses(
+    request: Option<RuntimeStatusRequest>,
+) -> Result<Vec<RuntimeStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || adapters::statuses(request.unwrap_or_default()))
+        .await
+        .map_err(|_| "Runtime status collection could not be completed.".to_string())
 }
 
 #[cfg(test)]

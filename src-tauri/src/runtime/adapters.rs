@@ -61,15 +61,15 @@ fn definition(id: &str) -> RuntimeDefinition {
         .expect("static runtime definition must exist")
 }
 
-fn openclaw_definition(remote: bool) -> RuntimeDefinition {
+fn openclaw_definition(location: openclaw::OpenClawRuntimeLocation) -> RuntimeDefinition {
     let mut definition = definition("openclaw");
-    definition.location = if remote {
-        RuntimeLocation::Remote
-    } else {
-        RuntimeLocation::Local
+    definition.location = match location {
+        openclaw::OpenClawRuntimeLocation::Local => RuntimeLocation::Local,
+        openclaw::OpenClawRuntimeLocation::Remote => RuntimeLocation::Remote,
+        openclaw::OpenClawRuntimeLocation::Invalid => RuntimeLocation::Hybrid,
     };
 
-    if !remote {
+    if location == openclaw::OpenClawRuntimeLocation::Local {
         definition.capabilities.push(RuntimeCapability::Start);
         definition.capabilities.push(RuntimeCapability::Stop);
     }
@@ -79,41 +79,13 @@ fn openclaw_definition(remote: bool) -> RuntimeDefinition {
 
 fn openclaw_status() -> RuntimeStatus {
     match openclaw::runtime_snapshot() {
-        Ok(snapshot) => map_openclaw_snapshot(openclaw_definition(snapshot.remote), snapshot),
-        Err(_) => {
-            let definition = definition("openclaw");
-
-            RuntimeStatus {
-                id: definition.id,
-                adapter_kind: definition.adapter_kind,
-                supported_platform: RuntimePlatform::Macos,
-                location: definition.location,
-                dependencies: definition.dependencies,
-                capabilities: definition.capabilities,
-                availability: RuntimeAvailability::Unavailable,
-                lifecycle: RuntimeLifecycle::Failed,
-                health: RuntimeHealth::Unhealthy,
-                readiness: RuntimeReadiness::NotReady,
-                observed_at: observed_at(),
-                error: Some(NormalizedRuntimeError {
-                    code: RuntimeErrorCode::ConfigurationUnavailable,
-                    message: "OpenClaw configuration could not be read.".to_string(),
-                    retryable: true,
-                }),
-            }
-        }
+        Ok(snapshot) => map_openclaw_snapshot(openclaw_definition(snapshot.location), snapshot),
+        Err(_) => openclaw_config_failure_status(),
     }
 }
 
-fn map_openclaw_snapshot(
-    definition: RuntimeDefinition,
-    snapshot: openclaw::OpenClawRuntimeSnapshot,
-) -> RuntimeStatus {
-    let connected = snapshot.connection_state == "connected";
-    let unhealthy = matches!(
-        snapshot.connection_state.as_str(),
-        "unauthorized" | "unreachable" | "pairing-required" | "error"
-    );
+fn openclaw_config_failure_status() -> RuntimeStatus {
+    let definition = definition("openclaw");
 
     RuntimeStatus {
         id: definition.id,
@@ -122,44 +94,157 @@ fn map_openclaw_snapshot(
         location: definition.location,
         dependencies: definition.dependencies,
         capabilities: definition.capabilities,
-        availability: if snapshot.configured {
-            RuntimeAvailability::Available
-        } else {
-            RuntimeAvailability::Unavailable
-        },
-        lifecycle: if connected {
-            RuntimeLifecycle::Running
-        } else if unhealthy {
-            RuntimeLifecycle::Failed
-        } else if snapshot.configured {
-            RuntimeLifecycle::Unknown
-        } else {
-            RuntimeLifecycle::Stopped
-        },
-        health: if connected {
-            RuntimeHealth::Healthy
-        } else if unhealthy {
-            RuntimeHealth::Unhealthy
-        } else {
-            RuntimeHealth::Unknown
-        },
-        readiness: if connected {
-            RuntimeReadiness::Ready
-        } else if snapshot.configured && !unhealthy {
-            RuntimeReadiness::Unknown
-        } else {
-            RuntimeReadiness::NotReady
-        },
+        availability: RuntimeAvailability::Unavailable,
+        lifecycle: RuntimeLifecycle::Unknown,
+        health: RuntimeHealth::Unknown,
+        readiness: RuntimeReadiness::NotReady,
         observed_at: observed_at(),
-        error: if snapshot.configured {
-            None
+        error: Some(runtime_error(
+            RuntimeErrorCode::ConfigurationUnavailable,
+            "OpenClaw configuration could not be read.",
+            true,
+        )),
+    }
+}
+
+fn map_openclaw_snapshot(
+    definition: RuntimeDefinition,
+    snapshot: openclaw::OpenClawRuntimeSnapshot,
+) -> RuntimeStatus {
+    let valid_observation = snapshot
+        .last_checked_at
+        .as_deref()
+        .filter(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok());
+    let connection_state =
+        if snapshot.connection_state == "connected" && valid_observation.is_none() {
+            "unknown"
         } else {
-            Some(NormalizedRuntimeError {
-                code: RuntimeErrorCode::ConfigurationUnavailable,
-                message: "No active OpenClaw server is configured.".to_string(),
-                retryable: false,
-            })
+            snapshot.connection_state.as_str()
+        };
+    let (lifecycle, health, readiness, error) = match connection_state {
+        "connected" => (
+            RuntimeLifecycle::Running,
+            RuntimeHealth::Healthy,
+            RuntimeReadiness::Ready,
+            None,
+        ),
+        "testing" => (
+            RuntimeLifecycle::Unknown,
+            RuntimeHealth::Checking,
+            RuntimeReadiness::Unknown,
+            None,
+        ),
+        "unauthorized" => (
+            RuntimeLifecycle::Running,
+            RuntimeHealth::Degraded,
+            RuntimeReadiness::NotReady,
+            Some(runtime_error(
+                RuntimeErrorCode::AuthenticationRequired,
+                "OpenClaw authentication is required.",
+                false,
+            )),
+        ),
+        "pairing-required" => (
+            RuntimeLifecycle::Running,
+            RuntimeHealth::Degraded,
+            RuntimeReadiness::NotReady,
+            Some(runtime_error(
+                RuntimeErrorCode::PairingRequired,
+                "OpenClaw pairing is required.",
+                false,
+            )),
+        ),
+        "unreachable" => (
+            RuntimeLifecycle::Unknown,
+            RuntimeHealth::Unhealthy,
+            RuntimeReadiness::NotReady,
+            Some(runtime_error(
+                RuntimeErrorCode::ConnectionUnavailable,
+                "OpenClaw is unreachable.",
+                true,
+            )),
+        ),
+        "error" => (
+            RuntimeLifecycle::Unknown,
+            RuntimeHealth::Unhealthy,
+            RuntimeReadiness::NotReady,
+            Some(runtime_error(
+                RuntimeErrorCode::ProbeFailed,
+                "OpenClaw status could not be determined.",
+                true,
+            )),
+        ),
+        _ => (
+            RuntimeLifecycle::Unknown,
+            RuntimeHealth::Unknown,
+            RuntimeReadiness::Unknown,
+            None,
+        ),
+    };
+
+    let (availability, lifecycle, health, readiness, error) = if !snapshot.configured {
+        (
+            RuntimeAvailability::Unavailable,
+            RuntimeLifecycle::Unknown,
+            RuntimeHealth::Unknown,
+            RuntimeReadiness::NotReady,
+            Some(runtime_error(
+                RuntimeErrorCode::ConfigurationUnavailable,
+                "No active OpenClaw server is configured.",
+                false,
+            )),
+        )
+    } else if snapshot.location == openclaw::OpenClawRuntimeLocation::Invalid {
+        (
+            RuntimeAvailability::Unavailable,
+            RuntimeLifecycle::Unknown,
+            RuntimeHealth::Unknown,
+            RuntimeReadiness::NotReady,
+            Some(runtime_error(
+                RuntimeErrorCode::InvalidConfiguration,
+                "The active OpenClaw server URL is invalid.",
+                false,
+            )),
+        )
+    } else {
+        (
+            RuntimeAvailability::Available,
+            lifecycle,
+            health,
+            readiness,
+            error,
+        )
+    };
+
+    RuntimeStatus {
+        id: definition.id,
+        adapter_kind: definition.adapter_kind,
+        supported_platform: RuntimePlatform::Macos,
+        location: definition.location,
+        dependencies: definition.dependencies,
+        capabilities: definition.capabilities,
+        availability,
+        lifecycle,
+        health,
+        readiness,
+        observed_at: if snapshot.configured
+            && snapshot.location != openclaw::OpenClawRuntimeLocation::Invalid
+        {
+            valid_observation
+                .map(str::to_string)
+                .unwrap_or_else(observed_at)
+        } else {
+            observed_at()
         },
+        error,
+    }
+}
+
+fn runtime_error(code: RuntimeErrorCode, message: &str, retryable: bool) -> NormalizedRuntimeError {
+    NormalizedRuntimeError {
+        code,
+        message: message.to_string(),
+        retryable,
     }
 }
 
@@ -212,7 +297,35 @@ pub fn statuses(request: RuntimeStatusRequest) -> Vec<RuntimeStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openclaw::OpenClawRuntimeSnapshot;
+    use crate::openclaw::{OpenClawRuntimeLocation, OpenClawRuntimeSnapshot};
+
+    const CHECKED_AT: &str = "2026-07-18T03:15:00Z";
+
+    fn snapshot(
+        configured: bool,
+        location: OpenClawRuntimeLocation,
+        state: &str,
+        last_checked_at: Option<&str>,
+    ) -> OpenClawRuntimeSnapshot {
+        OpenClawRuntimeSnapshot {
+            configured,
+            location,
+            connection_state: state.to_string(),
+            last_checked_at: last_checked_at.map(str::to_string),
+        }
+    }
+
+    fn mapped(state: &str) -> RuntimeStatus {
+        map_openclaw_snapshot(
+            openclaw_definition(OpenClawRuntimeLocation::Remote),
+            snapshot(
+                true,
+                OpenClawRuntimeLocation::Remote,
+                state,
+                Some(CHECKED_AT),
+            ),
+        )
+    }
 
     #[test]
     fn running_and_stopped_statuses_keep_dimensions_separate() {
@@ -232,12 +345,13 @@ mod tests {
     #[test]
     fn remote_openclaw_does_not_advertise_local_lifecycle_capabilities() {
         let status = map_openclaw_snapshot(
-            openclaw_definition(true),
-            OpenClawRuntimeSnapshot {
-                configured: true,
-                remote: true,
-                connection_state: "connected".to_string(),
-            },
+            openclaw_definition(OpenClawRuntimeLocation::Remote),
+            snapshot(
+                true,
+                OpenClawRuntimeLocation::Remote,
+                "connected",
+                Some(CHECKED_AT),
+            ),
         );
 
         assert_eq!(status.location, RuntimeLocation::Remote);
@@ -248,12 +362,13 @@ mod tests {
     #[test]
     fn local_openclaw_advertises_supported_local_lifecycle_capabilities() {
         let status = map_openclaw_snapshot(
-            openclaw_definition(false),
-            OpenClawRuntimeSnapshot {
-                configured: true,
-                remote: false,
-                connection_state: "connected".to_string(),
-            },
+            openclaw_definition(OpenClawRuntimeLocation::Local),
+            snapshot(
+                true,
+                OpenClawRuntimeLocation::Local,
+                "connected",
+                Some(CHECKED_AT),
+            ),
         );
 
         assert_eq!(status.location, RuntimeLocation::Local);
@@ -262,20 +377,141 @@ mod tests {
     }
 
     #[test]
-    fn safe_configuration_error_does_not_expose_adapter_details() {
+    fn invalid_location_never_receives_local_lifecycle_capabilities() {
         let status = map_openclaw_snapshot(
-            definition("openclaw"),
-            OpenClawRuntimeSnapshot {
-                configured: false,
-                remote: false,
-                connection_state: "unknown".to_string(),
-            },
+            openclaw_definition(OpenClawRuntimeLocation::Invalid),
+            snapshot(
+                true,
+                OpenClawRuntimeLocation::Invalid,
+                "connected",
+                Some(CHECKED_AT),
+            ),
         );
 
+        assert_eq!(status.location, RuntimeLocation::Hybrid);
+        assert!(!status.capabilities.contains(&RuntimeCapability::Start));
+        assert!(!status.capabilities.contains(&RuntimeCapability::Stop));
+        assert_eq!(
+            status.error.unwrap().code,
+            RuntimeErrorCode::InvalidConfiguration
+        );
+    }
+
+    #[test]
+    fn unauthorized_keeps_status_dimensions_independent() {
+        let status = mapped("unauthorized");
+        assert_eq!(status.lifecycle, RuntimeLifecycle::Running);
+        assert_eq!(status.health, RuntimeHealth::Degraded);
+        assert_eq!(status.readiness, RuntimeReadiness::NotReady);
+        assert_eq!(
+            status.error.unwrap().code,
+            RuntimeErrorCode::AuthenticationRequired
+        );
+    }
+
+    #[test]
+    fn pairing_required_keeps_status_dimensions_independent() {
+        let status = mapped("pairing-required");
+        assert_eq!(status.lifecycle, RuntimeLifecycle::Running);
+        assert_eq!(status.health, RuntimeHealth::Degraded);
+        assert_eq!(status.readiness, RuntimeReadiness::NotReady);
+        assert_eq!(
+            status.error.unwrap().code,
+            RuntimeErrorCode::PairingRequired
+        );
+    }
+
+    #[test]
+    fn unreachable_does_not_claim_a_failed_lifecycle() {
+        let status = mapped("unreachable");
+        assert_eq!(status.lifecycle, RuntimeLifecycle::Unknown);
+        assert_eq!(status.health, RuntimeHealth::Unhealthy);
+        assert_eq!(status.readiness, RuntimeReadiness::NotReady);
+        assert_eq!(
+            status.error.unwrap().code,
+            RuntimeErrorCode::ConnectionUnavailable
+        );
+    }
+
+    #[test]
+    fn testing_error_and_unknown_states_map_without_fabricated_lifecycle() {
+        let testing = mapped("testing");
+        assert_eq!(testing.lifecycle, RuntimeLifecycle::Unknown);
+        assert_eq!(testing.health, RuntimeHealth::Checking);
+        assert_eq!(testing.readiness, RuntimeReadiness::Unknown);
+        assert!(testing.error.is_none());
+
+        let error = mapped("error");
+        assert_eq!(error.lifecycle, RuntimeLifecycle::Unknown);
+        assert_eq!(error.health, RuntimeHealth::Unhealthy);
+        assert_eq!(error.readiness, RuntimeReadiness::NotReady);
+        assert_eq!(error.error.unwrap().code, RuntimeErrorCode::ProbeFailed);
+
+        let unknown = mapped("");
+        assert_eq!(unknown.lifecycle, RuntimeLifecycle::Unknown);
+        assert_eq!(unknown.health, RuntimeHealth::Unknown);
+        assert_eq!(unknown.readiness, RuntimeReadiness::Unknown);
+        assert!(unknown.error.is_none());
+    }
+
+    #[test]
+    fn no_active_configuration_has_unknown_lifecycle() {
+        let status = map_openclaw_snapshot(
+            openclaw_definition(OpenClawRuntimeLocation::Invalid),
+            snapshot(false, OpenClawRuntimeLocation::Invalid, "unknown", None),
+        );
+
+        assert_eq!(status.lifecycle, RuntimeLifecycle::Unknown);
         let error = status
             .error
             .expect("missing configuration should be normalized");
         assert_eq!(error.code, RuntimeErrorCode::ConfigurationUnavailable);
-        assert!(!error.message.contains("sensitive"));
+    }
+
+    #[test]
+    fn configuration_read_failure_does_not_claim_failed_lifecycle() {
+        let status = openclaw_config_failure_status();
+        assert_eq!(status.lifecycle, RuntimeLifecycle::Unknown);
+        assert_eq!(status.health, RuntimeHealth::Unknown);
+        assert_eq!(
+            status.error.unwrap().code,
+            RuntimeErrorCode::ConfigurationUnavailable
+        );
+    }
+
+    #[test]
+    fn stored_observation_uses_its_real_timestamp() {
+        let status = mapped("connected");
+        assert_eq!(status.observed_at, CHECKED_AT);
+        assert_eq!(status.health, RuntimeHealth::Healthy);
+        assert_eq!(status.readiness, RuntimeReadiness::Ready);
+    }
+
+    #[test]
+    fn connected_without_valid_timestamp_is_not_freshly_healthy() {
+        let status = map_openclaw_snapshot(
+            openclaw_definition(OpenClawRuntimeLocation::Remote),
+            snapshot(
+                true,
+                OpenClawRuntimeLocation::Remote,
+                "connected",
+                Some("not-a-timestamp"),
+            ),
+        );
+
+        assert_eq!(status.lifecycle, RuntimeLifecycle::Unknown);
+        assert_eq!(status.health, RuntimeHealth::Unknown);
+        assert_eq!(status.readiness, RuntimeReadiness::Unknown);
+        assert_ne!(status.observed_at, "not-a-timestamp");
+    }
+
+    #[test]
+    fn normalized_errors_are_sanitized() {
+        for state in ["unauthorized", "pairing-required", "unreachable", "error"] {
+            let error = mapped(state).error.expect("state should map to an error");
+            assert!(!error.message.contains("token"));
+            assert!(!error.message.contains("http"));
+            assert!(!error.message.contains('{'));
+        }
     }
 }

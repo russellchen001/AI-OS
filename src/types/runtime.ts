@@ -52,7 +52,11 @@ export type RuntimeReadiness =
   | "not-ready";
 
 export type RuntimeErrorCode =
+  | "authentication-required"
+  | "pairing-required"
+  | "connection-unavailable"
   | "configuration-unavailable"
+  | "invalid-configuration"
   | "probe-failed"
   | "unsupported-platform";
 
