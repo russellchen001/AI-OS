@@ -34,9 +34,17 @@ pub(crate) struct ServiceHealthSnapshot {
 }
 
 pub(crate) fn probe_ollama(base_url: &str) -> bool {
+    probe_ollama_endpoint(base_url) || probe_ollama_process()
+}
+
+pub(crate) fn probe_ollama_endpoint(base_url: &str) -> bool {
     let tags_url = format!("{}/api/tags", base_url.trim_end_matches('/'));
 
-    curl_success(&tags_url) || command_success(r#"pgrep -f "ollama serve" >/dev/null 2>&1"#)
+    curl_success(&tags_url)
+}
+
+pub(crate) fn probe_ollama_process() -> bool {
+    command_success(r#"pgrep -f "ollama serve" >/dev/null 2>&1"#)
 }
 
 pub(crate) fn probe_docker() -> bool {
@@ -44,6 +52,15 @@ pub(crate) fn probe_docker() -> bool {
         r#"
 "/Applications/Docker.app/Contents/Resources/bin/docker" info \
 >/dev/null 2>&1
+"#,
+    )
+}
+
+pub(crate) fn probe_docker_process() -> bool {
+    command_success(
+        r#"
+pgrep -f "/Docker.app/Contents/MacOS/Docker" >/dev/null 2>&1 ||
+pgrep -x "Docker Desktop" >/dev/null 2>&1
 "#,
     )
 }
@@ -59,14 +76,21 @@ grep -Ei 'open[-_]?webui|openwebui|ghcr.io/open-webui/open-webui' >/dev/null
 }
 
 pub(crate) fn probe_open_webui(url: &str) -> bool {
+    probe_open_webui_endpoint(url) || probe_open_webui_container()
+}
+
+pub(crate) fn probe_open_webui_endpoint(url: &str) -> bool {
     curl_success(url)
-        || command_success(
-            r#"
+}
+
+pub(crate) fn probe_open_webui_container() -> bool {
+    command_success(
+        r#"
 "/Applications/Docker.app/Contents/Resources/bin/docker" ps \
 --format '{{.Names}}' 2>/dev/null |
 grep -Ei 'open[-_]?webui' >/dev/null
 "#,
-        )
+    )
 }
 
 pub(crate) fn probe_cherry_studio() -> bool {

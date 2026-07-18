@@ -88,7 +88,7 @@ export type RuntimeStatus = {
   lifecycle: RuntimeLifecycle;
   health: RuntimeHealth;
   readiness: RuntimeReadiness;
-  observedAt: string;
+  observedAt: string | null;
   error: NormalizedRuntimeError | null;
 };
 

@@ -123,7 +123,7 @@ pub struct RuntimeStatus {
     pub lifecycle: RuntimeLifecycle,
     pub health: RuntimeHealth,
     pub readiness: RuntimeReadiness,
-    pub observed_at: String,
+    pub observed_at: Option<String>,
     pub error: Option<NormalizedRuntimeError>,
 }
 

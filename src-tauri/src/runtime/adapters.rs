@@ -13,15 +13,66 @@ use super::{
     registry,
 };
 
-fn observed_at() -> String {
-    Utc::now().to_rfc3339()
+fn observed_at() -> Option<String> {
+    Some(Utc::now().to_rfc3339())
 }
 
-fn status_from_running(
-    definition: RuntimeDefinition,
+#[derive(Debug, Clone, Copy)]
+struct RuntimeProbeFacts {
     installed: bool,
-    running: bool,
+    process_running: bool,
+    endpoint_healthy: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RuntimeProbeKind {
+    EndpointService,
+    ProcessApplication,
+}
+
+fn map_probe_facts(
+    definition: RuntimeDefinition,
+    facts: RuntimeProbeFacts,
+    kind: RuntimeProbeKind,
 ) -> RuntimeStatus {
+    let (availability, lifecycle, health, readiness) = if facts.endpoint_healthy {
+        (
+            RuntimeAvailability::Available,
+            RuntimeLifecycle::Running,
+            RuntimeHealth::Healthy,
+            RuntimeReadiness::Ready,
+        )
+    } else if !facts.installed {
+        (
+            RuntimeAvailability::NotInstalled,
+            RuntimeLifecycle::Unknown,
+            RuntimeHealth::Unknown,
+            RuntimeReadiness::NotReady,
+        )
+    } else if facts.process_running {
+        let (health, readiness) = match kind {
+            RuntimeProbeKind::EndpointService => {
+                (RuntimeHealth::Degraded, RuntimeReadiness::NotReady)
+            }
+            RuntimeProbeKind::ProcessApplication => {
+                (RuntimeHealth::Unknown, RuntimeReadiness::Ready)
+            }
+        };
+        (
+            RuntimeAvailability::Available,
+            RuntimeLifecycle::Running,
+            health,
+            readiness,
+        )
+    } else {
+        (
+            RuntimeAvailability::Available,
+            RuntimeLifecycle::Stopped,
+            RuntimeHealth::Unknown,
+            RuntimeReadiness::NotReady,
+        )
+    };
+
     RuntimeStatus {
         id: definition.id,
         adapter_kind: definition.adapter_kind,
@@ -29,26 +80,10 @@ fn status_from_running(
         location: definition.location,
         dependencies: definition.dependencies,
         capabilities: definition.capabilities,
-        availability: if running || installed {
-            RuntimeAvailability::Available
-        } else {
-            RuntimeAvailability::NotInstalled
-        },
-        lifecycle: if running {
-            RuntimeLifecycle::Running
-        } else {
-            RuntimeLifecycle::Stopped
-        },
-        health: if running {
-            RuntimeHealth::Healthy
-        } else {
-            RuntimeHealth::Unknown
-        },
-        readiness: if running {
-            RuntimeReadiness::Ready
-        } else {
-            RuntimeReadiness::NotReady
-        },
+        availability,
+        lifecycle,
+        health,
+        readiness,
         observed_at: observed_at(),
         error: None,
     }
@@ -115,12 +150,11 @@ fn map_openclaw_snapshot(
         .last_checked_at
         .as_deref()
         .filter(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok());
-    let connection_state =
-        if snapshot.connection_state == "connected" && valid_observation.is_none() {
-            "unknown"
-        } else {
-            snapshot.connection_state.as_str()
-        };
+    let connection_state = if valid_observation.is_some() {
+        snapshot.connection_state.as_str()
+    } else {
+        "unknown"
+    };
     let (lifecycle, health, readiness, error) = match connection_state {
         "connected" => (
             RuntimeLifecycle::Running,
@@ -227,14 +261,12 @@ fn map_openclaw_snapshot(
         lifecycle,
         health,
         readiness,
-        observed_at: if snapshot.configured
-            && snapshot.location != openclaw::OpenClawRuntimeLocation::Invalid
+        observed_at: if !snapshot.configured
+            || snapshot.location == openclaw::OpenClawRuntimeLocation::Invalid
         {
-            valid_observation
-                .map(str::to_string)
-                .unwrap_or_else(observed_at)
-        } else {
             observed_at()
+        } else {
+            valid_observation.map(str::to_string)
         },
         error,
     }
@@ -260,36 +292,60 @@ pub fn statuses(request: RuntimeStatusRequest) -> Vec<RuntimeStatus> {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("http://localhost:3000");
 
-    let ollama_running = health::probe_ollama(ollama_url);
-    let docker_running = health::probe_docker();
-    let open_webui_running = health::probe_open_webui(open_web_ui_url);
-    let cherry_running = health::probe_cherry_studio();
+    let ollama_endpoint_healthy = health::probe_ollama_endpoint(ollama_url);
+    let ollama_process_running = health::probe_ollama_process();
+    let docker_daemon_ready = health::probe_docker();
+    let docker_process_running = health::probe_docker_process();
+    let open_webui_endpoint_healthy = health::probe_open_webui_endpoint(open_web_ui_url);
+    let open_webui_container_running = health::probe_open_webui_container();
+    let open_webui_container_exists = health::open_webui_container_exists();
+    let cherry_process_running = health::probe_cherry_studio();
 
-    let ollama_installed = ollama_running
+    let ollama_installed = ollama_process_running
         || Path::new("/opt/homebrew/bin/ollama").exists()
         || Path::new("/usr/local/bin/ollama").exists()
         || health::command_success("command -v ollama >/dev/null 2>&1");
-    let docker_installed = docker_running || Path::new("/Applications/Docker.app").exists();
-    let cherry_installed = cherry_running || Path::new("/Applications/Cherry Studio.app").exists();
-    let open_webui_installed = open_webui_running || health::open_webui_container_exists();
+    let docker_installed = docker_process_running || Path::new("/Applications/Docker.app").exists();
+    let cherry_installed =
+        cherry_process_running || Path::new("/Applications/Cherry Studio.app").exists();
 
     vec![
         openclaw_status(),
-        status_from_running(definition("ollama"), ollama_installed, ollama_running),
-        status_from_running(
+        map_probe_facts(
+            definition("ollama"),
+            RuntimeProbeFacts {
+                installed: ollama_installed,
+                process_running: ollama_process_running,
+                endpoint_healthy: ollama_endpoint_healthy,
+            },
+            RuntimeProbeKind::EndpointService,
+        ),
+        map_probe_facts(
             definition("docker-desktop"),
-            docker_installed,
-            docker_running,
+            RuntimeProbeFacts {
+                installed: docker_installed,
+                process_running: docker_process_running,
+                endpoint_healthy: docker_daemon_ready,
+            },
+            RuntimeProbeKind::EndpointService,
         ),
-        status_from_running(
+        map_probe_facts(
             definition("open-webui"),
-            open_webui_installed,
-            open_webui_running,
+            RuntimeProbeFacts {
+                installed: open_webui_container_exists,
+                process_running: open_webui_container_running,
+                endpoint_healthy: open_webui_endpoint_healthy,
+            },
+            RuntimeProbeKind::EndpointService,
         ),
-        status_from_running(
+        map_probe_facts(
             definition("cherry-studio"),
-            cherry_installed,
-            cherry_running,
+            RuntimeProbeFacts {
+                installed: cherry_installed,
+                process_running: cherry_process_running,
+                endpoint_healthy: false,
+            },
+            RuntimeProbeKind::ProcessApplication,
         ),
     ]
 }
@@ -328,18 +384,82 @@ mod tests {
     }
 
     #[test]
-    fn running_and_stopped_statuses_keep_dimensions_separate() {
-        let running = status_from_running(definition("ollama"), true, true);
-        assert_eq!(running.availability, RuntimeAvailability::Available);
-        assert_eq!(running.lifecycle, RuntimeLifecycle::Running);
-        assert_eq!(running.health, RuntimeHealth::Healthy);
-        assert_eq!(running.readiness, RuntimeReadiness::Ready);
+    fn endpoint_process_and_installation_facts_map_independently() {
+        let endpoint_ready = map_probe_facts(
+            definition("ollama"),
+            RuntimeProbeFacts {
+                installed: false,
+                process_running: false,
+                endpoint_healthy: true,
+            },
+            RuntimeProbeKind::EndpointService,
+        );
+        assert_eq!(endpoint_ready.availability, RuntimeAvailability::Available);
+        assert_eq!(endpoint_ready.lifecycle, RuntimeLifecycle::Running);
+        assert_eq!(endpoint_ready.health, RuntimeHealth::Healthy);
+        assert_eq!(endpoint_ready.readiness, RuntimeReadiness::Ready);
 
-        let stopped = status_from_running(definition("ollama"), true, false);
+        let process_only = map_probe_facts(
+            definition("ollama"),
+            RuntimeProbeFacts {
+                installed: true,
+                process_running: true,
+                endpoint_healthy: false,
+            },
+            RuntimeProbeKind::EndpointService,
+        );
+        assert_eq!(process_only.lifecycle, RuntimeLifecycle::Running);
+        assert_eq!(process_only.health, RuntimeHealth::Degraded);
+        assert_eq!(process_only.readiness, RuntimeReadiness::NotReady);
+
+        let stopped = map_probe_facts(
+            definition("ollama"),
+            RuntimeProbeFacts {
+                installed: true,
+                process_running: false,
+                endpoint_healthy: false,
+            },
+            RuntimeProbeKind::EndpointService,
+        );
         assert_eq!(stopped.availability, RuntimeAvailability::Available);
         assert_eq!(stopped.lifecycle, RuntimeLifecycle::Stopped);
         assert_eq!(stopped.health, RuntimeHealth::Unknown);
         assert_eq!(stopped.readiness, RuntimeReadiness::NotReady);
+    }
+
+    #[test]
+    fn not_installed_never_claims_a_stopped_lifecycle() {
+        let status = map_probe_facts(
+            definition("docker-desktop"),
+            RuntimeProbeFacts {
+                installed: false,
+                process_running: false,
+                endpoint_healthy: false,
+            },
+            RuntimeProbeKind::EndpointService,
+        );
+
+        assert_eq!(status.availability, RuntimeAvailability::NotInstalled);
+        assert_eq!(status.lifecycle, RuntimeLifecycle::Unknown);
+        assert_eq!(status.health, RuntimeHealth::Unknown);
+        assert_eq!(status.readiness, RuntimeReadiness::NotReady);
+    }
+
+    #[test]
+    fn cherry_process_presence_does_not_claim_health() {
+        let status = map_probe_facts(
+            definition("cherry-studio"),
+            RuntimeProbeFacts {
+                installed: true,
+                process_running: true,
+                endpoint_healthy: false,
+            },
+            RuntimeProbeKind::ProcessApplication,
+        );
+
+        assert_eq!(status.lifecycle, RuntimeLifecycle::Running);
+        assert_eq!(status.health, RuntimeHealth::Unknown);
+        assert_eq!(status.readiness, RuntimeReadiness::Ready);
     }
 
     #[test]
@@ -477,32 +597,47 @@ mod tests {
             status.error.unwrap().code,
             RuntimeErrorCode::ConfigurationUnavailable
         );
+        assert!(status.observed_at.is_some());
     }
 
     #[test]
     fn stored_observation_uses_its_real_timestamp() {
         let status = mapped("connected");
-        assert_eq!(status.observed_at, CHECKED_AT);
+        assert_eq!(status.observed_at.as_deref(), Some(CHECKED_AT));
         assert_eq!(status.health, RuntimeHealth::Healthy);
         assert_eq!(status.readiness, RuntimeReadiness::Ready);
     }
 
     #[test]
-    fn connected_without_valid_timestamp_is_not_freshly_healthy() {
+    fn connected_without_timestamp_has_no_observation_or_derived_status() {
         let status = map_openclaw_snapshot(
             openclaw_definition(OpenClawRuntimeLocation::Remote),
-            snapshot(
-                true,
-                OpenClawRuntimeLocation::Remote,
-                "connected",
-                Some("not-a-timestamp"),
-            ),
+            snapshot(true, OpenClawRuntimeLocation::Remote, "connected", None),
         );
 
         assert_eq!(status.lifecycle, RuntimeLifecycle::Unknown);
         assert_eq!(status.health, RuntimeHealth::Unknown);
         assert_eq!(status.readiness, RuntimeReadiness::Unknown);
-        assert_ne!(status.observed_at, "not-a-timestamp");
+        assert!(status.observed_at.is_none());
+    }
+
+    #[test]
+    fn unverified_error_states_have_no_observation_or_derived_status() {
+        for (state, timestamp) in [
+            ("unauthorized", None),
+            ("unreachable", Some("not-a-timestamp")),
+        ] {
+            let status = map_openclaw_snapshot(
+                openclaw_definition(OpenClawRuntimeLocation::Remote),
+                snapshot(true, OpenClawRuntimeLocation::Remote, state, timestamp),
+            );
+
+            assert_eq!(status.lifecycle, RuntimeLifecycle::Unknown);
+            assert_eq!(status.health, RuntimeHealth::Unknown);
+            assert_eq!(status.readiness, RuntimeReadiness::Unknown);
+            assert!(status.observed_at.is_none());
+            assert!(status.error.is_none());
+        }
     }
 
     #[test]
