@@ -30,3 +30,6 @@ openclaw.log
 # Local source backups
 *.bak
 *.prompt-library.bak
+*.before-*
+*.analytics-backup
+.openclaw-integration-backup-*/

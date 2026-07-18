@@ -19,6 +19,9 @@ import {
   cancelMultiLlmStream,
   startMultiLlmStream,
 } from "../services/multillm";
+import {
+  recordAnalyticsEvent,
+} from "../services/analytics";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 
 import {
@@ -425,6 +428,25 @@ function MultiLlmPage({
         >
       >
     >({});
+  const analyticsRequests =
+    useRef<
+      Record<
+        string,
+        {
+          mode:
+            | "compare"
+            | "router";
+          providerLabel:
+            string;
+          model:
+            string;
+          startedAt:
+            number;
+        }
+      >
+    >({});
+
+
 
   
   const healthCheckIds =
@@ -868,6 +890,19 @@ useEffect(() => {
             return;
           }
 
+          const analyticsRequest =
+
+
+            analyticsRequests.current[
+
+
+              payload.operationId
+
+
+            ];
+
+
+
           delete operationIds.current[
             payload.providerId
           ];
@@ -938,6 +973,162 @@ useEffect(() => {
             return;
           }
 
+          if (analyticsRequest) {
+
+
+            const response =
+
+
+              activeCompareHistory.current
+
+
+                ?.responses[
+
+
+                  payload.providerId
+
+
+                ] ??
+
+
+              activeRouterHistory.current
+
+
+                ?.responses[
+
+
+                  payload.providerId
+
+
+                ] ??
+
+
+              "";
+
+
+
+            recordAnalyticsEvent({
+
+
+              module:
+
+
+                "multillm",
+
+
+              type:
+
+
+                payload.cancelled
+
+
+                  ? "failure"
+
+
+                  : "success",
+
+
+              title:
+
+
+                payload.cancelled
+
+
+                  ? "AI request cancelled"
+
+
+                  : "AI request completed",
+
+
+              description:
+
+
+                `${analyticsRequest.providerLabel} · ${analyticsRequest.model}`,
+
+
+              provider:
+
+
+                analyticsRequest.providerLabel,
+
+
+              model:
+
+
+                analyticsRequest.model,
+
+
+              outputTokens:
+
+
+                Math.ceil(
+
+
+                  response.length / 4,
+
+
+                ),
+
+
+              latencyMs:
+
+
+                Date.now() -
+
+
+                analyticsRequest.startedAt,
+
+
+              metadata: {
+
+
+                mode:
+
+
+                  analyticsRequest.mode,
+
+
+                operationId:
+
+
+                  payload.operationId,
+
+
+                cancelled:
+
+
+                  payload.cancelled,
+
+
+                tokenEstimate:
+
+
+                  true,
+
+
+              },
+
+
+            });
+
+
+
+            delete analyticsRequests
+
+
+              .current[
+
+
+                payload.operationId
+
+
+              ];
+
+
+          }
+
+
+
           setStatuses((current) => ({
             ...current,
             [payload.providerId]:
@@ -1007,6 +1198,19 @@ useEffect(() => {
             return;
           }
 
+          const analyticsRequest =
+
+
+            analyticsRequests.current[
+
+
+              payload.operationId
+
+
+            ];
+
+
+
           delete operationIds.current[
             payload.providerId
           ];
@@ -1032,6 +1236,95 @@ useEffect(() => {
 
           if (wasHealthCheck) {
             return;
+          }
+
+
+
+          if (analyticsRequest) {
+
+
+            recordAnalyticsEvent({
+
+
+              module:
+
+
+                "multillm",
+
+
+              type:
+
+
+                "failure",
+
+
+              title:
+
+
+                "AI request failed",
+
+
+              description:
+
+
+                payload.message,
+
+
+              provider:
+
+
+                analyticsRequest.providerLabel,
+
+
+              model:
+
+
+                analyticsRequest.model,
+
+
+              latencyMs:
+
+
+                Date.now() -
+
+
+                analyticsRequest.startedAt,
+
+
+              metadata: {
+
+
+                mode:
+
+
+                  analyticsRequest.mode,
+
+
+                operationId:
+
+
+                  payload.operationId,
+
+
+              },
+
+
+            });
+
+
+
+            delete analyticsRequests
+
+
+              .current[
+
+
+                payload.operationId
+
+
+              ];
+
+
           }
 
           setStatuses((current) => ({
@@ -1436,6 +1729,119 @@ useEffect(() => {
           provider.id
         ] = operationId;
 
+
+
+        analyticsRequests.current[
+
+
+          operationId
+
+
+        ] = {
+
+
+          mode:
+
+
+            "compare",
+
+
+          providerLabel:
+
+
+            provider.label,
+
+
+          model:
+
+
+            provider.model,
+
+
+          startedAt:
+
+
+            Date.now(),
+
+
+        };
+
+
+
+        recordAnalyticsEvent({
+
+
+          module:
+
+
+            "multillm",
+
+
+          type:
+
+
+            "request",
+
+
+          title:
+
+
+            "Compare request started",
+
+
+          description:
+
+
+            `${provider.label} · ${provider.model}`,
+
+
+          provider:
+
+
+            provider.label,
+
+
+          model:
+
+
+            provider.model,
+
+
+          inputTokens:
+
+
+            Math.ceil(
+
+
+              text.length / 4,
+
+
+            ),
+
+
+          metadata: {
+
+
+            mode:
+
+
+              "compare",
+
+
+            operationId,
+
+
+            tokenEstimate:
+
+
+              true,
+
+
+          },
+
+
+        });
+
         setProviderRuntime(
           (current) => ({
             ...current,
@@ -1762,6 +2168,131 @@ useEffect(() => {
         operationIds.current[
           provider.id
         ] = operationId;
+
+
+
+        analyticsRequests.current[
+
+
+          operationId
+
+
+        ] = {
+
+
+          mode:
+
+
+            "router",
+
+
+          providerLabel:
+
+
+            provider.label,
+
+
+          model:
+
+
+            provider.model,
+
+
+          startedAt:
+
+
+            Date.now(),
+
+
+        };
+
+
+
+        recordAnalyticsEvent({
+
+
+          module:
+
+
+            "multillm",
+
+
+          type:
+
+
+            "request",
+
+
+          title:
+
+
+            "Smart Router request started",
+
+
+          description:
+
+
+            `${provider.label} · ${provider.model} · ${route.category}`,
+
+
+          provider:
+
+
+            provider.label,
+
+
+          model:
+
+
+            provider.model,
+
+
+          inputTokens:
+
+
+            Math.ceil(
+
+
+              text.length / 4,
+
+
+            ),
+
+
+          metadata: {
+
+
+            mode:
+
+
+              "router",
+
+
+            operationId,
+
+
+            attempt:
+
+
+              index + 1,
+
+
+            category:
+
+
+              route.category,
+
+
+            tokenEstimate:
+
+
+              true,
+
+
+          },
+
+
+        });
 
         if (
           activeRouterHistory.current

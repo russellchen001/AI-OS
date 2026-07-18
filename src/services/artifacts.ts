@@ -1,3 +1,6 @@
+import {
+  recordAnalyticsEvent,
+} from "./analytics";
 import type {
   ArtifactKind,
   ArtifactLanguage,
@@ -602,6 +605,18 @@ export function createArtifactProject(
     ...loadArtifactProjects(),
   ]);
 
+  recordAnalyticsEvent({
+    module: "artifact",
+    type: "created",
+    title: "Artifact project created",
+    description:
+      project.title,
+    metadata: {
+      projectId:
+        project.id,
+    },
+  });
+
   return project;
 }
 
@@ -718,6 +733,26 @@ export function createArtifact(
       },
     ),
   );
+
+  recordAnalyticsEvent({
+    module: "artifact",
+    type: "created",
+    title: "Artifact saved",
+    description:
+      artifact.path,
+    provider:
+      artifact.provider,
+    metadata: {
+      artifactId:
+        artifact.id,
+      projectId:
+        artifact.projectId,
+      language:
+        artifact.language,
+      source:
+        artifact.source,
+    },
+  });
 
   return artifact;
 }

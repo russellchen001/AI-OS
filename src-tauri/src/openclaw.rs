@@ -804,7 +804,8 @@ fn open_gateway_session(
             "role": "operator",
 
             "scopes": [
-                "operator.read"
+                "operator.read",
+                "operator.write"
             ],
 
             "caps": [],

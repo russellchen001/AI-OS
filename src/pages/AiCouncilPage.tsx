@@ -19,6 +19,9 @@ import {
   useDialog,
 } from "../components/DialogProvider";
 import {
+  recordAnalyticsEvent,
+} from "../services/analytics";
+import {
   cancelMultiLlmStream,
   startMultiLlmStream,
   type MultiLlmMessage,
@@ -677,9 +680,35 @@ function AiCouncilPage({
         return;
       }
 
+      const councilStartedAt =
+        Date.now();
+
       cancelledRef.current =
         false;
       setIsRunning(true);
+
+      recordAnalyticsEvent({
+        module:
+          "council",
+        type:
+          "started",
+        title:
+          "AI Council started",
+        description:
+          `${activeMembers.length} active member(s)`,
+        inputTokens:
+          Math.ceil(
+            userPrompt.length / 4,
+          ),
+        metadata: {
+          sessionId:
+            crypto.randomUUID(),
+          memberCount:
+            activeMembers.length,
+          tokenEstimate:
+            true,
+        },
+      });
       setFinalAnswer("");
 
       const initialSteps =
@@ -881,6 +910,34 @@ function AiCouncilPage({
               completedStep,
             );
 
+            recordAnalyticsEvent({
+              module:
+                "council",
+              type:
+                "success",
+              title:
+                `Council ${member.name} completed`,
+              description:
+                `${result.providerId} · ${member.id}`,
+              provider:
+                result.providerId,
+              outputTokens:
+                Math.ceil(
+                  result.output.length /
+                  4,
+                ),
+              latencyMs:
+                Date.now() -
+                startedAt,
+              metadata: {
+                role:
+                  member.id,
+                sessionId,
+                tokenEstimate:
+                  true,
+              },
+            });
+
             setSteps(
               (current) =>
                 current.map(
@@ -931,6 +988,27 @@ function AiCouncilPage({
             completed.push(
               failedStep,
             );
+
+            recordAnalyticsEvent({
+              module:
+                "council",
+              type:
+                "failure",
+              title:
+                `Council ${member.name} failed`,
+              description:
+                failure,
+              provider:
+                activeProviderId,
+              latencyMs:
+                Date.now() -
+                startedAt,
+              metadata: {
+                role:
+                  member.id,
+                sessionId,
+              },
+            });
 
             setSteps(
               (current) =>
@@ -1012,6 +1090,38 @@ function AiCouncilPage({
           session.id,
         );
 
+        recordAnalyticsEvent({
+          module:
+            "council",
+          type:
+            "completed",
+          title:
+            "AI Council completed",
+          description:
+            session.title,
+          outputTokens:
+            Math.ceil(
+              judgeOutput.length / 4,
+            ),
+          latencyMs:
+            Date.now() -
+            councilStartedAt,
+          metadata: {
+            sessionId:
+              session.id,
+            memberCount:
+              completed.length,
+            successfulMembers:
+              completed.filter(
+                (step) =>
+                  step.status ===
+                  "done",
+              ).length,
+            tokenEstimate:
+              true,
+          },
+        });
+
         onMessage(
           "AI Council completed successfully.",
         );
@@ -1037,6 +1147,23 @@ function AiCouncilPage({
                   : step,
             ),
         );
+
+        recordAnalyticsEvent({
+          module:
+            "council",
+          type:
+            "failure",
+          title:
+            "AI Council failed",
+          description:
+            message,
+          latencyMs:
+            Date.now() -
+            councilStartedAt,
+          metadata: {
+            sessionId,
+          },
+        });
 
         onMessage(
           `AI Council failed: ${message}`,

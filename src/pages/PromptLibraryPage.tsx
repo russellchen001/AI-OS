@@ -29,6 +29,9 @@ import type {
 import {
   useDialog,
 } from "../components/DialogProvider";
+import {
+  recordAnalyticsEvent,
+} from "../services/analytics";
 type PromptLibraryPageProps = {
   cardStyle: CSSProperties;
   onMessage: (
@@ -1145,13 +1148,36 @@ function PromptLibraryPage({
                 <button
                   type="button"
                   className="action-button"
-                  onClick={() =>
+                  onClick={() => {
+                    recordAnalyticsEvent({
+                      module:
+                        "prompt",
+                      type:
+                        "used",
+                      title:
+                        "Prompt used in Compare",
+                      description:
+                        selectedPrompt.title,
+                      inputTokens:
+                        Math.ceil(
+                          selectedPrompt.content.length /
+                          4,
+                        ),
+                      metadata: {
+                        promptId:
+                          selectedPrompt.id,
+                        target:
+                          "compare",
+                        tokenEstimate:
+                          true,
+                      },
+                    });
+
                     onUsePrompt(
-                      selectedPrompt
-                        .content,
+                      selectedPrompt.content,
                       "compare",
-                    )
-                  }
+                    );
+                  }}
                 >
                   Use in Compare
                 </button>
@@ -1159,13 +1185,36 @@ function PromptLibraryPage({
                 <button
                   type="button"
                   className="secondary-button"
-                  onClick={() =>
+                  onClick={() => {
+                    recordAnalyticsEvent({
+                      module:
+                        "prompt",
+                      type:
+                        "used",
+                      title:
+                        "Prompt used in Smart Router",
+                      description:
+                        selectedPrompt.title,
+                      inputTokens:
+                        Math.ceil(
+                          selectedPrompt.content.length /
+                          4,
+                        ),
+                      metadata: {
+                        promptId:
+                          selectedPrompt.id,
+                        target:
+                          "router",
+                        tokenEstimate:
+                          true,
+                      },
+                    });
+
                     onUsePrompt(
-                      selectedPrompt
-                        .content,
+                      selectedPrompt.content,
                       "router",
-                    )
-                  }
+                    );
+                  }}
                 >
                   Use in Smart Router
                 </button>

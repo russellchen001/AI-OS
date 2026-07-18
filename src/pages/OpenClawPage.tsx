@@ -6,6 +6,7 @@ import {
 
 import InlineAlert from "../components/InlineAlert";
 import ConfirmDialog from "../components/ConfirmDialog";
+import OpenClawIntegrationPanel from "./OpenClawIntegrationPanel";
 import type {
   AsyncStatus,
   OpenClawConnectionResult,
@@ -1179,6 +1180,11 @@ function OpenClawPage({
           )}
         </div>
       )}
+
+      <OpenClawIntegrationPanel
+        activeServer={activeServer}
+        cardStyle={cardStyle}
+      />
 
       {formOpen && (
         <div className="openclaw-modal-backdrop">
