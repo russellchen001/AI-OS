@@ -2,7 +2,6 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::Path,
     process::{Child, Command, Stdio},
-    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -32,16 +31,15 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(350);
 const CLEANUP_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
-const DOCKER_DESKTOP_CONTEXT: &str = "desktop-linux";
-const DOCKER_DESKTOP_SOCKET_SUFFIX: &str = "/.docker/run/docker.sock";
 const DOCKER_ENV_REMOVALS: &[&str] = &[
     "DOCKER_HOST",
     "DOCKER_CONTEXT",
     "DOCKER_TLS_VERIFY",
     "DOCKER_CERT_PATH",
+    "DOCKER_CONFIG",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ValidatedEndpoint {
     url: String,
     location: RuntimeLocation,
@@ -57,7 +55,16 @@ impl ValidatedEndpoint {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for ValidatedEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ValidatedEndpoint")
+            .field("location", &self.location)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct OpenClawGatewayEndpoint {
     url: Url,
     location: RuntimeLocation,
@@ -65,20 +72,25 @@ struct OpenClawGatewayEndpoint {
 
 impl OpenClawGatewayEndpoint {
     fn browser_endpoint(&self) -> Result<ValidatedEndpoint, NormalizedRuntimeError> {
-        let mut browser = self.url.clone();
-        let scheme = match browser.scheme() {
-            "http" | "https" => browser.scheme().to_string(),
-            "ws" => "http".to_string(),
-            "wss" => "https".to_string(),
-            _ => return Err(invalid_configuration()),
-        };
-        browser
-            .set_scheme(&scheme)
-            .map_err(|_| invalid_configuration())?;
+        if !matches!(self.url.scheme(), "http" | "https") {
+            return Err(unsupported());
+        }
+        if self.url.query().is_some() || self.url.fragment().is_some() {
+            return Err(invalid_configuration());
+        }
         Ok(ValidatedEndpoint {
-            url: browser.to_string(),
+            url: self.url.to_string(),
             location: self.location,
         })
+    }
+}
+
+impl std::fmt::Debug for OpenClawGatewayEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenClawGatewayEndpoint")
+            .field("location", &self.location)
+            .finish()
     }
 }
 
@@ -181,18 +193,24 @@ enum DockerContainerState {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum OpenClawContext {
     Open {
         gateway: OpenClawGatewayEndpoint,
     },
     Manage {
-        profile: openclaw::FrozenOpenClawProfile,
         gateway: OpenClawGatewayEndpoint,
         launchctl_domain: String,
-        service_loaded: bool,
+        service_state: LaunchServiceState,
         bootstrap_plist: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchServiceState {
+    Loaded,
+    NotLoaded,
+    InspectionFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,14 +219,14 @@ struct OllamaContext {
     installation: OllamaInstallation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct LocalDockerTarget {
     host: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct DockerContext {
-    target: LocalDockerTarget,
+    target: Option<LocalDockerTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,13 +244,51 @@ enum OpenWebUiContext {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct CherryContext;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum RuntimePlanningContext {
     OpenClaw(OpenClawContext),
     Ollama(OllamaContext),
     Docker(DockerContext),
     OpenWebUi(OpenWebUiContext),
     Cherry(CherryContext),
+}
+
+impl std::fmt::Debug for OpenClawContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self {
+            Self::Open { .. } => "Open",
+            Self::Manage { .. } => "Manage",
+        };
+        formatter
+            .debug_tuple("OpenClawContext")
+            .field(&kind)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for DockerContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DockerContext")
+            .field("has_target", &self.target.is_some())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for RuntimePlanningContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self {
+            Self::OpenClaw(_) => "OpenClaw",
+            Self::Ollama(_) => "Ollama",
+            Self::Docker(_) => "Docker",
+            Self::OpenWebUi(_) => "OpenWebUi",
+            Self::Cherry(_) => "Cherry",
+        };
+        formatter
+            .debug_tuple("RuntimePlanningContext")
+            .field(&kind)
+            .finish()
+    }
 }
 
 trait ContextSource {
@@ -273,11 +329,15 @@ impl ContextSource for NativeContextSource {
 
     fn docker(
         &self,
-        _action: RuntimeOperationAction,
+        action: RuntimeOperationAction,
     ) -> Result<DockerContext, NormalizedRuntimeError> {
-        Ok(DockerContext {
-            target: expected_local_docker_target()?,
-        })
+        let target = match action {
+            RuntimeOperationAction::Open => None,
+            RuntimeOperationAction::Start => Some(expected_local_docker_target()?),
+            RuntimeOperationAction::Stop => Some(establish_local_docker_target()?),
+            RuntimeOperationAction::Restart => None,
+        };
+        Ok(DockerContext { target })
     }
 
     fn open_webui(
@@ -370,25 +430,37 @@ fn collect_openclaw_context(
             gateway: classify_openclaw_gateway(&endpoint)?,
         });
     }
-    let profile = openclaw::active_runtime_profile()
+    let endpoint = openclaw::active_runtime_endpoint()
         .map_err(|_| configuration_unavailable())?
         .ok_or_else(configuration_unavailable)?;
-    let gateway = classify_openclaw_gateway(profile.server_url())?;
+    let gateway = classify_openclaw_gateway(&endpoint)?;
     let launchctl_domain = current_launchctl_domain()?;
     let target = format!("{launchctl_domain}/{OPENCLAW_SERVICE}");
-    let service_loaded =
-        probe_status(LAUNCHCTL, &["print", &target], PROBE_TIMEOUT).unwrap_or(false);
+    let service_state = inspect_launch_service(&target, PROBE_TIMEOUT);
     let bootstrap_plist = dirs::home_dir()
         .map(|home| home.join("Library/LaunchAgents/ai.openclaw.gateway.plist"))
         .filter(|path| path.is_file())
         .map(|path| path.to_string_lossy().into_owned());
     Ok(OpenClawContext::Manage {
-        profile,
         gateway,
         launchctl_domain,
-        service_loaded,
+        service_state,
         bootstrap_plist,
     })
+}
+
+fn inspect_launch_service(target: &str, timeout: Duration) -> LaunchServiceState {
+    classify_launch_service_result(probe_status(LAUNCHCTL, &["print", target], timeout))
+}
+
+fn classify_launch_service_result(
+    result: Result<bool, NormalizedRuntimeError>,
+) -> LaunchServiceState {
+    match result {
+        Ok(true) => LaunchServiceState::Loaded,
+        Ok(false) => LaunchServiceState::NotLoaded,
+        Err(_) => LaunchServiceState::InspectionFailed,
+    }
 }
 
 fn current_launchctl_domain() -> Result<String, NormalizedRuntimeError> {
@@ -515,23 +587,9 @@ fn inspect_open_webui_dependency(
 }
 
 fn establish_local_docker_target() -> Result<LocalDockerTarget, NormalizedRuntimeError> {
-    let command = NativeCommand::new(
-        DOCKER_CLI,
-        [
-            "context",
-            "inspect",
-            DOCKER_DESKTOP_CONTEXT,
-            "--format",
-            "{{.Endpoints.docker.Host}}",
-        ],
-    )
-    .with_env_removals(DOCKER_ENV_REMOVALS);
-    let endpoint = capture_native_command(&command, PROBE_TIMEOUT)?;
-    let endpoint = endpoint.trim();
-    if endpoint.starts_with("unix://") && endpoint.ends_with(DOCKER_DESKTOP_SOCKET_SUFFIX) {
-        Ok(LocalDockerTarget {
-            host: endpoint.to_string(),
-        })
+    let target = expected_local_docker_target()?;
+    if probe_native_status(&docker_command(&target, ["info"]), PROBE_TIMEOUT)? {
+        Ok(target)
     } else {
         Err(error(
             RuntimeErrorCode::DependencyUnavailable,
@@ -552,6 +610,11 @@ fn expected_local_docker_target() -> Result<LocalDockerTarget, NormalizedRuntime
     Ok(LocalDockerTarget {
         host: format!("unix://{}", home.join(".docker/run/docker.sock").display()),
     })
+}
+
+#[cfg(test)]
+fn is_expected_local_docker_target(target: &LocalDockerTarget, home: &Path) -> bool {
+    target.host == format!("unix://{}", home.join(".docker/run/docker.sock").display())
 }
 
 fn parse_open_webui_candidate(line: &str) -> Option<(String, DockerContainerState)> {
@@ -584,11 +647,28 @@ fn parse_container_state(value: &str) -> DockerContainerState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct NativeCommand {
     program: &'static str,
     args: Vec<String>,
     env_remove: Vec<&'static str>,
+}
+
+impl std::fmt::Debug for NativeCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeCommand")
+            .field("program", &self.program)
+            .field("argument_count", &self.args.len())
+            .field("removed_environment_count", &self.env_remove.len())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for LocalDockerTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LocalDockerTarget([redacted])")
+    }
 }
 
 impl NativeCommand {
@@ -615,7 +695,7 @@ fn docker_command(
     NativeCommand::new(DOCKER_CLI, command_args).with_env_removals(DOCKER_ENV_REMOVALS)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Verification {
     None,
     HttpReady(ValidatedEndpoint),
@@ -624,18 +704,41 @@ enum Verification {
     DockerStopped(LocalDockerTarget),
     ProcessPresent(&'static str),
     ProcessAbsent(&'static str),
-    OpenClawReady {
-        service_target: String,
-        profile: openclaw::FrozenOpenClawProfile,
-    },
-    LaunchServiceStopped(String),
+    LaunchServiceLoaded(String),
+    LaunchServiceNotLoaded(String),
     ContainerStopped {
         id: String,
         target: LocalDockerTarget,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl Verification {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::HttpReady(_) => "HttpReady",
+            Self::HttpStopped(_) => "HttpStopped",
+            Self::DockerReady(_) => "DockerReady",
+            Self::DockerStopped(_) => "DockerStopped",
+            Self::ProcessPresent(_) => "ProcessPresent",
+            Self::ProcessAbsent(_) => "ProcessAbsent",
+            Self::LaunchServiceLoaded(_) => "LaunchServiceLoaded",
+            Self::LaunchServiceNotLoaded(_) => "LaunchServiceNotLoaded",
+            Self::ContainerStopped { .. } => "ContainerStopped",
+        }
+    }
+}
+
+impl std::fmt::Debug for Verification {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("Verification")
+            .field(&self.kind())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 enum RuntimeAdapterPlan {
     OpenClawLocal {
         commands: Vec<NativeCommand>,
@@ -687,13 +790,55 @@ enum RuntimeAdapterPlan {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl RuntimeAdapterPlan {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::OpenClawLocal { .. } => "OpenClawLocal",
+            Self::OpenClawRemoteOpen { .. } => "OpenClawRemoteOpen",
+            Self::OllamaHomebrewLifecycle { .. } => "OllamaHomebrewLifecycle",
+            Self::OllamaLocalOpen { .. } => "OllamaLocalOpen",
+            Self::OllamaRemoteOpen { .. } => "OllamaRemoteOpen",
+            Self::DockerDesktop { .. } => "DockerDesktop",
+            Self::OpenWebUiLocalOpen { .. } => "OpenWebUiLocalOpen",
+            Self::OpenWebUiRemoteOpen { .. } => "OpenWebUiRemoteOpen",
+            Self::OpenWebUiContainer { .. } => "OpenWebUiContainer",
+            Self::OpenWebUiNoOp { .. } => "OpenWebUiNoOp",
+            Self::CherryStudio { .. } => "CherryStudio",
+        }
+    }
+}
+
+impl std::fmt::Debug for RuntimeAdapterPlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (commands, verification) = commands_and_verification(self);
+        formatter
+            .debug_struct("RuntimeAdapterPlan")
+            .field("kind", &self.kind())
+            .field("command_count", &commands.len())
+            .field("verification", &verification.kind())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeExecutionPlan {
     runtime_id: String,
     action: RuntimeOperationAction,
     effective_location: RuntimeLocation,
     adapter: RuntimeAdapterPlan,
     progress: Vec<RuntimeOperationProgress>,
+}
+
+impl std::fmt::Debug for RuntimeExecutionPlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeExecutionPlan")
+            .field("runtime_id", &self.runtime_id)
+            .field("action", &self.action)
+            .field("effective_location", &self.effective_location)
+            .field("adapter", &self.adapter)
+            .finish()
+    }
 }
 
 fn build_execution_plan(
@@ -727,14 +872,13 @@ fn plan_openclaw(
     let (gateway, managed) = match context {
         OpenClawContext::Open { gateway } => (gateway, None),
         OpenClawContext::Manage {
-            profile,
             gateway,
             launchctl_domain,
-            service_loaded,
+            service_state,
             bootstrap_plist,
         } => (
             gateway,
-            Some((profile, launchctl_domain, service_loaded, bootstrap_plist)),
+            Some((launchctl_domain, service_state, bootstrap_plist)),
         ),
     };
     let location = gateway.location;
@@ -766,13 +910,20 @@ fn plan_openclaw(
             &["validating", "opening", "complete"],
         ));
     }
-    let (profile, launchctl_domain, service_loaded, bootstrap_plist) =
+    let (launchctl_domain, service_state, bootstrap_plist) =
         managed.ok_or_else(invalid_configuration)?;
+    if service_state == LaunchServiceState::InspectionFailed {
+        return Err(error(
+            RuntimeErrorCode::ProbeFailed,
+            "The OpenClaw launch service could not be inspected.",
+            true,
+        ));
+    }
     let service_target = format!("{launchctl_domain}/{OPENCLAW_SERVICE}");
     let (commands, verification, phases) = match action {
         RuntimeOperationAction::Start => {
             let mut commands = Vec::new();
-            if !service_loaded {
+            if service_state == LaunchServiceState::NotLoaded {
                 let plist = bootstrap_plist.ok_or_else(|| {
                     error(
                         RuntimeErrorCode::ConfigurationUnavailable,
@@ -791,10 +942,7 @@ fn plan_openclaw(
             ));
             (
                 commands,
-                Verification::OpenClawReady {
-                    service_target,
-                    profile,
-                },
+                Verification::LaunchServiceLoaded(service_target),
                 &[
                     "validating",
                     "starting-application",
@@ -803,9 +951,9 @@ fn plan_openclaw(
                 ][..],
             )
         }
-        RuntimeOperationAction::Stop if !service_loaded => (
+        RuntimeOperationAction::Stop if service_state == LaunchServiceState::NotLoaded => (
             Vec::new(),
-            Verification::LaunchServiceStopped(service_target),
+            Verification::LaunchServiceNotLoaded(service_target),
             &["validating", "verifying", "complete"][..],
         ),
         RuntimeOperationAction::Stop => (
@@ -813,7 +961,7 @@ fn plan_openclaw(
                 LAUNCHCTL,
                 ["bootout", service_target.as_str()],
             )],
-            Verification::LaunchServiceStopped(service_target),
+            Verification::LaunchServiceNotLoaded(service_target),
             &["validating", "stopping-service", "verifying", "complete"][..],
         ),
         RuntimeOperationAction::Open => unreachable!(),
@@ -931,28 +1079,37 @@ fn plan_docker(
     action: RuntimeOperationAction,
     context: DockerContext,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
+    if action == RuntimeOperationAction::Restart {
+        return Err(unsupported());
+    }
     let (commands, verification, phases) = match action {
-        RuntimeOperationAction::Start => (
-            vec![NativeCommand::new(OPEN, ["-a", "Docker"])],
-            Verification::DockerReady(context.target.clone()),
-            &[
-                "validating",
-                "starting-application",
-                "waiting-for-readiness",
-                "complete",
-            ][..],
-        ),
-        RuntimeOperationAction::Stop => (
-            vec![docker_command(&context.target, ["desktop", "stop"])],
-            Verification::DockerStopped(context.target.clone()),
-            &["validating", "stopping-service", "verifying", "complete"][..],
-        ),
+        RuntimeOperationAction::Start => {
+            let target = context.target.ok_or_else(invalid_configuration)?;
+            (
+                vec![NativeCommand::new(OPEN, ["-a", "Docker"])],
+                Verification::DockerReady(target),
+                &[
+                    "validating",
+                    "starting-application",
+                    "waiting-for-readiness",
+                    "complete",
+                ][..],
+            )
+        }
+        RuntimeOperationAction::Stop => {
+            let target = context.target.ok_or_else(invalid_configuration)?;
+            (
+                vec![docker_command(&target, ["desktop", "stop"])],
+                Verification::DockerStopped(target),
+                &["validating", "stopping-service", "verifying", "complete"][..],
+            )
+        }
         RuntimeOperationAction::Open => (
             vec![NativeCommand::new(OPEN, ["-a", "Docker"])],
             Verification::None,
             &["validating", "opening", "complete"][..],
         ),
-        RuntimeOperationAction::Restart => return Err(unsupported()),
+        RuntimeOperationAction::Restart => unreachable!(),
     };
     Ok(plan(
         "docker-desktop",
@@ -1517,56 +1674,33 @@ fn verification_satisfied(
         Verification::ProcessAbsent(name) => {
             Ok(!probe_status(PGREP, &["-x", name], probe_timeout)?)
         }
-        Verification::OpenClawReady {
-            service_target,
-            profile,
-        } => {
-            let loaded = probe_status(LAUNCHCTL, &["print", service_target], probe_timeout)?;
-            if !loaded {
-                return Ok(false);
+        Verification::LaunchServiceLoaded(target) => {
+            match inspect_launch_service(target, probe_timeout) {
+                LaunchServiceState::Loaded => Ok(true),
+                LaunchServiceState::NotLoaded => Ok(false),
+                LaunchServiceState::InspectionFailed => Err(error(
+                    RuntimeErrorCode::ProbeFailed,
+                    "The OpenClaw launch service could not be inspected.",
+                    true,
+                )),
             }
-            map_frozen_openclaw_probe(probe_frozen_openclaw(profile.clone(), probe_timeout)?)
         }
-        Verification::LaunchServiceStopped(target) => {
-            Ok(!probe_status(LAUNCHCTL, &["print", target], probe_timeout)?)
+        Verification::LaunchServiceNotLoaded(target) => {
+            match inspect_launch_service(target, probe_timeout) {
+                LaunchServiceState::Loaded => Ok(false),
+                LaunchServiceState::NotLoaded => Ok(true),
+                LaunchServiceState::InspectionFailed => Err(error(
+                    RuntimeErrorCode::ProbeFailed,
+                    "The OpenClaw launch service could not be inspected.",
+                    true,
+                )),
+            }
         }
         Verification::ContainerStopped { id, target } => Ok(matches!(
             docker_container_state(target, id, probe_timeout)?,
             Some(DockerContainerState::Exited | DockerContainerState::Created)
         )),
     }
-}
-
-fn map_frozen_openclaw_probe(
-    probe: openclaw::FrozenOpenClawProbe,
-) -> Result<bool, NormalizedRuntimeError> {
-    match probe {
-        openclaw::FrozenOpenClawProbe::Connected => Ok(true),
-        openclaw::FrozenOpenClawProbe::AuthenticationRequired => Err(error(
-            RuntimeErrorCode::AuthenticationRequired,
-            "OpenClaw authentication is required.",
-            false,
-        )),
-        openclaw::FrozenOpenClawProbe::PairingRequired => Err(error(
-            RuntimeErrorCode::PairingRequired,
-            "OpenClaw pairing is required.",
-            false,
-        )),
-        openclaw::FrozenOpenClawProbe::Unavailable => Ok(false),
-    }
-}
-
-fn probe_frozen_openclaw(
-    profile: openclaw::FrozenOpenClawProfile,
-    timeout: Duration,
-) -> Result<openclaw::FrozenOpenClawProbe, NormalizedRuntimeError> {
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let _ = sender.send(openclaw::test_frozen_runtime_profile(&profile));
-    });
-    receiver
-        .recv_timeout(timeout)
-        .map_err(|_| readiness_timeout())
 }
 
 fn docker_container_state(
@@ -1729,10 +1863,13 @@ mod tests {
 
     fn openclaw_context(value: &str, loaded: bool) -> OpenClawContext {
         OpenClawContext::Manage {
-            profile: openclaw::frozen_runtime_profile_for_test("profile-1", value, "secret-token"),
             gateway: classify_openclaw_gateway(value).unwrap(),
             launchctl_domain: "gui/501".to_string(),
-            service_loaded: loaded,
+            service_state: if loaded {
+                LaunchServiceState::Loaded
+            } else {
+                LaunchServiceState::NotLoaded
+            },
             bootstrap_plist: Some(
                 "/Users/test/Library/LaunchAgents/ai.openclaw.gateway.plist".to_string(),
             ),
@@ -1799,17 +1936,28 @@ mod tests {
 
     #[test]
     fn openclaw_gateway_and_browser_schemes_are_separate_and_safe() {
-        let ws = classify_openclaw_gateway("ws://localhost:18789/gateway?mode=safe").unwrap();
+        let ws = classify_openclaw_gateway("ws://localhost:18789/gateway").unwrap();
         assert_eq!(ws.location, RuntimeLocation::Local);
         assert_eq!(
-            ws.browser_endpoint().unwrap().as_str(),
-            "http://localhost:18789/gateway?mode=safe"
+            ws.browser_endpoint().unwrap_err().code,
+            RuntimeErrorCode::UnsupportedOperation
         );
         let wss = classify_openclaw_gateway("wss://gateway.example.com/path").unwrap();
         assert_eq!(wss.location, RuntimeLocation::Remote);
         assert_eq!(
-            wss.browser_endpoint().unwrap().as_str(),
-            "https://gateway.example.com/path"
+            wss.browser_endpoint().unwrap_err().code,
+            RuntimeErrorCode::UnsupportedOperation
+        );
+        let browser = classify_openclaw_gateway("https://gateway.example.com/dashboard").unwrap();
+        assert_eq!(
+            browser.browser_endpoint().unwrap().as_str(),
+            "https://gateway.example.com/dashboard"
+        );
+        assert!(
+            classify_openclaw_gateway("https://gateway.example.com/?token=secret")
+                .unwrap()
+                .browser_endpoint()
+                .is_err()
         );
         assert!(classify_openclaw_gateway("wss://user:secret@example.com").is_err());
     }
@@ -1851,7 +1999,7 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].args[0], "bootstrap");
         assert_eq!(commands[1].args[0], "kickstart");
-        assert!(matches!(verification, Verification::OpenClawReady { .. }));
+        assert!(matches!(verification, Verification::LaunchServiceLoaded(_)));
         assert!(commands.iter().all(|command| command.program == LAUNCHCTL));
         assert!(commands
             .iter()
@@ -1867,6 +2015,44 @@ mod tests {
         let commands = commands_and_verification(&loaded.adapter).0;
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].args[0], "kickstart");
+    }
+
+    #[test]
+    fn launchctl_failures_are_typed_and_never_assumed_not_loaded() {
+        assert_eq!(
+            classify_launch_service_result(Ok(true)),
+            LaunchServiceState::Loaded
+        );
+        assert_eq!(
+            classify_launch_service_result(Ok(false)),
+            LaunchServiceState::NotLoaded
+        );
+        assert_eq!(
+            classify_launch_service_result(Err(command_timeout())),
+            LaunchServiceState::InspectionFailed
+        );
+        assert_eq!(
+            classify_launch_service_result(Err(operation_failed())),
+            LaunchServiceState::InspectionFailed
+        );
+        let failed = OpenClawContext::Manage {
+            gateway: classify_openclaw_gateway("ws://localhost:18789").unwrap(),
+            launchctl_domain: "gui/501".to_string(),
+            service_state: LaunchServiceState::InspectionFailed,
+            bootstrap_plist: None,
+        };
+        for action in [RuntimeOperationAction::Start, RuntimeOperationAction::Stop] {
+            assert_eq!(
+                build(
+                    "openclaw",
+                    action,
+                    RuntimePlanningContext::OpenClaw(failed.clone())
+                )
+                .unwrap_err()
+                .code,
+                RuntimeErrorCode::ProbeFailed
+            );
+        }
     }
 
     struct RecordingSource {
@@ -1903,7 +2089,7 @@ mod tests {
             self.openclaw_calls.set(self.openclaw_calls.get() + 1);
             if action == RuntimeOperationAction::Open {
                 Ok(OpenClawContext::Open {
-                    gateway: classify_openclaw_gateway("ws://localhost:18789").unwrap(),
+                    gateway: classify_openclaw_gateway("http://localhost:18789").unwrap(),
                 })
             } else {
                 self.openclaw_service_inspections
@@ -1926,11 +2112,11 @@ mod tests {
 
         fn docker(
             &self,
-            _action: RuntimeOperationAction,
+            action: RuntimeOperationAction,
         ) -> Result<DockerContext, NormalizedRuntimeError> {
             self.docker_calls.set(self.docker_calls.get() + 1);
             Ok(DockerContext {
-                target: docker_target(),
+                target: (action != RuntimeOperationAction::Open).then(docker_target),
             })
         }
 
@@ -2012,9 +2198,7 @@ mod tests {
 
         let mismatched = build_execution_plan(
             &request("cherry-studio", RuntimeOperationAction::Open, None),
-            RuntimePlanningContext::Docker(DockerContext {
-                target: docker_target(),
-            }),
+            RuntimePlanningContext::Docker(DockerContext { target: None }),
         );
         assert_eq!(
             mismatched.unwrap_err().code,
@@ -2023,41 +2207,42 @@ mod tests {
     }
 
     #[test]
-    fn frozen_openclaw_plan_redacts_secret_and_never_uses_historical_snapshot() {
-        let plan = build(
-            "openclaw",
-            RuntimeOperationAction::Start,
-            RuntimePlanningContext::OpenClaw(openclaw_context("ws://localhost:18789", true)),
-        )
-        .unwrap();
-        let verification = commands_and_verification(&plan.adapter).1;
-        match verification {
-            Verification::OpenClawReady { profile, .. } => {
-                assert_eq!(profile.server_url(), "ws://localhost:18789");
-                let debug = format!("{profile:?}");
-                assert!(debug.contains("[redacted]"));
-                assert!(!debug.contains("secret-token"));
-            }
-            _ => panic!("expected frozen OpenClaw verification"),
+    fn openclaw_plan_retains_no_token_or_historical_health_probe() {
+        for (action, expected_loaded) in [
+            (RuntimeOperationAction::Start, true),
+            (RuntimeOperationAction::Stop, false),
+        ] {
+            let plan = build(
+                "openclaw",
+                action,
+                RuntimePlanningContext::OpenClaw(openclaw_context(
+                    "ws://localhost:18789?token=secret-token",
+                    expected_loaded,
+                )),
+            )
+            .unwrap();
+            let verification = commands_and_verification(&plan.adapter).1;
+            assert!(matches!(
+                (action, verification),
+                (
+                    RuntimeOperationAction::Start,
+                    Verification::LaunchServiceLoaded(_)
+                ) | (
+                    RuntimeOperationAction::Stop,
+                    Verification::LaunchServiceNotLoaded(_)
+                )
+            ));
+            let debug = format!("{plan:?}");
+            assert!(!debug.contains("secret-token"));
+            assert!(!debug.contains("ws://"));
         }
         let source = include_str!("lifecycle.rs");
-        let forbidden = ["openclaw::", "runtime_snapshot()"].concat();
-        assert!(!source.contains(&forbidden));
-        for (probe, code) in [
-            (
-                openclaw::FrozenOpenClawProbe::AuthenticationRequired,
-                RuntimeErrorCode::AuthenticationRequired,
-            ),
-            (
-                openclaw::FrozenOpenClawProbe::PairingRequired,
-                RuntimeErrorCode::PairingRequired,
-            ),
-        ] {
-            let error = map_frozen_openclaw_probe(probe).unwrap_err();
-            assert_eq!(error.code, code);
-            assert!(!error.message.contains("token"));
-            assert!(!error.message.contains("secret"));
-        }
+        let historical_snapshot = ["runtime_", "snapshot()"].concat();
+        assert!(!source.contains(&historical_snapshot));
+        let websocket_probe = ["test_frozen_", "runtime_profile"].concat();
+        assert!(!source.contains(&websocket_probe));
+        let token_profile = ["FrozenOpenClaw", "Profile"].concat();
+        assert!(!source.contains(&token_profile));
     }
 
     #[test]
@@ -2227,6 +2412,65 @@ mod tests {
     }
 
     #[test]
+    fn docker_target_is_exact_and_open_needs_no_target() {
+        let home = Path::new("/Users/current");
+        let expected = LocalDockerTarget {
+            host: "unix:///Users/current/.docker/run/docker.sock".to_string(),
+        };
+        let same_suffix_wrong_home = LocalDockerTarget {
+            host: "unix:///Users/other/.docker/run/docker.sock".to_string(),
+        };
+        assert!(is_expected_local_docker_target(&expected, home));
+        assert!(!is_expected_local_docker_target(
+            &same_suffix_wrong_home,
+            home
+        ));
+
+        let plan = build(
+            "docker-desktop",
+            RuntimeOperationAction::Open,
+            RuntimePlanningContext::Docker(DockerContext { target: None }),
+        )
+        .unwrap();
+        let (commands, verification) = commands_and_verification(&plan.adapter);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].program, OPEN);
+        assert_eq!(commands[0].args, ["-a", "Docker"]);
+        assert_eq!(*verification, Verification::None);
+    }
+
+    #[test]
+    fn plan_debug_redacts_urls_paths_tokens_and_raw_arguments() {
+        let endpoint = classify_endpoint("http://localhost:3000/dashboard").unwrap();
+        let target = LocalDockerTarget {
+            host: "unix:///Users/private-user/.docker/run/docker.sock".to_string(),
+        };
+        let command = NativeCommand::new(
+            LAUNCHCTL,
+            [
+                "bootstrap",
+                "gui/501",
+                "/Users/private-user/Library/LaunchAgents/secret.plist",
+            ],
+        );
+        let verification = Verification::ContainerStopped {
+            id: CONTAINER_ID.to_string(),
+            target,
+        };
+        let values = format!("{endpoint:?} {command:?} {verification:?}");
+        for secret in [
+            "http://localhost:3000/dashboard",
+            "/Users/private-user",
+            "docker.sock",
+            "secret.plist",
+            "bootstrap",
+            CONTAINER_ID,
+        ] {
+            assert!(!values.contains(secret), "Debug leaked {secret}");
+        }
+    }
+
+    #[test]
     fn container_states_are_explicit_and_transitional_states_are_never_stopped() {
         let states = [
             ("running", DockerContainerState::Running),
@@ -2317,7 +2561,7 @@ mod tests {
             .is_empty());
         assert!(matches!(
             commands_and_verification(&openclaw_stop.adapter).1,
-            Verification::LaunchServiceStopped(_)
+            Verification::LaunchServiceNotLoaded(_)
         ));
     }
 

@@ -92,7 +92,7 @@ Implementation scope:
 - Atomic `prepare_execution_plan` validation, action-specific collection, freezing, and planning
 - Explicit ordered native commands, argument arrays, and typed no-op plans without shell interpolation
 - Total-deadline command, readiness, and stopped-state verification primitives
-- Frozen-profile OpenClaw connection verification with redacted secret handling
+- Typed launch-service-only OpenClaw lifecycle verification without retained Gateway credentials
 - Explicit local Docker Desktop socket binding and per-command environment isolation
 - Typed Docker container states with safe transitional-state rejection
 - Stable internal progress phases without Tauri event emission
@@ -101,7 +101,7 @@ Implementation scope:
 
 Runtime policy:
 
-- OpenClaw supports local `ws`, `wss`, `http`, and `https` profiles for start and stop; remote profiles support browser open only; unloaded start performs ordered bootstrap then kickstart; restart is unsupported.
+- OpenClaw supports local `ws`, `wss`, `http`, and `https` profiles for start and stop; unloaded start performs ordered bootstrap then kickstart; restart is unsupported. Browser open accepts only an explicit safe HTTP or HTTPS endpoint with no query or fragment; AI-OS does not infer a dashboard URL from `ws` or `wss`.
 - Ollama start requires an approved Homebrew formula path, while stop additionally requires verified Homebrew service ownership; remote endpoints support open only; restart is unsupported.
 - Docker Desktop supports start, stop, and open; restart is unsupported.
 - Open WebUI starts only stopped containers, treats running starts and stopped stops idempotently, and restarts only confirmed running containers; remote endpoints support open only; Docker is never started automatically.
@@ -109,7 +109,11 @@ Runtime policy:
 
 M1B2A does not register lifecycle IPC or managed state, emit operation events, connect execution to the operation manager, delegate legacy commands, migrate UI, add dependencies, or change stored data. Canonical IPC exposure and operation-manager integration remain deferred to M1B2B.
 
-Final safety rules require fresh verification of frozen OpenClaw profiles, verified no-op revalidation, separate child-process and readiness polling intervals, and bounded timeout cleanup that never waits indefinitely after a failed kill attempt. Docker inspection failures never degrade into ordinary stopped, missing, or local-daemon-unavailable facts.
+Final safety rules require typed OpenClaw `Loaded`, `NotLoaded`, and `InspectionFailed` observations, verified no-op revalidation, separate child-process and readiness polling intervals, and bounded timeout cleanup that never waits indefinitely after a failed kill attempt. OpenClaw lifecycle completion verifies launch-service state only and does not claim Gateway authentication, health, readiness, or a fresh WebSocket connection. Active Gateway readiness requires a separately approved cancellable networking capability, and M1B2B must keep lifecycle completion separate from later health/readiness refresh.
+
+AI-OS derives Docker Desktop ownership from the exact current-user `$HOME/.docker/run/docker.sock`, freezes the absolute `unix://` host into all management commands, and removes Docker host, context, TLS, certificate, and configuration selectors from every Docker child. Docker contexts and suffix-equivalent socket paths are not trusted. Docker open performs no home, socket, context, or daemon inspection; Open WebUI never starts Docker automatically.
+
+Plan preparation collects only facts required by the requested runtime and action. Debug output for plans, commands, endpoints, verification, and planning contexts is structural and cannot reveal tokens, full URLs, query or fragment data, user paths, Docker sockets, launch plists, or raw arguments.
 
 ## M1C — Frontend Migration and Compatibility Cleanup
 
