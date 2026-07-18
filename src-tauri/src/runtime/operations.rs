@@ -1,0 +1,890 @@
+use std::{collections::HashMap, sync::Mutex};
+
+use chrono::{DateTime, Duration, Utc};
+use uuid::Uuid;
+
+use super::models::{
+    NormalizedRuntimeError, RuntimeErrorCode, RuntimeOperationAction, RuntimeOperationProgress,
+    RuntimeOperationResult, RuntimeOperationSnapshot, RuntimeOperationState,
+};
+
+const TERMINAL_RETENTION_MINUTES: i64 = 30;
+const MAX_TERMINAL_OPERATIONS: usize = 200;
+
+#[derive(Default)]
+struct OperationStore {
+    operations: HashMap<String, RuntimeOperationSnapshot>,
+    lifecycle_slots: HashMap<String, String>,
+    terminal_order: HashMap<String, u64>,
+    next_terminal_order: u64,
+}
+
+pub struct RuntimeOperationManager {
+    store: Mutex<OperationStore>,
+}
+
+impl Default for RuntimeOperationManager {
+    fn default() -> Self {
+        Self {
+            store: Mutex::new(OperationStore::default()),
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl RuntimeOperationManager {
+    pub fn create_operation(
+        &self,
+        runtime_id: &str,
+        action: RuntimeOperationAction,
+        cancellable: bool,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        self.create_operation_at(runtime_id, action, cancellable, Utc::now())
+    }
+
+    pub fn get_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        self.get_operation_at(operation_id, Utc::now())
+    }
+
+    pub fn transition(
+        &self,
+        operation_id: &str,
+        state: RuntimeOperationState,
+        result: Option<RuntimeOperationResult>,
+        error: Option<NormalizedRuntimeError>,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        self.transition_at(operation_id, state, result, error, Utc::now())
+    }
+
+    pub fn update_progress(
+        &self,
+        operation_id: &str,
+        progress: RuntimeOperationProgress,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        self.update_progress_at(operation_id, progress, Utc::now())
+    }
+
+    pub fn request_cancellation(
+        &self,
+        operation_id: &str,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        self.request_cancellation_at(operation_id, Utc::now())
+    }
+
+    fn create_operation_at(
+        &self,
+        runtime_id: &str,
+        action: RuntimeOperationAction,
+        cancellable: bool,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        if runtime_id.trim().is_empty() {
+            return Err(safe_error(
+                RuntimeErrorCode::RuntimeNotFound,
+                "Runtime was not found.",
+                false,
+            ));
+        }
+
+        let mut store = self.lock_store()?;
+        cleanup(&mut store, now);
+
+        if action.reserves_lifecycle_slot() && store.lifecycle_slots.contains_key(runtime_id) {
+            return Err(safe_error(
+                RuntimeErrorCode::OperationConflict,
+                "A lifecycle operation is already active for this runtime.",
+                true,
+            ));
+        }
+
+        let operation_id = Uuid::new_v4().to_string();
+        let timestamp = now.to_rfc3339();
+        let snapshot = RuntimeOperationSnapshot {
+            operation_id: operation_id.clone(),
+            runtime_id: runtime_id.to_string(),
+            action,
+            state: RuntimeOperationState::Queued,
+            revision: 1,
+            accepted_at: timestamp.clone(),
+            started_at: None,
+            updated_at: timestamp,
+            completed_at: None,
+            progress: None,
+            cancellable,
+            result: None,
+            error: None,
+        };
+
+        store
+            .operations
+            .insert(operation_id.clone(), snapshot.clone());
+        if action.reserves_lifecycle_slot() {
+            store
+                .lifecycle_slots
+                .insert(runtime_id.to_string(), operation_id);
+        }
+
+        Ok(snapshot)
+    }
+
+    fn get_operation_at(
+        &self,
+        operation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        let mut store = self.lock_store()?;
+        cleanup(&mut store, now);
+        find_operation(&store, operation_id)
+    }
+
+    fn transition_at(
+        &self,
+        operation_id: &str,
+        state: RuntimeOperationState,
+        result: Option<RuntimeOperationResult>,
+        error: Option<NormalizedRuntimeError>,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        let mut store = self.lock_store()?;
+        apply_transition(&mut store, operation_id, state, result, error, now)?;
+        cleanup(&mut store, now);
+        find_operation(&store, operation_id)
+    }
+
+    fn update_progress_at(
+        &self,
+        operation_id: &str,
+        progress: RuntimeOperationProgress,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        let mut store = self.lock_store()?;
+        cleanup(&mut store, now);
+        let snapshot = store
+            .operations
+            .get_mut(operation_id)
+            .ok_or_else(operation_not_found)?;
+
+        if snapshot.state.is_terminal() {
+            return Err(unsupported_transition());
+        }
+
+        snapshot.progress = Some(progress);
+        snapshot.updated_at = now.to_rfc3339();
+        snapshot.revision += 1;
+        Ok(snapshot.clone())
+    }
+
+    fn request_cancellation_at(
+        &self,
+        operation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        let mut store = self.lock_store()?;
+        cleanup(&mut store, now);
+        let snapshot = find_operation(&store, operation_id)?;
+
+        match snapshot.state {
+            RuntimeOperationState::Cancelled | RuntimeOperationState::Cancelling => {
+                return Ok(snapshot);
+            }
+            RuntimeOperationState::Succeeded | RuntimeOperationState::Failed => {
+                return Err(safe_error(
+                    RuntimeErrorCode::CancellationTooLate,
+                    "The operation has already completed.",
+                    false,
+                ));
+            }
+            RuntimeOperationState::Queued | RuntimeOperationState::Running => {}
+        }
+
+        if !snapshot.cancellable {
+            return Err(safe_error(
+                RuntimeErrorCode::CancellationUnsupported,
+                "This operation cannot be cancelled.",
+                false,
+            ));
+        }
+
+        apply_transition(
+            &mut store,
+            operation_id,
+            RuntimeOperationState::Cancelling,
+            None,
+            None,
+            now,
+        )
+    }
+
+    fn lock_store(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, OperationStore>, NormalizedRuntimeError> {
+        self.store.lock().map_err(|_| {
+            safe_error(
+                RuntimeErrorCode::OperationTaskFailed,
+                "Runtime operation state is unavailable.",
+                true,
+            )
+        })
+    }
+}
+
+fn apply_transition(
+    store: &mut OperationStore,
+    operation_id: &str,
+    next: RuntimeOperationState,
+    result: Option<RuntimeOperationResult>,
+    error: Option<NormalizedRuntimeError>,
+    now: DateTime<Utc>,
+) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+    let snapshot = store
+        .operations
+        .get_mut(operation_id)
+        .ok_or_else(operation_not_found)?;
+
+    if !legal_transition(snapshot.state, next) || !valid_payload(next, &result, &error) {
+        return Err(unsupported_transition());
+    }
+
+    let timestamp = now.to_rfc3339();
+    snapshot.state = next;
+    snapshot.revision += 1;
+    snapshot.updated_at = timestamp.clone();
+    snapshot.result = result;
+    snapshot.error = error;
+
+    if next == RuntimeOperationState::Running && snapshot.started_at.is_none() {
+        snapshot.started_at = Some(timestamp.clone());
+    }
+    if next.is_terminal() {
+        snapshot.completed_at = Some(timestamp);
+        snapshot.cancellable = false;
+        let terminal_order = store.next_terminal_order;
+        store.next_terminal_order = store.next_terminal_order.saturating_add(1);
+        store
+            .terminal_order
+            .insert(snapshot.operation_id.clone(), terminal_order);
+        if snapshot.action.reserves_lifecycle_slot()
+            && store.lifecycle_slots.get(&snapshot.runtime_id) == Some(&snapshot.operation_id)
+        {
+            store.lifecycle_slots.remove(&snapshot.runtime_id);
+        }
+    }
+
+    Ok(snapshot.clone())
+}
+
+fn legal_transition(current: RuntimeOperationState, next: RuntimeOperationState) -> bool {
+    use RuntimeOperationState::{Cancelled, Cancelling, Failed, Queued, Running, Succeeded};
+
+    matches!(
+        (current, next),
+        (Queued, Running)
+            | (Queued, Cancelling)
+            | (Queued, Failed)
+            | (Running, Cancelling)
+            | (Running, Succeeded)
+            | (Running, Failed)
+            | (Cancelling, Cancelled)
+            | (Cancelling, Failed)
+    )
+}
+
+fn valid_payload(
+    state: RuntimeOperationState,
+    result: &Option<RuntimeOperationResult>,
+    error: &Option<NormalizedRuntimeError>,
+) -> bool {
+    match state {
+        RuntimeOperationState::Succeeded => result.is_some() && error.is_none(),
+        RuntimeOperationState::Failed => result.is_none() && error.is_some(),
+        RuntimeOperationState::Cancelled
+        | RuntimeOperationState::Queued
+        | RuntimeOperationState::Running
+        | RuntimeOperationState::Cancelling => result.is_none() && error.is_none(),
+    }
+}
+
+fn cleanup(store: &mut OperationStore, now: DateTime<Utc>) {
+    let expiry = now - Duration::minutes(TERMINAL_RETENTION_MINUTES);
+    store.operations.retain(|_, snapshot| {
+        if !snapshot.state.is_terminal() {
+            return true;
+        }
+
+        snapshot
+            .completed_at
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|completed| completed.with_timezone(&Utc) >= expiry)
+            .unwrap_or(false)
+    });
+
+    store
+        .terminal_order
+        .retain(|operation_id, _| store.operations.contains_key(operation_id));
+
+    let mut terminal = store
+        .operations
+        .values()
+        .filter(|snapshot| snapshot.state.is_terminal())
+        .filter_map(|snapshot| {
+            store
+                .terminal_order
+                .get(&snapshot.operation_id)
+                .map(|order| (snapshot.operation_id.clone(), *order))
+        })
+        .collect::<Vec<_>>();
+
+    if terminal.len() > MAX_TERMINAL_OPERATIONS {
+        terminal.sort_by_key(|(_, order)| *order);
+        let remove_count = terminal.len() - MAX_TERMINAL_OPERATIONS;
+        for (operation_id, _) in terminal.into_iter().take(remove_count) {
+            store.operations.remove(&operation_id);
+            store.terminal_order.remove(&operation_id);
+        }
+    }
+
+    store.lifecycle_slots.retain(|runtime_id, operation_id| {
+        store.operations.get(operation_id).is_some_and(|snapshot| {
+            snapshot.runtime_id == *runtime_id
+                && snapshot.action.reserves_lifecycle_slot()
+                && !snapshot.state.is_terminal()
+        })
+    });
+}
+
+fn find_operation(
+    store: &OperationStore,
+    operation_id: &str,
+) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+    store
+        .operations
+        .get(operation_id)
+        .cloned()
+        .ok_or_else(operation_not_found)
+}
+
+fn operation_not_found() -> NormalizedRuntimeError {
+    safe_error(
+        RuntimeErrorCode::OperationNotFound,
+        "Runtime operation was not found.",
+        false,
+    )
+}
+
+fn unsupported_transition() -> NormalizedRuntimeError {
+    safe_error(
+        RuntimeErrorCode::UnsupportedOperation,
+        "The requested operation transition is not supported.",
+        false,
+    )
+}
+
+fn safe_error(code: RuntimeErrorCode, message: &str, retryable: bool) -> NormalizedRuntimeError {
+    NormalizedRuntimeError {
+        code,
+        message: message.to_string(),
+        retryable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{Arc, Barrier},
+        thread,
+    };
+
+    use serde_json::json;
+
+    use super::*;
+
+    fn time(minutes: i64) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-07-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+            + Duration::minutes(minutes)
+    }
+
+    fn time_milliseconds(milliseconds: i64) -> DateTime<Utc> {
+        time(0) + Duration::milliseconds(milliseconds)
+    }
+
+    fn result() -> RuntimeOperationResult {
+        RuntimeOperationResult {
+            message: "Runtime operation completed.".to_string(),
+        }
+    }
+
+    fn failure() -> NormalizedRuntimeError {
+        safe_error(
+            RuntimeErrorCode::OperationFailed,
+            "Runtime operation failed.",
+            true,
+        )
+    }
+
+    #[test]
+    fn initial_snapshot_is_queued_at_revision_one() {
+        let manager = RuntimeOperationManager::default();
+        let snapshot = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+
+        assert_eq!(snapshot.state, RuntimeOperationState::Queued);
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.accepted_at, snapshot.updated_at);
+        assert!(snapshot.started_at.is_none());
+        assert!(snapshot.completed_at.is_none());
+        assert!(Uuid::parse_str(&snapshot.operation_id).is_ok());
+    }
+
+    #[test]
+    fn queued_running_succeeded_preserves_invariants() {
+        let manager = RuntimeOperationManager::default();
+        let queued = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        let running = manager
+            .transition_at(
+                &queued.operation_id,
+                RuntimeOperationState::Running,
+                None,
+                None,
+                time(1),
+            )
+            .unwrap();
+        let succeeded = manager
+            .transition_at(
+                &queued.operation_id,
+                RuntimeOperationState::Succeeded,
+                Some(result()),
+                None,
+                time(2),
+            )
+            .unwrap();
+
+        assert_eq!(running.revision, 2);
+        assert_eq!(
+            running.started_at.as_deref(),
+            Some("2026-07-19T00:01:00+00:00")
+        );
+        assert_eq!(succeeded.revision, 3);
+        assert!(succeeded.result.is_some());
+        assert!(succeeded.error.is_none());
+        assert!(succeeded.completed_at.is_some());
+    }
+
+    #[test]
+    fn queued_running_failed_preserves_invariants() {
+        let manager = RuntimeOperationManager::default();
+        let queued = manager
+            .create_operation_at(
+                "docker-desktop",
+                RuntimeOperationAction::Stop,
+                false,
+                time(0),
+            )
+            .unwrap();
+        manager
+            .transition_at(
+                &queued.operation_id,
+                RuntimeOperationState::Running,
+                None,
+                None,
+                time(1),
+            )
+            .unwrap();
+        let failed = manager
+            .transition_at(
+                &queued.operation_id,
+                RuntimeOperationState::Failed,
+                None,
+                Some(failure()),
+                time(2),
+            )
+            .unwrap();
+
+        assert!(failed.result.is_none());
+        assert!(failed.error.is_some());
+        assert!(failed.completed_at.is_some());
+    }
+
+    #[test]
+    fn cancelling_path_is_legal_and_repeated_cancellation_is_idempotent() {
+        let manager = RuntimeOperationManager::default();
+        let queued = manager
+            .create_operation_at(
+                "future-runtime",
+                RuntimeOperationAction::Start,
+                true,
+                time(0),
+            )
+            .unwrap();
+        let cancelling = manager
+            .request_cancellation_at(&queued.operation_id, time(1))
+            .unwrap();
+        let repeated = manager
+            .request_cancellation_at(&queued.operation_id, time(2))
+            .unwrap();
+        assert_eq!(cancelling.state, RuntimeOperationState::Cancelling);
+        assert_eq!(repeated.revision, cancelling.revision);
+
+        let cancelled = manager
+            .transition_at(
+                &queued.operation_id,
+                RuntimeOperationState::Cancelled,
+                None,
+                None,
+                time(3),
+            )
+            .unwrap();
+        let repeated_terminal = manager
+            .request_cancellation_at(&queued.operation_id, time(4))
+            .unwrap();
+        assert_eq!(cancelled, repeated_terminal);
+    }
+
+    #[test]
+    fn terminal_state_rejects_later_transitions_without_revision_change() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Running,
+                None,
+                None,
+                time(1),
+            )
+            .unwrap();
+        let terminal = manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Succeeded,
+                Some(result()),
+                None,
+                time(2),
+            )
+            .unwrap();
+
+        for state in [
+            RuntimeOperationState::Running,
+            RuntimeOperationState::Cancelling,
+            RuntimeOperationState::Succeeded,
+            RuntimeOperationState::Failed,
+            RuntimeOperationState::Cancelled,
+        ] {
+            assert!(manager
+                .transition_at(&operation.operation_id, state, None, None, time(3))
+                .is_err());
+        }
+        assert_eq!(
+            manager
+                .get_operation_at(&operation.operation_id, time(3))
+                .unwrap()
+                .revision,
+            terminal.revision
+        );
+    }
+
+    #[test]
+    fn exactly_one_competing_terminal_transition_succeeds() {
+        let manager = Arc::new(RuntimeOperationManager::default());
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Running,
+                None,
+                None,
+                time(1),
+            )
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let mut handles = Vec::new();
+
+        for succeeds in [true, false] {
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
+            let operation_id = operation.operation_id.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                if succeeds {
+                    manager.transition_at(
+                        &operation_id,
+                        RuntimeOperationState::Succeeded,
+                        Some(result()),
+                        None,
+                        time(2),
+                    )
+                } else {
+                    manager.transition_at(
+                        &operation_id,
+                        RuntimeOperationState::Failed,
+                        None,
+                        Some(failure()),
+                        time(2),
+                    )
+                }
+            }));
+        }
+
+        barrier.wait();
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .filter(Result::is_ok)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn progress_increments_revision_but_rejected_mutations_do_not() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        let progress = manager
+            .update_progress_at(
+                &operation.operation_id,
+                RuntimeOperationProgress {
+                    phase: "validating".to_string(),
+                    completed_units: None,
+                    total_units: None,
+                    message: "Validating runtime operation.".to_string(),
+                },
+                time(1),
+            )
+            .unwrap();
+        assert_eq!(progress.revision, 2);
+        assert!(manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Succeeded,
+                None,
+                None,
+                time(2),
+            )
+            .is_err());
+        assert_eq!(
+            manager
+                .get_operation_at(&operation.operation_id, time(2))
+                .unwrap()
+                .revision,
+            2
+        );
+    }
+
+    #[test]
+    fn conflicting_lifecycle_operations_are_excluded_per_runtime() {
+        let manager = RuntimeOperationManager::default();
+        let first = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        let conflict = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(0))
+            .unwrap_err();
+        let independent = manager
+            .create_operation_at(
+                "docker-desktop",
+                RuntimeOperationAction::Start,
+                false,
+                time(0),
+            )
+            .unwrap();
+
+        assert_eq!(conflict.code, RuntimeErrorCode::OperationConflict);
+        assert_ne!(first.runtime_id, independent.runtime_id);
+    }
+
+    #[test]
+    fn open_does_not_reserve_lifecycle_slot() {
+        let manager = RuntimeOperationManager::default();
+        manager
+            .create_operation_at("ollama", RuntimeOperationAction::Open, false, time(0))
+            .unwrap();
+        manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        manager
+            .create_operation_at("ollama", RuntimeOperationAction::Open, false, time(0))
+            .unwrap();
+    }
+
+    #[test]
+    fn terminal_transition_releases_lifecycle_slot() {
+        let manager = RuntimeOperationManager::default();
+        let first = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        manager
+            .transition_at(
+                &first.operation_id,
+                RuntimeOperationState::Failed,
+                None,
+                Some(failure()),
+                time(1),
+            )
+            .unwrap();
+        manager
+            .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn cancellation_returns_typed_unsupported_too_late_and_not_found_errors() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        assert_eq!(
+            manager
+                .request_cancellation_at(&operation.operation_id, time(1))
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::CancellationUnsupported
+        );
+
+        manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Failed,
+                None,
+                Some(failure()),
+                time(2),
+            )
+            .unwrap();
+        assert_eq!(
+            manager
+                .request_cancellation_at(&operation.operation_id, time(3))
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::CancellationTooLate
+        );
+        assert_eq!(
+            manager
+                .request_cancellation_at("missing", time(3))
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::OperationNotFound
+        );
+    }
+
+    #[test]
+    fn active_operations_are_never_evicted() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        assert!(manager
+            .get_operation_at(&operation.operation_id, time(10_000))
+            .is_ok());
+    }
+
+    #[test]
+    fn expired_terminal_operations_are_removed_without_stale_slots() {
+        let manager = RuntimeOperationManager::default();
+        let operation = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        manager
+            .transition_at(
+                &operation.operation_id,
+                RuntimeOperationState::Failed,
+                None,
+                Some(failure()),
+                time(1),
+            )
+            .unwrap();
+        assert_eq!(
+            manager
+                .get_operation_at(&operation.operation_id, time(32))
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::OperationNotFound
+        );
+        manager
+            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(32))
+            .unwrap();
+    }
+
+    #[test]
+    fn terminal_retention_is_capped_at_two_hundred() {
+        let manager = RuntimeOperationManager::default();
+        let mut first_id = String::new();
+        let mut last_id = String::new();
+
+        for index in 0..=MAX_TERMINAL_OPERATIONS {
+            let operation = manager
+                .create_operation_at(
+                    &format!("runtime-{index}"),
+                    RuntimeOperationAction::Start,
+                    false,
+                    time_milliseconds(index as i64),
+                )
+                .unwrap();
+            if index == 0 {
+                first_id = operation.operation_id.clone();
+            }
+            last_id = operation.operation_id.clone();
+            manager
+                .transition_at(
+                    &operation.operation_id,
+                    RuntimeOperationState::Failed,
+                    None,
+                    Some(failure()),
+                    time_milliseconds(index as i64),
+                )
+                .unwrap();
+        }
+
+        assert!(manager
+            .get_operation_at(&first_id, time_milliseconds(MAX_TERMINAL_OPERATIONS as i64),)
+            .is_err());
+        assert!(manager
+            .get_operation_at(&last_id, time_milliseconds(MAX_TERMINAL_OPERATIONS as i64),)
+            .is_ok());
+    }
+
+    #[test]
+    fn json_contract_uses_typescript_compatible_names_and_safe_errors() {
+        let manager = RuntimeOperationManager::default();
+        let snapshot = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Restart, false, time(0))
+            .unwrap();
+        let event = super::super::models::RuntimeOperationEvent {
+            version: 1,
+            operation: snapshot,
+        };
+        let value = serde_json::to_value(event).unwrap();
+
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["operation"]["action"], "restart");
+        assert_eq!(value["operation"]["state"], "queued");
+        assert_eq!(value["operation"]["revision"], 1);
+        assert!(value["operation"].get("operationId").is_some());
+        assert_eq!(
+            serde_json::to_value(safe_error(
+                RuntimeErrorCode::OperationTaskFailed,
+                "Runtime operation task failed.",
+                true,
+            ))
+            .unwrap(),
+            json!({
+                "code": "operation-task-failed",
+                "message": "Runtime operation task failed.",
+                "retryable": true,
+            })
+        );
+    }
+}

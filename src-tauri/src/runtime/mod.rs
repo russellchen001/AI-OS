@@ -1,5 +1,6 @@
 mod adapters;
 pub mod models;
+pub mod operations;
 mod registry;
 
 use models::{RuntimeDefinition, RuntimeStatus, RuntimeStatusRequest};

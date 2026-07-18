@@ -58,7 +58,15 @@ export type RuntimeErrorCode =
   | "configuration-unavailable"
   | "invalid-configuration"
   | "probe-failed"
-  | "unsupported-platform";
+  | "unsupported-platform"
+  | "runtime-not-found"
+  | "operation-not-found"
+  | "unsupported-operation"
+  | "operation-conflict"
+  | "cancellation-unsupported"
+  | "cancellation-too-late"
+  | "operation-failed"
+  | "operation-task-failed";
 
 export type NormalizedRuntimeError = {
   code: RuntimeErrorCode;
@@ -95,4 +103,50 @@ export type RuntimeStatus = {
 export type RuntimeStatusRequest = {
   ollamaUrl?: string;
   openWebUiUrl?: string;
+};
+
+export type RuntimeOperationAction =
+  | "start"
+  | "stop"
+  | "restart"
+  | "open";
+
+export type RuntimeOperationState =
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export type RuntimeOperationProgress = {
+  phase: string;
+  completedUnits: number | null;
+  totalUnits: number | null;
+  message: string;
+};
+
+export type RuntimeOperationResult = {
+  message: string;
+};
+
+export type RuntimeOperationSnapshot = {
+  operationId: string;
+  runtimeId: string;
+  action: RuntimeOperationAction;
+  state: RuntimeOperationState;
+  revision: number;
+  acceptedAt: string;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  progress: RuntimeOperationProgress | null;
+  cancellable: boolean;
+  result: RuntimeOperationResult | null;
+  error: NormalizedRuntimeError | null;
+};
+
+export type RuntimeOperationEvent = {
+  version: 1;
+  operation: RuntimeOperationSnapshot;
 };

@@ -47,6 +47,20 @@ Deferred scope:
 - macOS process-management isolation
 - Compatibility façades for legacy lifecycle commands
 
+### M1B1 — Operation Contract and State Manager
+
+Foundation scope:
+
+- Canonical Rust and TypeScript operation contracts
+- Pure checked operation state machine and snapshot revision ordering
+- In-memory bounded operation retention
+- Per-runtime lifecycle exclusion for start, stop, and restart
+- Typed version-1 event payload contract without event emission
+- Typed cancellation outcomes without cancellation handles
+- No lifecycle execution, IPC registration, legacy delegation, or UI integration
+
+M1B1 operations are intentionally process-local. Active operations are never evicted; terminal operations are retained for 30 minutes with a maximum of 200 retained terminal snapshots.
+
 ## M1C — Frontend Migration and Compatibility Cleanup
 
 Deferred scope:

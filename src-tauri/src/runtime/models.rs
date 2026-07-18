@@ -87,6 +87,14 @@ pub enum RuntimeErrorCode {
     InvalidConfiguration,
     ProbeFailed,
     UnsupportedPlatform,
+    RuntimeNotFound,
+    OperationNotFound,
+    UnsupportedOperation,
+    OperationConflict,
+    CancellationUnsupported,
+    CancellationTooLate,
+    OperationFailed,
+    OperationTaskFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,4 +140,77 @@ pub struct RuntimeStatus {
 pub struct RuntimeStatusRequest {
     pub ollama_url: Option<String>,
     pub open_web_ui_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeOperationAction {
+    Start,
+    Stop,
+    Restart,
+    Open,
+}
+
+impl RuntimeOperationAction {
+    pub(crate) fn reserves_lifecycle_slot(self) -> bool {
+        matches!(self, Self::Start | Self::Stop | Self::Restart)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeOperationState {
+    Queued,
+    Running,
+    Cancelling,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl RuntimeOperationState {
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeOperationProgress {
+    pub phase: String,
+    pub completed_units: Option<u32>,
+    pub total_units: Option<u32>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeOperationResult {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeOperationSnapshot {
+    pub operation_id: String,
+    pub runtime_id: String,
+    pub action: RuntimeOperationAction,
+    pub state: RuntimeOperationState,
+    pub revision: u64,
+    pub accepted_at: String,
+    pub started_at: Option<String>,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+    pub progress: Option<RuntimeOperationProgress>,
+    pub cancellable: bool,
+    pub result: Option<RuntimeOperationResult>,
+    pub error: Option<NormalizedRuntimeError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct RuntimeOperationEvent {
+    pub version: u8,
+    pub operation: RuntimeOperationSnapshot,
 }
