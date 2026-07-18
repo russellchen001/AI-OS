@@ -113,7 +113,7 @@ Final safety rules require typed OpenClaw `Loaded`, `NotLoaded`, and `Inspection
 
 AI-OS derives Docker Desktop ownership from the exact current-user `$HOME/.docker/run/docker.sock`, freezes the absolute `unix://` host into all management commands, and removes Docker host, context, TLS, certificate, and configuration selectors from every Docker child. Docker contexts and suffix-equivalent socket paths are not trusted. Docker open performs no home, socket, context, or daemon inspection; Open WebUI never starts Docker automatically.
 
-Plan preparation collects only facts required by the requested runtime and action. Debug output for plans, commands, endpoints, verification, and planning contexts is structural and cannot reveal tokens, full URLs, query or fragment data, user paths, Docker sockets, launch plists, or raw arguments.
+Plan preparation rejects remote local-lifecycle requests and statically unsupported actions before native ownership or dependency inspection, then collects only facts required by the requested runtime and action. Only the verified macOS launchctl service-not-found exit establishes `NotLoaded`; every other nonzero exit, spawn failure, timeout, or internal wait failure is `InspectionFailed` and cannot authorize bootstrap or a stopped no-op. Debug output for requests, plans, commands, endpoints, verification, and planning contexts is structural and cannot reveal tokens, full URLs, query or fragment data, user paths, Docker sockets, launch plists, or raw arguments.
 
 ## M1C — Frontend Migration and Compatibility Cleanup
 

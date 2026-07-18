@@ -140,11 +140,22 @@ fn classify_url_host(parsed: &Url) -> Option<RuntimeLocation> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeLifecycleRequest {
     pub runtime_id: String,
     pub action: RuntimeOperationAction,
     pub endpoint_url: Option<String>,
+}
+
+impl std::fmt::Debug for RuntimeLifecycleRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeLifecycleRequest")
+            .field("runtime_id", &self.runtime_id)
+            .field("action", &self.action)
+            .field("endpoint_present", &self.endpoint_url.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +222,16 @@ enum LaunchServiceState {
     Loaded,
     NotLoaded,
     InspectionFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchctlPrintOutcome {
+    SuccessfulExit,
+    ServiceNotFound,
+    OtherNonzeroExit,
+    SpawnFailure,
+    Timeout,
+    InternalWaitFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,12 +403,31 @@ fn collect_context_with(
     request: &RuntimeLifecycleRequest,
     source: &impl ContextSource,
 ) -> Result<RuntimePlanningContext, NormalizedRuntimeError> {
+    if !matches!(
+        request.runtime_id.as_str(),
+        "openclaw" | "ollama" | "docker-desktop" | "open-webui" | "cherry-studio"
+    ) {
+        return Err(runtime_not_found());
+    }
+    if request.action == RuntimeOperationAction::Restart
+        && matches!(
+            request.runtime_id.as_str(),
+            "openclaw" | "ollama" | "docker-desktop" | "cherry-studio"
+        )
+    {
+        return Err(unsupported());
+    }
     match request.runtime_id.as_str() {
         "openclaw" => source
             .openclaw(request.action)
             .map(RuntimePlanningContext::OpenClaw),
         "ollama" => {
             let endpoint = explicit_endpoint(request)?;
+            if endpoint.location() == RuntimeLocation::Remote
+                && request.action != RuntimeOperationAction::Open
+            {
+                return Err(invalid_location());
+            }
             Ok(RuntimePlanningContext::Ollama(source.ollama(
                 endpoint,
                 request.action != RuntimeOperationAction::Open,
@@ -398,13 +438,18 @@ fn collect_context_with(
             .map(RuntimePlanningContext::Docker),
         "open-webui" => {
             let endpoint = explicit_endpoint(request)?;
+            if endpoint.location() == RuntimeLocation::Remote
+                && request.action != RuntimeOperationAction::Open
+            {
+                return Err(invalid_location());
+            }
             Ok(RuntimePlanningContext::OpenWebUi(source.open_webui(
                 endpoint,
                 request.action != RuntimeOperationAction::Open,
             )))
         }
         "cherry-studio" => Ok(RuntimePlanningContext::Cherry(source.cherry())),
-        _ => Err(runtime_not_found()),
+        _ => unreachable!(),
     }
 }
 
@@ -434,6 +479,9 @@ fn collect_openclaw_context(
         .map_err(|_| configuration_unavailable())?
         .ok_or_else(configuration_unavailable)?;
     let gateway = classify_openclaw_gateway(&endpoint)?;
+    if gateway.location == RuntimeLocation::Remote {
+        return Ok(OpenClawContext::Open { gateway });
+    }
     let launchctl_domain = current_launchctl_domain()?;
     let target = format!("{launchctl_domain}/{OPENCLAW_SERVICE}");
     let service_state = inspect_launch_service(&target, PROBE_TIMEOUT);
@@ -450,16 +498,60 @@ fn collect_openclaw_context(
 }
 
 fn inspect_launch_service(target: &str, timeout: Duration) -> LaunchServiceState {
-    classify_launch_service_result(probe_status(LAUNCHCTL, &["print", target], timeout))
+    classify_launch_service_outcome(run_launchctl_print(target, timeout))
 }
 
-fn classify_launch_service_result(
-    result: Result<bool, NormalizedRuntimeError>,
-) -> LaunchServiceState {
-    match result {
-        Ok(true) => LaunchServiceState::Loaded,
-        Ok(false) => LaunchServiceState::NotLoaded,
-        Err(_) => LaunchServiceState::InspectionFailed,
+fn classify_launch_service_outcome(outcome: LaunchctlPrintOutcome) -> LaunchServiceState {
+    match outcome {
+        LaunchctlPrintOutcome::SuccessfulExit => LaunchServiceState::Loaded,
+        LaunchctlPrintOutcome::ServiceNotFound => LaunchServiceState::NotLoaded,
+        LaunchctlPrintOutcome::OtherNonzeroExit
+        | LaunchctlPrintOutcome::SpawnFailure
+        | LaunchctlPrintOutcome::Timeout
+        | LaunchctlPrintOutcome::InternalWaitFailure => LaunchServiceState::InspectionFailed,
+    }
+}
+
+fn run_launchctl_print(target: &str, timeout: Duration) -> LaunchctlPrintOutcome {
+    let mut child = match Command::new(LAUNCHCTL)
+        .args(["print", target])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return LaunchctlPrintOutcome::SpawnFailure,
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                return LaunchctlPrintOutcome::SuccessfulExit;
+            }
+            Ok(Some(status)) if status.code() == Some(113) => {
+                return LaunchctlPrintOutcome::ServiceNotFound;
+            }
+            Ok(Some(_)) => return LaunchctlPrintOutcome::OtherNonzeroExit,
+            Err(_) => return LaunchctlPrintOutcome::InternalWaitFailure,
+            Ok(None) if Instant::now() >= deadline => {
+                if child.kill().is_ok() {
+                    let cleanup_deadline = Instant::now() + CLEANUP_TIMEOUT;
+                    while Instant::now() < cleanup_deadline {
+                        match child.try_wait() {
+                            Ok(Some(_)) | Err(_) => break,
+                            Ok(None) => thread::sleep(POLL_INTERVAL),
+                        }
+                    }
+                } else {
+                    let _ = child.try_wait();
+                }
+                return LaunchctlPrintOutcome::Timeout;
+            }
+            Ok(None) => {
+                thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())))
+            }
+        }
     }
 }
 
@@ -2020,21 +2112,24 @@ mod tests {
     #[test]
     fn launchctl_failures_are_typed_and_never_assumed_not_loaded() {
         assert_eq!(
-            classify_launch_service_result(Ok(true)),
+            classify_launch_service_outcome(LaunchctlPrintOutcome::SuccessfulExit),
             LaunchServiceState::Loaded
         );
         assert_eq!(
-            classify_launch_service_result(Ok(false)),
+            classify_launch_service_outcome(LaunchctlPrintOutcome::ServiceNotFound),
             LaunchServiceState::NotLoaded
         );
-        assert_eq!(
-            classify_launch_service_result(Err(command_timeout())),
-            LaunchServiceState::InspectionFailed
-        );
-        assert_eq!(
-            classify_launch_service_result(Err(operation_failed())),
-            LaunchServiceState::InspectionFailed
-        );
+        for outcome in [
+            LaunchctlPrintOutcome::OtherNonzeroExit,
+            LaunchctlPrintOutcome::SpawnFailure,
+            LaunchctlPrintOutcome::Timeout,
+            LaunchctlPrintOutcome::InternalWaitFailure,
+        ] {
+            assert_eq!(
+                classify_launch_service_outcome(outcome),
+                LaunchServiceState::InspectionFailed
+            );
+        }
         let failed = OpenClawContext::Manage {
             gateway: classify_openclaw_gateway("ws://localhost:18789").unwrap(),
             launchctl_domain: "gui/501".to_string(),
@@ -2056,6 +2151,7 @@ mod tests {
     }
 
     struct RecordingSource {
+        openclaw_gateway: &'static str,
         openclaw_calls: Cell<u32>,
         openclaw_service_inspections: Cell<u32>,
         ollama_calls: Cell<u32>,
@@ -2069,6 +2165,7 @@ mod tests {
     impl RecordingSource {
         fn new() -> Self {
             Self {
+                openclaw_gateway: "http://localhost:18789",
                 openclaw_calls: Cell::new(0),
                 openclaw_service_inspections: Cell::new(0),
                 ollama_calls: Cell::new(0),
@@ -2079,6 +2176,13 @@ mod tests {
                 cherry_calls: Cell::new(0),
             }
         }
+
+        fn with_remote_openclaw() -> Self {
+            Self {
+                openclaw_gateway: "wss://gateway.example.com",
+                ..Self::new()
+            }
+        }
     }
 
     impl ContextSource for RecordingSource {
@@ -2087,10 +2191,10 @@ mod tests {
             action: RuntimeOperationAction,
         ) -> Result<OpenClawContext, NormalizedRuntimeError> {
             self.openclaw_calls.set(self.openclaw_calls.get() + 1);
-            if action == RuntimeOperationAction::Open {
-                Ok(OpenClawContext::Open {
-                    gateway: classify_openclaw_gateway("http://localhost:18789").unwrap(),
-                })
+            let gateway = classify_openclaw_gateway(self.openclaw_gateway).unwrap();
+            if action == RuntimeOperationAction::Open || gateway.location == RuntimeLocation::Remote
+            {
+                Ok(OpenClawContext::Open { gateway })
             } else {
                 self.openclaw_service_inspections
                     .set(self.openclaw_service_inspections.get() + 1);
@@ -2204,6 +2308,90 @@ mod tests {
             mismatched.unwrap_err().code,
             RuntimeErrorCode::InvalidConfiguration
         );
+    }
+
+    #[test]
+    fn remote_preflight_rejects_before_local_ownership_or_dependency_inspection() {
+        let source = RecordingSource::new();
+        for action in [RuntimeOperationAction::Start, RuntimeOperationAction::Stop] {
+            let request = request("ollama", action, Some("https://ollama.example.com"));
+            assert_eq!(
+                prepare_with_source(&request, &source).unwrap_err().code,
+                RuntimeErrorCode::InvalidRuntimeLocation
+            );
+        }
+        assert_eq!(source.ollama_calls.get(), 0);
+        assert_eq!(source.ollama_ownership_inspections.get(), 0);
+
+        for action in [
+            RuntimeOperationAction::Start,
+            RuntimeOperationAction::Stop,
+            RuntimeOperationAction::Restart,
+        ] {
+            let request = request("open-webui", action, Some("https://webui.example.com"));
+            assert_eq!(
+                prepare_with_source(&request, &source).unwrap_err().code,
+                RuntimeErrorCode::InvalidRuntimeLocation
+            );
+        }
+        assert_eq!(source.webui_calls.get(), 0);
+        assert_eq!(source.webui_dependency_inspections.get(), 0);
+
+        let source = RecordingSource::with_remote_openclaw();
+        for action in [RuntimeOperationAction::Start, RuntimeOperationAction::Stop] {
+            let request = request("openclaw", action, None);
+            assert_eq!(
+                prepare_with_source(&request, &source).unwrap_err().code,
+                RuntimeErrorCode::InvalidRuntimeLocation
+            );
+        }
+        assert_eq!(source.openclaw_service_inspections.get(), 0);
+    }
+
+    #[test]
+    fn statically_unsupported_restart_performs_no_native_discovery() {
+        let source = RecordingSource::new();
+        for (runtime_id, endpoint) in [
+            ("openclaw", None),
+            ("ollama", Some("http://localhost:11434")),
+            ("docker-desktop", None),
+            ("cherry-studio", None),
+        ] {
+            let request = request(runtime_id, RuntimeOperationAction::Restart, endpoint);
+            assert_eq!(
+                prepare_with_source(&request, &source).unwrap_err().code,
+                RuntimeErrorCode::UnsupportedOperation
+            );
+        }
+        assert_eq!(source.openclaw_calls.get(), 0);
+        assert_eq!(source.ollama_calls.get(), 0);
+        assert_eq!(source.docker_calls.get(), 0);
+        assert_eq!(source.cherry_calls.get(), 0);
+    }
+
+    #[test]
+    fn lifecycle_request_debug_contains_only_safe_presence_metadata() {
+        let request = request(
+            "open-webui",
+            RuntimeOperationAction::Start,
+            Some("https://user:password@example.com/private?token=secret#fragment"),
+        );
+        let debug = format!("{request:?}");
+        assert!(debug.contains("open-webui"));
+        assert!(debug.contains("Start"));
+        assert!(debug.contains("endpoint_present"));
+        assert!(debug.contains("true"));
+        for secret in [
+            "https://",
+            "example.com",
+            "private",
+            "token",
+            "secret",
+            "fragment",
+            "password",
+        ] {
+            assert!(!debug.contains(secret));
+        }
     }
 
     #[test]
