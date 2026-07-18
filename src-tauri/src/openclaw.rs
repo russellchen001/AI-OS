@@ -62,6 +62,13 @@ struct StoredOpenClawServer {
     updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct OpenClawRuntimeSnapshot {
+    pub configured: bool,
+    pub remote: bool,
+    pub connection_state: String,
+}
+
 fn default_connection_state() -> String {
     "unknown".to_string()
 }
@@ -333,11 +340,15 @@ fn config_file() -> Result<PathBuf, String> {
 fn read_servers() -> Result<Vec<StoredOpenClawServer>, String> {
     let path = config_file()?;
 
+    read_servers_at(&path)
+}
+
+fn read_servers_at(path: &PathBuf) -> Result<Vec<StoredOpenClawServer>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let contents = fs::read_to_string(&path).map_err(|error| {
+    let contents = fs::read_to_string(path).map_err(|error| {
         format!(
             "Unable to read OpenClaw configuration {}: {}",
             path.display(),
@@ -351,6 +362,45 @@ fn read_servers() -> Result<Vec<StoredOpenClawServer>, String> {
 
     serde_json::from_str(&contents)
         .map_err(|error| format!("Unable to parse OpenClaw configuration: {}", error,))
+}
+
+pub(crate) fn runtime_snapshot() -> Result<OpenClawRuntimeSnapshot, String> {
+    let current_path = config_directory()?.join(CONFIG_FILE_NAME);
+    let legacy_path = legacy_config_directory()?.join(CONFIG_FILE_NAME);
+    let servers = if current_path.exists() {
+        read_servers_at(&current_path)?
+    } else if legacy_path.exists() {
+        read_servers_at(&legacy_path)?
+    } else {
+        Vec::new()
+    };
+
+    let Some(active) = servers
+        .iter()
+        .find(|server| server.active && server.enabled)
+    else {
+        return Ok(OpenClawRuntimeSnapshot {
+            configured: false,
+            remote: false,
+            connection_state: "unknown".to_string(),
+        });
+    };
+
+    let remote = Url::parse(&active.server_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .map(|host| host != "127.0.0.1" && host != "localhost" && host != "::1")
+        .unwrap_or(false);
+
+    Ok(OpenClawRuntimeSnapshot {
+        configured: true,
+        remote,
+        connection_state: if active.connection_state.trim().is_empty() {
+            "unknown".to_string()
+        } else {
+            active.connection_state.clone()
+        },
+    })
 }
 
 fn write_servers(servers: &[StoredOpenClawServer]) -> Result<(), String> {

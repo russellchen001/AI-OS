@@ -5,6 +5,7 @@ mod mcp;
 mod models;
 mod multillm;
 mod openclaw;
+mod runtime;
 mod stop;
 
 use std::{process::Command, thread, time::Duration};
@@ -587,6 +588,8 @@ pub fn run() {
             openclaw::export_openclaw_servers,
             openclaw::import_openclaw_servers,
             openclaw::invoke_active_openclaw_gateway,
+            runtime::list_runtimes,
+            runtime::get_runtime_statuses,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
