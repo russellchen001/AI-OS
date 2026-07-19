@@ -3,34 +3,51 @@ import type {
 } from "react";
 
 import type {
-  Service,
+  ServiceStatus,
 } from "../types/index";
+import type {
+  RuntimeOperationSnapshot,
+} from "../types/runtime";
 
 import ServiceRow from "./ServiceRow";
 
+export type RuntimeServiceView = {
+  runtimeId: string;
+  name: string;
+  icon: string;
+  description: string;
+  status: ServiceStatus;
+  canStart: boolean;
+  canStop: boolean;
+  canOpen: boolean;
+  listenerReady: boolean;
+  lifecyclePending: boolean;
+  openPending: boolean;
+  lifecycleOperation:
+    | RuntimeOperationSnapshot
+    | undefined;
+  openOperation:
+    | RuntimeOperationSnapshot
+    | undefined;
+};
+
 type ServiceListProps = {
-  services: Service[];
+  services: RuntimeServiceView[];
   cardStyle: CSSProperties;
-  isBusy: boolean;
-  serviceAction: string | null;
-  openAction: string | null;
   onStart: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onStop: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onOpen: (
-    service: string,
+    runtimeId: string,
   ) => void;
 };
 
 function ServiceList({
   services,
   cardStyle,
-  isBusy,
-  serviceAction,
-  openAction,
   onStart,
   onStop,
   onOpen,
@@ -39,14 +56,9 @@ function ServiceList({
     <div className="service-list">
       {services.map((service) => (
         <ServiceRow
-          key={service.name}
+          key={service.runtimeId}
           service={service}
           cardStyle={cardStyle}
-          isBusy={isBusy}
-          serviceAction={
-            serviceAction
-          }
-          openAction={openAction}
           onStart={onStart}
           onStop={onStop}
           onOpen={onOpen}

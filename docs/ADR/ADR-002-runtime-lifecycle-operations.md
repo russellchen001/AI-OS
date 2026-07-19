@@ -1,6 +1,6 @@
 # ADR-002: Runtime Lifecycle Operations
 
-- **Status:** Accepted through P9-M1B2B2
+- **Status:** Accepted through P9-M1C1
 - **Date:** 2026-07-19
 - **Decision owners:** AI-OS
 
@@ -116,4 +116,14 @@ M1B2B3 adds no React consumer, UI migration, runtime-status refresh, persistence
 - Late subscribers will recover state through operation lookup once IPC is added.
 - Operations are lost on application exit by design.
 - Initial runtime adapters do not advertise genuine cancellation.
-- The current legacy lifecycle implementation and UI remain unchanged.
+- Legacy native lifecycle commands and bulk UI behavior remain available during the staged frontend migration.
+
+## M1C1 Canonical UI State and Individual Controls
+
+The Dashboard and Services individual Start, Stop, and Open controls consume the canonical typed Runtime client through one App-owned `useRuntimeOperations` hook. Canonical identity comes directly from `RuntimeDefinition.id` and `RuntimeStatus.id`; display labels never derive identity, and only Ollama and Open WebUI select configured endpoints by canonical ID. No frontend OpenClaw endpoint or token is sent to lifecycle IPC.
+
+The hook owns one `operationsById` full-Snapshot store, synchronous per-runtime lifecycle/Open submission channels, one listener registration state, terminal-refresh deduplication, and coalesced refresh coordination. Per-runtime active lifecycle, active Open, and latest terminal views are derived rather than stored as duplicate Snapshots. One `runtime://operation` listener is registered at the App boundary, gates individual admission until ready, reconciles responses, lookups, and events only by operation ID and Revision, and calls the exact unlisten function during cleanup, including late listener registration.
+
+Conflicts attach to the returned canonical existing Snapshot without retry. Terminal Start, Stop, and Restart outcomes schedule a separate best-effort canonical Runtime-status refresh, while Open never refreshes status. Operation completion never directly changes Runtime lifecycle, health, readiness, or OpenClaw connectivity. Fixed action/code-based notifications exclude operation IDs, revisions, endpoints, raw native details, and arbitrary progress messages.
+
+Start All and Stop All remain isolated legacy compatibility behavior pending a separate approved bulk design. No Restart or Cancel control was added. Backend legacy commands, unused legacy frontend individual wrappers/hooks, persistence, operation history, and active/recent list IPC remain unchanged for M1C2/M1C3 review.

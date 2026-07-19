@@ -37,6 +37,33 @@ function useRuntimes({
     useState(false);
   const [error, setError] =
     useState("");
+  const [lastUpdated, setLastUpdated] =
+    useState("Not checked");
+
+  const refreshStatuses = useCallback(
+    async () => {
+      const nextStatuses =
+        await getRuntimeStatuses({
+          ollamaUrl,
+          openWebUiUrl,
+        });
+      setStatuses(nextStatuses);
+      setError("");
+      setLastUpdated(
+        new Date().toLocaleTimeString(
+          [],
+          {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          },
+        ),
+      );
+    }, [
+      ollamaUrl,
+      openWebUiUrl,
+    ],
+  );
 
   const refresh = useCallback(
     async () => {
@@ -44,25 +71,22 @@ function useRuntimes({
         setIsLoading(true);
         setError("");
 
-        const [definitions, nextStatuses] =
+        const [definitions] =
           await Promise.all([
             listRuntimes(),
-            getRuntimeStatuses({
-              ollamaUrl,
-              openWebUiUrl,
-            }),
+            refreshStatuses(),
           ]);
 
         setRuntimes(definitions);
-        setStatuses(nextStatuses);
-      } catch (nextError) {
-        setError(String(nextError));
+      } catch {
+        setError(
+          "Runtime status is unavailable.",
+        );
       } finally {
         setIsLoading(false);
       }
     }, [
-      ollamaUrl,
-      openWebUiUrl,
+      refreshStatuses,
     ]);
 
   useEffect(() => {
@@ -74,7 +98,13 @@ function useRuntimes({
 
     const interval = window.setInterval(
       () => {
-        void refresh();
+        void refreshStatuses().catch(
+          () => {
+            setError(
+              "Runtime status is unavailable.",
+            );
+          },
+        );
       },
       Math.max(refreshInterval, 2) * 1000,
     );
@@ -82,14 +112,20 @@ function useRuntimes({
     return () => {
       window.clearInterval(interval);
     };
-  }, [refresh, refreshInterval]);
+  }, [
+    refresh,
+    refreshInterval,
+    refreshStatuses,
+  ]);
 
   return {
     runtimes,
     statuses,
     isLoading,
     error,
+    lastUpdated,
     refresh,
+    refreshStatuses,
   };
 }
 

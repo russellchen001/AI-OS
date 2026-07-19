@@ -2,33 +2,29 @@ import type {
   CSSProperties,
 } from "react";
 
-import type {
-  Service,
-} from "../types/index";
-
 import ServiceList from "../components/ServiceList";
+import type {
+  RuntimeServiceView,
+} from "../components/ServiceList";
 import ServiceToggle from "../components/ServiceToggle";
 
 type ServicesPageProps = {
-  services: Service[];
+  services: RuntimeServiceView[];
   cardStyle: CSSProperties;
   allRunning: boolean;
-  isBusy: boolean;
   globalAction:
     | "start"
     | "stop"
     | null;
-  serviceAction: string | null;
-  openAction: string | null;
   onGlobalToggle: () => void;
   onStartService: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onStopService: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onOpenService: (
-    service: string,
+    runtimeId: string,
   ) => void;
 };
 
@@ -36,10 +32,7 @@ function ServicesPage({
   services,
   cardStyle,
   allRunning,
-  isBusy,
   globalAction,
-  serviceAction,
-  openAction,
   onGlobalToggle,
   onStartService,
   onStopService,
@@ -59,7 +52,9 @@ function ServicesPage({
 
         <ServiceToggle
           checked={allRunning}
-          disabled={isBusy}
+          disabled={
+            globalAction !== null
+          }
           loading={
             globalAction !== null
           }
@@ -80,9 +75,6 @@ function ServicesPage({
       <ServiceList
         services={services}
         cardStyle={cardStyle}
-        isBusy={isBusy}
-        serviceAction={serviceAction}
-        openAction={openAction}
         onStart={onStartService}
         onStop={onStopService}
         onOpen={onOpenService}

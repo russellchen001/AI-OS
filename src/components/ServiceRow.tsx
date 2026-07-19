@@ -2,35 +2,85 @@ import type {
   CSSProperties,
 } from "react";
 
-import type {
-  Service,
-} from "../types/index";
-
 import ServiceToggle from "./ServiceToggle";
+import type {
+  RuntimeServiceView,
+} from "./ServiceList";
 
 type ServiceRowProps = {
-  service: Service;
+  service: RuntimeServiceView;
   cardStyle: CSSProperties;
-  isBusy: boolean;
-  serviceAction: string | null;
-  openAction: string | null;
   onStart: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onStop: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onOpen: (
-    service: string,
+    runtimeId: string,
   ) => void;
 };
+
+function lifecycleLabel(
+  service: RuntimeServiceView,
+): string {
+  const operation =
+    service.lifecycleOperation;
+  if (service.lifecyclePending) {
+    return "Working…";
+  }
+  if (operation === undefined) {
+    return service.status === "Running"
+      ? "Running"
+      : service.status === "Stopped"
+        ? "Stopped"
+        : "Unknown";
+  }
+  if (operation.state === "queued") {
+    switch (operation.action) {
+      case "start":
+        return "Queued to start";
+      case "stop":
+        return "Queued to stop";
+      case "restart":
+        return "Queued to restart";
+      case "open":
+        return "Working…";
+    }
+  }
+  if (operation.state === "running") {
+    const knownPhases: Record<
+      string,
+      string
+    > = {
+      validating: "Working…",
+      "starting-application": "Starting…",
+      "stopping-service": "Stopping…",
+      "waiting-for-readiness": "Working…",
+      "checking-dependency": "Working…",
+      "starting-container": "Starting…",
+      "stopping-container": "Stopping…",
+      "restarting-container": "Restarting…",
+      opening: "Opening…",
+      verifying: "Verifying…",
+      complete: "Working…",
+    };
+    return operation.progress === null
+      ? operation.action === "start"
+        ? "Starting…"
+        : operation.action === "stop"
+          ? "Stopping…"
+          : "Restarting…"
+      : knownPhases[
+          operation.progress.phase
+        ] ?? "Working…";
+  }
+  return "Working…";
+}
 
 function ServiceRow({
   service,
   cardStyle,
-  isBusy,
-  serviceAction,
-  openAction,
   onStart,
   onStop,
   onOpen,
@@ -38,16 +88,16 @@ function ServiceRow({
   const running =
     service.status === "Running";
 
-  const starting =
-    serviceAction ===
-    `start:${service.name}`;
-
-  const stopping =
-    serviceAction ===
-    `stop:${service.name}`;
-
-  const loading =
-    starting || stopping;
+  const lifecycleBusy =
+    service.lifecyclePending ||
+    service.lifecycleOperation !==
+      undefined;
+  const openBusy =
+    service.openPending ||
+    service.openOperation !== undefined;
+  const nextActionSupported = running
+    ? service.canStop
+    : service.canStart;
 
   return (
     <div
@@ -87,22 +137,18 @@ function ServiceRow({
 
         <ServiceToggle
           checked={running}
-          disabled={isBusy}
-          loading={loading}
-          label={
-            starting
-              ? "Starting..."
-              : stopping
-                ? "Stopping..."
-                : running
-                  ? "Running"
-                  : "Stopped"
+          disabled={
+            !service.listenerReady ||
+            lifecycleBusy ||
+            !nextActionSupported
           }
+          loading={lifecycleBusy}
+          label={lifecycleLabel(service)}
           onChange={() => {
             if (running) {
-              onStop(service.name);
+              onStop(service.runtimeId);
             } else {
-              onStart(service.name);
+              onStart(service.runtimeId);
             }
           }}
         />
@@ -111,14 +157,16 @@ function ServiceRow({
           type="button"
           className="open-button"
           disabled={
-            openAction === service.name
+            !service.listenerReady ||
+            openBusy ||
+            !service.canOpen
           }
           onClick={() =>
-            onOpen(service.name)
+            onOpen(service.runtimeId)
           }
         >
-          {openAction === service.name
-            ? "Opening..."
+          {openBusy
+            ? "Opening…"
             : "↗ Open"}
         </button>
       </div>

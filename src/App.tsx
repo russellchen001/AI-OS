@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useState,
   type CSSProperties,
 } from "react";
@@ -30,12 +31,82 @@ import useMcp from "./hooks/useMcp";
 import useMetrics from "./hooks/useMetrics";
 import useModels from "./hooks/useModels";
 import useOpenClaw from "./hooks/useOpenClaw";
-import useServices from "./hooks/useServices";
+import useLegacyBulkRuntimeActions from "./hooks/useLegacyBulkRuntimeActions";
+import useRuntimeOperations from "./hooks/useRuntimeOperations";
+import useRuntimes from "./hooks/useRuntimes";
 import useSettings from "./hooks/useSettings";
+import type {
+  RuntimeNotificationSeverity,
+} from "./hooks/useRuntimeOperations";
+import type {
+  RuntimeServiceView,
+} from "./components/ServiceList";
+import type {
+  RuntimeDefinition,
+  RuntimeStatus,
+} from "./types/runtime";
 
 import type {
   PageName,
 } from "./types/index";
+
+function runtimePresentation(
+  runtimeId: string,
+): Pick<
+  RuntimeServiceView,
+  "name" | "icon" | "description"
+> {
+  switch (runtimeId) {
+    case "openclaw":
+      return {
+        name: "OpenClaw",
+        icon: "🤖",
+        description: "Local AI gateway",
+      };
+    case "ollama":
+      return {
+        name: "Ollama",
+        icon: "🦙",
+        description: "Local model runtime",
+      };
+    case "docker-desktop":
+      return {
+        name: "Docker",
+        icon: "🐳",
+        description: "Container runtime",
+      };
+    case "open-webui":
+      return {
+        name: "Open WebUI",
+        icon: "🌐",
+        description: "Browser AI workspace",
+      };
+    case "cherry-studio":
+      return {
+        name: "Cherry Studio",
+        icon: "🍒",
+        description: "Desktop AI client",
+      };
+    default:
+      return {
+        name: "Runtime",
+        icon: "⚙️",
+        description: "AI runtime",
+      };
+  }
+}
+
+function serviceStatus(
+  status: RuntimeStatus | undefined,
+): "Running" | "Stopped" | "Unknown" {
+  if (status?.lifecycle === "running") {
+    return "Running";
+  }
+  if (status?.lifecycle === "stopped") {
+    return "Stopped";
+  }
+  return "Unknown";
+}
 
 function App() {
   const [
@@ -121,12 +192,14 @@ function App() {
     useCallback(
       (
         nextMessage: string,
+        explicitType?: RuntimeNotificationSeverity,
       ) => {
         const normalized =
           nextMessage.toLowerCase();
 
         const type: ToastType =
-          normalized.includes("error") ||
+          explicitType ??
+          (normalized.includes("error") ||
           normalized.includes("failed") ||
           normalized.includes("unable")
             ? "error"
@@ -143,7 +216,7 @@ function App() {
                   normalized.includes("imported") ||
                   normalized.includes("moved")
                 ? "success"
-                : "info";
+                : "info");
 
         const id =
           crypto.randomUUID();
@@ -201,33 +274,175 @@ function App() {
       handleMessage,
   });
 
+  const runtimes = useRuntimes({
+    request: {
+      ollamaUrl: settings.ollamaUrl,
+      openWebUiUrl:
+        settings.openWebUiUrl,
+    },
+    refreshInterval:
+      settings.refreshInterval,
+  });
+
+  const runtimeOperations =
+    useRuntimeOperations({
+      refreshStatuses:
+        runtimes.refreshStatuses,
+      notify: handleMessage,
+    });
+
+  const statusesById = useMemo(
+    () =>
+      Object.fromEntries(
+        runtimes.statuses.map(
+          (status) => [
+            status.id,
+            status,
+          ],
+        ),
+      ) as Record<
+        string,
+        RuntimeStatus
+      >,
+    [runtimes.statuses],
+  );
+
+  const services = useMemo<
+    RuntimeServiceView[]
+  >(
+    () =>
+      runtimes.runtimes.map(
+        (definition: RuntimeDefinition) => {
+          const status =
+            statusesById[definition.id];
+          const capabilities =
+            status?.capabilities ??
+            definition.capabilities;
+          return {
+            runtimeId: definition.id,
+            ...runtimePresentation(
+              definition.id,
+            ),
+            status: serviceStatus(status),
+            canStart:
+              capabilities.includes("start"),
+            canStop:
+              capabilities.includes("stop"),
+            canOpen:
+              capabilities.includes("open"),
+            listenerReady:
+              runtimeOperations.listenerState ===
+              "ready",
+            lifecyclePending:
+              runtimeOperations
+                .lifecyclePendingByRuntime[
+                definition.id
+              ] ?? false,
+            openPending:
+              runtimeOperations
+                .openPendingByRuntime[
+                definition.id
+              ] ?? false,
+            lifecycleOperation:
+              runtimeOperations
+                .activeLifecycleByRuntime[
+                definition.id
+              ],
+            openOperation:
+              runtimeOperations
+                .activeOpenByRuntime[
+                definition.id
+              ],
+          };
+        },
+      ),
+    [
+      runtimeOperations,
+      runtimes.runtimes,
+      statusesById,
+    ],
+  );
+
+  const runningCount = services.filter(
+    (service) =>
+      service.status === "Running",
+  ).length;
+  const stoppedCount = services.filter(
+    (service) =>
+      service.status === "Stopped",
+  ).length;
+  const unknownCount = services.filter(
+    (service) =>
+      service.status === "Unknown",
+  ).length;
+  const allRunning =
+    services.length > 0 &&
+    runningCount === services.length;
+
   const {
-    services,
     lastUpdated,
-    isChecking,
+    isLoading: isChecking,
+    refreshStatuses,
+  } = runtimes;
+
+  const {
     globalAction,
-    serviceAction,
-    openAction,
-    isBusy,
-    runningCount,
-    stoppedCount,
-    unknownCount,
-    allRunning,
-    healthCheck,
-    startService,
-    stopService,
-    openService,
     handleGlobalToggle,
-  } = useServices({
-  settings,
+  } = useLegacyBulkRuntimeActions({
+    allRunning,
+    refreshStatuses,
+    notify: handleMessage,
+  });
 
-  activeOpenClawUrl:
-    openClaw.activeServer
-      ?.serverUrl,
+  const runAction = useCallback(
+    (
+      runtimeId: string,
+      action: "start" | "stop" | "open",
+    ) => {
+      if (
+        !runtimes.runtimes.some(
+          (runtime) =>
+            runtime.id === runtimeId,
+        )
+      ) {
+        return;
+      }
 
-  onMessage:
-    handleMessage,
-});
+      const endpointUrl =
+        runtimeId === "ollama"
+          ? settings.ollamaUrl
+          : runtimeId === "open-webui"
+            ? settings.openWebUiUrl
+            : undefined;
+      void runtimeOperations.runRuntimeAction({
+        runtimeId,
+        action,
+        endpointUrl,
+      });
+    },
+    [
+      runtimeOperations,
+      runtimes.runtimes,
+      settings.ollamaUrl,
+      settings.openWebUiUrl,
+    ],
+  );
+
+  const startService = useCallback(
+    (runtimeId: string) =>
+      runAction(runtimeId, "start"),
+    [runAction],
+  );
+  const stopService = useCallback(
+    (runtimeId: string) =>
+      runAction(runtimeId, "stop"),
+    [runAction],
+  );
+  const openService = useCallback(
+    (runtimeId: string) =>
+      runAction(runtimeId, "open"),
+    [runAction],
+  );
 
   const backup =
     useBackup({
@@ -268,19 +483,11 @@ function App() {
     });
 
   useEffect(() => {
-    void healthCheck(
-      false,
-    );
-
     void refreshMetrics();
 
     const interval =
       window.setInterval(
         () => {
-          void healthCheck(
-            false,
-          );
-
           void refreshMetrics();
         },
         Math.max(
@@ -296,7 +503,6 @@ function App() {
       );
     };
   }, [
-    healthCheck,
     refreshMetrics,
     settings.refreshInterval,
   ]);
@@ -399,20 +605,11 @@ function App() {
             allRunning={
               allRunning
             }
-            isBusy={
-              isBusy
-            }
             isChecking={
               isChecking
             }
             globalAction={
               globalAction
-            }
-            serviceAction={
-              serviceAction
-            }
-            openAction={
-              openAction
             }
             onGlobalToggle={
               handleGlobalToggle
@@ -430,9 +627,13 @@ function App() {
               refreshMetrics
             }
             onHealthCheck={() => {
-              void healthCheck(
-                true,
-              );
+                void refreshStatuses()
+                  .catch(() => {
+                    handleMessage(
+                      "Runtime status is unavailable.",
+                      "warning",
+                    );
+                  });
             }}
             onBackup={() =>
               setActivePage(
@@ -454,17 +655,8 @@ function App() {
             allRunning={
               allRunning
             }
-            isBusy={
-              isBusy
-            }
             globalAction={
               globalAction
-            }
-            serviceAction={
-              serviceAction
-            }
-            openAction={
-              openAction
             }
             onGlobalToggle={
               handleGlobalToggle

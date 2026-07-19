@@ -252,6 +252,21 @@ Deferred scope:
 - Consolidate duplicate service types, metadata, hooks, and health parsing
 - Retain approved legacy IPC compatibility through the defined deprecation period
 
+### M1C1 — Canonical Runtime UI State and Individual-Control Migration
+
+- **P9-M1C1:** Completed separately
+- **P9-M1C2:** Not implemented
+- **P9-M1C3:** Not implemented
+- **Scope:** One App-owned Runtime Operation listener and one App-owned canonical Runtime status owner migrate Dashboard and Services individual Start, Stop, and Open controls
+- **Identity:** Canonical IDs come only from Runtime Registry definitions/statuses; display labels remain presentation-only
+- **State:** One `operationsById` Snapshot store with derived per-runtime lifecycle/Open state, synchronous submission channels, listener-ready admission gating, conflict attachment, and Revision-only reconciliation
+- **Status boundary:** Terminal Start, Stop, and Restart schedule a separate deduplicated/coalesced best-effort status refresh; Open does not refresh status or imply Runtime health/readiness
+- **Compatibility:** Start All and Stop All remain isolated legacy compatibility behavior; backend legacy commands and unused legacy frontend files remain for later review
+- **UI boundary:** Internal Restart submission is supported, but no Restart or Cancel UI was added
+- **Data/dependencies:** No operation persistence, stored schema change, list-active/list-recent IPC, or dependency addition
+
+M1C1 does not complete M1C. M1C2 remains responsible for the remaining caller audit and frontend legacy dead-code cleanup. M1C3 remains responsible for the separately approved backend compatibility decision and final M1C validation/completion record.
+
 ## Out of Scope for P9-M1
 
 - Unified Session

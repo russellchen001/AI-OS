@@ -7,8 +7,10 @@ import {
 } from "react";
 import type {
   Metrics,
-  Service,
 } from "../types/index";
+import type {
+  RuntimeServiceView,
+} from "../components/ServiceList";
 import type {
   AnalyticsEvent,
   AnalyticsSnapshot,
@@ -22,30 +24,27 @@ import ServiceToggle from "../components/ServiceToggle";
 import StatCard from "../components/StatCard";
 
 type DashboardPageProps = {
-  services: Service[];
+  services: RuntimeServiceView[];
   metrics: Metrics;
   cardStyle: CSSProperties;
   runningCount: number;
   stoppedCount: number;
   unknownCount: number;
   allRunning: boolean;
-  isBusy: boolean;
   isChecking: boolean;
   globalAction:
     | "start"
     | "stop"
     | null;
-  serviceAction: string | null;
-  openAction: string | null;
   onGlobalToggle: () => void;
   onStartService: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onStopService: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onOpenService: (
-    service: string,
+    runtimeId: string,
   ) => void;
   onRefreshMetrics: () => void;
   onHealthCheck: () => void;
@@ -145,11 +144,8 @@ function DashboardPage({
   stoppedCount,
   unknownCount,
   allRunning,
-  isBusy,
   isChecking,
   globalAction,
-  serviceAction,
-  openAction,
   onGlobalToggle,
   onStartService,
   onStopService,
@@ -698,13 +694,6 @@ function DashboardPage({
         <ServiceList
           services={services}
           cardStyle={cardStyle}
-          isBusy={isBusy}
-          serviceAction={
-            serviceAction
-          }
-          openAction={
-            openAction
-          }
           onStart={
             onStartService
           }
@@ -720,7 +709,9 @@ function DashboardPage({
       <section className="bottom-actions">
         <ServiceToggle
           checked={allRunning}
-          disabled={isBusy}
+          disabled={
+            globalAction !== null
+          }
           loading={
             globalAction !== null
           }
@@ -751,7 +742,6 @@ function DashboardPage({
           type="button"
           className="action-button health-button"
           disabled={
-            isBusy ||
             isChecking
           }
           onClick={
