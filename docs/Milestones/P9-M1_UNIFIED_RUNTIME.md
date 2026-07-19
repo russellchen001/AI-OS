@@ -273,6 +273,8 @@ Final review corrections keep Legacy Bulk isolation active until its existing fi
 
 The final status-coordinator correction replaces split first/trailing Promises with one shared drain-cycle Promise covering every required latest-generation query. Endpoint effects and stale-query completion cannot schedule the same generation twice; stale success/failure cannot replace or fail current-endpoint status, while a final applicable failure preserves prior status and rejects safely. Bulk final isolation waits for the complete shared refresh cycle, and post-invoke Bulk completion/failure notifications are unmount-safe. M1C2 and M1C3 remain unimplemented.
 
+The V5 correction moves endpoint Ref and Generation updates into the committed layout effect, leaving speculative renders side-effect free while preserving one initial query and one coalesced latest-generation query per committed change. Coordinator Ref and loading cleanup now occur within the drain lifecycle before the shared Promise settles, preventing completion-boundary refresh loss. Existing stale-result, single-query, shared-Promise, and Bulk isolation guarantees remain unchanged. M1C2 and M1C3 remain unimplemented.
+
 ## Out of Scope for P9-M1
 
 - Unified Session

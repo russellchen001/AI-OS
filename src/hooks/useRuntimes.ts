@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -49,18 +50,6 @@ function useRuntimes({
     openWebUiUrl,
   });
   const endpointGenerationRef = useRef(0);
-  if (
-    endpointRef.current.ollamaUrl !==
-      ollamaUrl ||
-    endpointRef.current.openWebUiUrl !==
-      openWebUiUrl
-  ) {
-    endpointRef.current = {
-      ollamaUrl,
-      openWebUiUrl,
-    };
-    endpointGenerationRef.current += 1;
-  }
   const scheduledEndpointGenerationRef =
     useRef(-1);
 
@@ -69,72 +58,6 @@ function useRuntimes({
   >(null);
   const refreshRequestedRef = useRef(false);
 
-  const drainStatusRefreshes = useCallback(
-    async () => {
-      while (refreshRequestedRef.current) {
-        refreshRequestedRef.current = false;
-        const queryGeneration =
-          endpointGenerationRef.current;
-        const queryEndpoints = {
-          ...endpointRef.current,
-        };
-        scheduledEndpointGenerationRef.current =
-          queryGeneration;
-
-        try {
-          const nextStatuses =
-            await getRuntimeStatuses({
-              ollamaUrl:
-                queryEndpoints.ollamaUrl,
-              openWebUiUrl:
-                queryEndpoints.openWebUiUrl,
-            });
-
-          if (
-            queryGeneration !==
-            endpointGenerationRef.current
-          ) {
-            refreshRequestedRef.current = true;
-            continue;
-          }
-
-          setStatuses(nextStatuses);
-          setStatusError("");
-          setLastUpdated(
-            new Date().toLocaleTimeString(
-              [],
-              {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-              },
-            ),
-          );
-        } catch {
-          if (
-            queryGeneration !==
-            endpointGenerationRef.current
-          ) {
-            refreshRequestedRef.current = true;
-            continue;
-          }
-
-          if (refreshRequestedRef.current) {
-            continue;
-          }
-
-          setStatusError(
-            "Runtime status is unavailable.",
-          );
-          throw new Error(
-            "Runtime status refresh failed.",
-          );
-        }
-      }
-    },
-    [],
-  );
-
   const refreshStatuses = useCallback(() => {
     refreshRequestedRef.current = true;
     if (coordinatorPromiseRef.current !== null) {
@@ -142,19 +65,112 @@ function useRuntimes({
     }
 
     setIsRefreshingStatuses(true);
-    const coordinator = drainStatusRefreshes()
-      .finally(() => {
-        if (
-          coordinatorPromiseRef.current ===
-          coordinator
-        ) {
+    const coordinator = Promise.resolve().then(
+      async () => {
+        try {
+          while (refreshRequestedRef.current) {
+            refreshRequestedRef.current = false;
+            const queryGeneration =
+              endpointGenerationRef.current;
+            const queryEndpoints = {
+              ...endpointRef.current,
+            };
+            scheduledEndpointGenerationRef.current =
+              queryGeneration;
+
+            try {
+              const nextStatuses =
+                await getRuntimeStatuses({
+                  ollamaUrl:
+                    queryEndpoints.ollamaUrl,
+                  openWebUiUrl:
+                    queryEndpoints.openWebUiUrl,
+                });
+
+              if (
+                queryGeneration !==
+                endpointGenerationRef.current
+              ) {
+                refreshRequestedRef.current = true;
+                continue;
+              }
+
+              setStatuses(nextStatuses);
+              setStatusError("");
+              setLastUpdated(
+                new Date().toLocaleTimeString(
+                  [],
+                  {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  },
+                ),
+              );
+            } catch {
+              if (
+                queryGeneration !==
+                endpointGenerationRef.current
+              ) {
+                refreshRequestedRef.current = true;
+                continue;
+              }
+
+              if (refreshRequestedRef.current) {
+                continue;
+              }
+
+              setStatusError(
+                "Runtime status is unavailable.",
+              );
+              throw new Error(
+                "Runtime status refresh failed.",
+              );
+            }
+          }
+        } finally {
           coordinatorPromiseRef.current = null;
           setIsRefreshingStatuses(false);
         }
-      });
+      },
+    );
     coordinatorPromiseRef.current = coordinator;
     return coordinator;
-  }, [drainStatusRefreshes]);
+  }, []);
+
+  useLayoutEffect(() => {
+    const endpointChanged =
+      endpointRef.current.ollamaUrl !==
+        ollamaUrl ||
+      endpointRef.current.openWebUiUrl !==
+        openWebUiUrl;
+
+    if (endpointChanged) {
+      endpointRef.current = {
+        ollamaUrl,
+        openWebUiUrl,
+      };
+      endpointGenerationRef.current += 1;
+    }
+
+    const generation =
+      endpointGenerationRef.current;
+    if (
+      scheduledEndpointGenerationRef.current ===
+      generation
+    ) {
+      return;
+    }
+    scheduledEndpointGenerationRef.current =
+      generation;
+    void refreshStatuses().catch(
+      () => undefined,
+    );
+  }, [
+    ollamaUrl,
+    openWebUiUrl,
+    refreshStatuses,
+  ]);
 
   const refreshDefinitions = useCallback(
     async () => {
@@ -193,26 +209,6 @@ function useRuntimes({
   useEffect(() => {
     void refreshDefinitions();
   }, [refreshDefinitions]);
-
-  useEffect(() => {
-    const generation =
-      endpointGenerationRef.current;
-    if (
-      scheduledEndpointGenerationRef.current ===
-      generation
-    ) {
-      return;
-    }
-    scheduledEndpointGenerationRef.current =
-      generation;
-    void refreshStatuses().catch(
-      () => undefined,
-    );
-  }, [
-    ollamaUrl,
-    openWebUiUrl,
-    refreshStatuses,
-  ]);
 
   useEffect(() => {
     if (!refreshInterval) {
