@@ -275,6 +275,49 @@ The final status-coordinator correction replaces split first/trailing Promises w
 
 The V5 correction moves endpoint Ref and Generation updates into the committed layout effect, leaving speculative renders side-effect free while preserving one initial query and one coalesced latest-generation query per committed change. Coordinator Ref and loading cleanup now occur within the drain lifecycle before the shared Promise settles, preventing completion-boundary refresh loss. Existing stale-result, single-query, shared-Promise, and Bulk isolation guarantees remain unchanged. M1C2 and M1C3 remain unimplemented.
 
+### P9-M1C1 Completion Record
+
+- **P9-M1C1:** Completed
+- **P9-M1C2:** Not started
+- **P9-M1C3:** Not started
+- **Completion date:** 2026-07-19
+- **Implementation and review commits:** `3cb20a4296f709c6d0007548d352a3ad5b3192d8`, `f86c39e69a53f7ff06be47b4f9214d06c2411f4a`, `a3131487f51298dc3108fed8abe18280be98df7c`, `8a5300675e39b0760ce4b4612f0dc40e4fdb7575`, and `98d1ea7bc5f7c70f6ce9b421defa0ad0b0f1c675`
+- **Validation:** TypeScript type-check passed; production build passed; 108 Rust tests passed
+- **Manual Integration:** PASS; only Health Check and Ollama Open were used
+- **Lifecycle safety:** No Start, Stop, Restart, Start All, or Stop All action was executed
+- **Repository integrity:** Repository remained clean; no dependency, manifest, lockfile, backend, or stored schema changed; nothing was pushed
+
+Final P9-M1C1 guarantees:
+
+1. Dashboard and Services individual lifecycle controls use the canonical typed Runtime Operation boundary.
+2. React components do not invoke canonical Tauri commands directly.
+3. One App-owned Runtime Operation listener exists.
+4. Runtime Operation response, lookup, and event Snapshots reconcile by Operation ID and Revision.
+5. `operationsById` remains the single complete Snapshot store.
+6. Canonical Runtime identity comes from Runtime definitions/statuses, not display labels.
+7. Open and lifecycle actions use independent per-Runtime channels.
+8. Same-channel duplicate submissions are rejected locally.
+9. Conflict attaches to the returned existing Snapshot.
+10. Current adapters remain non-cancellable and no Cancel UI exists.
+11. No Restart UI was added.
+12. Lifecycle Operation success never manufactures Runtime health, readiness, or lifecycle state.
+13. Start/Stop/Restart terminal outcomes request one coalesced best-effort status refresh.
+14. Open does not request a lifecycle/status refresh.
+15. Runtime definitions and statuses load independently.
+16. One shared Runtime-status drain-cycle coordinator owns every status query.
+17. Endpoint Generation advances only for committed endpoint changes.
+18. Stale endpoint successes and failures cannot replace or fail the current endpoint status result.
+19. Coordinator cleanup occurs before its shared Promise settles, so a completion-boundary refresh cannot be lost.
+20. Legacy Start All/Stop All remain isolated compatibility behavior.
+21. Legacy Bulk and Canonical individual actions cannot overlap.
+22. Start All isolation remains through its final 45-second status refresh; Stop All isolation remains through its 8-second refresh.
+23. Raw operation identifiers, revisions, endpoints, native output, and backend error details are never rendered or logged.
+24. Backend Legacy commands remain registered and unchanged.
+25. M1C2 remains responsible for frontend Legacy dead-code cleanup.
+26. M1C3 remains responsible for compatibility decisions and final M1C completion.
+
+This record completes P9-M1C1 only; it does not record full P9-M1C completion or start P9-M1C2/P9-M1C3.
+
 ## Out of Scope for P9-M1
 
 - Unified Session
