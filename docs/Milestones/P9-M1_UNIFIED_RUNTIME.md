@@ -324,6 +324,32 @@ P9-M1C2 frontend cleanup is completed. Repository-wide caller proof confirmed th
 
 Legacy Start All and Stop All frontend compatibility remains isolated through `useLegacyBulkRuntimeActions` and retained `startAllServices`/`stopAllServices` wrappers. Backend Legacy commands remain registered and unchanged. No Runtime UI behavior or canonical operation/status semantics changed. M1C3 remains unimplemented, and full P9-M1C is not yet complete.
 
+#### P9-M1C2 Completion Record
+
+- **P9-M1C2:** Completed
+- **P9-M1C3:** Not started
+- **Completion date:** 2026-07-19
+- **Implementation commit:** `4105beafa2bf6014973e780de51a3ec07b520ea1`
+- **Validation:** TypeScript type-check passed; production build passed; 108 Rust tests passed
+- **Manual Smoke:** PASS; no Runtime action was executed
+- **Repository integrity:** Repository remained clean; no dependency, manifest, lockfile, backend, or stored schema changed; nothing was pushed
+
+Final P9-M1C2 guarantees:
+
+1. Dead `useServices` and `useServiceActions` frontend paths are removed.
+2. Unused `startSingleService`, `stopSingleService`, and `openSingleService` wrappers are removed.
+3. No live frontend caller remains for `start_service`, `stop_service`, or `open_service`.
+4. Individual Runtime lifecycle controls remain exclusively canonical.
+5. Runtime status queries remain exclusively canonical.
+6. Start All and Stop All remain the only live Legacy frontend Runtime lifecycle path.
+7. Legacy Bulk remains isolated through `useLegacyBulkRuntimeActions` and `services/tauri.ts`.
+8. Backend Legacy individual and Bulk commands remain registered and unchanged.
+9. No Runtime UI behavior changed in M1C2.
+10. No OpenClaw, MultiLLM, or unrelated page behavior changed.
+11. M1C3 remains responsible for the backend compatibility decision and full P9-M1C closure.
+
+This record completes P9-M1C2 only; it does not record full P9-M1C completion or start P9-M1C3.
+
 ## Out of Scope for P9-M1
 
 - Unified Session
