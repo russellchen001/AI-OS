@@ -21,28 +21,6 @@ type UseRuntimesOptions = {
   refreshInterval?: number;
 };
 
-type Deferred = {
-  promise: Promise<void>;
-  resolve: () => void;
-  reject: () => void;
-};
-
-function createDeferred(): Deferred {
-  let resolve: () => void = () => {};
-  let reject: () => void = () => {};
-  const promise = new Promise<void>(
-    (nextResolve, nextReject) => {
-      resolve = nextResolve;
-      reject = () => nextReject();
-    },
-  );
-  return {
-    promise,
-    resolve,
-    reject,
-  };
-}
-
 function useRuntimes({
   request,
   refreshInterval,
@@ -86,114 +64,97 @@ function useRuntimes({
   const scheduledEndpointGenerationRef =
     useRef(-1);
 
-  const inFlightRef = useRef<
+  const coordinatorPromiseRef = useRef<
     Promise<void> | null
   >(null);
-  const trailingRef = useRef<Deferred | null>(
-    null,
-  );
+  const refreshRequestedRef = useRef(false);
 
-  const executeStatusQuery = useCallback(
-    async (
-      queryGeneration: number,
-      endpoints: RuntimeStatusRequest,
-    ) => {
-      const nextStatuses =
-        await getRuntimeStatuses({
-          ollamaUrl: endpoints.ollamaUrl,
-          openWebUiUrl:
-            endpoints.openWebUiUrl,
-        });
-      if (
-        queryGeneration ===
-        endpointGenerationRef.current
-      ) {
-        setStatuses(nextStatuses);
-        setStatusError("");
-        setLastUpdated(
-          new Date().toLocaleTimeString(
-            [],
-            {
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-            },
-          ),
-        );
+  const drainStatusRefreshes = useCallback(
+    async () => {
+      while (refreshRequestedRef.current) {
+        refreshRequestedRef.current = false;
+        const queryGeneration =
+          endpointGenerationRef.current;
+        const queryEndpoints = {
+          ...endpointRef.current,
+        };
+        scheduledEndpointGenerationRef.current =
+          queryGeneration;
+
+        try {
+          const nextStatuses =
+            await getRuntimeStatuses({
+              ollamaUrl:
+                queryEndpoints.ollamaUrl,
+              openWebUiUrl:
+                queryEndpoints.openWebUiUrl,
+            });
+
+          if (
+            queryGeneration !==
+            endpointGenerationRef.current
+          ) {
+            refreshRequestedRef.current = true;
+            continue;
+          }
+
+          setStatuses(nextStatuses);
+          setStatusError("");
+          setLastUpdated(
+            new Date().toLocaleTimeString(
+              [],
+              {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              },
+            ),
+          );
+        } catch {
+          if (
+            queryGeneration !==
+            endpointGenerationRef.current
+          ) {
+            refreshRequestedRef.current = true;
+            continue;
+          }
+
+          if (refreshRequestedRef.current) {
+            continue;
+          }
+
+          setStatusError(
+            "Runtime status is unavailable.",
+          );
+          throw new Error(
+            "Runtime status refresh failed.",
+          );
+        }
       }
     },
     [],
   );
 
-  const startStatusQuery = useCallback(() => {
+  const refreshStatuses = useCallback(() => {
+    refreshRequestedRef.current = true;
+    if (coordinatorPromiseRef.current !== null) {
+      return coordinatorPromiseRef.current;
+    }
+
     setIsRefreshingStatuses(true);
-    const queryGeneration =
-      endpointGenerationRef.current;
-    const queryEndpoints = {
-      ...endpointRef.current,
-    };
-    const query = executeStatusQuery(
-      queryGeneration,
-      queryEndpoints,
-    )
-      .catch(() => {
-        if (
-          queryGeneration ===
-          endpointGenerationRef.current
-        ) {
-          setStatusError(
-            "Runtime status is unavailable.",
-          );
-        }
-        throw new Error(
-          "Runtime status refresh failed.",
-        );
-      })
+    const coordinator = drainStatusRefreshes()
       .finally(() => {
-        if (inFlightRef.current !== query) {
-          return;
-        }
-
-        inFlightRef.current = null;
-        const trailing = trailingRef.current;
-        trailingRef.current = null;
-        const endpointChanged =
-          queryGeneration !==
-          endpointGenerationRef.current;
         if (
-          trailing === null &&
-          !endpointChanged
+          coordinatorPromiseRef.current ===
+          coordinator
         ) {
+          coordinatorPromiseRef.current = null;
           setIsRefreshingStatuses(false);
-          return;
-        }
-
-        const trailingQuery = startStatusQuery();
-        if (trailing !== null) {
-          trailingQuery.then(
-            trailing.resolve,
-            trailing.reject,
-          );
-        } else {
-          void trailingQuery.catch(
-            () => undefined,
-          );
         }
       });
-    inFlightRef.current = query;
-    return query;
-  }, [executeStatusQuery]);
-
-  const refreshStatuses = useCallback(() => {
-    if (inFlightRef.current === null) {
-      return startStatusQuery();
-    }
-
-    if (trailingRef.current === null) {
-      trailingRef.current = createDeferred();
-    }
-    return trailingRef.current.promise;
-  }, [startStatusQuery]);
+    coordinatorPromiseRef.current = coordinator;
+    return coordinator;
+  }, [drainStatusRefreshes]);
 
   const refreshDefinitions = useCallback(
     async () => {

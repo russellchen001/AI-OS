@@ -271,6 +271,8 @@ M1C1 review corrections preserve independently successful Runtime definitions an
 
 Final review corrections keep Legacy Bulk isolation active until its existing final delayed status refresh settles and use synchronous ref-backed guards in both Bulk and canonical handlers. Endpoint configuration changes trigger one coalesced status refresh without definition reload; endpoint generations prevent old-endpoint responses from replacing current status. Error-code extraction accepts safe object, bounded JSON-string, and exact-code forms without exposing raw error data. M1C2 and M1C3 remain unimplemented.
 
+The final status-coordinator correction replaces split first/trailing Promises with one shared drain-cycle Promise covering every required latest-generation query. Endpoint effects and stale-query completion cannot schedule the same generation twice; stale success/failure cannot replace or fail current-endpoint status, while a final applicable failure preserves prior status and rejects safely. Bulk final isolation waits for the complete shared refresh cycle, and post-invoke Bulk completion/failure notifications are unmount-safe. M1C2 and M1C3 remain unimplemented.
+
 ## Out of Scope for P9-M1
 
 - Unified Session

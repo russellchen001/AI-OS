@@ -94,16 +94,19 @@ export default function useLegacyBulkRuntimeActions({
     try {
       setGlobalAction("start");
       notify("🚀 Starting services...");
-      notify(await startAllServices());
+      const result = await startAllServices();
       if (!mountedRef.current) {
         return;
       }
+      notify(result);
       scheduleRefresh(5000, false);
       scheduleRefresh(20000, false);
       scheduleRefresh(45000, true);
     } catch {
       setIsolation(false);
-      notify("Start All failed.");
+      if (mountedRef.current) {
+        notify("Start All failed.");
+      }
     } finally {
       if (mountedRef.current) {
         setGlobalAction(null);
@@ -128,14 +131,17 @@ export default function useLegacyBulkRuntimeActions({
     try {
       setGlobalAction("stop");
       notify("🛑 Stopping services...");
-      notify(await stopAllServices());
+      const result = await stopAllServices();
       if (!mountedRef.current) {
         return;
       }
+      notify(result);
       scheduleRefresh(8000, true);
     } catch {
       setIsolation(false);
-      notify("Stop All failed.");
+      if (mountedRef.current) {
+        notify("Stop All failed.");
+      }
     } finally {
       if (mountedRef.current) {
         setGlobalAction(null);
