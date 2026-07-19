@@ -31,7 +31,7 @@ import useMcp from "./hooks/useMcp";
 import useMetrics from "./hooks/useMetrics";
 import useModels from "./hooks/useModels";
 import useOpenClaw from "./hooks/useOpenClaw";
-import useLegacyBulkRuntimeActions from "./hooks/useLegacyBulkRuntimeActions";
+import useRuntimeBulkActions from "./hooks/useRuntimeBulkActions";
 import useRuntimeOperations from "./hooks/useRuntimeOperations";
 import useRuntimes from "./hooks/useRuntimes";
 import useSettings from "./hooks/useSettings";
@@ -391,8 +391,15 @@ function App() {
     bulkIsolationActive,
     isBulkIsolationActive,
     handleGlobalToggle,
-  } = useLegacyBulkRuntimeActions({
+  } = useRuntimeBulkActions({
     allRunning,
+    runtimes: [
+      { runtimeId: "docker-desktop" },
+      { runtimeId: "ollama", endpointUrl: settings.ollamaUrl },
+      { runtimeId: "openclaw" },
+      { runtimeId: "open-webui", endpointUrl: settings.openWebUiUrl },
+      { runtimeId: "cherry-studio" },
+    ],
     isCanonicalActivityActive:
       runtimeOperations
         .isCanonicalActivityActive,

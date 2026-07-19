@@ -6,7 +6,6 @@ mod models;
 mod multillm;
 mod openclaw;
 mod runtime;
-mod stop;
 
 use std::process::Command;
 
@@ -34,87 +33,6 @@ fn run_shell(command: &str) -> Result<String, String> {
     } else {
         Err(format!("Command failed with status: {}", output.status,))
     }
-}
-
-fn spawn_shell(command: &str) -> Result<(), String> {
-    Command::new("/bin/sh")
-        .args(["-c", command])
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-}
-
-fn open_application(name: &str) -> Result<(), String> {
-    Command::new("/usr/bin/open")
-        .args(["-a", name])
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Failed to open {}: {}", name, error,))
-}
-
-#[tauri::command]
-fn start_all() -> String {
-    let _ = open_application("Docker");
-
-    let _ = spawn_shell(
-        r#"
-if command -v brew >/dev/null 2>&1; then
-  brew services start ollama >/dev/null 2>&1 || true
-elif [ -x /opt/homebrew/bin/brew ]; then
-  /opt/homebrew/bin/brew services start ollama >/dev/null 2>&1 || true
-fi
-
-pgrep -f "ollama serve" >/dev/null 2>&1 ||
-  nohup ollama serve >/tmp/ollama.log 2>&1 &
-"#,
-    );
-
-    let _ = spawn_shell(
-        r#"
-launchctl bootstrap gui/$(id -u) \
-  "$HOME/Library/LaunchAgents/ai.openclaw.gateway.plist" \
-  2>/dev/null || true
-
-launchctl kickstart -k \
-  gui/$(id -u)/ai.openclaw.gateway \
-  2>/dev/null || true
-"#,
-    );
-
-    let _ = spawn_shell(
-        r#"
-DOCKER="/Applications/Docker.app/Contents/Resources/bin/docker"
-
-for i in $(seq 1 45); do
-  if "$DOCKER" info >/dev/null 2>&1; then
-    break
-  fi
-
-  sleep 1
-done
-
-CONTAINER=$(
-  "$DOCKER" ps -a \
-    --format '{{.Names}}|{{.Image}}' \
-    2>/dev/null |
-  awk -F'|' '
-    BEGIN { IGNORECASE=1 }
-    /open-webui|open_webui|openwebui|ghcr.io\/open-webui\/open-webui/ {
-      print $1
-      exit
-    }
-  '
-)
-
-if [ -n "$CONTAINER" ]; then
-  "$DOCKER" start "$CONTAINER" >/dev/null 2>&1 || true
-fi
-"#,
-    );
-
-    let _ = open_application("Cherry Studio");
-
-    "🚀 Start All command sent. Docker and Open WebUI may need up to 45 seconds.".to_string()
 }
 
 #[tauri::command]
@@ -188,10 +106,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
-            start_all,
             system_metrics,
             health::health_check,
-            stop::stop_all,
             backup::create_backup,
             backup::cancel_backup,
             backup::restore_backup,
@@ -231,6 +147,7 @@ pub fn run() {
             runtime::list_runtimes,
             runtime::get_runtime_statuses,
             runtime::ipc::start_runtime_operation,
+            runtime::bulk::start_runtime_bulk_operation,
             runtime::ipc::get_runtime_operation,
             runtime::ipc::cancel_runtime_operation,
         ])

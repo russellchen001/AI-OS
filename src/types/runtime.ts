@@ -141,6 +141,32 @@ export type RuntimeOperationProgress = {
 
 export type RuntimeOperationResult = {
   message: string;
+  bulk?: RuntimeBulkResult;
+};
+
+export type RuntimeBulkOutcome = {
+  runtimeId: string;
+  succeeded: boolean;
+  error?: NormalizedRuntimeError;
+};
+
+export type RuntimeBulkResult = {
+  total: number;
+  succeeded: number;
+  failed: number;
+  outcomes: RuntimeBulkOutcome[];
+};
+
+export type RuntimeBulkAction = "start" | "stop";
+
+export type RuntimeBulkItemRequest = {
+  runtimeId: string;
+  endpointUrl?: string;
+};
+
+export type StartRuntimeBulkOperationRequest = {
+  action: RuntimeBulkAction;
+  runtimes: RuntimeBulkItemRequest[];
 };
 
 export type RuntimeOperationSnapshot = {

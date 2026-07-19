@@ -129,3 +129,9 @@ OpenClaw sits across several architectural layers:
 - **Workspace:** data and artifacts surfaced through the gateway
 
 OpenClaw must remain behind explicit integration contracts. AI-OS core models must support OpenClaw deeply without becoming dependent on its protocol, storage format, or availability. Protocol adaptation, authentication, and connection management belong in the native OpenClaw integration module.
+
+## Canonical Runtime Bulk Flow
+
+Start All and Stop All use one canonical aggregate Runtime Operation. The frontend submits an ordered list through the typed Runtime client; the operation manager admits a `runtime-bulk` snapshot and prevents overlap with individual lifecycle work; the Bulk supervisor then validates and executes each item sequentially through the existing Runtime lifecycle engine. Every completed item advances aggregate progress. Failures are collected without stopping later items, and the terminal result reports ordered outcomes and summary counts.
+
+This design provides one execution model for individual and Bulk lifecycle work. There is no Legacy Bulk shell path, rollback, retry, parallel executor, persistent history, or persistent recovery path.

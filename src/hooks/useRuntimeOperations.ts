@@ -288,6 +288,9 @@ export default function useRuntimeOperations({
       if (!isTerminal(operation)) {
         return;
       }
+      if (operation.runtimeId === "runtime-bulk") {
+        return;
+      }
 
       if (operation.state === "succeeded") {
         notify(

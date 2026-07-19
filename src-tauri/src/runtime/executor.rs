@@ -241,6 +241,7 @@ fn run_operation_supervisor_inner(
                 RuntimeOperationState::Succeeded,
                 Some(RuntimeOperationResult {
                     message: "Runtime operation completed.".to_string(),
+                    bulk: None,
                 }),
                 None,
             ) {
@@ -299,7 +300,19 @@ pub(crate) fn cancel_operation_with_emitter(
     }
 }
 
-fn emit_best_effort(emitter: &dyn OperationEventEmitter, snapshot: RuntimeOperationSnapshot) {
+pub(crate) fn execute_validated_request(
+    request: &ValidatedRuntimeLifecycleRequest,
+    report: &mut dyn FnMut(RuntimeOperationProgress),
+) -> Result<(), NormalizedRuntimeError> {
+    NativePipeline
+        .prepare(request, Instant::now() + PREPARATION_TIMEOUT)?
+        .execute(report)
+}
+
+pub(crate) fn emit_best_effort(
+    emitter: &dyn OperationEventEmitter,
+    snapshot: RuntimeOperationSnapshot,
+) {
     let _ = catch_unwind(AssertUnwindSafe(|| emitter.emit(snapshot)));
 }
 
@@ -930,6 +943,7 @@ mod tests {
                 RuntimeOperationState::Succeeded,
                 Some(RuntimeOperationResult {
                     message: "done".to_string(),
+                    bulk: None,
                 }),
                 None,
             )

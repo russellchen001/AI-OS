@@ -155,3 +155,11 @@ Legacy `startAllServices` and `stopAllServices` remain isolated through `useLega
 P9-M1C3 removes the undocumented internal Legacy individual IPC commands `start_service`, `stop_service`, and `open_service` after repository-wide inventory confirmed that no supported frontend caller remained. The retired names are not aliased to canonical commands, no runtime or UI deprecation warning is added, and any future reuse requires a new explicit compatibility contract. Canonical typed Runtime Operations remain the only supported individual lifecycle and Open path, with canonical Runtime status IPC retaining sole status-query ownership.
 
 Legacy `start_all` and `stop_all` remain explicitly non-canonical compatibility behavior with their frontend wrappers, UI, ordering, messages, refresh timing, and isolation unchanged. Their retention does not imply a Bulk transaction, rollback, aggregate operation history, or canonical admission. Removal is gated by **P9-FU-RUNTIME-BULK — Canonical Runtime Bulk Operations**. P9-M1 completes with this explicit Bulk exception.
+
+## P9-M2 Canonical Bulk Executor
+
+P9-M2 closes the Bulk exception. Start All and Stop All now submit one typed aggregate operation under the reserved `runtime-bulk` identity. The existing operation manager performs admission, conflict isolation, revisioned snapshots, progress, and terminal publication. A Bulk operation conflicts with active individual lifecycle work, and individual lifecycle work conflicts with an active Bulk operation.
+
+The executor validates each ordered item and invokes the same native preparation and execution pipeline used by individual Runtime Operations. Execution is sequential and continues after a child failure. The aggregate succeeds when the sequence finishes and returns ordered per-runtime outcomes plus total, succeeded, and failed counts; a supervisor failure fails the aggregate itself. Rollback, retry, parallelism, persistence, and recovery remain out of scope.
+
+The `start_all` and `stop_all` IPC commands, their shell implementations, `startAllServices`/`stopAllServices`, and `useLegacyBulkRuntimeActions` are removed rather than aliased. Existing Dashboard controls, fixed user-facing messages, mutual exclusion, and delayed status stabilization remain in place through the canonical frontend client.

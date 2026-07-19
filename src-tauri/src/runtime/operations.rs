@@ -3,6 +3,8 @@ use std::{collections::HashMap, sync::Mutex};
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
+pub(crate) const RUNTIME_BULK_ID: &str = "runtime-bulk";
+
 use super::models::{
     NormalizedRuntimeError, RuntimeErrorCode, RuntimeOperationAction, RuntimeOperationAdmission,
     RuntimeOperationProgress, RuntimeOperationResult, RuntimeOperationSnapshot,
@@ -155,12 +157,38 @@ impl RuntimeOperationManager {
         cancellable: bool,
         now: DateTime<Utc>,
     ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
-        if !registry::contains_id(runtime_id) {
+        let is_bulk = runtime_id == RUNTIME_BULK_ID;
+        if !is_bulk && !registry::contains_id(runtime_id) {
             return Err(operation_runtime_not_found());
+        }
+        if is_bulk
+            && !matches!(
+                action,
+                RuntimeOperationAction::Start | RuntimeOperationAction::Stop
+            )
+        {
+            return Err(safe_error(
+                RuntimeErrorCode::UnsupportedOperation,
+                "This runtime operation is not supported.",
+                false,
+            ));
         }
 
         let mut store = self.lock_store()?;
         cleanup(&mut store, now);
+
+        if action.reserves_lifecycle_slot() {
+            let conflicting_id = if is_bulk {
+                store.lifecycle_slots.values().next().cloned()
+            } else {
+                store.lifecycle_slots.get(RUNTIME_BULK_ID).cloned()
+            };
+            if let Some(operation_id) = conflicting_id {
+                if let Some(existing_operation) = store.operations.get(&operation_id).cloned() {
+                    return Ok(RuntimeOperationAdmission::Conflict { existing_operation });
+                }
+            }
+        }
 
         if action.reserves_lifecycle_slot() {
             if let Some(operation_id) = store.lifecycle_slots.get(runtime_id).cloned() {
@@ -539,6 +567,7 @@ mod tests {
     fn result() -> RuntimeOperationResult {
         RuntimeOperationResult {
             message: "Runtime operation completed.".to_string(),
+            bulk: None,
         }
     }
 
@@ -1642,5 +1671,44 @@ mod tests {
         };
         assert_eq!(repeated.revision, cancelling.revision);
         assert_eq!(repeated.updated_at, cancelling.updated_at);
+    }
+
+    #[test]
+    fn bulk_and_individual_lifecycle_admission_are_mutually_exclusive() {
+        let manager = RuntimeOperationManager::default();
+        let individual = manager
+            .admit_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .unwrap();
+        let bulk = manager
+            .admit_operation_at(
+                RUNTIME_BULK_ID,
+                RuntimeOperationAction::Start,
+                false,
+                time(1),
+            )
+            .unwrap();
+        assert!(matches!(
+            individual,
+            RuntimeOperationAdmission::Accepted { .. }
+        ));
+        assert!(matches!(bulk, RuntimeOperationAdmission::Conflict { .. }));
+
+        let other_manager = RuntimeOperationManager::default();
+        let bulk = other_manager
+            .admit_operation_at(
+                RUNTIME_BULK_ID,
+                RuntimeOperationAction::Stop,
+                false,
+                time(0),
+            )
+            .unwrap();
+        let individual = other_manager
+            .admit_operation_at("openclaw", RuntimeOperationAction::Stop, false, time(1))
+            .unwrap();
+        assert!(matches!(bulk, RuntimeOperationAdmission::Accepted { .. }));
+        assert!(matches!(
+            individual,
+            RuntimeOperationAdmission::Conflict { .. }
+        ));
     }
 }

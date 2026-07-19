@@ -5,30 +5,29 @@ import {
   useState,
 } from "react";
 
-import {
-  startAllServices,
-  stopAllServices,
-} from "../services/tauri";
+import { startRuntimeBulkOperation } from "../services/runtime";
+import type { RuntimeBulkItemRequest } from "../types/runtime";
 
 type LegacyBulkAction =
   | "start"
   | "stop"
   | null;
 
-type UseLegacyBulkRuntimeActionsOptions = {
+type UseRuntimeBulkActionsOptions = {
   allRunning: boolean;
+  runtimes: RuntimeBulkItemRequest[];
   refreshStatuses: () => Promise<void>;
   notify: (message: string) => void;
   isCanonicalActivityActive: () => boolean;
 };
 
-// Bulk behavior remains on the legacy boundary pending a separately approved design.
-export default function useLegacyBulkRuntimeActions({
+export default function useRuntimeBulkActions({
   allRunning,
+  runtimes,
   refreshStatuses,
   notify,
   isCanonicalActivityActive,
-}: UseLegacyBulkRuntimeActionsOptions) {
+}: UseRuntimeBulkActionsOptions) {
   const [globalAction, setGlobalAction] =
     useState<LegacyBulkAction>(null);
   const [bulkIsolationActive, setBulkIsolationActive] =
@@ -94,11 +93,16 @@ export default function useLegacyBulkRuntimeActions({
     try {
       setGlobalAction("start");
       notify("🚀 Starting services...");
-      const result = await startAllServices();
+      const admission = await startRuntimeBulkOperation({ action: "start", runtimes });
       if (!mountedRef.current) {
         return;
       }
-      notify(result);
+      if (admission.status !== "accepted") {
+        setIsolation(false);
+        notify("Start All could not be started.");
+        return;
+      }
+      notify("🚀 Start All command sent. Docker and Open WebUI may need up to 45 seconds.");
       scheduleRefresh(5000, false);
       scheduleRefresh(20000, false);
       scheduleRefresh(45000, true);
@@ -115,6 +119,7 @@ export default function useLegacyBulkRuntimeActions({
   }, [
     isCanonicalActivityActive,
     notify,
+    runtimes,
     scheduleRefresh,
     setIsolation,
   ]);
@@ -131,11 +136,16 @@ export default function useLegacyBulkRuntimeActions({
     try {
       setGlobalAction("stop");
       notify("🛑 Stopping services...");
-      const result = await stopAllServices();
+      const admission = await startRuntimeBulkOperation({ action: "stop", runtimes });
       if (!mountedRef.current) {
         return;
       }
-      notify(result);
+      if (admission.status !== "accepted") {
+        setIsolation(false);
+        notify("Stop All could not be started.");
+        return;
+      }
+      notify("🛑 Stop All command sent.");
       scheduleRefresh(8000, true);
     } catch {
       setIsolation(false);
@@ -150,6 +160,7 @@ export default function useLegacyBulkRuntimeActions({
   }, [
     isCanonicalActivityActive,
     notify,
+    runtimes,
     scheduleRefresh,
     setIsolation,
   ]);

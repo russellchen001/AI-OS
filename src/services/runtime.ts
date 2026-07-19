@@ -13,6 +13,7 @@ import type {
   RuntimeOperationSnapshot,
   RuntimeStatus,
   RuntimeStatusRequest,
+  StartRuntimeBulkOperationRequest,
   StartRuntimeOperationRequest,
 } from "../types/runtime";
 
@@ -45,6 +46,15 @@ export async function startRuntimeOperation(
     {
       request,
     },
+  );
+}
+
+export async function startRuntimeBulkOperation(
+  request: StartRuntimeBulkOperationRequest,
+): Promise<RuntimeOperationAdmission> {
+  return invoke<RuntimeOperationAdmission>(
+    "start_runtime_bulk_operation",
+    { request },
   );
 }
 

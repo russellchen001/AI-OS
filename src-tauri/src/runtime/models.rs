@@ -194,6 +194,26 @@ pub struct RuntimeOperationProgress {
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeOperationResult {
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bulk: Option<RuntimeBulkResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeBulkResult {
+    pub total: u32,
+    pub succeeded: u32,
+    pub failed: u32,
+    pub outcomes: Vec<RuntimeBulkOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeBulkOutcome {
+    pub runtime_id: String,
+    pub succeeded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<NormalizedRuntimeError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

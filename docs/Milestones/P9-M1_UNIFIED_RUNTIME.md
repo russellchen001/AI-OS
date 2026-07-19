@@ -371,3 +371,27 @@ P9-M1 completion establishes canonical Runtime identity, status, observable indi
 - System metrics migration
 - New provider integrations
 - UI redesign
+
+## P9-M2 Canonical Runtime Bulk Operations
+
+- **Implementation:** Complete; Architecture Review and subsequent manual smoke test remain the release gates.
+- **Executor:** Bulk Start and Bulk Stop are admitted as one observable canonical operation and execute the supplied Runtime list sequentially through the P9-M1 lifecycle engine.
+- **Failure policy:** Execution continues after per-runtime failures. The aggregate result contains ordered outcomes and total, succeeded, and failed counts.
+- **Progress:** The aggregate snapshot reports completed Runtime units against the total after every item.
+- **Compatibility:** Dashboard controls, service rows, fixed notifications, mutual exclusion, and post-command status stabilization remain unchanged.
+- **Legacy removal:** `start_all`, `stop_all`, `startAllServices`, `stopAllServices`, and `useLegacyBulkRuntimeActions` are removed with no aliases or second execution path.
+- **Excluded:** Rollback, retry, parallel execution, persistent history, and persistent recovery.
+
+### Migration Notes
+
+Frontend callers use `startRuntimeBulkOperation` with canonical Runtime IDs and configured endpoints where required. Backend callers receive normal Runtime Operation admission and consume the existing `runtime://operation` snapshot stream. Partial child failures are data in the successful aggregate result; only failure of the aggregate supervisor itself produces a failed operation.
+
+### Manual Smoke Test Checklist — after Architecture Review
+
+- Start All remains disabled while an individual lifecycle operation is active.
+- Individual lifecycle controls remain disabled throughout Bulk isolation and stabilization.
+- Start All executes the five displayed Runtime targets in the submitted order and status refreshes settle normally.
+- Stop All executes every submitted target sequentially and status refreshes settle normally.
+- A single Runtime failure is reported in the aggregate while later targets still execute.
+- Aggregate progress increases once per completed target and reaches the submitted total.
+- Dashboard and Services views show the same controls, messages, and final statuses as before migration.
