@@ -79,6 +79,7 @@ pub(crate) fn start_runtime_bulk_operation(
 ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
     validate_request(&request)?;
     let manager = state.manager();
+    let scheduler = state.scheduler();
     let admission = manager.admit_operation(RUNTIME_BULK_ID, request.action, false)?;
     let queued = match admission {
         RuntimeOperationAdmission::Accepted { ref operation } => operation.clone(),
@@ -86,10 +87,12 @@ pub(crate) fn start_runtime_bulk_operation(
     };
     emit_best_effort(&TauriEventEmitter::new(app.clone()), queued.clone());
     let operation_id = queued.operation_id.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let emitter = TauriEventEmitter::new(app);
+    let task_manager = Arc::clone(&manager);
+    let task_app = app.clone();
+    let scheduled = scheduler.enqueue(Box::new(move || {
+        let emitter = TauriEventEmitter::new(task_app);
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            run_bulk(&manager, &operation_id, request, &emitter)
+            run_bulk(&task_manager, &operation_id, request, &emitter)
         }));
         if outcome.is_err() {
             let error = NormalizedRuntimeError {
@@ -97,7 +100,7 @@ pub(crate) fn start_runtime_bulk_operation(
                 message: "The runtime operation task failed.".to_string(),
                 retryable: true,
             };
-            if let Ok(snapshot) = manager.transition(
+            if let Ok(snapshot) = task_manager.transition(
                 &operation_id,
                 RuntimeOperationState::Failed,
                 None,
@@ -106,7 +109,24 @@ pub(crate) fn start_runtime_bulk_operation(
                 emit_best_effort(&emitter, snapshot);
             }
         }
-    });
+    }));
+    if scheduled.is_err() {
+        let error = NormalizedRuntimeError {
+            code: RuntimeErrorCode::OperationTaskFailed,
+            message: "The runtime operation task failed.".to_string(),
+            retryable: true,
+        };
+        let snapshot = manager.transition(
+            &queued.operation_id,
+            RuntimeOperationState::Failed,
+            None,
+            Some(error),
+        )?;
+        emit_best_effort(&TauriEventEmitter::new(app), snapshot.clone());
+        return Ok(RuntimeOperationAdmission::Accepted {
+            operation: snapshot,
+        });
+    }
     Ok(RuntimeOperationAdmission::Accepted { operation: queued })
 }
 

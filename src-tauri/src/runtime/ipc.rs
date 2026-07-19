@@ -5,7 +5,7 @@ use super::{
         cancel_operation_with_emitter, start_accepted_operation, RuntimeExecutionState,
         TauriEventEmitter,
     },
-    lifecycle::{validate_runtime_lifecycle_request, RuntimeLifecycleRequest},
+    lifecycle::RuntimeLifecycleRequest,
     models::{NormalizedRuntimeError, RuntimeOperationAdmission, RuntimeOperationSnapshot},
 };
 
@@ -15,8 +15,7 @@ pub(crate) fn start_runtime_operation(
     state: State<'_, RuntimeExecutionState>,
     request: RuntimeLifecycleRequest,
 ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
-    let validated = validate_runtime_lifecycle_request(request)?;
-    start_accepted_operation(state.manager(), validated, app)
+    start_accepted_operation(state.manager(), state.scheduler(), request, app)
 }
 
 #[tauri::command]
@@ -45,6 +44,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::runtime::lifecycle::validate_runtime_lifecycle_request;
     use crate::runtime::models::{RuntimeErrorCode, RuntimeOperationAction};
 
     #[test]

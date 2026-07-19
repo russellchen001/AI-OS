@@ -163,3 +163,9 @@ P9-M2 closes the Bulk exception. Start All and Stop All now submit one typed agg
 The executor validates each ordered item and invokes the same native preparation and execution pipeline used by individual Runtime Operations. Execution is sequential and continues after a child failure. The aggregate succeeds when the sequence finishes and returns ordered per-runtime outcomes plus total, succeeded, and failed counts; a supervisor failure fails the aggregate itself. Rollback, retry, parallelism, persistence, and recovery remain out of scope.
 
 The `start_all` and `stop_all` IPC commands, their shell implementations, `startAllServices`/`stopAllServices`, and `useLegacyBulkRuntimeActions` are removed rather than aliased. Existing Dashboard controls, fixed user-facing messages, mutual exclusion, and delayed status stabilization remain in place through the canonical frontend client.
+
+## P9-M3 Runtime Scheduler
+
+One shared in-memory FIFO Scheduler is the mandatory dispatch boundary for canonical individual and Bulk Runtime operation tasks. Admission still creates the canonical queued snapshot; Scheduler dispatch occurs before lifecycle validation, preparation, or execution. Once dispatched, the existing Lifecycle Engine and executor retain all Runtime-specific responsibility. The Scheduler catches task-boundary panics so a failed task cannot prevent dispatch of the next queued task, while the operation supervisor remains responsible for canonical terminal state.
+
+Only one task runs at a time. Pending tasks are process-local and are neither persisted nor recovered. Retry, delayed or cron work, priorities, parallel execution, health policy, and Scheduler UI are explicitly deferred.

@@ -6,6 +6,7 @@ pub(crate) mod lifecycle;
 pub mod models;
 pub mod operations;
 mod registry;
+pub(crate) mod scheduler;
 
 use models::{RuntimeDefinition, RuntimeStatus, RuntimeStatusRequest};
 

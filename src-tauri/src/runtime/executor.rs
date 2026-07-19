@@ -8,8 +8,9 @@ use tauri::{AppHandle, Emitter};
 
 use super::{
     lifecycle::{
-        execute_plan, prepare_execution_plan, RuntimeExecutionPlan,
-        ValidatedRuntimeLifecycleRequest, PREPARATION_TIMEOUT,
+        execute_plan, prepare_execution_plan, validate_runtime_lifecycle_request,
+        RuntimeExecutionPlan, RuntimeLifecycleRequest, ValidatedRuntimeLifecycleRequest,
+        PREPARATION_TIMEOUT,
     },
     models::{
         NormalizedRuntimeError, RuntimeErrorCode, RuntimeOperationAdmission, RuntimeOperationEvent,
@@ -19,6 +20,7 @@ use super::{
     operations::{
         RuntimeOperationCancellationUpdate, RuntimeOperationManager, RuntimeOperationProgressUpdate,
     },
+    scheduler::RuntimeScheduler,
 };
 
 pub(crate) const RUNTIME_OPERATION_EVENT: &str = "runtime://operation";
@@ -26,12 +28,14 @@ pub(crate) const RUNTIME_OPERATION_EVENT: &str = "runtime://operation";
 #[derive(Clone)]
 pub struct RuntimeExecutionState {
     manager: Arc<RuntimeOperationManager>,
+    scheduler: RuntimeScheduler,
 }
 
 impl Default for RuntimeExecutionState {
     fn default() -> Self {
         Self {
             manager: Arc::new(RuntimeOperationManager::default()),
+            scheduler: RuntimeScheduler::default(),
         }
     }
 }
@@ -40,12 +44,17 @@ impl RuntimeExecutionState {
     pub(crate) fn manager(&self) -> Arc<RuntimeOperationManager> {
         Arc::clone(&self.manager)
     }
+
+    pub(crate) fn scheduler(&self) -> RuntimeScheduler {
+        self.scheduler.clone()
+    }
 }
 
 pub(crate) trait OperationEventEmitter: Send + Sync {
     fn emit(&self, snapshot: RuntimeOperationSnapshot) -> Result<(), ()>;
 }
 
+#[cfg(test)]
 pub(crate) trait SupervisorSpawner {
     fn spawn(&self, task: Box<dyn FnOnce() + Send + 'static>) -> Result<(), ()>;
 }
@@ -113,29 +122,55 @@ impl OperationEventEmitter for TauriEventEmitter {
     }
 }
 
-struct TauriSupervisorSpawner;
-
-impl SupervisorSpawner for TauriSupervisorSpawner {
-    fn spawn(&self, task: Box<dyn FnOnce() + Send + 'static>) -> Result<(), ()> {
-        tauri::async_runtime::spawn_blocking(task);
-        Ok(())
-    }
-}
-
 pub(crate) fn start_accepted_operation(
     manager: Arc<RuntimeOperationManager>,
-    request: ValidatedRuntimeLifecycleRequest,
+    scheduler: RuntimeScheduler,
+    request: RuntimeLifecycleRequest,
     app: AppHandle,
 ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
-    start_with_dependencies(
-        manager,
-        request,
-        Arc::new(TauriEventEmitter::new(app)),
-        &TauriSupervisorSpawner,
-        Arc::new(NativePipeline),
-    )
+    let admission = manager.admit_operation(&request.runtime_id, request.action, false)?;
+    let queued = match admission {
+        RuntimeOperationAdmission::Accepted { operation } => operation,
+        other => return Ok(other),
+    };
+    let emitter: Arc<dyn OperationEventEmitter> = Arc::new(TauriEventEmitter::new(app));
+    emit_best_effort(emitter.as_ref(), queued.clone());
+    let operation_id = queued.operation_id.clone();
+    let task_manager = Arc::clone(&manager);
+    let task_emitter = Arc::clone(&emitter);
+    let task = Box::new(move || match validate_runtime_lifecycle_request(request) {
+        Ok(validated) => run_operation_supervisor(
+            task_manager,
+            operation_id,
+            validated,
+            task_emitter,
+            Arc::new(NativePipeline),
+        ),
+        Err(error) => {
+            let _ = fail_operation(&task_manager, &operation_id, error, task_emitter.as_ref());
+        }
+    });
+    let scheduled = catch_unwind(AssertUnwindSafe(|| scheduler.enqueue(task)))
+        .ok()
+        .and_then(Result::ok)
+        .is_some();
+    if !scheduled {
+        let terminal = fail_operation(
+            &manager,
+            &queued.operation_id,
+            operation_task_failed(),
+            emitter.as_ref(),
+        )?;
+        let operation = match terminal {
+            RuntimeOperationTerminalUpdate::Applied(operation)
+            | RuntimeOperationTerminalUpdate::AlreadyTerminal(operation) => operation,
+        };
+        return Ok(RuntimeOperationAdmission::Accepted { operation });
+    }
+    Ok(RuntimeOperationAdmission::Accepted { operation: queued })
 }
 
+#[cfg(test)]
 fn start_with_dependencies(
     manager: Arc<RuntimeOperationManager>,
     request: ValidatedRuntimeLifecycleRequest,
@@ -473,14 +508,11 @@ mod tests {
     }
 
     #[test]
-    fn clones_share_the_only_manager_arc() {
+    fn clones_share_runtime_coordination_state() {
         let state = RuntimeExecutionState::default();
         let clone = state.clone();
         assert!(Arc::ptr_eq(&state.manager(), &clone.manager()));
-        assert_eq!(
-            std::mem::size_of::<RuntimeExecutionState>(),
-            std::mem::size_of::<Arc<RuntimeOperationManager>>()
-        );
+        assert!(state.scheduler().shares_state_with(&clone.scheduler()));
     }
 
     #[test]

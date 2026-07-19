@@ -395,3 +395,11 @@ Frontend callers use `startRuntimeBulkOperation` with canonical Runtime IDs and 
 - A single Runtime failure is reported in the aggregate while later targets still execute.
 - Aggregate progress increases once per completed target and reaches the submitted total.
 - Dashboard and Services views show the same controls, messages, and final statuses as before migration.
+
+## P9-M3 Runtime Scheduler
+
+- **Implementation:** Complete; Architecture Review remains the release gate.
+- **Dispatch:** One shared process-local FIFO Scheduler dispatches individual and Bulk Runtime operations sequentially.
+- **Ownership:** The Scheduler owns queue order and running/pending coordination only. Canonical operation state remains in the Runtime Operation manager; validation and execution remain in the Lifecycle Engine and executor.
+- **Required flow:** Request admission → Scheduler → Lifecycle validation/preparation → executor.
+- **Excluded:** Retry, recovery, delayed tasks, cron, priorities, parallel execution, persistent queues, health policies, and Scheduler UI.

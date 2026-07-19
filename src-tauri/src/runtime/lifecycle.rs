@@ -160,10 +160,12 @@ pub(crate) struct ValidatedRuntimeLifecycleRequest {
 }
 
 impl ValidatedRuntimeLifecycleRequest {
+    #[cfg(test)]
     pub(crate) fn runtime_id(&self) -> &str {
         &self.runtime_id
     }
 
+    #[cfg(test)]
     pub(crate) fn action(&self) -> RuntimeOperationAction {
         self.action
     }

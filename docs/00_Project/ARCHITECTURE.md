@@ -135,3 +135,9 @@ OpenClaw must remain behind explicit integration contracts. AI-OS core models mu
 Start All and Stop All use one canonical aggregate Runtime Operation. The frontend submits an ordered list through the typed Runtime client; the operation manager admits a `runtime-bulk` snapshot and prevents overlap with individual lifecycle work; the Bulk supervisor then validates and executes each item sequentially through the existing Runtime lifecycle engine. Every completed item advances aggregate progress. Failures are collected without stopping later items, and the terminal result reports ordered outcomes and summary counts.
 
 This design provides one execution model for individual and Bulk lifecycle work. There is no Legacy Bulk shell path, rollback, retry, parallel executor, persistent history, or persistent recovery path.
+
+## Runtime Scheduler
+
+All individual and Bulk Runtime operations enter one process-wide, in-memory FIFO Scheduler after canonical operation admission. The Scheduler dispatches exactly one operation task at a time, then hands it to the existing Runtime Lifecycle Engine for validation and execution. It owns queue order and running/pending coordination only; operation snapshots remain owned by the Runtime Operation manager and all Runtime-specific behavior remains owned by the Lifecycle Engine and executor.
+
+The P9-M3 Scheduler is intentionally non-persistent and immediate. It provides no retry, recovery, delay, cron, priority, parallel execution, health policy, or UI.
