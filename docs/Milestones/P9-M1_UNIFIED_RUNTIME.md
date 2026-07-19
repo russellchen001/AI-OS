@@ -190,6 +190,8 @@ Implementation scope:
 
 M1B2B2 is implemented separately from M1B2B3. It adds no frontend service wrapper, listener, reconciliation helper, hook, page, component, legacy delegation, stored operation persistence, or UI migration. M1B2B3 and M1C remain unimplemented.
 
+Code-review hardening freezes Registry-owned `RuntimeAdapterKind` during preflight and uses exhaustive adapter dispatch throughout planning. Accepted cancellation mutations now have an explicit Applied/Unchanged outcome and emit only when applied. Scheduling rejection or panic is terminalized without returning queued state, while terminal races return the existing winner without duplicate emission. Canonical emission catches emitter errors and panics without changing operation truth; panic payloads do not enter state, IPC, or events. Process-global panic-hook behavior remains unchanged and outside this slice.
+
 ## M1C — Frontend Migration and Compatibility Cleanup
 
 Deferred scope:

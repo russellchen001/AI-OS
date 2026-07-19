@@ -1,7 +1,10 @@
 use tauri::{AppHandle, State};
 
 use super::{
-    executor::{start_accepted_operation, RuntimeExecutionState},
+    executor::{
+        cancel_operation_with_emitter, start_accepted_operation, RuntimeExecutionState,
+        TauriEventEmitter,
+    },
     lifecycle::{validate_runtime_lifecycle_request, RuntimeLifecycleRequest},
     models::{NormalizedRuntimeError, RuntimeOperationAdmission, RuntimeOperationSnapshot},
 };
@@ -26,10 +29,15 @@ pub(crate) fn get_runtime_operation(
 
 #[tauri::command]
 pub(crate) fn cancel_runtime_operation(
+    app: AppHandle,
     state: State<'_, RuntimeExecutionState>,
     operation_id: String,
 ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
-    state.manager().request_cancellation(&operation_id)
+    cancel_operation_with_emitter(
+        state.manager().as_ref(),
+        &operation_id,
+        &TauriEventEmitter::new(app),
+    )
 }
 
 #[cfg(test)]

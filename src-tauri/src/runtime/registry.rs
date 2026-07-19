@@ -64,7 +64,12 @@ pub fn definitions() -> Vec<RuntimeDefinition> {
 }
 
 pub(crate) fn contains_id(runtime_id: &str) -> bool {
+    adapter_kind(runtime_id).is_some()
+}
+
+pub(crate) fn adapter_kind(runtime_id: &str) -> Option<RuntimeAdapterKind> {
     definitions()
-        .iter()
-        .any(|definition| definition.id == runtime_id)
+        .into_iter()
+        .find(|definition| definition.id == runtime_id)
+        .map(|definition| definition.adapter_kind)
 }

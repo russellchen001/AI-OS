@@ -20,6 +20,20 @@ pub(crate) enum RuntimeOperationProgressUpdate {
     Unchanged(RuntimeOperationSnapshot),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RuntimeOperationCancellationUpdate {
+    Applied(RuntimeOperationSnapshot),
+    Unchanged(RuntimeOperationSnapshot),
+}
+
+impl RuntimeOperationCancellationUpdate {
+    pub(crate) fn operation(&self) -> &RuntimeOperationSnapshot {
+        match self {
+            Self::Applied(operation) | Self::Unchanged(operation) => operation,
+        }
+    }
+}
+
 impl RuntimeOperationProgressUpdate {
     pub(crate) fn operation(&self) -> &RuntimeOperationSnapshot {
         match self {
@@ -105,7 +119,15 @@ impl RuntimeOperationManager {
         &self,
         operation_id: &str,
     ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
-        self.request_cancellation_at(operation_id, Utc::now())
+        self.request_cancellation_update(operation_id)
+            .map(|update| update.operation().clone())
+    }
+
+    pub(crate) fn request_cancellation_update(
+        &self,
+        operation_id: &str,
+    ) -> Result<RuntimeOperationCancellationUpdate, NormalizedRuntimeError> {
+        self.request_cancellation_update_at(operation_id, Utc::now())
     }
 
     fn create_operation_at(
@@ -256,13 +278,22 @@ impl RuntimeOperationManager {
         operation_id: &str,
         now: DateTime<Utc>,
     ) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+        self.request_cancellation_update_at(operation_id, now)
+            .map(|update| update.operation().clone())
+    }
+
+    fn request_cancellation_update_at(
+        &self,
+        operation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeOperationCancellationUpdate, NormalizedRuntimeError> {
         let mut store = self.lock_store()?;
         cleanup(&mut store, now);
         let snapshot = find_operation(&store, operation_id)?;
 
         match snapshot.state {
             RuntimeOperationState::Cancelled | RuntimeOperationState::Cancelling => {
-                return Ok(snapshot);
+                return Ok(RuntimeOperationCancellationUpdate::Unchanged(snapshot));
             }
             RuntimeOperationState::Succeeded | RuntimeOperationState::Failed => {
                 return Err(safe_error(
@@ -290,6 +321,7 @@ impl RuntimeOperationManager {
             None,
             now,
         )
+        .map(RuntimeOperationCancellationUpdate::Applied)
     }
 
     fn lock_store(
@@ -1581,5 +1613,34 @@ mod tests {
                 "retryable": true,
             })
         );
+    }
+
+    #[test]
+    fn cancellation_outcome_distinguishes_applied_from_idempotent_unchanged() {
+        let manager = RuntimeOperationManager::default();
+        let queued = manager
+            .create_operation_at("ollama", RuntimeOperationAction::Open, true, time(0))
+            .unwrap();
+
+        let applied = manager
+            .request_cancellation_update_at(&queued.operation_id, time(1))
+            .unwrap();
+        let cancelling = match applied {
+            RuntimeOperationCancellationUpdate::Applied(snapshot) => snapshot,
+            RuntimeOperationCancellationUpdate::Unchanged(_) => panic!("expected mutation"),
+        };
+        assert_eq!(cancelling.state, RuntimeOperationState::Cancelling);
+        assert_eq!(cancelling.revision, queued.revision + 1);
+        assert_ne!(cancelling.updated_at, queued.updated_at);
+
+        let unchanged = manager
+            .request_cancellation_update_at(&queued.operation_id, time(2))
+            .unwrap();
+        let repeated = match unchanged {
+            RuntimeOperationCancellationUpdate::Unchanged(snapshot) => snapshot,
+            RuntimeOperationCancellationUpdate::Applied(_) => panic!("expected no mutation"),
+        };
+        assert_eq!(repeated.revision, cancelling.revision);
+        assert_eq!(repeated.updated_at, cancelling.updated_at);
     }
 }

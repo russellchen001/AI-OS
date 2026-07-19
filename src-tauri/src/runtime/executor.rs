@@ -16,7 +16,9 @@ use super::{
         RuntimeOperationProgress, RuntimeOperationResult, RuntimeOperationSnapshot,
         RuntimeOperationState,
     },
-    operations::{RuntimeOperationManager, RuntimeOperationProgressUpdate},
+    operations::{
+        RuntimeOperationCancellationUpdate, RuntimeOperationManager, RuntimeOperationProgressUpdate,
+    },
 };
 
 pub(crate) const RUNTIME_OPERATION_EVENT: &str = "runtime://operation";
@@ -87,8 +89,14 @@ impl PreparedOperation for NativePreparedOperation {
     }
 }
 
-struct TauriEventEmitter {
+pub(crate) struct TauriEventEmitter {
     app: AppHandle,
+}
+
+impl TauriEventEmitter {
+    pub(crate) fn new(app: AppHandle) -> Self {
+        Self { app }
+    }
 }
 
 impl OperationEventEmitter for TauriEventEmitter {
@@ -122,7 +130,7 @@ pub(crate) fn start_accepted_operation(
     start_with_dependencies(
         manager,
         request,
-        Arc::new(TauriEventEmitter { app }),
+        Arc::new(TauriEventEmitter::new(app)),
         &TauriSupervisorSpawner,
         Arc::new(NativePipeline),
     )
@@ -141,7 +149,7 @@ fn start_with_dependencies(
         other => return Ok(other),
     };
 
-    let _ = emitter.emit(queued.clone());
+    emit_best_effort(emitter.as_ref(), queued.clone());
     let operation_id = queued.operation_id.clone();
     let task_manager = Arc::clone(&manager);
     let task_emitter = Arc::clone(&emitter);
@@ -149,15 +157,22 @@ fn start_with_dependencies(
         run_operation_supervisor(task_manager, operation_id, request, task_emitter, pipeline);
     });
 
-    if spawner.spawn(task).is_err() {
-        let failed = fail_operation(
+    let scheduled = catch_unwind(AssertUnwindSafe(|| spawner.spawn(task)))
+        .ok()
+        .and_then(Result::ok)
+        .is_some();
+    if !scheduled {
+        let terminal = fail_operation(
             &manager,
             &queued.operation_id,
             operation_task_failed(),
             emitter.as_ref(),
-        )
-        .unwrap_or(queued);
-        return Ok(RuntimeOperationAdmission::Accepted { operation: failed });
+        )?;
+        let operation = match terminal {
+            RuntimeOperationTerminalUpdate::Applied(operation)
+            | RuntimeOperationTerminalUpdate::AlreadyTerminal(operation) => operation,
+        };
+        return Ok(RuntimeOperationAdmission::Accepted { operation });
     }
 
     Ok(RuntimeOperationAdmission::Accepted { operation: queued })
@@ -210,11 +225,11 @@ fn run_operation_supervisor_inner(
         Ok(snapshot) => snapshot,
         Err(_) => return,
     };
-    let _ = emitter.emit(running);
+    emit_best_effort(emitter, running);
 
     let mut report = |progress| match manager.update_progress(operation_id, progress) {
         Ok(update @ RuntimeOperationProgressUpdate::Applied(_)) => {
-            let _ = emitter.emit(update.operation().clone());
+            emit_best_effort(emitter, update.operation().clone());
         }
         Ok(RuntimeOperationProgressUpdate::Unchanged(_)) | Err(_) => {}
     };
@@ -229,7 +244,7 @@ fn run_operation_supervisor_inner(
                 }),
                 None,
             ) {
-                let _ = emitter.emit(snapshot);
+                emit_best_effort(emitter, snapshot);
             }
         }
         Err(error) => {
@@ -238,22 +253,54 @@ fn run_operation_supervisor_inner(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeOperationTerminalUpdate {
+    Applied(RuntimeOperationSnapshot),
+    AlreadyTerminal(RuntimeOperationSnapshot),
+}
+
 fn fail_operation(
     manager: &RuntimeOperationManager,
     operation_id: &str,
     error: NormalizedRuntimeError,
     emitter: &dyn OperationEventEmitter,
-) -> Option<RuntimeOperationSnapshot> {
-    let snapshot = manager
-        .transition(
-            operation_id,
-            RuntimeOperationState::Failed,
-            None,
-            Some(error),
-        )
-        .ok()?;
-    let _ = emitter.emit(snapshot.clone());
-    Some(snapshot)
+) -> Result<RuntimeOperationTerminalUpdate, NormalizedRuntimeError> {
+    match manager.transition(
+        operation_id,
+        RuntimeOperationState::Failed,
+        None,
+        Some(error),
+    ) {
+        Ok(snapshot) => {
+            emit_best_effort(emitter, snapshot.clone());
+            Ok(RuntimeOperationTerminalUpdate::Applied(snapshot))
+        }
+        Err(transition_error) => match manager.get_operation(operation_id) {
+            Ok(snapshot) if snapshot.state.is_terminal() => {
+                Ok(RuntimeOperationTerminalUpdate::AlreadyTerminal(snapshot))
+            }
+            Ok(_) => Err(transition_error),
+            Err(manager_error) => Err(manager_error),
+        },
+    }
+}
+
+pub(crate) fn cancel_operation_with_emitter(
+    manager: &RuntimeOperationManager,
+    operation_id: &str,
+    emitter: &dyn OperationEventEmitter,
+) -> Result<RuntimeOperationSnapshot, NormalizedRuntimeError> {
+    match manager.request_cancellation_update(operation_id)? {
+        RuntimeOperationCancellationUpdate::Applied(snapshot) => {
+            emit_best_effort(emitter, snapshot.clone());
+            Ok(snapshot)
+        }
+        RuntimeOperationCancellationUpdate::Unchanged(snapshot) => Ok(snapshot),
+    }
+}
+
+fn emit_best_effort(emitter: &dyn OperationEventEmitter, snapshot: RuntimeOperationSnapshot) {
+    let _ = catch_unwind(AssertUnwindSafe(|| emitter.emit(snapshot)));
 }
 
 fn operation_task_failed() -> NormalizedRuntimeError {
@@ -307,6 +354,23 @@ mod tests {
 
     impl SupervisorSpawner for RejectingSpawner {
         fn spawn(&self, _task: Box<dyn FnOnce() + Send + 'static>) -> Result<(), ()> {
+            Err(())
+        }
+    }
+
+    struct PanickingSpawner;
+
+    impl SupervisorSpawner for PanickingSpawner {
+        fn spawn(&self, _task: Box<dyn FnOnce() + Send + 'static>) -> Result<(), ()> {
+            panic!("scheduler internals")
+        }
+    }
+
+    struct RunThenRejectSpawner;
+
+    impl SupervisorSpawner for RunThenRejectSpawner {
+        fn spawn(&self, task: Box<dyn FnOnce() + Send + 'static>) -> Result<(), ()> {
+            task();
             Err(())
         }
     }
@@ -804,5 +868,258 @@ mod tests {
         run_operation_supervisor_inner(&manager, &queued.operation_id, &request(), &emitter, &fake);
         assert!(!executed.load(Ordering::SeqCst));
         assert!(emitter.events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancellation_applied_emits_once_and_unchanged_emits_nothing() {
+        let manager = RuntimeOperationManager::default();
+        let queued = match manager
+            .admit_operation("ollama", RuntimeOperationAction::Open, true)
+            .unwrap()
+        {
+            RuntimeOperationAdmission::Accepted { operation } => operation,
+            _ => panic!("expected acceptance"),
+        };
+        let emitter = RecordingEmitter::default();
+        let cancelling =
+            cancel_operation_with_emitter(&manager, &queued.operation_id, &emitter).unwrap();
+        assert_eq!(cancelling.revision, queued.revision + 1);
+        assert_eq!(emitter.events.lock().unwrap().len(), 1);
+        let event = RuntimeOperationEvent {
+            version: 1,
+            operation: emitter.events.lock().unwrap()[0].clone(),
+        };
+        assert_eq!(serde_json::to_value(event).unwrap()["version"], 1);
+
+        let repeated =
+            cancel_operation_with_emitter(&manager, &queued.operation_id, &emitter).unwrap();
+        assert_eq!(repeated.revision, cancelling.revision);
+        assert_eq!(emitter.events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejected_cancellation_paths_emit_nothing_and_preserve_state() {
+        let manager = RuntimeOperationManager::default();
+        let queued = match manager
+            .admit_operation("ollama", RuntimeOperationAction::Open, false)
+            .unwrap()
+        {
+            RuntimeOperationAdmission::Accepted { operation } => operation,
+            _ => panic!("expected acceptance"),
+        };
+        let emitter = RecordingEmitter::default();
+        assert_eq!(
+            cancel_operation_with_emitter(&manager, &queued.operation_id, &emitter)
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::CancellationUnsupported
+        );
+        assert_eq!(manager.get_operation(&queued.operation_id).unwrap(), queued);
+
+        manager
+            .transition(
+                &queued.operation_id,
+                RuntimeOperationState::Running,
+                None,
+                None,
+            )
+            .unwrap();
+        manager
+            .transition(
+                &queued.operation_id,
+                RuntimeOperationState::Succeeded,
+                Some(RuntimeOperationResult {
+                    message: "done".to_string(),
+                }),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            cancel_operation_with_emitter(&manager, &queued.operation_id, &emitter)
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::CancellationTooLate
+        );
+        assert_eq!(
+            cancel_operation_with_emitter(&manager, "missing", &emitter)
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::OperationNotFound
+        );
+        assert!(emitter.events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn spawner_panic_is_a_sanitized_scheduling_failure() {
+        let manager = Arc::new(RuntimeOperationManager::default());
+        let emitter = Arc::new(RecordingEmitter::default());
+        let admission = start_with_dependencies(
+            Arc::clone(&manager),
+            request_for(RuntimeOperationAction::Start),
+            emitter,
+            &PanickingSpawner,
+            pipeline(Ok(())),
+        )
+        .unwrap();
+        let operation = match admission {
+            RuntimeOperationAdmission::Accepted { operation } => operation,
+            _ => panic!("expected acceptance"),
+        };
+        assert_eq!(operation.state, RuntimeOperationState::Failed);
+        assert_eq!(operation.error.unwrap(), operation_task_failed());
+        assert!(matches!(
+            manager
+                .admit_operation("ollama", RuntimeOperationAction::Stop, false)
+                .unwrap(),
+            RuntimeOperationAdmission::Accepted { .. }
+        ));
+    }
+
+    #[test]
+    fn terminal_winner_is_returned_when_spawner_runs_then_reports_failure() {
+        let manager = Arc::new(RuntimeOperationManager::default());
+        let emitter = Arc::new(RecordingEmitter::default());
+        let admission = start_with_dependencies(
+            manager,
+            request(),
+            emitter.clone(),
+            &RunThenRejectSpawner,
+            pipeline(Ok(())),
+        )
+        .unwrap();
+        let operation = match admission {
+            RuntimeOperationAdmission::Accepted { operation } => operation,
+            _ => panic!("expected acceptance"),
+        };
+        assert_eq!(operation.state, RuntimeOperationState::Succeeded);
+        assert_eq!(
+            emitter
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|snapshot| snapshot.state.is_terminal())
+                .count(),
+            1
+        );
+    }
+
+    struct SelectivePanicEmitter {
+        state: RuntimeOperationState,
+        progress: bool,
+        events: Mutex<Vec<RuntimeOperationSnapshot>>,
+    }
+
+    impl OperationEventEmitter for SelectivePanicEmitter {
+        fn emit(&self, snapshot: RuntimeOperationSnapshot) -> Result<(), ()> {
+            if snapshot.state == self.state && (!self.progress || snapshot.progress.is_some()) {
+                panic!("private emitter panic")
+            }
+            self.events.lock().unwrap().push(snapshot);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn emitter_panics_never_change_successful_operation_truth() {
+        for (state, progress) in [
+            (RuntimeOperationState::Running, false),
+            (RuntimeOperationState::Running, true),
+            (RuntimeOperationState::Succeeded, false),
+        ] {
+            let manager = Arc::new(RuntimeOperationManager::default());
+            let emitter = Arc::new(SelectivePanicEmitter {
+                state,
+                progress,
+                events: Mutex::new(Vec::new()),
+            });
+            let selected_pipeline: Arc<dyn OperationPipeline> = if progress {
+                Arc::new(FakePipeline {
+                    preparation: Mutex::new(Some(Ok(FakePrepared {
+                        progress: vec![
+                            RuntimeOperationProgress {
+                                phase: "opening".to_string(),
+                                completed_units: None,
+                                total_units: None,
+                                message: "Opening runtime.".to_string(),
+                            },
+                            RuntimeOperationProgress {
+                                phase: "verifying".to_string(),
+                                completed_units: None,
+                                total_units: None,
+                                message: "Verifying runtime.".to_string(),
+                            },
+                        ],
+                        result: Ok(()),
+                        executed: None,
+                        block: None,
+                    }))),
+                })
+            } else {
+                pipeline(Ok(()))
+            };
+            let admission = start_with_dependencies(
+                Arc::clone(&manager),
+                request(),
+                emitter,
+                &InlineSpawner,
+                selected_pipeline,
+            )
+            .unwrap();
+            let id = match admission {
+                RuntimeOperationAdmission::Accepted { operation } => operation.operation_id,
+                _ => panic!("expected acceptance"),
+            };
+            let terminal = manager.get_operation(&id).unwrap();
+            assert_eq!(terminal.state, RuntimeOperationState::Succeeded);
+            if progress {
+                assert_eq!(terminal.revision, 5);
+                assert_eq!(terminal.progress.as_ref().unwrap().phase, "verifying");
+            }
+            assert!(!serde_json::to_string(&terminal)
+                .unwrap()
+                .contains("private emitter panic"));
+        }
+    }
+
+    #[test]
+    fn terminalization_outcome_emits_only_applied_and_propagates_unknown() {
+        let manager = RuntimeOperationManager::default();
+        let emitter = RecordingEmitter::default();
+        let queued = match manager
+            .admit_operation("ollama", RuntimeOperationAction::Open, false)
+            .unwrap()
+        {
+            RuntimeOperationAdmission::Accepted { operation } => operation,
+            _ => panic!("expected acceptance"),
+        };
+        assert!(matches!(
+            fail_operation(
+                &manager,
+                &queued.operation_id,
+                operation_task_failed(),
+                &emitter
+            )
+            .unwrap(),
+            RuntimeOperationTerminalUpdate::Applied(_)
+        ));
+        assert_eq!(emitter.events.lock().unwrap().len(), 1);
+        assert!(matches!(
+            fail_operation(
+                &manager,
+                &queued.operation_id,
+                operation_task_failed(),
+                &emitter
+            )
+            .unwrap(),
+            RuntimeOperationTerminalUpdate::AlreadyTerminal(_)
+        ));
+        assert_eq!(emitter.events.lock().unwrap().len(), 1);
+        assert_eq!(
+            fail_operation(&manager, "missing", operation_task_failed(), &emitter)
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::OperationNotFound
+        );
     }
 }

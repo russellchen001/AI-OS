@@ -12,8 +12,8 @@ use url::{Host, Url};
 use crate::openclaw;
 
 use super::models::{
-    NormalizedRuntimeError, RuntimeErrorCode, RuntimeLocation, RuntimeOperationAction,
-    RuntimeOperationProgress,
+    NormalizedRuntimeError, RuntimeAdapterKind, RuntimeErrorCode, RuntimeLocation,
+    RuntimeOperationAction, RuntimeOperationProgress,
 };
 use super::registry;
 
@@ -154,6 +154,7 @@ pub(crate) struct RuntimeLifecycleRequest {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ValidatedRuntimeLifecycleRequest {
     runtime_id: String,
+    adapter_kind: RuntimeAdapterKind,
     action: RuntimeOperationAction,
     endpoint: Option<ValidatedEndpoint>,
 }
@@ -166,6 +167,10 @@ impl ValidatedRuntimeLifecycleRequest {
     pub(crate) fn action(&self) -> RuntimeOperationAction {
         self.action
     }
+
+    pub(crate) fn adapter_kind(&self) -> RuntimeAdapterKind {
+        self.adapter_kind
+    }
 }
 
 impl std::fmt::Debug for ValidatedRuntimeLifecycleRequest {
@@ -173,6 +178,7 @@ impl std::fmt::Debug for ValidatedRuntimeLifecycleRequest {
         formatter
             .debug_struct("ValidatedRuntimeLifecycleRequest")
             .field("runtime_id", &self.runtime_id)
+            .field("adapter_kind", &self.adapter_kind)
             .field("action", &self.action)
             .field("endpoint_present", &self.endpoint.is_some())
             .finish()
@@ -182,15 +188,20 @@ impl std::fmt::Debug for ValidatedRuntimeLifecycleRequest {
 pub(crate) fn validate_runtime_lifecycle_request(
     request: RuntimeLifecycleRequest,
 ) -> Result<ValidatedRuntimeLifecycleRequest, NormalizedRuntimeError> {
-    if !registry::contains_id(&request.runtime_id) {
-        return Err(runtime_not_found());
-    }
-    if request.action == RuntimeOperationAction::Restart && request.runtime_id != "open-webui" {
+    let adapter_kind = registry::adapter_kind(&request.runtime_id).ok_or_else(runtime_not_found)?;
+    let restart_supported = match adapter_kind {
+        RuntimeAdapterKind::OpenWebui => true,
+        RuntimeAdapterKind::Openclaw
+        | RuntimeAdapterKind::Ollama
+        | RuntimeAdapterKind::DockerDesktop
+        | RuntimeAdapterKind::CherryStudio => false,
+    };
+    if request.action == RuntimeOperationAction::Restart && !restart_supported {
         return Err(unsupported());
     }
 
-    let endpoint = match request.runtime_id.as_str() {
-        "ollama" | "open-webui" => {
+    let endpoint = match adapter_kind {
+        RuntimeAdapterKind::Ollama | RuntimeAdapterKind::OpenWebui => {
             let endpoint = classify_endpoint(
                 request
                     .endpoint_url
@@ -204,11 +215,14 @@ pub(crate) fn validate_runtime_lifecycle_request(
             }
             Some(endpoint)
         }
-        _ => None,
+        RuntimeAdapterKind::Openclaw
+        | RuntimeAdapterKind::DockerDesktop
+        | RuntimeAdapterKind::CherryStudio => None,
     };
 
     Ok(ValidatedRuntimeLifecycleRequest {
         runtime_id: request.runtime_id,
+        adapter_kind,
         action: request.action,
         endpoint,
     })
@@ -490,7 +504,7 @@ fn prepare_validated_with_source(
     source: &impl ContextSource,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
     let context = collect_validated_context_with(request, source)?;
-    build_execution_plan(&request.runtime_id, request.action, context)
+    build_execution_plan(request.adapter_kind(), request.action, context)
 }
 
 #[cfg(test)]
@@ -506,29 +520,28 @@ fn collect_validated_context_with(
     request: &ValidatedRuntimeLifecycleRequest,
     source: &impl ContextSource,
 ) -> Result<RuntimePlanningContext, NormalizedRuntimeError> {
-    match request.runtime_id.as_str() {
-        "openclaw" => source
+    match request.adapter_kind() {
+        RuntimeAdapterKind::Openclaw => source
             .openclaw(request.action)
             .map(RuntimePlanningContext::OpenClaw),
-        "ollama" => {
+        RuntimeAdapterKind::Ollama => {
             let endpoint = request.endpoint.clone().ok_or_else(invalid_configuration)?;
             Ok(RuntimePlanningContext::Ollama(source.ollama(
                 endpoint,
                 request.action != RuntimeOperationAction::Open,
             )?))
         }
-        "docker-desktop" => source
+        RuntimeAdapterKind::DockerDesktop => source
             .docker(request.action)
             .map(RuntimePlanningContext::Docker),
-        "open-webui" => {
+        RuntimeAdapterKind::OpenWebui => {
             let endpoint = request.endpoint.clone().ok_or_else(invalid_configuration)?;
             Ok(RuntimePlanningContext::OpenWebUi(source.open_webui(
                 endpoint,
                 request.action != RuntimeOperationAction::Open,
             )?))
         }
-        "cherry-studio" => Ok(RuntimePlanningContext::Cherry(source.cherry())),
-        _ => unreachable!(),
+        RuntimeAdapterKind::CherryStudio => Ok(RuntimePlanningContext::Cherry(source.cherry())),
     }
 }
 
@@ -1050,24 +1063,40 @@ impl std::fmt::Debug for RuntimeExecutionPlan {
 }
 
 fn build_execution_plan(
-    runtime_id: &str,
+    adapter_kind: RuntimeAdapterKind,
     action: RuntimeOperationAction,
     context: RuntimePlanningContext,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
-    match (runtime_id, context) {
-        ("openclaw", RuntimePlanningContext::OpenClaw(context)) => plan_openclaw(action, context),
-        ("ollama", RuntimePlanningContext::Ollama(context)) => plan_ollama(action, context),
-        ("docker-desktop", RuntimePlanningContext::Docker(context)) => plan_docker(action, context),
-        ("open-webui", RuntimePlanningContext::OpenWebUi(context)) => {
-            plan_open_webui(action, context)
-        }
-        ("cherry-studio", RuntimePlanningContext::Cherry(_)) => plan_cherry(action),
-        _ => Err(error(
-            RuntimeErrorCode::InvalidConfiguration,
-            "The runtime context does not match the request.",
-            false,
-        )),
+    match adapter_kind {
+        RuntimeAdapterKind::Openclaw => match context {
+            RuntimePlanningContext::OpenClaw(context) => plan_openclaw(action, context),
+            _ => Err(context_mismatch()),
+        },
+        RuntimeAdapterKind::Ollama => match context {
+            RuntimePlanningContext::Ollama(context) => plan_ollama(action, context),
+            _ => Err(context_mismatch()),
+        },
+        RuntimeAdapterKind::DockerDesktop => match context {
+            RuntimePlanningContext::Docker(context) => plan_docker(action, context),
+            _ => Err(context_mismatch()),
+        },
+        RuntimeAdapterKind::OpenWebui => match context {
+            RuntimePlanningContext::OpenWebUi(context) => plan_open_webui(action, context),
+            _ => Err(context_mismatch()),
+        },
+        RuntimeAdapterKind::CherryStudio => match context {
+            RuntimePlanningContext::Cherry(_) => plan_cherry(action),
+            _ => Err(context_mismatch()),
+        },
     }
+}
+
+fn context_mismatch() -> NormalizedRuntimeError {
+    error(
+        RuntimeErrorCode::InvalidConfiguration,
+        "The runtime context does not match the request.",
+        false,
+    )
 }
 
 fn plan_openclaw(
@@ -2092,6 +2121,52 @@ mod tests {
     }
 
     #[test]
+    fn every_registered_runtime_freezes_explicit_adapter_dispatch() {
+        for definition in registry::definitions() {
+            let endpoint = match definition.adapter_kind {
+                RuntimeAdapterKind::Ollama => Some("http://localhost:11434"),
+                RuntimeAdapterKind::OpenWebui => Some("http://localhost:3000"),
+                RuntimeAdapterKind::Openclaw
+                | RuntimeAdapterKind::DockerDesktop
+                | RuntimeAdapterKind::CherryStudio => None,
+            };
+            let validated = validate_runtime_lifecycle_request(request(
+                &definition.id,
+                RuntimeOperationAction::Open,
+                endpoint,
+            ))
+            .unwrap();
+            assert_eq!(validated.adapter_kind(), definition.adapter_kind);
+        }
+        let source = include_str!("lifecycle.rs");
+        let dispatch = source
+            .split("fn collect_validated_context_with")
+            .nth(1)
+            .unwrap()
+            .split("fn collect_openclaw_context")
+            .next()
+            .unwrap();
+        assert!(!dispatch.contains(&["unreachable", "!()"].concat()));
+    }
+
+    #[test]
+    fn registered_but_unsupported_lifecycle_action_fails_before_collection() {
+        let source = RecordingSource::new();
+        let error = validate_runtime_lifecycle_request(request(
+            "docker-desktop",
+            RuntimeOperationAction::Restart,
+            None,
+        ))
+        .unwrap_err();
+        assert_eq!(error.code, RuntimeErrorCode::UnsupportedOperation);
+        assert_eq!(source.openclaw_calls.get(), 0);
+        assert_eq!(source.ollama_calls.get(), 0);
+        assert_eq!(source.docker_calls.get(), 0);
+        assert_eq!(source.webui_calls.get(), 0);
+        assert_eq!(source.cherry_calls.get(), 0);
+    }
+
+    #[test]
     fn static_preflight_freezes_the_parsed_endpoint_without_native_collection() {
         let source = RecordingSource::new();
         let validated = validate_runtime_lifecycle_request(request(
@@ -2168,7 +2243,7 @@ mod tests {
         action: RuntimeOperationAction,
         context: RuntimePlanningContext,
     ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
-        build_execution_plan(runtime, action, context)
+        build_execution_plan(registry::adapter_kind(runtime).unwrap(), action, context)
     }
 
     #[test]
@@ -2476,7 +2551,7 @@ mod tests {
         assert_eq!(source.webui_dependency_inspections.get(), 0);
 
         let mismatched = build_execution_plan(
-            "cherry-studio",
+            RuntimeAdapterKind::CherryStudio,
             RuntimeOperationAction::Open,
             RuntimePlanningContext::Docker(DockerContext { target: None }),
         );
