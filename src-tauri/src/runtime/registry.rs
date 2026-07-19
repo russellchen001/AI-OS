@@ -62,3 +62,9 @@ pub fn definitions() -> Vec<RuntimeDefinition> {
         },
     ]
 }
+
+pub(crate) fn contains_id(runtime_id: &str) -> bool {
+    definitions()
+        .iter()
+        .any(|definition| definition.id == runtime_id)
+}

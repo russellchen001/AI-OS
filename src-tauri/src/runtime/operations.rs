@@ -8,20 +8,21 @@ use super::models::{
     RuntimeOperationProgress, RuntimeOperationResult, RuntimeOperationSnapshot,
     RuntimeOperationState,
 };
+use super::registry;
 
 const TERMINAL_RETENTION_MINUTES: i64 = 30;
 const MAX_TERMINAL_OPERATIONS: usize = 200;
 pub(crate) const MAX_ACTIVE_OPERATIONS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeOperationProgressUpdate {
+pub(crate) enum RuntimeOperationProgressUpdate {
     Applied(RuntimeOperationSnapshot),
     Unchanged(RuntimeOperationSnapshot),
 }
 
 impl RuntimeOperationProgressUpdate {
     #[allow(dead_code)]
-    pub fn operation(&self) -> &RuntimeOperationSnapshot {
+    pub(crate) fn operation(&self) -> &RuntimeOperationSnapshot {
         match self {
             Self::Applied(operation) | Self::Unchanged(operation) => operation,
         }
@@ -133,7 +134,7 @@ impl RuntimeOperationManager {
         cancellable: bool,
         now: DateTime<Utc>,
     ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
-        if !is_canonical_runtime_id(runtime_id) {
+        if !registry::contains_id(runtime_id) {
             return Err(operation_runtime_not_found());
         }
 
@@ -450,13 +451,6 @@ fn active_operation_count(store: &OperationStore) -> usize {
         .count()
 }
 
-fn is_canonical_runtime_id(runtime_id: &str) -> bool {
-    matches!(
-        runtime_id,
-        "openclaw" | "ollama" | "docker-desktop" | "open-webui" | "cherry-studio"
-    )
-}
-
 fn operation_runtime_not_found() -> NormalizedRuntimeError {
     safe_error(
         RuntimeErrorCode::RuntimeNotFound,
@@ -523,6 +517,51 @@ mod tests {
             "Runtime operation failed.",
             true,
         )
+    }
+
+    #[test]
+    fn every_registered_runtime_id_can_be_admitted() {
+        for definition in registry::definitions() {
+            let manager = RuntimeOperationManager::default();
+            let admission = manager
+                .admit_operation(&definition.id, RuntimeOperationAction::Open, false)
+                .unwrap();
+
+            assert!(matches!(
+                admission,
+                RuntimeOperationAdmission::Accepted { operation }
+                    if operation.runtime_id == definition.id
+            ));
+        }
+    }
+
+    #[test]
+    fn unknown_runtime_id_is_rejected() {
+        let error = RuntimeOperationManager::default()
+            .admit_operation(
+                "definitely-not-a-runtime",
+                RuntimeOperationAction::Open,
+                false,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, RuntimeErrorCode::RuntimeNotFound);
+    }
+
+    #[test]
+    fn runtime_id_validation_is_case_sensitive() {
+        let manager = RuntimeOperationManager::default();
+        assert!(matches!(
+            manager
+                .admit_operation("ollama", RuntimeOperationAction::Open, false)
+                .unwrap(),
+            RuntimeOperationAdmission::Accepted { .. }
+        ));
+
+        let error = RuntimeOperationManager::default()
+            .admit_operation("Ollama", RuntimeOperationAction::Open, false)
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeErrorCode::RuntimeNotFound);
     }
 
     #[test]
