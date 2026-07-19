@@ -350,6 +350,17 @@ Final P9-M1C2 guarantees:
 
 This record completes P9-M1C2 only; it does not record full P9-M1C completion or start P9-M1C3.
 
+### P9-M1C3 Backend Compatibility and P9-M1 Closure
+
+- **P9-M1C3:** Completed
+- **P9-M1:** Completed
+- **Individual compatibility:** The undocumented backend IPC commands `start_service`, `stop_service`, and `open_service` are removed without aliases or runtime warnings; canonical Runtime Operations and canonical status IPC are the only supported individual lifecycle/Open and status paths.
+- **Bulk exception:** Legacy `start_all` and `stop_all` remain non-canonical compatibility behavior outside the P9-M1 canonicalization claim. Their existing backend implementations, frontend wrappers, controls, ordering, messages, refresh timing, and isolation remain unchanged.
+- **Follow-up:** **P9-FU-RUNTIME-BULK — Canonical Runtime Bulk Operations** owns aggregate semantics and eventual Legacy Bulk removal.
+- **Boundary:** No frontend/UI behavior, dependency, manifest, lockfile, stored schema, Tauri capability, or permission changed.
+
+P9-M1 completion establishes canonical Runtime identity, status, observable individual operations, reconciliation, and individual UI ownership. It does not claim that Legacy Bulk is canonical, transactional, rollback-capable, recorded in operation history, or admitted through canonical operation policy.
+
 ## Out of Scope for P9-M1
 
 - Unified Session

@@ -149,3 +149,9 @@ The V5 scheduling correction assigns endpoint values and advances endpoint Gener
 P9-M1C2 removes the unreferenced `useServices` and `useServiceActions` frontend hooks and their unused individual `startSingleService`, `stopSingleService`, and `openSingleService` wrappers. No live frontend caller remains for `start_service`, `stop_service`, or `open_service`; individual Runtime controls continue through the canonical typed Runtime Operation boundary without UI or operation-semantic changes.
 
 Legacy `startAllServices` and `stopAllServices` remain isolated through `useLegacyBulkRuntimeActions`, with their messages, ordering, timing, and backend Bulk commands unchanged. All backend Legacy lifecycle commands remain registered for compatibility. M1C3 remains unimplemented, and full P9-M1C is not yet complete.
+
+## M1C3 Backend Compatibility Decision
+
+P9-M1C3 removes the undocumented internal Legacy individual IPC commands `start_service`, `stop_service`, and `open_service` after repository-wide inventory confirmed that no supported frontend caller remained. The retired names are not aliased to canonical commands, no runtime or UI deprecation warning is added, and any future reuse requires a new explicit compatibility contract. Canonical typed Runtime Operations remain the only supported individual lifecycle and Open path, with canonical Runtime status IPC retaining sole status-query ownership.
+
+Legacy `start_all` and `stop_all` remain explicitly non-canonical compatibility behavior with their frontend wrappers, UI, ordering, messages, refresh timing, and isolation unchanged. Their retention does not imply a Bulk transaction, rollback, aggregate operation history, or canonical admission. Removal is gated by **P9-FU-RUNTIME-BULK — Canonical Runtime Bulk Operations**. P9-M1 completes with this explicit Bulk exception.
