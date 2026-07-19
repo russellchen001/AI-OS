@@ -188,9 +188,22 @@ Implementation scope:
 - Current adapters remain non-cancellable
 - No automatic runtime status, health, readiness, or OpenClaw Gateway refresh
 
-M1B2B2 is implemented separately from M1B2B3. It adds no frontend service wrapper, listener, reconciliation helper, hook, page, component, legacy delegation, stored operation persistence, or UI migration. M1B2B3 and M1C remain unimplemented.
+M1B2B2 is implemented separately from M1B2B3. It adds no frontend service wrapper, listener, reconciliation helper, hook, page, component, legacy delegation, stored operation persistence, or UI migration. The typed client boundary is implemented in the later M1B2B3 slice; M1C remains unimplemented.
 
 Code-review hardening freezes Registry-owned `RuntimeAdapterKind` during preflight and uses exhaustive adapter dispatch throughout planning. Accepted cancellation mutations now have an explicit Applied/Unchanged outcome and emit only when applied. Scheduling rejection or panic is terminalized without returning queued state, while terminal races return the existing winner without duplicate emission. Canonical emission catches emitter errors and panics without changing operation truth; panic payloads do not enter state, IPC, or events. Process-global panic-hook behavior remains unchanged and outside this slice.
+
+### M1B2B3 — Typed Runtime Operation Client Boundary
+
+Implementation scope:
+
+- Canonical TypeScript start-request contract
+- Typed invoke wrappers for start, get, and cancel
+- One `runtime://operation` listener wrapper with version-1 filtering and full-snapshot delivery
+- Revision-only snapshot reconciliation with fixed safe mismatched-ID rejection
+- Consumer-owned unlisten lifecycle with no retained global subscription state
+- Rust/TypeScript contract-parity and static wrapper-consumer audits
+
+M1B2B3 was implemented separately from B1 and B2. No React page, hook, or component consumes the new client boundary, and no UI migration, legacy delegation, runtime-status refresh, or stored-data change was added. Complete M1B2B approval and merge remain pending final review and manual integration validation. M1C remains unimplemented.
 
 ## M1C — Frontend Migration and Compatibility Cleanup
 

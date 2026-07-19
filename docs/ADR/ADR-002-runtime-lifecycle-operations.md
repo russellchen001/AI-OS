@@ -98,7 +98,17 @@ All canonical event emission is isolated from both ordinary emitter errors and e
 
 The additive native IPC boundary contains exactly `start_runtime_operation`, `get_runtime_operation`, and `cancel_runtime_operation`. All current adapters remain non-cancellable, so active cancellation returns `cancellation-unsupported` and terminal cancellation returns `cancellation-too-late` without mutation or emission. Lifecycle completion updates only operation state; it does not refresh runtime status, health, readiness, or OpenClaw Gateway connectivity.
 
-M1B2B2 does not add frontend wrappers or listeners, migrate legacy commands or UI, persist operations, or implement status reconciliation. M1B2B3 and M1C remain unimplemented.
+M1B2B2 itself does not add frontend wrappers or listeners, migrate legacy commands or UI, persist operations, or implement status reconciliation. The typed client boundary is implemented separately in M1B2B3; M1C remains unimplemented.
+
+## M1B2B3 Typed Client Boundary
+
+The unused TypeScript Runtime service now exposes typed wrappers for `start_runtime_operation`, `get_runtime_operation`, and `cancel_runtime_operation` without rewriting normalized backend errors or delegating to legacy commands. The start request retains the canonical `{ runtimeId, action, endpointUrl? }` shape and returns the accepted/conflict/rejected admission union.
+
+One listener wrapper subscribes to exactly `runtime://operation`, accepts only version-1 payloads with a present operation object, and passes the full canonical snapshot to its caller. Unknown versions and malformed payloads are ignored. The wrapper returns Tauri's exact unlisten function and retains no global subscription state; future consumers own listener lifecycle.
+
+Snapshot reconciliation uses only operation ID and revision. A null current value accepts the incoming snapshot, higher revisions replace current state, and equal or lower revisions preserve it. Mismatched operation IDs produce a fixed payload-free error. The helper does not merge fields, mutate inputs, or use timestamps or arrival order.
+
+M1B2B3 adds no React consumer, UI migration, runtime-status refresh, persistence, or legacy delegation. It was implemented separately from B1 and B2. Complete M1B2B approval and merge remain pending final review and manual integration validation; M1C remains unimplemented.
 
 ## Consequences
 

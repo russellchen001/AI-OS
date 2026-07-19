@@ -118,6 +118,12 @@ export type RuntimeOperationAction =
   | "restart"
   | "open";
 
+export type StartRuntimeOperationRequest = {
+  runtimeId: string;
+  action: RuntimeOperationAction;
+  endpointUrl?: string;
+};
+
 export type RuntimeOperationState =
   | "queued"
   | "running"
