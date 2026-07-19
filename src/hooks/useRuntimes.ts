@@ -70,10 +70,21 @@ function useRuntimes({
     ollamaUrl,
     openWebUiUrl,
   });
-  endpointRef.current = {
-    ollamaUrl,
-    openWebUiUrl,
-  };
+  const endpointGenerationRef = useRef(0);
+  if (
+    endpointRef.current.ollamaUrl !==
+      ollamaUrl ||
+    endpointRef.current.openWebUiUrl !==
+      openWebUiUrl
+  ) {
+    endpointRef.current = {
+      ollamaUrl,
+      openWebUiUrl,
+    };
+    endpointGenerationRef.current += 1;
+  }
+  const scheduledEndpointGenerationRef =
+    useRef(-1);
 
   const inFlightRef = useRef<
     Promise<void> | null
@@ -83,37 +94,57 @@ function useRuntimes({
   );
 
   const executeStatusQuery = useCallback(
-    async () => {
-      const endpoints = endpointRef.current;
+    async (
+      queryGeneration: number,
+      endpoints: RuntimeStatusRequest,
+    ) => {
       const nextStatuses =
         await getRuntimeStatuses({
           ollamaUrl: endpoints.ollamaUrl,
           openWebUiUrl:
             endpoints.openWebUiUrl,
         });
-      setStatuses(nextStatuses);
-      setStatusError("");
-      setLastUpdated(
-        new Date().toLocaleTimeString(
-          [],
-          {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          },
-        ),
-      );
+      if (
+        queryGeneration ===
+        endpointGenerationRef.current
+      ) {
+        setStatuses(nextStatuses);
+        setStatusError("");
+        setLastUpdated(
+          new Date().toLocaleTimeString(
+            [],
+            {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            },
+          ),
+        );
+      }
     },
     [],
   );
 
   const startStatusQuery = useCallback(() => {
     setIsRefreshingStatuses(true);
-    const query = executeStatusQuery()
+    const queryGeneration =
+      endpointGenerationRef.current;
+    const queryEndpoints = {
+      ...endpointRef.current,
+    };
+    const query = executeStatusQuery(
+      queryGeneration,
+      queryEndpoints,
+    )
       .catch(() => {
-        setStatusError(
-          "Runtime status is unavailable.",
-        );
+        if (
+          queryGeneration ===
+          endpointGenerationRef.current
+        ) {
+          setStatusError(
+            "Runtime status is unavailable.",
+          );
+        }
         throw new Error(
           "Runtime status refresh failed.",
         );
@@ -126,16 +157,28 @@ function useRuntimes({
         inFlightRef.current = null;
         const trailing = trailingRef.current;
         trailingRef.current = null;
-        if (trailing === null) {
+        const endpointChanged =
+          queryGeneration !==
+          endpointGenerationRef.current;
+        if (
+          trailing === null &&
+          !endpointChanged
+        ) {
           setIsRefreshingStatuses(false);
           return;
         }
 
         const trailingQuery = startStatusQuery();
-        trailingQuery.then(
-          trailing.resolve,
-          trailing.reject,
-        );
+        if (trailing !== null) {
+          trailingQuery.then(
+            trailing.resolve,
+            trailing.reject,
+          );
+        } else {
+          void trailingQuery.catch(
+            () => undefined,
+          );
+        }
       });
     inFlightRef.current = query;
     return query;
@@ -187,8 +230,30 @@ function useRuntimes({
   ]);
 
   useEffect(() => {
-    void refresh();
+    void refreshDefinitions();
+  }, [refreshDefinitions]);
 
+  useEffect(() => {
+    const generation =
+      endpointGenerationRef.current;
+    if (
+      scheduledEndpointGenerationRef.current ===
+      generation
+    ) {
+      return;
+    }
+    scheduledEndpointGenerationRef.current =
+      generation;
+    void refreshStatuses().catch(
+      () => undefined,
+    );
+  }, [
+    ollamaUrl,
+    openWebUiUrl,
+    refreshStatuses,
+  ]);
+
+  useEffect(() => {
     if (!refreshInterval) {
       return;
     }
@@ -206,7 +271,6 @@ function useRuntimes({
       window.clearInterval(interval);
     };
   }, [
-    refresh,
     refreshInterval,
     refreshStatuses,
   ]);

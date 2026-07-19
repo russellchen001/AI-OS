@@ -95,6 +95,28 @@ RuntimeErrorCode
 function runtimeErrorCode(
   value: unknown,
 ): RuntimeErrorCode | null {
+  if (typeof value === "string") {
+    if (
+      RUNTIME_ERROR_CODES.has(
+        value as RuntimeErrorCode,
+      )
+    ) {
+      return value as RuntimeErrorCode;
+    }
+    if (value.length > 4096) {
+      return null;
+    }
+    try {
+      const parsed: unknown =
+        JSON.parse(value);
+      return typeof parsed === "object" &&
+        parsed !== null
+        ? runtimeErrorCode(parsed)
+        : null;
+    } catch {
+      return null;
+    }
+  }
   if (
     typeof value !== "object" ||
     value === null ||
@@ -245,6 +267,19 @@ export default function useRuntimeOperations({
   const pendingRef = useRef(
     new Set<string>(),
   );
+
+  const isCanonicalActivityActive =
+    useCallback(
+      () =>
+        pendingRef.current.size > 0 ||
+        Object.values(
+          operationsRef.current,
+        ).some(
+          (operation) =>
+            !isTerminal(operation),
+        ),
+      [],
+    );
 
   const handleTerminal = useCallback(
     (
@@ -599,6 +634,7 @@ export default function useRuntimeOperations({
     operationsById,
     listenerState,
     runRuntimeAction,
+    isCanonicalActivityActive,
     ...derived,
   };
 }

@@ -269,6 +269,8 @@ M1C1 does not complete M1C. M1C2 remains responsible for the remaining caller au
 
 M1C1 review corrections preserve independently successful Runtime definitions and statuses, centralize all status-query coalescing in `useRuntimes`, keep the operation listener mounted once, and bound terminal handling to observed state transitions. Hook-level active-channel rejection prevents duplicate admission before invocation. Canonical activity disables Legacy Bulk, active Legacy Bulk disables all canonical controls, and unstable Runtime lifecycle status disables only the lifecycle toggle. Fixed error-code classification handles rejected admissions and thrown IPC failures without exposing payload details. No M1C2 or M1C3 work was included.
 
+Final review corrections keep Legacy Bulk isolation active until its existing final delayed status refresh settles and use synchronous ref-backed guards in both Bulk and canonical handlers. Endpoint configuration changes trigger one coalesced status refresh without definition reload; endpoint generations prevent old-endpoint responses from replacing current status. Error-code extraction accepts safe object, bounded JSON-string, and exact-code forms without exposing raw error data. M1C2 and M1C3 remain unimplemented.
+
 ## Out of Scope for P9-M1
 
 - Unified Session

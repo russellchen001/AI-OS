@@ -388,12 +388,14 @@ function App() {
 
   const {
     globalAction,
+    bulkIsolationActive,
+    isBulkIsolationActive,
     handleGlobalToggle,
   } = useLegacyBulkRuntimeActions({
     allRunning,
-    hasCanonicalActivity:
+    isCanonicalActivityActive:
       runtimeOperations
-        .hasCanonicalActivity,
+        .isCanonicalActivityActive,
     refreshStatuses,
     notify: handleMessage,
   });
@@ -404,7 +406,7 @@ function App() {
       action: "start" | "stop" | "open",
     ) => {
       if (
-        globalAction !== null ||
+        isBulkIsolationActive() ||
         !runtimes.runtimes.some(
           (runtime) =>
             runtime.id === runtimeId,
@@ -428,7 +430,7 @@ function App() {
     [
       runtimeOperations,
       runtimes.runtimes,
-      globalAction,
+      isBulkIsolationActive,
       settings.ollamaUrl,
       settings.openWebUiUrl,
     ],
@@ -621,6 +623,9 @@ function App() {
             globalAction={
               globalAction
             }
+            bulkIsolationActive={
+              bulkIsolationActive
+            }
             onGlobalToggle={
               handleGlobalToggle
             }
@@ -671,6 +676,9 @@ function App() {
             }
             globalAction={
               globalAction
+            }
+            bulkIsolationActive={
+              bulkIsolationActive
             }
             onGlobalToggle={
               handleGlobalToggle

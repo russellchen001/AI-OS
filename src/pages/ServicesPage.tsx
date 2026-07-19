@@ -17,6 +17,7 @@ type ServicesPageProps = {
     | "start"
     | "stop"
     | null;
+  bulkIsolationActive: boolean;
   onGlobalToggle: () => void;
   onStartService: (
     runtimeId: string,
@@ -35,6 +36,7 @@ function ServicesPage({
   allRunning,
   hasCanonicalActivity,
   globalAction,
+  bulkIsolationActive,
   onGlobalToggle,
   onStartService,
   onStopService,
@@ -55,7 +57,7 @@ function ServicesPage({
         <ServiceToggle
           checked={allRunning}
           disabled={
-            globalAction !== null ||
+            bulkIsolationActive ||
             hasCanonicalActivity
           }
           loading={
@@ -79,7 +81,7 @@ function ServicesPage({
         services={services}
         cardStyle={cardStyle}
         bulkActive={
-          globalAction !== null
+          bulkIsolationActive
         }
         onStart={onStartService}
         onStop={onStopService}

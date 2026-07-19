@@ -1,5 +1,7 @@
 import {
   useCallback,
+  useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -15,73 +17,142 @@ type LegacyBulkAction =
 
 type UseLegacyBulkRuntimeActionsOptions = {
   allRunning: boolean;
-  hasCanonicalActivity: boolean;
   refreshStatuses: () => Promise<void>;
   notify: (message: string) => void;
+  isCanonicalActivityActive: () => boolean;
 };
 
 // Bulk behavior remains on the legacy boundary pending a separately approved design.
 export default function useLegacyBulkRuntimeActions({
   allRunning,
-  hasCanonicalActivity,
   refreshStatuses,
   notify,
+  isCanonicalActivityActive,
 }: UseLegacyBulkRuntimeActionsOptions) {
   const [globalAction, setGlobalAction] =
     useState<LegacyBulkAction>(null);
+  const [bulkIsolationActive, setBulkIsolationActive] =
+    useState(false);
+  const bulkIsolationRef = useRef(false);
+  const mountedRef = useRef(true);
+  const timeoutHandlesRef = useRef(
+    new Set<number>(),
+  );
+
+  const setIsolation = useCallback(
+    (active: boolean) => {
+      bulkIsolationRef.current = active;
+      if (mountedRef.current) {
+        setBulkIsolationActive(active);
+      }
+    },
+    [],
+  );
+
+  const scheduleRefresh = useCallback(
+    (
+      delay: number,
+      releaseAfter: boolean,
+    ) => {
+      const handle = window.setTimeout(
+        () => {
+          timeoutHandlesRef.current.delete(
+            handle,
+          );
+          void refreshStatuses()
+            .catch(() => undefined)
+            .finally(() => {
+              if (releaseAfter) {
+                setIsolation(false);
+              }
+            });
+        },
+        delay,
+      );
+      timeoutHandlesRef.current.add(handle);
+    },
+    [
+      refreshStatuses,
+      setIsolation,
+    ],
+  );
+
+  const isBulkIsolationActive = useCallback(
+    () => bulkIsolationRef.current,
+    [],
+  );
 
   const startAll = useCallback(async () => {
+    if (
+      bulkIsolationRef.current ||
+      isCanonicalActivityActive()
+    ) {
+      return;
+    }
+
+    setIsolation(true);
     try {
       setGlobalAction("start");
       notify("🚀 Starting services...");
       notify(await startAllServices());
-
-      for (const delay of [
-        5000,
-        20000,
-        45000,
-      ]) {
-        window.setTimeout(() => {
-          void refreshStatuses().catch(
-            () => undefined,
-          );
-        }, delay);
+      if (!mountedRef.current) {
+        return;
       }
+      scheduleRefresh(5000, false);
+      scheduleRefresh(20000, false);
+      scheduleRefresh(45000, true);
     } catch {
+      setIsolation(false);
       notify("Start All failed.");
     } finally {
-      setGlobalAction(null);
+      if (mountedRef.current) {
+        setGlobalAction(null);
+      }
     }
   }, [
+    isCanonicalActivityActive,
     notify,
-    refreshStatuses,
+    scheduleRefresh,
+    setIsolation,
   ]);
 
   const stopAll = useCallback(async () => {
+    if (
+      bulkIsolationRef.current ||
+      isCanonicalActivityActive()
+    ) {
+      return;
+    }
+
+    setIsolation(true);
     try {
       setGlobalAction("stop");
       notify("🛑 Stopping services...");
       notify(await stopAllServices());
-      window.setTimeout(() => {
-        void refreshStatuses().catch(
-          () => undefined,
-        );
-      }, 8000);
+      if (!mountedRef.current) {
+        return;
+      }
+      scheduleRefresh(8000, true);
     } catch {
+      setIsolation(false);
       notify("Stop All failed.");
     } finally {
-      setGlobalAction(null);
+      if (mountedRef.current) {
+        setGlobalAction(null);
+      }
     }
   }, [
+    isCanonicalActivityActive,
     notify,
-    refreshStatuses,
+    scheduleRefresh,
+    setIsolation,
   ]);
 
   const handleGlobalToggle = useCallback(
     () => {
       if (
-        globalAction !== null ||
-        hasCanonicalActivity
+        bulkIsolationRef.current ||
+        isCanonicalActivityActive()
       ) {
         return;
       }
@@ -91,15 +162,29 @@ export default function useLegacyBulkRuntimeActions({
     },
     [
       allRunning,
-      globalAction,
-      hasCanonicalActivity,
+      isCanonicalActivityActive,
       startAll,
       stopAll,
     ],
   );
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      bulkIsolationRef.current = false;
+      for (const handle of
+        timeoutHandlesRef.current) {
+        window.clearTimeout(handle);
+      }
+      timeoutHandlesRef.current.clear();
+    };
+  }, []);
+
   return {
     globalAction,
+    bulkIsolationActive,
+    isBulkIsolationActive,
     handleGlobalToggle,
   };
 }

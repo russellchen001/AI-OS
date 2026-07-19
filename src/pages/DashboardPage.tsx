@@ -37,6 +37,7 @@ type DashboardPageProps = {
     | "start"
     | "stop"
     | null;
+  bulkIsolationActive: boolean;
   onGlobalToggle: () => void;
   onStartService: (
     runtimeId: string,
@@ -148,6 +149,7 @@ function DashboardPage({
   hasCanonicalActivity,
   isChecking,
   globalAction,
+  bulkIsolationActive,
   onGlobalToggle,
   onStartService,
   onStopService,
@@ -697,7 +699,7 @@ function DashboardPage({
           services={services}
           cardStyle={cardStyle}
           bulkActive={
-            globalAction !== null
+            bulkIsolationActive
           }
           onStart={
             onStartService
@@ -715,7 +717,7 @@ function DashboardPage({
         <ServiceToggle
           checked={allRunning}
           disabled={
-            globalAction !== null ||
+            bulkIsolationActive ||
             hasCanonicalActivity
           }
           loading={
