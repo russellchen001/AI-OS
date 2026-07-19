@@ -231,7 +231,6 @@ pub enum RuntimeOperationAdmission {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub struct RuntimeOperationEvent {
     pub version: u8,
     pub operation: RuntimeOperationSnapshot,

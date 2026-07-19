@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::Deserialize;
 use url::{Host, Url};
 
 use crate::openclaw;
@@ -14,6 +15,7 @@ use super::models::{
     NormalizedRuntimeError, RuntimeErrorCode, RuntimeLocation, RuntimeOperationAction,
     RuntimeOperationProgress,
 };
+use super::registry;
 
 const OPENCLAW_SERVICE: &str = "ai.openclaw.gateway";
 const DOCKER_CLI: &str = "/Applications/Docker.app/Contents/Resources/bin/docker";
@@ -31,6 +33,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(350);
 const CLEANUP_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
+pub(crate) const PREPARATION_TIMEOUT: Duration = Duration::from_secs(30);
 const DOCKER_ENV_REMOVALS: &[&str] = &[
     "DOCKER_HOST",
     "DOCKER_CONTEXT",
@@ -140,11 +143,75 @@ fn classify_url_host(parsed: &Url) -> Option<RuntimeLocation> {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeLifecycleRequest {
-    pub runtime_id: String,
-    pub action: RuntimeOperationAction,
-    pub endpoint_url: Option<String>,
+    pub(crate) runtime_id: String,
+    pub(crate) action: RuntimeOperationAction,
+    pub(crate) endpoint_url: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ValidatedRuntimeLifecycleRequest {
+    runtime_id: String,
+    action: RuntimeOperationAction,
+    endpoint: Option<ValidatedEndpoint>,
+}
+
+impl ValidatedRuntimeLifecycleRequest {
+    pub(crate) fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+
+    pub(crate) fn action(&self) -> RuntimeOperationAction {
+        self.action
+    }
+}
+
+impl std::fmt::Debug for ValidatedRuntimeLifecycleRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ValidatedRuntimeLifecycleRequest")
+            .field("runtime_id", &self.runtime_id)
+            .field("action", &self.action)
+            .field("endpoint_present", &self.endpoint.is_some())
+            .finish()
+    }
+}
+
+pub(crate) fn validate_runtime_lifecycle_request(
+    request: RuntimeLifecycleRequest,
+) -> Result<ValidatedRuntimeLifecycleRequest, NormalizedRuntimeError> {
+    if !registry::contains_id(&request.runtime_id) {
+        return Err(runtime_not_found());
+    }
+    if request.action == RuntimeOperationAction::Restart && request.runtime_id != "open-webui" {
+        return Err(unsupported());
+    }
+
+    let endpoint = match request.runtime_id.as_str() {
+        "ollama" | "open-webui" => {
+            let endpoint = classify_endpoint(
+                request
+                    .endpoint_url
+                    .as_deref()
+                    .ok_or_else(invalid_configuration)?,
+            )?;
+            if endpoint.location() == RuntimeLocation::Remote
+                && request.action != RuntimeOperationAction::Open
+            {
+                return Err(invalid_location());
+            }
+            Some(endpoint)
+        }
+        _ => None,
+    };
+
+    Ok(ValidatedRuntimeLifecycleRequest {
+        runtime_id: request.runtime_id,
+        action: request.action,
+        endpoint,
+    })
 }
 
 impl std::fmt::Debug for RuntimeLifecycleRequest {
@@ -317,45 +384,59 @@ trait ContextSource {
         &self,
         action: RuntimeOperationAction,
     ) -> Result<OpenClawContext, NormalizedRuntimeError>;
-    fn ollama(&self, endpoint: ValidatedEndpoint, inspect_ownership: bool) -> OllamaContext;
+    fn ollama(
+        &self,
+        endpoint: ValidatedEndpoint,
+        inspect_ownership: bool,
+    ) -> Result<OllamaContext, NormalizedRuntimeError>;
     fn docker(
         &self,
         action: RuntimeOperationAction,
     ) -> Result<DockerContext, NormalizedRuntimeError>;
-    fn open_webui(&self, endpoint: ValidatedEndpoint, inspect_dependency: bool)
-        -> OpenWebUiContext;
+    fn open_webui(
+        &self,
+        endpoint: ValidatedEndpoint,
+        inspect_dependency: bool,
+    ) -> Result<OpenWebUiContext, NormalizedRuntimeError>;
     fn cherry(&self) -> CherryContext;
 }
 
-struct NativeContextSource;
+struct NativeContextSource {
+    deadline: Instant,
+}
 
 impl ContextSource for NativeContextSource {
     fn openclaw(
         &self,
         action: RuntimeOperationAction,
     ) -> Result<OpenClawContext, NormalizedRuntimeError> {
-        collect_openclaw_context(action)
+        collect_openclaw_context(action, self.deadline)
     }
 
-    fn ollama(&self, endpoint: ValidatedEndpoint, inspect_ownership: bool) -> OllamaContext {
-        OllamaContext {
+    fn ollama(
+        &self,
+        endpoint: ValidatedEndpoint,
+        inspect_ownership: bool,
+    ) -> Result<OllamaContext, NormalizedRuntimeError> {
+        Ok(OllamaContext {
             endpoint,
             installation: if inspect_ownership {
-                detect_ollama_installation()
+                detect_ollama_installation(self.deadline)?
             } else {
                 OllamaInstallation::OtherInstallation
             },
-        }
+        })
     }
 
     fn docker(
         &self,
         action: RuntimeOperationAction,
     ) -> Result<DockerContext, NormalizedRuntimeError> {
+        ensure_preparation_time(self.deadline)?;
         let target = match action {
             RuntimeOperationAction::Open => None,
             RuntimeOperationAction::Start => Some(expected_local_docker_target()?),
-            RuntimeOperationAction::Stop => Some(establish_local_docker_target()?),
+            RuntimeOperationAction::Stop => Some(establish_local_docker_target(self.deadline)?),
             RuntimeOperationAction::Restart => None,
         };
         Ok(DockerContext { target })
@@ -365,16 +446,16 @@ impl ContextSource for NativeContextSource {
         &self,
         endpoint: ValidatedEndpoint,
         inspect_dependency: bool,
-    ) -> OpenWebUiContext {
+    ) -> Result<OpenWebUiContext, NormalizedRuntimeError> {
         if inspect_dependency {
-            let (dependency, target) = inspect_open_webui_dependency(&endpoint);
-            OpenWebUiContext::Manage {
+            let (dependency, target) = inspect_open_webui_dependency(&endpoint, self.deadline)?;
+            Ok(OpenWebUiContext::Manage {
                 endpoint,
                 dependency,
                 target,
-            }
+            })
         } else {
-            OpenWebUiContext::Open { endpoint }
+            Ok(OpenWebUiContext::Open { endpoint })
         }
     }
 
@@ -383,90 +464,79 @@ impl ContextSource for NativeContextSource {
     }
 }
 
-// M1B2B will use this single entry point so context cannot be mixed across requests.
-#[allow(dead_code)]
 pub(crate) fn prepare_execution_plan(
-    request: &RuntimeLifecycleRequest,
+    request: &ValidatedRuntimeLifecycleRequest,
+    deadline: Instant,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
-    prepare_with_source(request, &NativeContextSource)
+    if Instant::now() >= deadline {
+        return Err(readiness_timeout());
+    }
+    let plan = prepare_validated_with_source(request, &NativeContextSource { deadline })?;
+    ensure_preparation_time(deadline)?;
+    Ok(plan)
 }
 
+#[cfg(test)]
 fn prepare_with_source(
     request: &RuntimeLifecycleRequest,
     source: &impl ContextSource,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
-    let context = collect_context_with(request, source)?;
-    build_execution_plan(request, context)
+    let validated = validate_runtime_lifecycle_request(request.clone())?;
+    prepare_validated_with_source(&validated, source)
 }
 
+fn prepare_validated_with_source(
+    request: &ValidatedRuntimeLifecycleRequest,
+    source: &impl ContextSource,
+) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
+    let context = collect_validated_context_with(request, source)?;
+    build_execution_plan(&request.runtime_id, request.action, context)
+}
+
+#[cfg(test)]
 fn collect_context_with(
     request: &RuntimeLifecycleRequest,
     source: &impl ContextSource,
 ) -> Result<RuntimePlanningContext, NormalizedRuntimeError> {
-    if !matches!(
-        request.runtime_id.as_str(),
-        "openclaw" | "ollama" | "docker-desktop" | "open-webui" | "cherry-studio"
-    ) {
-        return Err(runtime_not_found());
-    }
-    if request.action == RuntimeOperationAction::Restart
-        && matches!(
-            request.runtime_id.as_str(),
-            "openclaw" | "ollama" | "docker-desktop" | "cherry-studio"
-        )
-    {
-        return Err(unsupported());
-    }
+    let validated = validate_runtime_lifecycle_request(request.clone())?;
+    collect_validated_context_with(&validated, source)
+}
+
+fn collect_validated_context_with(
+    request: &ValidatedRuntimeLifecycleRequest,
+    source: &impl ContextSource,
+) -> Result<RuntimePlanningContext, NormalizedRuntimeError> {
     match request.runtime_id.as_str() {
         "openclaw" => source
             .openclaw(request.action)
             .map(RuntimePlanningContext::OpenClaw),
         "ollama" => {
-            let endpoint = explicit_endpoint(request)?;
-            if endpoint.location() == RuntimeLocation::Remote
-                && request.action != RuntimeOperationAction::Open
-            {
-                return Err(invalid_location());
-            }
+            let endpoint = request.endpoint.clone().ok_or_else(invalid_configuration)?;
             Ok(RuntimePlanningContext::Ollama(source.ollama(
                 endpoint,
                 request.action != RuntimeOperationAction::Open,
-            )))
+            )?))
         }
         "docker-desktop" => source
             .docker(request.action)
             .map(RuntimePlanningContext::Docker),
         "open-webui" => {
-            let endpoint = explicit_endpoint(request)?;
-            if endpoint.location() == RuntimeLocation::Remote
-                && request.action != RuntimeOperationAction::Open
-            {
-                return Err(invalid_location());
-            }
+            let endpoint = request.endpoint.clone().ok_or_else(invalid_configuration)?;
             Ok(RuntimePlanningContext::OpenWebUi(source.open_webui(
                 endpoint,
                 request.action != RuntimeOperationAction::Open,
-            )))
+            )?))
         }
         "cherry-studio" => Ok(RuntimePlanningContext::Cherry(source.cherry())),
         _ => unreachable!(),
     }
 }
 
-fn explicit_endpoint(
-    request: &RuntimeLifecycleRequest,
-) -> Result<ValidatedEndpoint, NormalizedRuntimeError> {
-    classify_endpoint(
-        request
-            .endpoint_url
-            .as_deref()
-            .ok_or_else(invalid_configuration)?,
-    )
-}
-
 fn collect_openclaw_context(
     action: RuntimeOperationAction,
+    deadline: Instant,
 ) -> Result<OpenClawContext, NormalizedRuntimeError> {
+    ensure_preparation_time(deadline)?;
     if action == RuntimeOperationAction::Open {
         let endpoint = openclaw::active_runtime_endpoint()
             .map_err(|_| configuration_unavailable())?
@@ -482,9 +552,10 @@ fn collect_openclaw_context(
     if gateway.location == RuntimeLocation::Remote {
         return Ok(OpenClawContext::Open { gateway });
     }
-    let launchctl_domain = current_launchctl_domain()?;
+    let launchctl_domain = current_launchctl_domain(deadline)?;
     let target = format!("{launchctl_domain}/{OPENCLAW_SERVICE}");
-    let service_state = inspect_launch_service(&target, PROBE_TIMEOUT);
+    let service_state = inspect_launch_service(&target, remaining_probe_time(deadline)?);
+    ensure_preparation_time(deadline)?;
     let bootstrap_plist = dirs::home_dir()
         .map(|home| home.join("Library/LaunchAgents/ai.openclaw.gateway.plist"))
         .filter(|path| path.is_file())
@@ -555,8 +626,8 @@ fn run_launchctl_print(target: &str, timeout: Duration) -> LaunchctlPrintOutcome
     }
 }
 
-fn current_launchctl_domain() -> Result<String, NormalizedRuntimeError> {
-    let output = capture_command("/usr/bin/id", &["-u"], PROBE_TIMEOUT)?;
+fn current_launchctl_domain(deadline: Instant) -> Result<String, NormalizedRuntimeError> {
+    let output = capture_command("/usr/bin/id", &["-u"], remaining_probe_time(deadline)?)?;
     let uid = output.trim();
     if !uid.is_empty() && uid.bytes().all(|byte| byte.is_ascii_digit()) {
         Ok(format!("gui/{uid}"))
@@ -565,31 +636,44 @@ fn current_launchctl_domain() -> Result<String, NormalizedRuntimeError> {
     }
 }
 
-fn detect_ollama_installation() -> OllamaInstallation {
+fn detect_ollama_installation(
+    deadline: Instant,
+) -> Result<OllamaInstallation, NormalizedRuntimeError> {
     for brew in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"] {
+        ensure_preparation_time(deadline)?;
         if !Path::new(brew).is_file() {
             continue;
         }
-        let formula =
-            probe_status(brew, &["list", "--formula", "ollama"], PROBE_TIMEOUT).unwrap_or(false);
+        let formula = probe_status(
+            brew,
+            &["list", "--formula", "ollama"],
+            remaining_probe_time(deadline)?,
+        )
+        .unwrap_or(false);
+        ensure_preparation_time(deadline)?;
         if !formula {
             continue;
         }
         let services =
-            capture_command(brew, &["services", "list"], PROBE_TIMEOUT).unwrap_or_default();
+            capture_command(brew, &["services", "list"], remaining_probe_time(deadline)?)
+                .unwrap_or_default();
+        ensure_preparation_time(deadline)?;
         if homebrew_service_managed(&services) {
-            return OllamaInstallation::HomebrewServiceManaged { brew_path: brew };
+            return Ok(OllamaInstallation::HomebrewServiceManaged { brew_path: brew });
         }
-        return OllamaInstallation::HomebrewFormulaInstalled { brew_path: brew };
+        return Ok(OllamaInstallation::HomebrewFormulaInstalled { brew_path: brew });
     }
-    if Path::new("/opt/homebrew/bin/ollama").is_file()
-        || Path::new("/usr/local/bin/ollama").is_file()
-        || Path::new("/Applications/Ollama.app").exists()
-    {
-        OllamaInstallation::OtherInstallation
-    } else {
-        OllamaInstallation::NotInstalled
-    }
+    ensure_preparation_time(deadline)?;
+    Ok(
+        if Path::new("/opt/homebrew/bin/ollama").is_file()
+            || Path::new("/usr/local/bin/ollama").is_file()
+            || Path::new("/Applications/Ollama.app").exists()
+        {
+            OllamaInstallation::OtherInstallation
+        } else {
+            OllamaInstallation::NotInstalled
+        },
+    )
 }
 
 fn homebrew_service_managed(output: &str) -> bool {
@@ -604,41 +688,51 @@ fn homebrew_service_managed(output: &str) -> bool {
 
 fn inspect_open_webui_dependency(
     endpoint: &ValidatedEndpoint,
-) -> (OpenWebUiDependency, Option<LocalDockerTarget>) {
+    deadline: Instant,
+) -> Result<(OpenWebUiDependency, Option<LocalDockerTarget>), NormalizedRuntimeError> {
     let first_process = probe_status(
         PGREP,
         &["-f", "/Docker.app/Contents/MacOS/Docker"],
-        PROBE_TIMEOUT,
+        remaining_probe_time(deadline)?,
     );
-    let second_process = probe_status(PGREP, &["-x", "Docker Desktop"], PROBE_TIMEOUT);
+    let second_process = probe_status(
+        PGREP,
+        &["-x", "Docker Desktop"],
+        remaining_probe_time(deadline)?,
+    );
+    ensure_preparation_time(deadline)?;
     let docker_process_running = match (first_process, second_process) {
         (Ok(first), Ok(second)) => first || second,
-        _ => return (OpenWebUiDependency::DockerInspectionFailed, None),
+        _ => return Ok((OpenWebUiDependency::DockerInspectionFailed, None)),
     };
     let docker_installed = docker_process_running || Path::new("/Applications/Docker.app").exists();
     if !docker_installed {
-        return (
+        return Ok((
             classify_open_webui_inspection(false, false, false, false, &[], None),
             None,
-        );
+        ));
     }
     if !docker_process_running {
-        return (OpenWebUiDependency::DockerInstalledStopped, None);
+        return Ok((OpenWebUiDependency::DockerInstalledStopped, None));
     }
-    let target = match establish_local_docker_target() {
+    let target = match establish_local_docker_target(deadline) {
         Ok(target) => target,
-        Err(_) => return (OpenWebUiDependency::DockerInspectionFailed, None),
+        Err(error) if error.code == RuntimeErrorCode::ReadinessTimeout => return Err(error),
+        Err(_) => return Ok((OpenWebUiDependency::DockerInspectionFailed, None)),
     };
-    let daemon_ready = match probe_native_status(&docker_command(&target, ["info"]), PROBE_TIMEOUT)
-    {
+    let daemon_ready = match probe_native_status(
+        &docker_command(&target, ["info"]),
+        remaining_probe_time(deadline)?,
+    ) {
         Ok(ready) => ready,
-        Err(_) => return (OpenWebUiDependency::DockerInspectionFailed, Some(target)),
+        Err(_) => return Ok((OpenWebUiDependency::DockerInspectionFailed, Some(target))),
     };
+    ensure_preparation_time(deadline)?;
     if !daemon_ready {
-        return (
+        return Ok((
             OpenWebUiDependency::DockerProcessPresentDaemonUnavailable,
             Some(target),
-        );
+        ));
     }
     let output = capture_native_command(
         &docker_command(
@@ -650,11 +744,12 @@ fn inspect_open_webui_dependency(
                 "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}",
             ],
         ),
-        PROBE_TIMEOUT,
+        remaining_probe_time(deadline)?,
     );
     let Ok(output) = output else {
-        return (OpenWebUiDependency::DockerInspectionFailed, Some(target));
+        return Ok((OpenWebUiDependency::DockerInspectionFailed, Some(target)));
     };
+    ensure_preparation_time(deadline)?;
     let candidates = output
         .lines()
         .filter_map(parse_open_webui_candidate)
@@ -662,10 +757,11 @@ fn inspect_open_webui_dependency(
     let endpoint_ready = probe_status(
         CURL,
         &["-fsS", "--max-time", "2", endpoint.as_str()],
-        PROBE_TIMEOUT,
+        remaining_probe_time(deadline)?,
     )
     .ok();
-    (
+    ensure_preparation_time(deadline)?;
+    Ok((
         classify_open_webui_inspection(
             true,
             docker_process_running,
@@ -675,12 +771,17 @@ fn inspect_open_webui_dependency(
             endpoint_ready,
         ),
         Some(target),
-    )
+    ))
 }
 
-fn establish_local_docker_target() -> Result<LocalDockerTarget, NormalizedRuntimeError> {
+fn establish_local_docker_target(
+    deadline: Instant,
+) -> Result<LocalDockerTarget, NormalizedRuntimeError> {
     let target = expected_local_docker_target()?;
-    if probe_native_status(&docker_command(&target, ["info"]), PROBE_TIMEOUT)? {
+    if probe_native_status(
+        &docker_command(&target, ["info"]),
+        remaining_probe_time(deadline)?,
+    )? {
         Ok(target)
     } else {
         Err(error(
@@ -689,6 +790,21 @@ fn establish_local_docker_target() -> Result<LocalDockerTarget, NormalizedRuntim
             true,
         ))
     }
+}
+
+fn ensure_preparation_time(deadline: Instant) -> Result<(), NormalizedRuntimeError> {
+    if Instant::now() >= deadline {
+        Err(readiness_timeout())
+    } else {
+        Ok(())
+    }
+}
+
+fn remaining_probe_time(deadline: Instant) -> Result<Duration, NormalizedRuntimeError> {
+    ensure_preparation_time(deadline)?;
+    Ok(deadline
+        .saturating_duration_since(Instant::now())
+        .min(PROBE_TIMEOUT))
 }
 
 fn expected_local_docker_target() -> Result<LocalDockerTarget, NormalizedRuntimeError> {
@@ -934,21 +1050,18 @@ impl std::fmt::Debug for RuntimeExecutionPlan {
 }
 
 fn build_execution_plan(
-    request: &RuntimeLifecycleRequest,
+    runtime_id: &str,
+    action: RuntimeOperationAction,
     context: RuntimePlanningContext,
 ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
-    match (request.runtime_id.as_str(), context) {
-        ("openclaw", RuntimePlanningContext::OpenClaw(context)) => {
-            plan_openclaw(request.action, context)
-        }
-        ("ollama", RuntimePlanningContext::Ollama(context)) => plan_ollama(request.action, context),
-        ("docker-desktop", RuntimePlanningContext::Docker(context)) => {
-            plan_docker(request.action, context)
-        }
+    match (runtime_id, context) {
+        ("openclaw", RuntimePlanningContext::OpenClaw(context)) => plan_openclaw(action, context),
+        ("ollama", RuntimePlanningContext::Ollama(context)) => plan_ollama(action, context),
+        ("docker-desktop", RuntimePlanningContext::Docker(context)) => plan_docker(action, context),
         ("open-webui", RuntimePlanningContext::OpenWebUi(context)) => {
-            plan_open_webui(request.action, context)
+            plan_open_webui(action, context)
         }
-        ("cherry-studio", RuntimePlanningContext::Cherry(_)) => plan_cherry(request.action),
+        ("cherry-studio", RuntimePlanningContext::Cherry(_)) => plan_cherry(action),
         _ => Err(error(
             RuntimeErrorCode::InvalidConfiguration,
             "The runtime context does not match the request.",
@@ -1486,8 +1599,6 @@ fn validate_container_id(id: &str) -> Result<String, NormalizedRuntimeError> {
     }
 }
 
-// M1B2B will invoke this only after an operation has atomically accepted its frozen plan.
-#[allow(dead_code)]
 pub(crate) fn execute_plan(
     plan: &RuntimeExecutionPlan,
     mut report: impl FnMut(RuntimeOperationProgress),
@@ -1953,6 +2064,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn static_preflight_rejects_invalid_unsupported_and_remote_lifecycle_requests() {
+        let unknown = validate_runtime_lifecycle_request(request(
+            "unknown-runtime",
+            RuntimeOperationAction::Open,
+            None,
+        ))
+        .unwrap_err();
+        assert_eq!(unknown.code, RuntimeErrorCode::RuntimeNotFound);
+
+        let restart = validate_runtime_lifecycle_request(request(
+            "ollama",
+            RuntimeOperationAction::Restart,
+            Some("http://localhost:11434"),
+        ))
+        .unwrap_err();
+        assert_eq!(restart.code, RuntimeErrorCode::UnsupportedOperation);
+
+        let remote = validate_runtime_lifecycle_request(request(
+            "open-webui",
+            RuntimeOperationAction::Start,
+            Some("https://webui.example.com"),
+        ))
+        .unwrap_err();
+        assert_eq!(remote.code, RuntimeErrorCode::InvalidRuntimeLocation);
+    }
+
+    #[test]
+    fn static_preflight_freezes_the_parsed_endpoint_without_native_collection() {
+        let source = RecordingSource::new();
+        let validated = validate_runtime_lifecycle_request(request(
+            "ollama",
+            RuntimeOperationAction::Open,
+            Some("http://localhost:11434"),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            validated.endpoint.as_ref().unwrap().as_str(),
+            "http://localhost:11434/"
+        );
+        assert_eq!(source.openclaw_calls.get(), 0);
+        assert_eq!(source.ollama_calls.get(), 0);
+        assert_eq!(source.docker_calls.get(), 0);
+        assert_eq!(source.webui_calls.get(), 0);
+        assert_eq!(source.cherry_calls.get(), 0);
+    }
+
+    #[test]
+    fn expired_preparation_deadline_starts_no_probe() {
+        let validated = validate_runtime_lifecycle_request(request(
+            "docker-desktop",
+            RuntimeOperationAction::Open,
+            None,
+        ))
+        .unwrap();
+        let error = prepare_execution_plan(&validated, Instant::now()).unwrap_err();
+        assert_eq!(error.code, RuntimeErrorCode::ReadinessTimeout);
+    }
+
     fn openclaw_context(value: &str, loaded: bool) -> OpenClawContext {
         OpenClawContext::Manage {
             gateway: classify_openclaw_gateway(value).unwrap(),
@@ -1997,7 +2168,7 @@ mod tests {
         action: RuntimeOperationAction,
         context: RuntimePlanningContext,
     ) -> Result<RuntimeExecutionPlan, NormalizedRuntimeError> {
-        build_execution_plan(&request(runtime, action, None), context)
+        build_execution_plan(runtime, action, context)
     }
 
     #[test]
@@ -2202,16 +2373,20 @@ mod tests {
             }
         }
 
-        fn ollama(&self, endpoint: ValidatedEndpoint, inspect_ownership: bool) -> OllamaContext {
+        fn ollama(
+            &self,
+            endpoint: ValidatedEndpoint,
+            inspect_ownership: bool,
+        ) -> Result<OllamaContext, NormalizedRuntimeError> {
             self.ollama_calls.set(self.ollama_calls.get() + 1);
             if inspect_ownership {
                 self.ollama_ownership_inspections
                     .set(self.ollama_ownership_inspections.get() + 1);
             }
-            OllamaContext {
+            Ok(OllamaContext {
                 endpoint,
                 installation: OllamaInstallation::OtherInstallation,
-            }
+            })
         }
 
         fn docker(
@@ -2228,18 +2403,18 @@ mod tests {
             &self,
             endpoint: ValidatedEndpoint,
             inspect_dependency: bool,
-        ) -> OpenWebUiContext {
+        ) -> Result<OpenWebUiContext, NormalizedRuntimeError> {
             self.webui_calls.set(self.webui_calls.get() + 1);
             if inspect_dependency {
                 self.webui_dependency_inspections
                     .set(self.webui_dependency_inspections.get() + 1);
-                OpenWebUiContext::Manage {
+                Ok(OpenWebUiContext::Manage {
                     endpoint,
                     dependency: OpenWebUiDependency::ContainerMissing,
                     target: Some(docker_target()),
-                }
+                })
             } else {
-                OpenWebUiContext::Open { endpoint }
+                Ok(OpenWebUiContext::Open { endpoint })
             }
         }
 
@@ -2301,7 +2476,8 @@ mod tests {
         assert_eq!(source.webui_dependency_inspections.get(), 0);
 
         let mismatched = build_execution_plan(
-            &request("cherry-studio", RuntimeOperationAction::Open, None),
+            "cherry-studio",
+            RuntimeOperationAction::Open,
             RuntimePlanningContext::Docker(DockerContext { target: None }),
         );
         assert_eq!(
@@ -2910,7 +3086,7 @@ mod tests {
         let broad = ["#![allow(", "dead_code)]"].concat();
         let narrow = ["#[allow(", "dead_code)]"].concat();
         assert!(!source.contains(&broad));
-        assert_eq!(source.matches(&narrow).count(), 2);
+        assert_eq!(source.matches(&narrow).count(), 0);
         let blocking_wait = ["child.", "wait()"].concat();
         assert!(!source.contains(&blocking_wait));
     }

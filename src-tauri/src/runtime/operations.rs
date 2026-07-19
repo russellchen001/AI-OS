@@ -21,7 +21,6 @@ pub(crate) enum RuntimeOperationProgressUpdate {
 }
 
 impl RuntimeOperationProgressUpdate {
-    #[allow(dead_code)]
     pub(crate) fn operation(&self) -> &RuntimeOperationSnapshot {
         match self {
             Self::Applied(operation) | Self::Unchanged(operation) => operation,

@@ -1,6 +1,6 @@
 # ADR-002: Runtime Lifecycle Operations
 
-- **Status:** Accepted through P9-M1B2B1
+- **Status:** Accepted through P9-M1B2B2
 - **Date:** 2026-07-19
 - **Decision owners:** AI-OS
 
@@ -81,6 +81,18 @@ Admission is one locked accepted/conflict/rejected decision. Every queued, runni
 Progress mutation explicitly returns `Applied` for a distinct update and `Unchanged` for a byte-for-byte duplicate. Only `Applied` changes `updatedAt` and increments revision. M1B2B2 may therefore emit only meaningful progress changes without inferring mutation from snapshot values.
 
 M1B2B1 registers managed state only. It adds no lifecycle IPC, execution supervisor, plan wiring, runtime event emission, frontend service wrapper, or UI integration. Those remain M1B2B2 and M1B2B3 work.
+
+## M1B2B2 Execution, IPC, and Event Boundary
+
+Canonical lifecycle requests now pass through typed, non-native static preflight before admission. Preflight validates the registry-owned runtime ID, statically supported action, and any required explicit Ollama or Open WebUI endpoint. It freezes the parsed endpoint and location, rejects remote local-lifecycle requests before admission, and performs no native inspection. OpenClaw remains the exception: its mutable active profile is read and frozen once during post-admission preparation.
+
+An accepted operation returns its revision-1 queued snapshot immediately after best-effort queued emission and caller-independent Supervisor scheduling. There is no start gate. The sequential Supervisor owns the validated request and operation ID, prepares one frozen plan within a 30-second absolute deadline, requests the queued-to-running transition, and executes only after that transition succeeds. Preparation failure or panic terminalizes the queued operation without native execution. Execution success, normalized failure, or panic produces at most one Manager-accepted terminal transition.
+
+Every accepted queued, running, distinct-progress, and terminal snapshot is emitted best-effort as `runtime://operation` with `RuntimeOperationEvent { version: 1, operation }`. Events always contain the full canonical snapshot, use its revision as the only ordering field, and are emitted after Manager methods release their lock. Duplicate or late progress, conflicts, capacity rejection, lookup, and rejected cancellation emit nothing. Event delivery never changes operation truth.
+
+The additive native IPC boundary contains exactly `start_runtime_operation`, `get_runtime_operation`, and `cancel_runtime_operation`. All current adapters remain non-cancellable, so active cancellation returns `cancellation-unsupported` and terminal cancellation returns `cancellation-too-late` without mutation or emission. Lifecycle completion updates only operation state; it does not refresh runtime status, health, readiness, or OpenClaw Gateway connectivity.
+
+M1B2B2 does not add frontend wrappers or listeners, migrate legacy commands or UI, persist operations, or implement status reconciliation. M1B2B3 and M1C remain unimplemented.
 
 ## Consequences
 

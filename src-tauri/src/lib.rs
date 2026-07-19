@@ -591,6 +591,9 @@ pub fn run() {
             openclaw::invoke_active_openclaw_gateway,
             runtime::list_runtimes,
             runtime::get_runtime_statuses,
+            runtime::ipc::start_runtime_operation,
+            runtime::ipc::get_runtime_operation,
+            runtime::ipc::cancel_runtime_operation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

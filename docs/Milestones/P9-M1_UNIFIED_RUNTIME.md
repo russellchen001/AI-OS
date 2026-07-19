@@ -173,6 +173,23 @@ Implementation scope:
 
 M1B2B1 is intentionally separate from execution. It registers no lifecycle IPC, runs no frozen plan, emits no runtime operation event, and adds no frontend service wrapper or UI integration. M1B2B2 execution/IPC/events, M1B2B3 frontend wrappers/integration validation, and M1C migration remain unimplemented.
 
+### M1B2B2 — Lifecycle Execution Supervisor, IPC, and Events
+
+Implementation scope:
+
+- Typed static preflight with canonical registry validation and frozen explicit endpoint/location context
+- Immediate accepted queued response after best-effort queued emission and caller-independent scheduling
+- No start gate; one sequential prepare → running → execute Supervisor transaction
+- One absolute 30-second preparation deadline propagated into bounded native preparation probes
+- Frozen-plan execution only after the Manager accepts the running transition
+- Canonical full-snapshot `runtime://operation` events for accepted queued, running, meaningful progress, and terminal mutations
+- Best-effort event delivery with revision-based ordering and no impact on operation truth
+- Additive `start_runtime_operation`, `get_runtime_operation`, and `cancel_runtime_operation` native IPC
+- Current adapters remain non-cancellable
+- No automatic runtime status, health, readiness, or OpenClaw Gateway refresh
+
+M1B2B2 is implemented separately from M1B2B3. It adds no frontend service wrapper, listener, reconciliation helper, hook, page, component, legacy delegation, stored operation persistence, or UI migration. M1B2B3 and M1C remain unimplemented.
+
 ## M1C — Frontend Migration and Compatibility Cleanup
 
 Deferred scope:
