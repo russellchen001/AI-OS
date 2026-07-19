@@ -1,0 +1,469 @@
+From ae0614f019634ae00b5a51b6a65237612a173a04 Mon Sep 17 00:00:00 2001
+From: Russell Chen <russellchen001@gmail.com>
+Date: Sun, 19 Jul 2026 23:41:51 +1000
+Subject: [PATCH] feat(runtime): introduce canonical runtime scheduler
+
+---
+ docs/00_Project/ARCHITECTURE.md               |   6 +
+ .../ADR-002-runtime-lifecycle-operations.md   |   6 +
+ docs/Milestones/P9-M1_UNIFIED_RUNTIME.md      |   8 ++
+ src-tauri/src/runtime/bulk.rs                 |  30 +++-
+ src-tauri/src/runtime/executor.rs             |  80 +++++++----
+ src-tauri/src/runtime/ipc.rs                  |   6 +-
+ src-tauri/src/runtime/lifecycle.rs            |   2 +
+ src-tauri/src/runtime/mod.rs                  |   1 +
+ src-tauri/src/runtime/scheduler.rs            | 128 ++++++++++++++++++
+ 9 files changed, 235 insertions(+), 32 deletions(-)
+ create mode 100644 src-tauri/src/runtime/scheduler.rs
+
+diff --git a/docs/00_Project/ARCHITECTURE.md b/docs/00_Project/ARCHITECTURE.md
+index 49469b7..f20ca93 100644
+--- a/docs/00_Project/ARCHITECTURE.md
++++ b/docs/00_Project/ARCHITECTURE.md
+@@ -135,3 +135,9 @@ OpenClaw must remain behind explicit integration contracts. AI-OS core models mu
+ Start All and Stop All use one canonical aggregate Runtime Operation. The frontend submits an ordered list through the typed Runtime client; the operation manager admits a `runtime-bulk` snapshot and prevents overlap with individual lifecycle work; the Bulk supervisor then validates and executes each item sequentially through the existing Runtime lifecycle engine. Every completed item advances aggregate progress. Failures are collected without stopping later items, and the terminal result reports ordered outcomes and summary counts.
+ 
+ This design provides one execution model for individual and Bulk lifecycle work. There is no Legacy Bulk shell path, rollback, retry, parallel executor, persistent history, or persistent recovery path.
++
++## Runtime Scheduler
++
++All individual and Bulk Runtime operations enter one process-wide, in-memory FIFO Scheduler after canonical operation admission. The Scheduler dispatches exactly one operation task at a time, then hands it to the existing Runtime Lifecycle Engine for validation and execution. It owns queue order and running/pending coordination only; operation snapshots remain owned by the Runtime Operation manager and all Runtime-specific behavior remains owned by the Lifecycle Engine and executor.
++
++The P9-M3 Scheduler is intentionally non-persistent and immediate. It provides no retry, recovery, delay, cron, priority, parallel execution, health policy, or UI.
+diff --git a/docs/ADR/ADR-002-runtime-lifecycle-operations.md b/docs/ADR/ADR-002-runtime-lifecycle-operations.md
+index 026ae00..4e1c1a9 100644
+--- a/docs/ADR/ADR-002-runtime-lifecycle-operations.md
++++ b/docs/ADR/ADR-002-runtime-lifecycle-operations.md
+@@ -163,3 +163,9 @@ P9-M2 closes the Bulk exception. Start All and Stop All now submit one typed agg
+ The executor validates each ordered item and invokes the same native preparation and execution pipeline used by individual Runtime Operations. Execution is sequential and continues after a child failure. The aggregate succeeds when the sequence finishes and returns ordered per-runtime outcomes plus total, succeeded, and failed counts; a supervisor failure fails the aggregate itself. Rollback, retry, parallelism, persistence, and recovery remain out of scope.
+ 
+ The `start_all` and `stop_all` IPC commands, their shell implementations, `startAllServices`/`stopAllServices`, and `useLegacyBulkRuntimeActions` are removed rather than aliased. Existing Dashboard controls, fixed user-facing messages, mutual exclusion, and delayed status stabilization remain in place through the canonical frontend client.
++
++## P9-M3 Runtime Scheduler
++
++One shared in-memory FIFO Scheduler is the mandatory dispatch boundary for canonical individual and Bulk Runtime operation tasks. Admission still creates the canonical queued snapshot; Scheduler dispatch occurs before lifecycle validation, preparation, or execution. Once dispatched, the existing Lifecycle Engine and executor retain all Runtime-specific responsibility. The Scheduler catches task-boundary panics so a failed task cannot prevent dispatch of the next queued task, while the operation supervisor remains responsible for canonical terminal state.
++
++Only one task runs at a time. Pending tasks are process-local and are neither persisted nor recovered. Retry, delayed or cron work, priorities, parallel execution, health policy, and Scheduler UI are explicitly deferred.
+diff --git a/docs/Milestones/P9-M1_UNIFIED_RUNTIME.md b/docs/Milestones/P9-M1_UNIFIED_RUNTIME.md
+index c2a2386..1515b09 100644
+--- a/docs/Milestones/P9-M1_UNIFIED_RUNTIME.md
++++ b/docs/Milestones/P9-M1_UNIFIED_RUNTIME.md
+@@ -395,3 +395,11 @@ Frontend callers use `startRuntimeBulkOperation` with canonical Runtime IDs and
+ - A single Runtime failure is reported in the aggregate while later targets still execute.
+ - Aggregate progress increases once per completed target and reaches the submitted total.
+ - Dashboard and Services views show the same controls, messages, and final statuses as before migration.
++
++## P9-M3 Runtime Scheduler
++
++- **Implementation:** Complete; Architecture Review remains the release gate.
++- **Dispatch:** One shared process-local FIFO Scheduler dispatches individual and Bulk Runtime operations sequentially.
++- **Ownership:** The Scheduler owns queue order and running/pending coordination only. Canonical operation state remains in the Runtime Operation manager; validation and execution remain in the Lifecycle Engine and executor.
++- **Required flow:** Request admission → Scheduler → Lifecycle validation/preparation → executor.
++- **Excluded:** Retry, recovery, delayed tasks, cron, priorities, parallel execution, persistent queues, health policies, and Scheduler UI.
+diff --git a/src-tauri/src/runtime/bulk.rs b/src-tauri/src/runtime/bulk.rs
+index 5e3d682..8e03c48 100644
+--- a/src-tauri/src/runtime/bulk.rs
++++ b/src-tauri/src/runtime/bulk.rs
+@@ -79,6 +79,7 @@ pub(crate) fn start_runtime_bulk_operation(
+ ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
+     validate_request(&request)?;
+     let manager = state.manager();
++    let scheduler = state.scheduler();
+     let admission = manager.admit_operation(RUNTIME_BULK_ID, request.action, false)?;
+     let queued = match admission {
+         RuntimeOperationAdmission::Accepted { ref operation } => operation.clone(),
+@@ -86,10 +87,12 @@ pub(crate) fn start_runtime_bulk_operation(
+     };
+     emit_best_effort(&TauriEventEmitter::new(app.clone()), queued.clone());
+     let operation_id = queued.operation_id.clone();
+-    tauri::async_runtime::spawn_blocking(move || {
+-        let emitter = TauriEventEmitter::new(app);
++    let task_manager = Arc::clone(&manager);
++    let task_app = app.clone();
++    let scheduled = scheduler.enqueue(Box::new(move || {
++        let emitter = TauriEventEmitter::new(task_app);
+         let outcome = catch_unwind(AssertUnwindSafe(|| {
+-            run_bulk(&manager, &operation_id, request, &emitter)
++            run_bulk(&task_manager, &operation_id, request, &emitter)
+         }));
+         if outcome.is_err() {
+             let error = NormalizedRuntimeError {
+@@ -97,7 +100,7 @@ pub(crate) fn start_runtime_bulk_operation(
+                 message: "The runtime operation task failed.".to_string(),
+                 retryable: true,
+             };
+-            if let Ok(snapshot) = manager.transition(
++            if let Ok(snapshot) = task_manager.transition(
+                 &operation_id,
+                 RuntimeOperationState::Failed,
+                 None,
+@@ -106,7 +109,24 @@ pub(crate) fn start_runtime_bulk_operation(
+                 emit_best_effort(&emitter, snapshot);
+             }
+         }
+-    });
++    }));
++    if scheduled.is_err() {
++        let error = NormalizedRuntimeError {
++            code: RuntimeErrorCode::OperationTaskFailed,
++            message: "The runtime operation task failed.".to_string(),
++            retryable: true,
++        };
++        let snapshot = manager.transition(
++            &queued.operation_id,
++            RuntimeOperationState::Failed,
++            None,
++            Some(error),
++        )?;
++        emit_best_effort(&TauriEventEmitter::new(app), snapshot.clone());
++        return Ok(RuntimeOperationAdmission::Accepted {
++            operation: snapshot,
++        });
++    }
+     Ok(RuntimeOperationAdmission::Accepted { operation: queued })
+ }
+ 
+diff --git a/src-tauri/src/runtime/executor.rs b/src-tauri/src/runtime/executor.rs
+index 2fa44e8..9474488 100644
+--- a/src-tauri/src/runtime/executor.rs
++++ b/src-tauri/src/runtime/executor.rs
+@@ -8,8 +8,9 @@ use tauri::{AppHandle, Emitter};
+ 
+ use super::{
+     lifecycle::{
+-        execute_plan, prepare_execution_plan, RuntimeExecutionPlan,
+-        ValidatedRuntimeLifecycleRequest, PREPARATION_TIMEOUT,
++        execute_plan, prepare_execution_plan, validate_runtime_lifecycle_request,
++        RuntimeExecutionPlan, RuntimeLifecycleRequest, ValidatedRuntimeLifecycleRequest,
++        PREPARATION_TIMEOUT,
+     },
+     models::{
+         NormalizedRuntimeError, RuntimeErrorCode, RuntimeOperationAdmission, RuntimeOperationEvent,
+@@ -19,6 +20,7 @@ use super::{
+     operations::{
+         RuntimeOperationCancellationUpdate, RuntimeOperationManager, RuntimeOperationProgressUpdate,
+     },
++    scheduler::RuntimeScheduler,
+ };
+ 
+ pub(crate) const RUNTIME_OPERATION_EVENT: &str = "runtime://operation";
+@@ -26,12 +28,14 @@ pub(crate) const RUNTIME_OPERATION_EVENT: &str = "runtime://operation";
+ #[derive(Clone)]
+ pub struct RuntimeExecutionState {
+     manager: Arc<RuntimeOperationManager>,
++    scheduler: RuntimeScheduler,
+ }
+ 
+ impl Default for RuntimeExecutionState {
+     fn default() -> Self {
+         Self {
+             manager: Arc::new(RuntimeOperationManager::default()),
++            scheduler: RuntimeScheduler::default(),
+         }
+     }
+ }
+@@ -40,12 +44,17 @@ impl RuntimeExecutionState {
+     pub(crate) fn manager(&self) -> Arc<RuntimeOperationManager> {
+         Arc::clone(&self.manager)
+     }
++
++    pub(crate) fn scheduler(&self) -> RuntimeScheduler {
++        self.scheduler.clone()
++    }
+ }
+ 
+ pub(crate) trait OperationEventEmitter: Send + Sync {
+     fn emit(&self, snapshot: RuntimeOperationSnapshot) -> Result<(), ()>;
+ }
+ 
++#[cfg(test)]
+ pub(crate) trait SupervisorSpawner {
+     fn spawn(&self, task: Box<dyn FnOnce() + Send + 'static>) -> Result<(), ()>;
+ }
+@@ -113,29 +122,55 @@ impl OperationEventEmitter for TauriEventEmitter {
+     }
+ }
+ 
+-struct TauriSupervisorSpawner;
+-
+-impl SupervisorSpawner for TauriSupervisorSpawner {
+-    fn spawn(&self, task: Box<dyn FnOnce() + Send + 'static>) -> Result<(), ()> {
+-        tauri::async_runtime::spawn_blocking(task);
+-        Ok(())
+-    }
+-}
+-
+ pub(crate) fn start_accepted_operation(
+     manager: Arc<RuntimeOperationManager>,
+-    request: ValidatedRuntimeLifecycleRequest,
++    scheduler: RuntimeScheduler,
++    request: RuntimeLifecycleRequest,
+     app: AppHandle,
+ ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
+-    start_with_dependencies(
+-        manager,
+-        request,
+-        Arc::new(TauriEventEmitter::new(app)),
+-        &TauriSupervisorSpawner,
+-        Arc::new(NativePipeline),
+-    )
++    let admission = manager.admit_operation(&request.runtime_id, request.action, false)?;
++    let queued = match admission {
++        RuntimeOperationAdmission::Accepted { operation } => operation,
++        other => return Ok(other),
++    };
++    let emitter: Arc<dyn OperationEventEmitter> = Arc::new(TauriEventEmitter::new(app));
++    emit_best_effort(emitter.as_ref(), queued.clone());
++    let operation_id = queued.operation_id.clone();
++    let task_manager = Arc::clone(&manager);
++    let task_emitter = Arc::clone(&emitter);
++    let task = Box::new(move || match validate_runtime_lifecycle_request(request) {
++        Ok(validated) => run_operation_supervisor(
++            task_manager,
++            operation_id,
++            validated,
++            task_emitter,
++            Arc::new(NativePipeline),
++        ),
++        Err(error) => {
++            let _ = fail_operation(&task_manager, &operation_id, error, task_emitter.as_ref());
++        }
++    });
++    let scheduled = catch_unwind(AssertUnwindSafe(|| scheduler.enqueue(task)))
++        .ok()
++        .and_then(Result::ok)
++        .is_some();
++    if !scheduled {
++        let terminal = fail_operation(
++            &manager,
++            &queued.operation_id,
++            operation_task_failed(),
++            emitter.as_ref(),
++        )?;
++        let operation = match terminal {
++            RuntimeOperationTerminalUpdate::Applied(operation)
++            | RuntimeOperationTerminalUpdate::AlreadyTerminal(operation) => operation,
++        };
++        return Ok(RuntimeOperationAdmission::Accepted { operation });
++    }
++    Ok(RuntimeOperationAdmission::Accepted { operation: queued })
+ }
+ 
++#[cfg(test)]
+ fn start_with_dependencies(
+     manager: Arc<RuntimeOperationManager>,
+     request: ValidatedRuntimeLifecycleRequest,
+@@ -473,14 +508,11 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn clones_share_the_only_manager_arc() {
++    fn clones_share_runtime_coordination_state() {
+         let state = RuntimeExecutionState::default();
+         let clone = state.clone();
+         assert!(Arc::ptr_eq(&state.manager(), &clone.manager()));
+-        assert_eq!(
+-            std::mem::size_of::<RuntimeExecutionState>(),
+-            std::mem::size_of::<Arc<RuntimeOperationManager>>()
+-        );
++        assert!(state.scheduler().shares_state_with(&clone.scheduler()));
+     }
+ 
+     #[test]
+diff --git a/src-tauri/src/runtime/ipc.rs b/src-tauri/src/runtime/ipc.rs
+index be72d24..2d22f15 100644
+--- a/src-tauri/src/runtime/ipc.rs
++++ b/src-tauri/src/runtime/ipc.rs
+@@ -5,7 +5,7 @@ use super::{
+         cancel_operation_with_emitter, start_accepted_operation, RuntimeExecutionState,
+         TauriEventEmitter,
+     },
+-    lifecycle::{validate_runtime_lifecycle_request, RuntimeLifecycleRequest},
++    lifecycle::RuntimeLifecycleRequest,
+     models::{NormalizedRuntimeError, RuntimeOperationAdmission, RuntimeOperationSnapshot},
+ };
+ 
+@@ -15,8 +15,7 @@ pub(crate) fn start_runtime_operation(
+     state: State<'_, RuntimeExecutionState>,
+     request: RuntimeLifecycleRequest,
+ ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
+-    let validated = validate_runtime_lifecycle_request(request)?;
+-    start_accepted_operation(state.manager(), validated, app)
++    start_accepted_operation(state.manager(), state.scheduler(), request, app)
+ }
+ 
+ #[tauri::command]
+@@ -45,6 +44,7 @@ mod tests {
+     use serde_json::json;
+ 
+     use super::*;
++    use crate::runtime::lifecycle::validate_runtime_lifecycle_request;
+     use crate::runtime::models::{RuntimeErrorCode, RuntimeOperationAction};
+ 
+     #[test]
+diff --git a/src-tauri/src/runtime/lifecycle.rs b/src-tauri/src/runtime/lifecycle.rs
+index d78433a..d0946d1 100644
+--- a/src-tauri/src/runtime/lifecycle.rs
++++ b/src-tauri/src/runtime/lifecycle.rs
+@@ -160,10 +160,12 @@ pub(crate) struct ValidatedRuntimeLifecycleRequest {
+ }
+ 
+ impl ValidatedRuntimeLifecycleRequest {
++    #[cfg(test)]
+     pub(crate) fn runtime_id(&self) -> &str {
+         &self.runtime_id
+     }
+ 
++    #[cfg(test)]
+     pub(crate) fn action(&self) -> RuntimeOperationAction {
+         self.action
+     }
+diff --git a/src-tauri/src/runtime/mod.rs b/src-tauri/src/runtime/mod.rs
+index 687f644..a6f095c 100644
+--- a/src-tauri/src/runtime/mod.rs
++++ b/src-tauri/src/runtime/mod.rs
+@@ -6,6 +6,7 @@ pub(crate) mod lifecycle;
+ pub mod models;
+ pub mod operations;
+ mod registry;
++pub(crate) mod scheduler;
+ 
+ use models::{RuntimeDefinition, RuntimeStatus, RuntimeStatusRequest};
+ 
+diff --git a/src-tauri/src/runtime/scheduler.rs b/src-tauri/src/runtime/scheduler.rs
+new file mode 100644
+index 0000000..574e790
+--- /dev/null
++++ b/src-tauri/src/runtime/scheduler.rs
+@@ -0,0 +1,128 @@
++use std::{
++    collections::VecDeque,
++    panic::{catch_unwind, AssertUnwindSafe},
++    sync::{Arc, Mutex},
++};
++
++type RuntimeTask = Box<dyn FnOnce() + Send + 'static>;
++
++#[derive(Default)]
++struct SchedulerState {
++    pending: VecDeque<RuntimeTask>,
++    running: bool,
++}
++
++#[derive(Clone, Default)]
++pub(crate) struct RuntimeScheduler {
++    state: Arc<Mutex<SchedulerState>>,
++}
++
++impl RuntimeScheduler {
++    pub(crate) fn enqueue(&self, task: RuntimeTask) -> Result<(), ()> {
++        let should_dispatch = {
++            let mut state = self.state.lock().map_err(|_| ())?;
++            state.pending.push_back(task);
++            if state.running {
++                false
++            } else {
++                state.running = true;
++                true
++            }
++        };
++        if should_dispatch {
++            let scheduler = self.clone();
++            tauri::async_runtime::spawn_blocking(move || scheduler.dispatch());
++        }
++        Ok(())
++    }
++
++    fn dispatch(&self) {
++        while let Some(task) = self.next() {
++            let _ = catch_unwind(AssertUnwindSafe(task));
++        }
++    }
++
++    fn next(&self) -> Option<RuntimeTask> {
++        let mut state = self.state.lock().ok()?;
++        match state.pending.pop_front() {
++            Some(task) => Some(task),
++            None => {
++                state.running = false;
++                None
++            }
++        }
++    }
++
++    #[cfg(test)]
++    pub(crate) fn pending(&self) -> usize {
++        self.state
++            .lock()
++            .map(|state| state.pending.len())
++            .unwrap_or_default()
++    }
++
++    #[cfg(test)]
++    pub(crate) fn running(&self) -> bool {
++        self.state
++            .lock()
++            .map(|state| state.running)
++            .unwrap_or(false)
++    }
++
++    #[cfg(test)]
++    pub(crate) fn shares_state_with(&self, other: &Self) -> bool {
++        Arc::ptr_eq(&self.state, &other.state)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::{
++        sync::{mpsc, Arc, Mutex},
++        time::Duration,
++    };
++
++    #[test]
++    fn tasks_dispatch_in_fifo_order_without_parallel_execution() {
++        let scheduler = RuntimeScheduler::default();
++        let order = Arc::new(Mutex::new(Vec::new()));
++        let (release_tx, release_rx) = mpsc::channel();
++        let (started_tx, started_rx) = mpsc::channel();
++        let (done_tx, done_rx) = mpsc::channel();
++        let first_order = Arc::clone(&order);
++        scheduler
++            .enqueue(Box::new(move || {
++                first_order.lock().unwrap().push(1);
++                started_tx.send(()).unwrap();
++                release_rx.recv().unwrap();
++            }))
++            .unwrap();
++        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
++        let second_order = Arc::clone(&order);
++        scheduler
++            .enqueue(Box::new(move || {
++                second_order.lock().unwrap().push(2);
++                done_tx.send(()).unwrap();
++            }))
++            .unwrap();
++        assert!(scheduler.running());
++        assert_eq!(scheduler.pending(), 1);
++        release_tx.send(()).unwrap();
++        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
++        assert_eq!(*order.lock().unwrap(), vec![1, 2]);
++    }
++
++    #[test]
++    fn panicking_task_does_not_block_the_next_task() {
++        let scheduler = RuntimeScheduler::default();
++        let (done_tx, done_rx) = mpsc::channel();
++        scheduler
++            .enqueue(Box::new(|| panic!("task panic")))
++            .unwrap();
++        scheduler
++            .enqueue(Box::new(move || done_tx.send(()).unwrap()))
++            .unwrap();
++        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
++    }
++}
+-- 
+2.55.0
+
