@@ -205,6 +205,43 @@ Implementation scope:
 
 M1B2B3 was implemented separately from B1 and B2. No React page, hook, or component consumes the new client boundary, and no UI migration, legacy delegation, runtime-status refresh, or stored-data change was added. Complete M1B2B approval and merge remain pending final review and manual integration validation. M1C remains unimplemented.
 
+### M1B2B Final Completion Record
+
+- **P9-M1B2B:** Completed
+- **P9-M1C:** Not started
+- **Completion date:** 2026-07-19
+- **Review:** B1, B2, and B3 were independently reviewed
+- **Implementation commits:** `9790a8207d0f46446587266ba0da75e756fb5b06`, `e6b66a0243ecfbede19fec318e3603d425e4dc95`, `8a4f8f36ed98e283577d7dd674e317cc481bd5a1`, `76206d8f8ce36c9183f2bd5d10b4c6b680be19a7`, `bb312b8a89b258ac8f7c7d3841729c071edc3610`
+- **Automated validation:** 108 Rust tests passed; TypeScript type-check and production build passed
+- **Native Manual Integration result:** PASS
+- **Manual test boundary:** Only Ollama open was used; no Start, Stop, or Restart action was executed
+- **Repository integrity:** Repository remained clean; no dependency, manifest, lockfile, or stored schema changed; nothing was pushed
+
+Final guarantees:
+
+1. `RuntimeOperationManager` is the only canonical operation store.
+2. `RuntimeExecutionState` shares exactly one Manager `Arc`.
+3. Admission atomically returns accepted, conflicting Snapshot, or capacity rejection.
+4. Global active-operation limit is 16.
+5. Open counts globally but does not reserve a lifecycle slot.
+6. Lifecycle plans are validated, prepared, and frozen before native execution.
+7. Registry `AdapterKind` is the canonical lifecycle dispatch source.
+8. Static remote and unsupported requests are rejected before admission.
+9. Supervisor execution is independent of the IPC caller.
+10. Start IPC returns the accepted queued Snapshot without waiting for preparation or execution.
+11. Sequential Supervisor order is: prepare → running → execute → terminal.
+12. Native execution cannot begin before accepted running transition.
+13. Canonical event name is `runtime://operation`.
+14. Events contain full version-1 Snapshots and use Revision as the only ordering field.
+15. Event errors and panics never determine operation truth.
+16. Applied cancellation mutations emit canonical events; rejected and unchanged cancellation does not.
+17. Current adapters remain non-cancellable.
+18. Lifecycle completion does not update or imply Runtime health, readiness, or OpenClaw Gateway connectivity.
+19. TypeScript wrappers are additive and unused by React UI.
+20. Legacy commands and UI remain unchanged.
+21. No operation persistence or cross-restart recovery was added.
+22. P9-M1C remains responsible for legacy command and UI migration.
+
 ## M1C — Frontend Migration and Compatibility Cleanup
 
 Deferred scope:
