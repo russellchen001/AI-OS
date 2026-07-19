@@ -10,6 +10,7 @@ import type {
 type ServiceRowProps = {
   service: RuntimeServiceView;
   cardStyle: CSSProperties;
+  bulkActive: boolean;
   onStart: (
     runtimeId: string,
   ) => void;
@@ -81,6 +82,7 @@ function lifecycleLabel(
 function ServiceRow({
   service,
   cardStyle,
+  bulkActive,
   onStart,
   onStop,
   onOpen,
@@ -98,6 +100,9 @@ function ServiceRow({
   const nextActionSupported = running
     ? service.canStop
     : service.canStart;
+  const hasStableStatus =
+    service.status === "Running" ||
+    service.status === "Stopped";
 
   return (
     <div
@@ -139,7 +144,9 @@ function ServiceRow({
           checked={running}
           disabled={
             !service.listenerReady ||
+            bulkActive ||
             lifecycleBusy ||
+            !hasStableStatus ||
             !nextActionSupported
           }
           loading={lifecycleBusy}
@@ -158,6 +165,7 @@ function ServiceRow({
           className="open-button"
           disabled={
             !service.listenerReady ||
+            bulkActive ||
             openBusy ||
             !service.canOpen
           }

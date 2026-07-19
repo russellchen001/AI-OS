@@ -31,6 +31,7 @@ type DashboardPageProps = {
   stoppedCount: number;
   unknownCount: number;
   allRunning: boolean;
+  hasCanonicalActivity: boolean;
   isChecking: boolean;
   globalAction:
     | "start"
@@ -144,6 +145,7 @@ function DashboardPage({
   stoppedCount,
   unknownCount,
   allRunning,
+  hasCanonicalActivity,
   isChecking,
   globalAction,
   onGlobalToggle,
@@ -694,6 +696,9 @@ function DashboardPage({
         <ServiceList
           services={services}
           cardStyle={cardStyle}
+          bulkActive={
+            globalAction !== null
+          }
           onStart={
             onStartService
           }
@@ -710,7 +715,8 @@ function DashboardPage({
         <ServiceToggle
           checked={allRunning}
           disabled={
-            globalAction !== null
+            globalAction !== null ||
+            hasCanonicalActivity
           }
           loading={
             globalAction !== null

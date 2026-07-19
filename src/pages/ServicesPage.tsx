@@ -12,6 +12,7 @@ type ServicesPageProps = {
   services: RuntimeServiceView[];
   cardStyle: CSSProperties;
   allRunning: boolean;
+  hasCanonicalActivity: boolean;
   globalAction:
     | "start"
     | "stop"
@@ -32,6 +33,7 @@ function ServicesPage({
   services,
   cardStyle,
   allRunning,
+  hasCanonicalActivity,
   globalAction,
   onGlobalToggle,
   onStartService,
@@ -53,7 +55,8 @@ function ServicesPage({
         <ServiceToggle
           checked={allRunning}
           disabled={
-            globalAction !== null
+            globalAction !== null ||
+            hasCanonicalActivity
           }
           loading={
             globalAction !== null
@@ -75,6 +78,9 @@ function ServicesPage({
       <ServiceList
         services={services}
         cardStyle={cardStyle}
+        bulkActive={
+          globalAction !== null
+        }
         onStart={onStartService}
         onStop={onStopService}
         onOpen={onOpenService}

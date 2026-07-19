@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -20,12 +21,33 @@ type UseRuntimesOptions = {
   refreshInterval?: number;
 };
 
+type Deferred = {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: () => void;
+};
+
+function createDeferred(): Deferred {
+  let resolve: () => void = () => {};
+  let reject: () => void = () => {};
+  const promise = new Promise<void>(
+    (nextResolve, nextReject) => {
+      resolve = nextResolve;
+      reject = () => nextReject();
+    },
+  );
+  return {
+    promise,
+    resolve,
+    reject,
+  };
+}
+
 function useRuntimes({
   request,
   refreshInterval,
 }: UseRuntimesOptions = {}) {
-  const ollamaUrl =
-    request?.ollamaUrl;
+  const ollamaUrl = request?.ollamaUrl;
   const openWebUiUrl =
     request?.openWebUiUrl;
 
@@ -33,22 +55,44 @@ function useRuntimes({
     useState<RuntimeDefinition[]>([]);
   const [statuses, setStatuses] =
     useState<RuntimeStatus[]>([]);
-  const [isLoading, setIsLoading] =
+  const [isLoadingDefinitions, setIsLoadingDefinitions] =
     useState(false);
-  const [error, setError] =
+  const [isRefreshingStatuses, setIsRefreshingStatuses] =
+    useState(false);
+  const [definitionsError, setDefinitionsError] =
+    useState("");
+  const [statusError, setStatusError] =
     useState("");
   const [lastUpdated, setLastUpdated] =
     useState("Not checked");
 
-  const refreshStatuses = useCallback(
+  const endpointRef = useRef({
+    ollamaUrl,
+    openWebUiUrl,
+  });
+  endpointRef.current = {
+    ollamaUrl,
+    openWebUiUrl,
+  };
+
+  const inFlightRef = useRef<
+    Promise<void> | null
+  >(null);
+  const trailingRef = useRef<Deferred | null>(
+    null,
+  );
+
+  const executeStatusQuery = useCallback(
     async () => {
+      const endpoints = endpointRef.current;
       const nextStatuses =
         await getRuntimeStatuses({
-          ollamaUrl,
-          openWebUiUrl,
+          ollamaUrl: endpoints.ollamaUrl,
+          openWebUiUrl:
+            endpoints.openWebUiUrl,
         });
       setStatuses(nextStatuses);
-      setError("");
+      setStatusError("");
       setLastUpdated(
         new Date().toLocaleTimeString(
           [],
@@ -59,35 +103,88 @@ function useRuntimes({
           },
         ),
       );
-    }, [
-      ollamaUrl,
-      openWebUiUrl,
-    ],
+    },
+    [],
   );
 
-  const refresh = useCallback(
-    async () => {
-      try {
-        setIsLoading(true);
-        setError("");
-
-        const [definitions] =
-          await Promise.all([
-            listRuntimes(),
-            refreshStatuses(),
-          ]);
-
-        setRuntimes(definitions);
-      } catch {
-        setError(
+  const startStatusQuery = useCallback(() => {
+    setIsRefreshingStatuses(true);
+    const query = executeStatusQuery()
+      .catch(() => {
+        setStatusError(
           "Runtime status is unavailable.",
         );
+        throw new Error(
+          "Runtime status refresh failed.",
+        );
+      })
+      .finally(() => {
+        if (inFlightRef.current !== query) {
+          return;
+        }
+
+        inFlightRef.current = null;
+        const trailing = trailingRef.current;
+        trailingRef.current = null;
+        if (trailing === null) {
+          setIsRefreshingStatuses(false);
+          return;
+        }
+
+        const trailingQuery = startStatusQuery();
+        trailingQuery.then(
+          trailing.resolve,
+          trailing.reject,
+        );
+      });
+    inFlightRef.current = query;
+    return query;
+  }, [executeStatusQuery]);
+
+  const refreshStatuses = useCallback(() => {
+    if (inFlightRef.current === null) {
+      return startStatusQuery();
+    }
+
+    if (trailingRef.current === null) {
+      trailingRef.current = createDeferred();
+    }
+    return trailingRef.current.promise;
+  }, [startStatusQuery]);
+
+  const refreshDefinitions = useCallback(
+    async () => {
+      setIsLoadingDefinitions(true);
+      try {
+        const definitions =
+          await listRuntimes();
+        setRuntimes(definitions);
+        setDefinitionsError("");
+      } catch {
+        setDefinitionsError(
+          "Runtime definitions are unavailable.",
+        );
       } finally {
-        setIsLoading(false);
+        setIsLoadingDefinitions(false);
       }
-    }, [
-      refreshStatuses,
+    },
+    [],
+  );
+
+  const refresh = useCallback(async () => {
+    const definitions = refreshDefinitions();
+    const nextStatuses =
+      refreshStatuses().catch(
+        () => undefined,
+      );
+    await Promise.all([
+      definitions,
+      nextStatuses,
     ]);
+  }, [
+    refreshDefinitions,
+    refreshStatuses,
+  ]);
 
   useEffect(() => {
     void refresh();
@@ -99,11 +196,7 @@ function useRuntimes({
     const interval = window.setInterval(
       () => {
         void refreshStatuses().catch(
-          () => {
-            setError(
-              "Runtime status is unavailable.",
-            );
-          },
+          () => undefined,
         );
       },
       Math.max(refreshInterval, 2) * 1000,
@@ -121,8 +214,10 @@ function useRuntimes({
   return {
     runtimes,
     statuses,
-    isLoading,
-    error,
+    isLoadingDefinitions,
+    isRefreshingStatuses,
+    definitionsError,
+    statusError,
     lastUpdated,
     refresh,
     refreshStatuses,

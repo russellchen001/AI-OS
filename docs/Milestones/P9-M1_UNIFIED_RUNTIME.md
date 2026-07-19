@@ -267,6 +267,8 @@ Deferred scope:
 
 M1C1 does not complete M1C. M1C2 remains responsible for the remaining caller audit and frontend legacy dead-code cleanup. M1C3 remains responsible for the separately approved backend compatibility decision and final M1C validation/completion record.
 
+M1C1 review corrections preserve independently successful Runtime definitions and statuses, centralize all status-query coalescing in `useRuntimes`, keep the operation listener mounted once, and bound terminal handling to observed state transitions. Hook-level active-channel rejection prevents duplicate admission before invocation. Canonical activity disables Legacy Bulk, active Legacy Bulk disables all canonical controls, and unstable Runtime lifecycle status disables only the lifecycle toggle. Fixed error-code classification handles rejected admissions and thrown IPC failures without exposing payload details. No M1C2 or M1C3 work was included.
+
 ## Out of Scope for P9-M1
 
 - Unified Session

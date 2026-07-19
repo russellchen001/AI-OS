@@ -15,6 +15,7 @@ import {
 import type {
   RuntimeOperationAction,
   RuntimeOperationSnapshot,
+  RuntimeErrorCode,
   StartRuntimeOperationRequest,
 } from "../types/runtime";
 
@@ -52,6 +53,94 @@ RuntimeOperationAction
   "stop",
   "restart",
 ]);
+
+const RUNTIME_ERROR_CODES = new Set<
+RuntimeErrorCode
+>([
+  "authentication-required",
+  "pairing-required",
+  "connection-unavailable",
+  "configuration-unavailable",
+  "invalid-configuration",
+  "probe-failed",
+  "unsupported-platform",
+  "runtime-not-found",
+  "operation-not-found",
+  "unsupported-operation",
+  "operation-conflict",
+  "operation-capacity-exceeded",
+  "cancellation-unsupported",
+  "cancellation-too-late",
+  "operation-failed",
+  "operation-task-failed",
+  "dependency-unavailable",
+  "dependency-not-installed",
+  "invalid-runtime-location",
+  "container-not-found",
+  "container-ambiguous",
+  "readiness-timeout",
+]);
+
+const STATIC_CONFIGURATION_CODES = new Set<
+RuntimeErrorCode
+>([
+  "configuration-unavailable",
+  "invalid-configuration",
+  "unsupported-platform",
+  "runtime-not-found",
+  "unsupported-operation",
+  "invalid-runtime-location",
+]);
+
+function runtimeErrorCode(
+  value: unknown,
+): RuntimeErrorCode | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("code" in value) ||
+    typeof value.code !== "string" ||
+    !RUNTIME_ERROR_CODES.has(
+      value.code as RuntimeErrorCode,
+    )
+  ) {
+    return null;
+  }
+  return value.code as RuntimeErrorCode;
+}
+
+function admissionFailure(
+  value: unknown,
+): {
+  message: string;
+  severity: RuntimeNotificationSeverity;
+} {
+  const code = runtimeErrorCode(value);
+  if (
+    code === "operation-capacity-exceeded"
+  ) {
+    return {
+      message:
+        "Runtime actions are temporarily busy. Try again shortly.",
+      severity: "warning",
+    };
+  }
+  if (
+    code !== null &&
+    STATIC_CONFIGURATION_CODES.has(code)
+  ) {
+    return {
+      message:
+        "This action is not available for the current runtime configuration.",
+      severity: "error",
+    };
+  }
+  return {
+    message:
+      "The runtime action could not be started. Try again.",
+    severity: "error",
+  };
+}
 
 function isTerminal(
   operation: RuntimeOperationSnapshot,
@@ -156,56 +245,14 @@ export default function useRuntimeOperations({
   const pendingRef = useRef(
     new Set<string>(),
   );
-  const handledTerminalsRef = useRef(
-    new Set<string>(),
-  );
-  const refreshInFlightRef = useRef(false);
-  const refreshTrailingRef = useRef(false);
-
-  const runCoalescedRefresh = useCallback(
-    async () => {
-      if (refreshInFlightRef.current) {
-        refreshTrailingRef.current = true;
-        return;
-      }
-
-      refreshInFlightRef.current = true;
-      try {
-        await refreshStatuses();
-      } catch {
-        notify(
-          "The action finished, but runtime status could not be refreshed.",
-          "warning",
-        );
-      } finally {
-        refreshInFlightRef.current = false;
-        if (refreshTrailingRef.current) {
-          refreshTrailingRef.current = false;
-          void runCoalescedRefresh();
-        }
-      }
-    }, [
-      notify,
-      refreshStatuses,
-    ],
-  );
 
   const handleTerminal = useCallback(
     (
       operation: RuntimeOperationSnapshot,
     ) => {
-      if (
-        !isTerminal(operation) ||
-        handledTerminalsRef.current.has(
-          operation.operationId,
-        )
-      ) {
+      if (!isTerminal(operation)) {
         return;
       }
-
-      handledTerminalsRef.current.add(
-        operation.operationId,
-      );
 
       if (operation.state === "succeeded") {
         notify(
@@ -226,11 +273,16 @@ export default function useRuntimeOperations({
           operation.action,
         )
       ) {
-        void runCoalescedRefresh();
+        void refreshStatuses().catch(() => {
+          notify(
+            "The action finished, but runtime status could not be refreshed.",
+            "warning",
+          );
+        });
       }
     }, [
       notify,
-      runCoalescedRefresh,
+      refreshStatuses,
     ],
   );
 
@@ -274,10 +326,23 @@ export default function useRuntimeOperations({
       });
       operationsRef.current = next;
       setOperationsById(next);
-      handleTerminal(reconciled);
+      if (
+        isTerminal(reconciled) &&
+        (current === null ||
+          !isTerminal(current))
+      ) {
+        handleTerminal(reconciled);
+      }
     },
     [handleTerminal],
   );
+
+  const ingestSnapshotRef = useRef(
+    ingestSnapshot,
+  );
+  ingestSnapshotRef.current = ingestSnapshot;
+  const notifyRef = useRef(notify);
+  notifyRef.current = notify;
 
   useEffect(() => {
     let disposed = false;
@@ -298,7 +363,7 @@ export default function useRuntimeOperations({
 
     void listenRuntimeOperations(
       (operation) => {
-        ingestSnapshot(
+        ingestSnapshotRef.current(
           operation,
           false,
         );
@@ -317,7 +382,7 @@ export default function useRuntimeOperations({
           return;
         }
         setListenerState("failed");
-        notify(
+        notifyRef.current(
           "Runtime action updates are unavailable. Individual runtime controls are disabled.",
           "warning",
         );
@@ -327,10 +392,7 @@ export default function useRuntimeOperations({
       disposed = true;
       callUnlisten();
     };
-  }, [
-    ingestSnapshot,
-    notify,
-  ]);
+  }, []);
 
   const lookupAndIngest = useCallback(
     async (operationId: string) => {
@@ -360,6 +422,23 @@ export default function useRuntimeOperations({
         request.action,
       );
       if (pendingRef.current.has(key)) {
+        return;
+      }
+
+      const channelIsOpen =
+        request.action === "open";
+      const hasActiveChannel =
+        Object.values(
+          operationsRef.current,
+        ).some(
+          (operation) =>
+            operation.runtimeId ===
+              request.runtimeId &&
+            !isTerminal(operation) &&
+            (operation.action === "open") ===
+              channelIsOpen,
+        );
+      if (hasActiveChannel) {
         return;
       }
 
@@ -401,20 +480,19 @@ export default function useRuntimeOperations({
           return;
         }
 
-        notify(
-          admission.error.code ===
-            "operation-capacity-exceeded"
-            ? "Runtime actions are temporarily busy. Try again shortly."
-            : "This action is not available for the current runtime configuration.",
-          admission.error.code ===
-            "operation-capacity-exceeded"
-            ? "warning"
-            : "error",
+        const failure = admissionFailure(
+          admission.error,
         );
-      } catch {
         notify(
-          "This action is not available for the current runtime configuration.",
-          "error",
+          failure.message,
+          failure.severity,
+        );
+      } catch (error: unknown) {
+        const failure =
+          admissionFailure(error);
+        notify(
+          failure.message,
+          failure.severity,
         );
       } finally {
         pendingRef.current.delete(key);
@@ -503,6 +581,14 @@ export default function useRuntimeOperations({
       latestTerminalByRuntime,
       lifecyclePendingByRuntime,
       openPendingByRuntime,
+      hasCanonicalActivity:
+        pendingChannels.size > 0 ||
+        Object.values(
+          operationsById,
+        ).some(
+          (operation) =>
+            !isTerminal(operation),
+        ),
     };
   }, [
     operationsById,

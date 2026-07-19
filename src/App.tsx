@@ -381,7 +381,8 @@ function App() {
 
   const {
     lastUpdated,
-    isLoading: isChecking,
+    isRefreshingStatuses:
+      isChecking,
     refreshStatuses,
   } = runtimes;
 
@@ -390,6 +391,9 @@ function App() {
     handleGlobalToggle,
   } = useLegacyBulkRuntimeActions({
     allRunning,
+    hasCanonicalActivity:
+      runtimeOperations
+        .hasCanonicalActivity,
     refreshStatuses,
     notify: handleMessage,
   });
@@ -400,6 +404,7 @@ function App() {
       action: "start" | "stop" | "open",
     ) => {
       if (
+        globalAction !== null ||
         !runtimes.runtimes.some(
           (runtime) =>
             runtime.id === runtimeId,
@@ -423,6 +428,7 @@ function App() {
     [
       runtimeOperations,
       runtimes.runtimes,
+      globalAction,
       settings.ollamaUrl,
       settings.openWebUiUrl,
     ],
@@ -605,6 +611,10 @@ function App() {
             allRunning={
               allRunning
             }
+            hasCanonicalActivity={
+              runtimeOperations
+                .hasCanonicalActivity
+            }
             isChecking={
               isChecking
             }
@@ -654,6 +664,10 @@ function App() {
             }
             allRunning={
               allRunning
+            }
+            hasCanonicalActivity={
+              runtimeOperations
+                .hasCanonicalActivity
             }
             globalAction={
               globalAction

@@ -15,6 +15,7 @@ type LegacyBulkAction =
 
 type UseLegacyBulkRuntimeActionsOptions = {
   allRunning: boolean;
+  hasCanonicalActivity: boolean;
   refreshStatuses: () => Promise<void>;
   notify: (message: string) => void;
 };
@@ -22,6 +23,7 @@ type UseLegacyBulkRuntimeActionsOptions = {
 // Bulk behavior remains on the legacy boundary pending a separately approved design.
 export default function useLegacyBulkRuntimeActions({
   allRunning,
+  hasCanonicalActivity,
   refreshStatuses,
   notify,
 }: UseLegacyBulkRuntimeActionsOptions) {
@@ -77,7 +79,10 @@ export default function useLegacyBulkRuntimeActions({
 
   const handleGlobalToggle = useCallback(
     () => {
-      if (globalAction !== null) {
+      if (
+        globalAction !== null ||
+        hasCanonicalActivity
+      ) {
         return;
       }
       void (allRunning
@@ -87,6 +92,7 @@ export default function useLegacyBulkRuntimeActions({
     [
       allRunning,
       globalAction,
+      hasCanonicalActivity,
       startAll,
       stopAll,
     ],

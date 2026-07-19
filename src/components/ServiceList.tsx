@@ -34,6 +34,7 @@ export type RuntimeServiceView = {
 type ServiceListProps = {
   services: RuntimeServiceView[];
   cardStyle: CSSProperties;
+  bulkActive: boolean;
   onStart: (
     runtimeId: string,
   ) => void;
@@ -48,6 +49,7 @@ type ServiceListProps = {
 function ServiceList({
   services,
   cardStyle,
+  bulkActive,
   onStart,
   onStop,
   onOpen,
@@ -59,6 +61,7 @@ function ServiceList({
           key={service.runtimeId}
           service={service}
           cardStyle={cardStyle}
+          bulkActive={bulkActive}
           onStart={onStart}
           onStop={onStop}
           onOpen={onOpen}
