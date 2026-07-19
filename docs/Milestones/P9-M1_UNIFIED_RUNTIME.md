@@ -318,6 +318,12 @@ Final P9-M1C1 guarantees:
 
 This record completes P9-M1C1 only; it does not record full P9-M1C completion or start P9-M1C2/P9-M1C3.
 
+### P9-M1C2 Frontend Legacy Runtime Lifecycle Cleanup
+
+P9-M1C2 frontend cleanup is completed. Repository-wide caller proof confirmed that `useServices` and `useServiceActions` were unreferenced dead paths, so both hooks and the unused individual Legacy frontend wrappers `startSingleService`, `stopSingleService`, and `openSingleService` were removed. No live frontend caller remains for `start_service`, `stop_service`, or `open_service`; individual Dashboard and Services controls continue through `useRuntimeOperations` and the canonical Runtime service.
+
+Legacy Start All and Stop All frontend compatibility remains isolated through `useLegacyBulkRuntimeActions` and retained `startAllServices`/`stopAllServices` wrappers. Backend Legacy commands remain registered and unchanged. No Runtime UI behavior or canonical operation/status semantics changed. M1C3 remains unimplemented, and full P9-M1C is not yet complete.
+
 ## Out of Scope for P9-M1
 
 - Unified Session

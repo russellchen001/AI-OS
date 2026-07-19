@@ -143,3 +143,9 @@ The final status-coordinator correction uses one shared drain-cycle Promise. Eve
 Legacy Bulk's final delayed refresh awaits this complete drain cycle, so endpoint changes cannot release isolation before the latest status query settles. Completion and fixed failure notifications after `start_all` or `stop_all` invocation are emitted only while the owning hook remains mounted. M1C2 and M1C3 remain unimplemented.
 
 The V5 scheduling correction assigns endpoint values and advances endpoint Generation only inside the committed layout effect; speculative renders cannot mutate coordination state. Initial mount schedules exactly one status cycle, while committed endpoint changes join or create the same coordinator cycle without definition reload or duplicate physical queries. Coordinator ownership and loading state are cleared inside the drain lifecycle before its shared Promise settles, so a completion-boundary request either joins the active cycle or observes a null coordinator and starts a new one. The V4 drain-cycle, stale-result, and Bulk waiting guarantees remain intact. M1C2 and M1C3 remain unimplemented.
+
+## M1C2 Frontend Legacy Lifecycle Cleanup
+
+P9-M1C2 removes the unreferenced `useServices` and `useServiceActions` frontend hooks and their unused individual `startSingleService`, `stopSingleService`, and `openSingleService` wrappers. No live frontend caller remains for `start_service`, `stop_service`, or `open_service`; individual Runtime controls continue through the canonical typed Runtime Operation boundary without UI or operation-semantic changes.
+
+Legacy `startAllServices` and `stopAllServices` remain isolated through `useLegacyBulkRuntimeActions`, with their messages, ordering, timing, and backend Bulk commands unchanged. All backend Legacy lifecycle commands remain registered for compatibility. M1C3 remains unimplemented, and full P9-M1C is not yet complete.
