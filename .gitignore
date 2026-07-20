@@ -33,3 +33,4 @@ openclaw.log
 *.before-*
 *.analytics-backup
 .openclaw-integration-backup-*/
+.chatgpt-review/
