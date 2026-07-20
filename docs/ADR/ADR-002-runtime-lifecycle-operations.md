@@ -169,3 +169,9 @@ The `start_all` and `stop_all` IPC commands, their shell implementations, `start
 One shared in-memory FIFO Scheduler is the mandatory dispatch boundary for canonical individual and Bulk Runtime operation tasks. Admission still creates the canonical queued snapshot; Scheduler dispatch occurs before lifecycle validation, preparation, or execution. Once dispatched, the existing Lifecycle Engine and executor retain all Runtime-specific responsibility. The Scheduler catches task-boundary panics so a failed task cannot prevent dispatch of the next queued task, while the operation supervisor remains responsible for canonical terminal state.
 
 Only one task runs at a time. Pending tasks are process-local and are neither persisted nor recovered. Retry, delayed or cron work, priorities, parallel execution, health policy, and Scheduler UI are explicitly deferred.
+
+## P9-M4 Runtime Recovery
+
+One Recovery Coordinator is composed with the process-wide Runtime Scheduler. All normalized individual and Bulk execution failures pass through its single evaluation entry point. The resulting decision contains a centralized `Recoverable`, `NonRecoverable`, or `Unknown` classification and whether recovery can be planned. Eligibility requires both a recognized retryable transient failure and an available canonical Scheduler.
+
+The Coordinator does not mutate Runtime state, validate lifecycle requests, execute Runtime commands, enqueue automatic retries, or replace Scheduler dispatch. Future retry policy, auto-restart, health-triggered recovery, limits, and backoff must consume the decision and submit any explicit recovery work through the existing Scheduler. Persistent recovery state and UI controls remain out of scope.

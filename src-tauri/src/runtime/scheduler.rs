@@ -18,6 +18,10 @@ pub(crate) struct RuntimeScheduler {
 }
 
 impl RuntimeScheduler {
+    pub(crate) fn is_available(&self) -> bool {
+        self.state.lock().is_ok()
+    }
+
     pub(crate) fn enqueue(&self, task: RuntimeTask) -> Result<(), ()> {
         let should_dispatch = {
             let mut state = self.state.lock().map_err(|_| ())?;

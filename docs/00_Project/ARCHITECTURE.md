@@ -140,4 +140,10 @@ This design provides one execution model for individual and Bulk lifecycle work.
 
 All individual and Bulk Runtime operations enter one process-wide, in-memory FIFO Scheduler after canonical operation admission. The Scheduler dispatches exactly one operation task at a time, then hands it to the existing Runtime Lifecycle Engine for validation and execution. It owns queue order and running/pending coordination only; operation snapshots remain owned by the Runtime Operation manager and all Runtime-specific behavior remains owned by the Lifecycle Engine and executor.
 
-The P9-M3 Scheduler is intentionally non-persistent and immediate. It provides no retry, recovery, delay, cron, priority, parallel execution, health policy, or UI.
+The P9-M3 Scheduler is intentionally non-persistent and immediate. It provides no retry execution, delay, cron, priority, parallel execution, health policy, or UI; recovery decisions are owned separately by the P9-M4 Recovery Coordinator.
+
+## Runtime Recovery
+
+P9-M4 introduces one process-wide Recovery Coordinator alongside the canonical Scheduler. Every individual or Bulk lifecycle failure is evaluated through this coordinator. It classifies normalized failures as recoverable, non-recoverable, or unknown and produces a recovery-eligibility decision. Static configuration, authorization, unsupported-operation, missing-dependency, invalid-location, and ambiguous-container failures are non-recoverable; explicitly retryable transient connectivity, probing, execution, dependency-availability, task, and readiness failures are recoverable. Unclear combinations remain unknown and are not eligible.
+
+Recovery owns classification and planning only. It shares the existing Scheduler handle so scheduler availability is part of eligibility, but it neither executes lifecycle work nor automatically creates a retry. Any future retry, auto-restart, or health-triggered recovery request must re-enter the canonical Scheduler before lifecycle validation and execution. Decisions are currently process-local and are not persisted or exposed in the UI.

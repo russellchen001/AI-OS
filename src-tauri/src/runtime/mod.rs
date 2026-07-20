@@ -5,6 +5,7 @@ pub(crate) mod ipc;
 pub(crate) mod lifecycle;
 pub mod models;
 pub mod operations;
+pub(crate) mod recovery;
 mod registry;
 pub(crate) mod scheduler;
 

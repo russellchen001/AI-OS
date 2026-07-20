@@ -15,7 +15,13 @@ pub(crate) fn start_runtime_operation(
     state: State<'_, RuntimeExecutionState>,
     request: RuntimeLifecycleRequest,
 ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
-    start_accepted_operation(state.manager(), state.scheduler(), request, app)
+    start_accepted_operation(
+        state.manager(),
+        state.scheduler(),
+        state.recovery(),
+        request,
+        app,
+    )
 }
 
 #[tauri::command]

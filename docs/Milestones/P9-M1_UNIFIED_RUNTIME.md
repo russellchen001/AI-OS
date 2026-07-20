@@ -402,4 +402,13 @@ Frontend callers use `startRuntimeBulkOperation` with canonical Runtime IDs and 
 - **Dispatch:** One shared process-local FIFO Scheduler dispatches individual and Bulk Runtime operations sequentially.
 - **Ownership:** The Scheduler owns queue order and running/pending coordination only. Canonical operation state remains in the Runtime Operation manager; validation and execution remain in the Lifecycle Engine and executor.
 - **Required flow:** Request admission → Scheduler → Lifecycle validation/preparation → executor.
-- **Excluded:** Retry, recovery, delayed tasks, cron, priorities, parallel execution, persistent queues, health policies, and Scheduler UI.
+- **Excluded from Scheduler:** Retry execution, recovery decisions, delayed tasks, cron, priorities, parallel execution, persistent queues, health policies, and Scheduler UI. Recovery decisions are introduced separately in P9-M4.
+
+## P9-M4 Runtime Recovery
+
+- **Implementation:** Complete; ready for Architecture Review and subsequent manual smoke testing.
+- **Coordinator:** One process-wide Recovery Coordinator evaluates every normalized individual and Bulk lifecycle failure.
+- **Decision:** Failures are centrally classified as recoverable, non-recoverable, or unknown; only recognized retryable transient failures with an available Scheduler are recovery-eligible.
+- **Boundaries:** Recovery owns classification and planning only. Scheduler retains sole dispatch ownership, Lifecycle retains validation/execution ownership, and Runtime Operations retain state ownership.
+- **Future path:** Retry policy, auto-restart, health-triggered recovery, recovery limits, and backoff may consume Recovery decisions but must submit work through the canonical Scheduler.
+- **Excluded:** Automatic retry, backoff, cron, health monitoring, watchdogs, persistent recovery state, configurable policies, and Recovery UI.

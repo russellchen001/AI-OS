@@ -20,6 +20,7 @@ use super::{
     operations::{
         RuntimeOperationCancellationUpdate, RuntimeOperationManager, RuntimeOperationProgressUpdate,
     },
+    recovery::RecoveryCoordinator,
     scheduler::RuntimeScheduler,
 };
 
@@ -29,13 +30,16 @@ pub(crate) const RUNTIME_OPERATION_EVENT: &str = "runtime://operation";
 pub struct RuntimeExecutionState {
     manager: Arc<RuntimeOperationManager>,
     scheduler: RuntimeScheduler,
+    recovery: RecoveryCoordinator,
 }
 
 impl Default for RuntimeExecutionState {
     fn default() -> Self {
+        let scheduler = RuntimeScheduler::default();
         Self {
             manager: Arc::new(RuntimeOperationManager::default()),
-            scheduler: RuntimeScheduler::default(),
+            recovery: RecoveryCoordinator::new(scheduler.clone()),
+            scheduler,
         }
     }
 }
@@ -47,6 +51,10 @@ impl RuntimeExecutionState {
 
     pub(crate) fn scheduler(&self) -> RuntimeScheduler {
         self.scheduler.clone()
+    }
+
+    pub(crate) fn recovery(&self) -> RecoveryCoordinator {
+        self.recovery.clone()
     }
 }
 
@@ -125,6 +133,7 @@ impl OperationEventEmitter for TauriEventEmitter {
 pub(crate) fn start_accepted_operation(
     manager: Arc<RuntimeOperationManager>,
     scheduler: RuntimeScheduler,
+    recovery: RecoveryCoordinator,
     request: RuntimeLifecycleRequest,
     app: AppHandle,
 ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
@@ -145,8 +154,10 @@ pub(crate) fn start_accepted_operation(
             validated,
             task_emitter,
             Arc::new(NativePipeline),
+            Some(recovery),
         ),
         Err(error) => {
+            let _ = recovery.evaluate(&error);
             let _ = fail_operation(&task_manager, &operation_id, error, task_emitter.as_ref());
         }
     });
@@ -189,7 +200,14 @@ fn start_with_dependencies(
     let task_manager = Arc::clone(&manager);
     let task_emitter = Arc::clone(&emitter);
     let task = Box::new(move || {
-        run_operation_supervisor(task_manager, operation_id, request, task_emitter, pipeline);
+        run_operation_supervisor(
+            task_manager,
+            operation_id,
+            request,
+            task_emitter,
+            pipeline,
+            None,
+        );
     });
 
     let scheduled = catch_unwind(AssertUnwindSafe(|| spawner.spawn(task)))
@@ -219,6 +237,7 @@ fn run_operation_supervisor(
     request: ValidatedRuntimeLifecycleRequest,
     emitter: Arc<dyn OperationEventEmitter>,
     pipeline: Arc<dyn OperationPipeline>,
+    recovery: Option<RecoveryCoordinator>,
 ) {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         run_operation_supervisor_inner(
@@ -227,6 +246,7 @@ fn run_operation_supervisor(
             &request,
             emitter.as_ref(),
             pipeline.as_ref(),
+            recovery.as_ref(),
         )
     }));
     if outcome.is_err() {
@@ -245,11 +265,15 @@ fn run_operation_supervisor_inner(
     request: &ValidatedRuntimeLifecycleRequest,
     emitter: &dyn OperationEventEmitter,
     pipeline: &dyn OperationPipeline,
+    recovery: Option<&RecoveryCoordinator>,
 ) {
     let deadline = Instant::now() + PREPARATION_TIMEOUT;
     let prepared = match pipeline.prepare(request, deadline) {
         Ok(prepared) => prepared,
         Err(error) => {
+            if let Some(recovery) = recovery {
+                let _ = recovery.evaluate(&error);
+            }
             let _ = fail_operation(manager, operation_id, error, emitter);
             return;
         }
@@ -284,6 +308,9 @@ fn run_operation_supervisor_inner(
             }
         }
         Err(error) => {
+            if let Some(recovery) = recovery {
+                let _ = recovery.evaluate(&error);
+            }
             let _ = fail_operation(manager, operation_id, error, emitter);
         }
     }
@@ -513,6 +540,7 @@ mod tests {
         let clone = state.clone();
         assert!(Arc::ptr_eq(&state.manager(), &clone.manager()));
         assert!(state.scheduler().shares_state_with(&clone.scheduler()));
+        assert!(state.recovery().shares_scheduler_with(&state.scheduler()));
     }
 
     #[test]
@@ -910,7 +938,14 @@ mod tests {
             }))),
         };
         let emitter = RecordingEmitter::default();
-        run_operation_supervisor_inner(&manager, &queued.operation_id, &request(), &emitter, &fake);
+        run_operation_supervisor_inner(
+            &manager,
+            &queued.operation_id,
+            &request(),
+            &emitter,
+            &fake,
+            None,
+        );
         assert!(!executed.load(Ordering::SeqCst));
         assert!(emitter.events.lock().unwrap().is_empty());
     }

@@ -18,6 +18,7 @@ use super::{
         RuntimeOperationResult, RuntimeOperationState,
     },
     operations::{RuntimeOperationManager, RuntimeOperationProgressUpdate, RUNTIME_BULK_ID},
+    recovery::RecoveryCoordinator,
 };
 
 #[derive(Clone, Deserialize)]
@@ -80,6 +81,7 @@ pub(crate) fn start_runtime_bulk_operation(
     validate_request(&request)?;
     let manager = state.manager();
     let scheduler = state.scheduler();
+    let recovery = state.recovery();
     let admission = manager.admit_operation(RUNTIME_BULK_ID, request.action, false)?;
     let queued = match admission {
         RuntimeOperationAdmission::Accepted { ref operation } => operation.clone(),
@@ -89,10 +91,17 @@ pub(crate) fn start_runtime_bulk_operation(
     let operation_id = queued.operation_id.clone();
     let task_manager = Arc::clone(&manager);
     let task_app = app.clone();
+    let task_recovery = recovery.clone();
     let scheduled = scheduler.enqueue(Box::new(move || {
         let emitter = TauriEventEmitter::new(task_app);
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            run_bulk(&task_manager, &operation_id, request, &emitter)
+            run_bulk(
+                &task_manager,
+                &operation_id,
+                request,
+                &emitter,
+                &task_recovery,
+            )
         }));
         if outcome.is_err() {
             let error = NormalizedRuntimeError {
@@ -100,6 +109,7 @@ pub(crate) fn start_runtime_bulk_operation(
                 message: "The runtime operation task failed.".to_string(),
                 retryable: true,
             };
+            let _ = task_recovery.evaluate(&error);
             if let Ok(snapshot) = task_manager.transition(
                 &operation_id,
                 RuntimeOperationState::Failed,
@@ -116,6 +126,7 @@ pub(crate) fn start_runtime_bulk_operation(
             message: "The runtime operation task failed.".to_string(),
             retryable: true,
         };
+        let _ = recovery.evaluate(&error);
         let snapshot = manager.transition(
             &queued.operation_id,
             RuntimeOperationState::Failed,
@@ -135,6 +146,7 @@ fn run_bulk(
     operation_id: &str,
     request: StartRuntimeBulkOperationRequest,
     emitter: &TauriEventEmitter,
+    recovery: &RecoveryCoordinator,
 ) {
     let Ok(running) = manager.transition(operation_id, RuntimeOperationState::Running, None, None)
     else {
@@ -152,6 +164,9 @@ fn run_bulk(
         };
         let execution = validate_runtime_lifecycle_request(lifecycle_request)
             .and_then(|validated| execute_validated_request(&validated, &mut |_| {}));
+        if let Err(error) = &execution {
+            let _ = recovery.evaluate(error);
+        }
         outcomes.push(RuntimeBulkOutcome {
             runtime_id: item.runtime_id,
             succeeded: execution.is_ok(),
