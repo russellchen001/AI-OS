@@ -154,3 +154,5 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
 }
+
+pub mod task_engine;
