@@ -5,6 +5,7 @@ mod mcp;
 mod models;
 mod multillm;
 mod openclaw;
+pub mod planner;
 mod runtime;
 
 use std::process::Command;
