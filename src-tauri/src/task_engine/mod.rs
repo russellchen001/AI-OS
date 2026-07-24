@@ -4,7 +4,7 @@ pub mod lifecycle;
 pub mod repository;
 
 pub use domain::{
-    Task, TaskContext, TaskError, TaskId, TaskPlan, TaskPriority, TaskResult, TaskStatus, TaskType,
+    Task, TaskContext, TaskError, TaskId, TaskPriority, TaskResult, TaskStatus, TaskType,
     TimestampMs,
 };
 

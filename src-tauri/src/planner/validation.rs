@@ -192,7 +192,7 @@ mod tests {
         let classify = step("classify").depends_on(scan.id.clone());
         let move_files = step("move").depends_on(classify.id.clone());
 
-        let mut plan = Plan::new("organize files").unwrap();
+        let mut plan = Plan::new(crate::task_engine::TaskId::new(), 1, "organize files").unwrap();
 
         plan.add_step(scan).unwrap();
         plan.add_step(classify).unwrap();
@@ -213,7 +213,8 @@ mod tests {
             .depends_on(left.id.clone())
             .depends_on(right.id.clone());
 
-        let mut plan = Plan::new("branching workflow").unwrap();
+        let mut plan =
+            Plan::new(crate::task_engine::TaskId::new(), 1, "branching workflow").unwrap();
 
         plan.add_step(source).unwrap();
         plan.add_step(left).unwrap();
@@ -225,7 +226,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_plan() {
-        let plan = Plan::new("empty workflow").unwrap();
+        let plan = Plan::new(crate::task_engine::TaskId::new(), 1, "empty workflow").unwrap();
 
         assert_eq!(validate_plan(&plan), Err(PlanValidationError::EmptyPlan));
     }
@@ -236,7 +237,7 @@ mod tests {
 
         let dependent = step("dependent").depends_on(missing.clone());
 
-        let mut plan = Plan::new("invalid workflow").unwrap();
+        let mut plan = Plan::new(crate::task_engine::TaskId::new(), 1, "invalid workflow").unwrap();
 
         plan.add_step(dependent).unwrap();
 
@@ -255,7 +256,7 @@ mod tests {
 
         let dependent = step("self").depends_on(id.clone());
 
-        let mut plan = Plan::new("invalid workflow").unwrap();
+        let mut plan = Plan::new(crate::task_engine::TaskId::new(), 1, "invalid workflow").unwrap();
 
         plan.add_step(dependent).unwrap();
 
@@ -275,7 +276,7 @@ mod tests {
             ..step("dependent")
         };
 
-        let mut plan = Plan::new("invalid workflow").unwrap();
+        let mut plan = Plan::new(crate::task_engine::TaskId::new(), 1, "invalid workflow").unwrap();
 
         plan.add_step(source).unwrap();
         plan.add_step(dependent).unwrap();
@@ -298,7 +299,7 @@ mod tests {
 
         let second = step("second").depends_on(first_id);
 
-        let mut plan = Plan::new("cyclic workflow").unwrap();
+        let mut plan = Plan::new(crate::task_engine::TaskId::new(), 1, "cyclic workflow").unwrap();
 
         plan.add_step(first).unwrap();
         plan.add_step(second).unwrap();
@@ -317,7 +318,7 @@ mod tests {
 
         let third = step("third").depends_on(PlanStepId::from_static("second"));
 
-        let mut plan = Plan::new("cyclic workflow").unwrap();
+        let mut plan = Plan::new(crate::task_engine::TaskId::new(), 1, "cyclic workflow").unwrap();
 
         plan.add_step(first).unwrap();
         plan.add_step(second).unwrap();

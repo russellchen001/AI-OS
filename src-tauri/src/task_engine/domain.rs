@@ -1,3 +1,4 @@
+use crate::planner::PlanId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -10,7 +11,6 @@ use std::{
 
 pub type TimestampMs = u64;
 pub type TaskContext = BTreeMap<String, Value>;
-pub type TaskPlan = Vec<Value>;
 pub type TaskResult = Value;
 
 static TASK_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -99,7 +99,7 @@ pub struct Task {
     pub status: TaskStatus,
     pub priority: TaskPriority,
     pub context: TaskContext,
-    pub plan: TaskPlan,
+    pub active_plan_id: Option<PlanId>,
     pub result: Option<TaskResult>,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
@@ -122,7 +122,7 @@ impl Task {
             status: TaskStatus::Created,
             priority: TaskPriority::Normal,
             context: TaskContext::new(),
-            plan: TaskPlan::new(),
+            active_plan_id: None,
             result: None,
             created_at: timestamp,
             updated_at: timestamp,
@@ -136,6 +136,14 @@ impl Task {
 
         if next == TaskStatus::Failed {
             return true;
+        }
+
+        if self.task_type == TaskType::Do
+            && self.status == TaskStatus::Planning
+            && next == TaskStatus::Ready
+            && self.active_plan_id.is_none()
+        {
+            return false;
         }
 
         match (self.task_type, self.status, next) {
@@ -159,7 +167,20 @@ impl Task {
         }
     }
 
+    pub fn activate_plan(&mut self, plan_id: PlanId) {
+        self.active_plan_id = Some(plan_id);
+        self.updated_at = now_ms();
+    }
+
     pub fn transition_to(&mut self, next: TaskStatus) -> Result<(), TaskError> {
+        if self.task_type == TaskType::Do
+            && self.status == TaskStatus::Planning
+            && next == TaskStatus::Ready
+            && self.active_plan_id.is_none()
+        {
+            return Err(TaskError::ActivePlanRequired);
+        }
+
         if !self.can_transition_to(next) {
             return Err(TaskError::InvalidTransition {
                 task_type: self.task_type,
@@ -178,6 +199,7 @@ impl Task {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskError {
     EmptyIntent,
+    ActivePlanRequired,
 
     InvalidTransition {
         task_type: TaskType,
@@ -190,6 +212,10 @@ impl fmt::Display for TaskError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyIntent => formatter.write_str("task intent must not be empty"),
+
+            Self::ActivePlanRequired => {
+                formatter.write_str("do task requires an active plan before becoming ready")
+            }
 
             Self::InvalidTransition {
                 task_type,
@@ -222,7 +248,7 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Created);
         assert_eq!(task.priority, TaskPriority::Normal);
         assert!(task.context.is_empty());
-        assert!(task.plan.is_empty());
+        assert!(task.active_plan_id.is_none());
         assert!(task.result.is_none());
         assert!(task.updated_at >= task.created_at);
     }
@@ -257,6 +283,19 @@ mod tests {
         ));
 
         task.transition_to(TaskStatus::Planning).unwrap();
+
+        assert!(!task.can_transition_to(TaskStatus::Ready));
+        assert_eq!(
+            task.transition_to(TaskStatus::Ready),
+            Err(TaskError::ActivePlanRequired)
+        );
+
+        let plan_id = PlanId::new();
+        task.activate_plan(plan_id.clone());
+
+        assert_eq!(task.active_plan_id, Some(plan_id));
+        assert!(task.can_transition_to(TaskStatus::Ready));
+
         task.transition_to(TaskStatus::Ready).unwrap();
         task.transition_to(TaskStatus::Executing).unwrap();
         task.transition_to(TaskStatus::Verifying).unwrap();
@@ -271,6 +310,7 @@ mod tests {
 
         task.transition_to(TaskStatus::Understanding).unwrap();
         task.transition_to(TaskStatus::Planning).unwrap();
+        task.activate_plan(PlanId::new());
         task.transition_to(TaskStatus::Ready).unwrap();
         task.transition_to(TaskStatus::Executing).unwrap();
         task.transition_to(TaskStatus::Recovery).unwrap();
@@ -308,9 +348,7 @@ mod tests {
         task.context
             .insert("path".to_owned(), json!("/Users/example"));
 
-        task.plan.push(json!({
-            "step": "scan"
-        }));
+        task.activate_plan(PlanId::new());
 
         task.result = Some(json!({
             "organized": 12

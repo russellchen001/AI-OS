@@ -1,3 +1,4 @@
+use crate::task_engine::TaskId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -196,6 +197,8 @@ impl PlanStep {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
     pub id: PlanId,
+    pub task_id: TaskId,
+    pub revision: u32,
     pub objective: String,
     pub status: PlanStatus,
     pub steps: Vec<PlanStep>,
@@ -204,8 +207,16 @@ pub struct Plan {
 }
 
 impl Plan {
-    pub fn new(objective: impl Into<String>) -> Result<Self, PlanDomainError> {
+    pub fn new(
+        task_id: TaskId,
+        revision: u32,
+        objective: impl Into<String>,
+    ) -> Result<Self, PlanDomainError> {
         let objective = objective.into().trim().to_owned();
+
+        if revision == 0 {
+            return Err(PlanDomainError::InvalidRevision);
+        }
 
         if objective.is_empty() {
             return Err(PlanDomainError::EmptyObjective);
@@ -215,6 +226,8 @@ impl Plan {
 
         Ok(Self {
             id: PlanId::new(),
+            task_id,
+            revision,
             objective,
             status: PlanStatus::Draft,
             steps: Vec::new(),
@@ -246,6 +259,7 @@ impl Plan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanDomainError {
     EmptyObjective,
+    InvalidRevision,
     EmptyStepName,
     EmptyCapability,
     DuplicateStepId(PlanStepId),
@@ -255,6 +269,8 @@ impl fmt::Display for PlanDomainError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyObjective => formatter.write_str("plan objective must not be empty"),
+
+            Self::InvalidRevision => formatter.write_str("plan revision must be greater than zero"),
 
             Self::EmptyStepName => formatter.write_str("plan step name must not be empty"),
 
@@ -276,9 +292,12 @@ mod tests {
 
     #[test]
     fn creates_plan_with_stable_defaults() {
-        let plan = Plan::new("organize files").unwrap();
+        let task_id = TaskId::new();
+        let plan = Plan::new(task_id.clone(), 1, "organize files").unwrap();
 
         assert!(plan.id.as_str().starts_with("plan_"));
+        assert_eq!(plan.task_id, task_id);
+        assert_eq!(plan.revision, 1);
         assert_eq!(plan.objective, "organize files");
         assert_eq!(plan.status, PlanStatus::Draft);
         assert!(plan.steps.is_empty());
@@ -287,7 +306,18 @@ mod tests {
 
     #[test]
     fn rejects_empty_plan_objective() {
-        assert_eq!(Plan::new("   "), Err(PlanDomainError::EmptyObjective));
+        assert_eq!(
+            Plan::new(TaskId::new(), 1, "   "),
+            Err(PlanDomainError::EmptyObjective)
+        );
+    }
+
+    #[test]
+    fn rejects_zero_revision() {
+        assert_eq!(
+            Plan::new(TaskId::new(), 0, "organize files"),
+            Err(PlanDomainError::InvalidRevision)
+        );
     }
 
     #[test]
@@ -326,7 +356,7 @@ mod tests {
             .unwrap()
             .with_id(step_id.clone());
 
-        let mut plan = Plan::new("organize files").unwrap();
+        let mut plan = Plan::new(TaskId::new(), 1, "organize files").unwrap();
 
         plan.add_step(first).unwrap();
 
@@ -351,7 +381,7 @@ mod tests {
             .unwrap()
             .depends_on(scan_id);
 
-        let mut plan = Plan::new("organize files").unwrap();
+        let mut plan = Plan::new(TaskId::new(), 1, "organize files").unwrap();
 
         plan.add_step(scan).unwrap();
         plan.add_step(move_step).unwrap();

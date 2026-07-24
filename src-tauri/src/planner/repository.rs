@@ -139,7 +139,7 @@ mod tests {
     use crate::planner::{PlanStatus, PlanStep};
 
     fn plan(objective: &str) -> Plan {
-        let mut plan = Plan::new(objective).unwrap();
+        let mut plan = Plan::new(crate::task_engine::TaskId::new(), 1, objective).unwrap();
 
         plan.add_step(
             PlanStep::new(
