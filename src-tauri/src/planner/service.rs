@@ -2,7 +2,7 @@ use super::{
     validate_plan as validate_plan_structure, Plan, PlanDomainError, PlanId, PlanRepository,
     PlanRepositoryError, PlanStatus, PlanValidationError,
 };
-use crate::task_engine::{Task, TaskId, TaskRepository, TaskRepositoryError};
+use crate::task_engine::{Task, TaskId, TaskRepository, TaskRepositoryError, TaskStatus};
 use std::{error::Error, fmt};
 
 pub struct PlannerService<T, P> {
@@ -85,7 +85,7 @@ where
             .get(task_id)?
             .ok_or_else(|| TaskRepositoryError::NotFound(task_id.clone()))?;
 
-        let plan = self
+        let mut plan = self
             .plans
             .get(plan_id)?
             .ok_or_else(|| PlanRepositoryError::NotFound(plan_id.clone()))?;
@@ -98,6 +98,20 @@ where
             });
         }
 
+        if task.status != TaskStatus::Planning {
+            return Err(PlannerServiceError::TaskNotPlanning {
+                task_id: task.id,
+                status: task.status,
+            });
+        }
+
+        if let Some(active_plan_id) = task.active_plan_id.clone() {
+            return Err(PlannerServiceError::TaskAlreadyHasActivePlan {
+                task_id: task.id,
+                active_plan_id,
+            });
+        }
+
         if plan.status != PlanStatus::Validated {
             return Err(PlannerServiceError::PlanNotValidated {
                 plan_id: plan.id,
@@ -105,8 +119,10 @@ where
             });
         }
 
-        task.activate_plan(plan.id);
+        plan.status = PlanStatus::Ready;
+        self.plans.update(plan.clone())?;
 
+        task.activate_plan(plan.id);
         self.tasks.update(task.clone())?;
 
         Ok(task)
@@ -134,6 +150,16 @@ pub enum PlannerServiceError {
     PlanNotValidated {
         plan_id: PlanId,
         status: PlanStatus,
+    },
+
+    TaskNotPlanning {
+        task_id: TaskId,
+        status: TaskStatus,
+    },
+
+    TaskAlreadyHasActivePlan {
+        task_id: TaskId,
+        active_plan_id: PlanId,
     },
 
     RevisionOverflow(TaskId),
@@ -183,6 +209,23 @@ impl fmt::Display for PlannerServiceError {
                 )
             }
 
+            Self::TaskNotPlanning { task_id, status } => {
+                write!(
+                    formatter,
+                    "task {task_id} has status {status:?} and cannot activate a plan"
+                )
+            }
+
+            Self::TaskAlreadyHasActivePlan {
+                task_id,
+                active_plan_id,
+            } => {
+                write!(
+                    formatter,
+                    "task {task_id} already has active plan {active_plan_id}"
+                )
+            }
+
             Self::RevisionOverflow(task_id) => {
                 write!(formatter, "plan revision overflow for task {task_id}")
             }
@@ -201,6 +244,8 @@ impl Error for PlannerServiceError {
             Self::PlanTaskMismatch { .. }
             | Self::PlanNotDraft { .. }
             | Self::PlanNotValidated { .. }
+            | Self::TaskNotPlanning { .. }
+            | Self::TaskAlreadyHasActivePlan { .. }
             | Self::RevisionOverflow(_) => None,
         }
     }
@@ -235,7 +280,7 @@ mod tests {
     use super::*;
     use crate::{
         planner::{InMemoryPlanRepository, PlanStep},
-        task_engine::{InMemoryTaskRepository, Task, TaskType},
+        task_engine::{InMemoryTaskRepository, Task, TaskStatus, TaskType},
     };
 
     fn service() -> PlannerService<InMemoryTaskRepository, InMemoryPlanRepository> {
@@ -264,6 +309,20 @@ mod tests {
         service.plan_repository().update(plan.clone()).unwrap();
 
         plan
+    }
+
+    fn move_task_to_planning(
+        service: &PlannerService<InMemoryTaskRepository, InMemoryPlanRepository>,
+        task: &Task,
+    ) -> Task {
+        let mut task = task.clone();
+
+        task.transition_to(TaskStatus::Understanding).unwrap();
+        task.transition_to(TaskStatus::Planning).unwrap();
+
+        service.task_repository().update(task.clone()).unwrap();
+
+        task
     }
 
     #[test]
@@ -423,6 +482,7 @@ mod tests {
     fn rejects_activation_for_draft_plan() {
         let service = service();
         let task = create_task(&service, "organize files");
+        let task = move_task_to_planning(&service, &task);
 
         let plan = service
             .create_plan(&task.id, "organize files safely")
@@ -446,9 +506,10 @@ mod tests {
     }
 
     #[test]
-    fn activates_validated_plan_for_owning_task() {
+    fn activates_validated_plan_and_marks_it_ready() {
         let service = service();
         let task = create_task(&service, "organize files");
+        let task = move_task_to_planning(&service, &task);
 
         let plan = service
             .create_plan(&task.id, "organize files safely")
@@ -469,7 +530,149 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .active_plan_id,
-            Some(plan.id)
+            Some(plan.id.clone())
+        );
+
+        assert_eq!(
+            service
+                .plan_repository()
+                .get(&plan.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            PlanStatus::Ready
+        );
+    }
+
+    #[test]
+    fn rejects_activation_when_task_is_not_planning() {
+        let service = service();
+        let task = create_task(&service, "organize files");
+
+        let plan = service
+            .create_plan(&task.id, "organize files safely")
+            .unwrap();
+
+        let plan = add_valid_step(&service, plan);
+
+        service.validate_plan(&plan.id).unwrap();
+
+        assert!(matches!(
+            service.activate_plan(&task.id, &plan.id),
+            Err(PlannerServiceError::TaskNotPlanning {
+                task_id,
+                status: TaskStatus::Created,
+            }) if task_id == task.id
+        ));
+
+        assert!(service
+            .task_repository()
+            .get(&task.id)
+            .unwrap()
+            .unwrap()
+            .active_plan_id
+            .is_none());
+
+        assert_eq!(
+            service
+                .plan_repository()
+                .get(&plan.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            PlanStatus::Validated
+        );
+    }
+
+    #[test]
+    fn rejects_activation_when_task_already_has_active_plan() {
+        let service = service();
+        let task = create_task(&service, "organize files");
+        let mut task = move_task_to_planning(&service, &task);
+        let existing_plan_id = PlanId::new();
+
+        task.activate_plan(existing_plan_id.clone());
+        service.task_repository().update(task.clone()).unwrap();
+
+        let plan = service.create_plan(&task.id, "replacement plan").unwrap();
+
+        let plan = add_valid_step(&service, plan);
+
+        service.validate_plan(&plan.id).unwrap();
+
+        assert!(matches!(
+            service.activate_plan(&task.id, &plan.id),
+            Err(PlannerServiceError::TaskAlreadyHasActivePlan {
+                task_id,
+                active_plan_id,
+            }) if task_id == task.id && active_plan_id == existing_plan_id
+        ));
+
+        assert_eq!(
+            service
+                .task_repository()
+                .get(&task.id)
+                .unwrap()
+                .unwrap()
+                .active_plan_id,
+            Some(existing_plan_id)
+        );
+
+        assert_eq!(
+            service
+                .plan_repository()
+                .get(&plan.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            PlanStatus::Validated
+        );
+    }
+
+    #[test]
+    fn rejects_reactivation_of_ready_plan() {
+        let service = service();
+        let task = create_task(&service, "organize files");
+        let task = move_task_to_planning(&service, &task);
+
+        let plan = service
+            .create_plan(&task.id, "organize files safely")
+            .unwrap();
+
+        let plan = add_valid_step(&service, plan);
+
+        service.validate_plan(&plan.id).unwrap();
+        service.activate_plan(&task.id, &plan.id).unwrap();
+
+        let mut persisted_task = service.task_repository().get(&task.id).unwrap().unwrap();
+
+        persisted_task.active_plan_id = None;
+        service.task_repository().update(persisted_task).unwrap();
+
+        assert!(matches!(
+            service.activate_plan(&task.id, &plan.id),
+            Err(PlannerServiceError::PlanNotValidated {
+                plan_id,
+                status: PlanStatus::Ready,
+            }) if plan_id == plan.id
+        ));
+
+        assert!(service
+            .task_repository()
+            .get(&task.id)
+            .unwrap()
+            .unwrap()
+            .active_plan_id
+            .is_none());
+
+        assert_eq!(
+            service
+                .plan_repository()
+                .get(&plan.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            PlanStatus::Ready
         );
     }
 
