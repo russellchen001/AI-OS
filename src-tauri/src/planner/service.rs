@@ -1,0 +1,306 @@
+use super::{Plan, PlanDomainError, PlanId, PlanRepository, PlanRepositoryError};
+use crate::task_engine::{Task, TaskId, TaskRepository, TaskRepositoryError};
+use std::{error::Error, fmt};
+
+pub struct PlannerService<T, P> {
+    tasks: T,
+    plans: P,
+}
+
+impl<T, P> PlannerService<T, P>
+where
+    T: TaskRepository,
+    P: PlanRepository,
+{
+    pub fn new(tasks: T, plans: P) -> Self {
+        Self { tasks, plans }
+    }
+
+    pub fn task_repository(&self) -> &T {
+        &self.tasks
+    }
+
+    pub fn plan_repository(&self) -> &P {
+        &self.plans
+    }
+
+    pub fn create_plan(
+        &self,
+        task_id: &TaskId,
+        objective: impl Into<String>,
+    ) -> Result<Plan, PlannerServiceError> {
+        self.tasks
+            .get(task_id)?
+            .ok_or_else(|| TaskRepositoryError::NotFound(task_id.clone()))?;
+
+        let revision = self
+            .plans
+            .list_by_task(task_id)?
+            .iter()
+            .map(|plan| plan.revision)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| PlannerServiceError::RevisionOverflow(task_id.clone()))?;
+
+        let plan = Plan::new(task_id.clone(), revision, objective)?;
+
+        self.plans.create(plan.clone())?;
+
+        Ok(plan)
+    }
+
+    pub fn activate_plan(
+        &self,
+        task_id: &TaskId,
+        plan_id: &PlanId,
+    ) -> Result<Task, PlannerServiceError> {
+        let mut task = self
+            .tasks
+            .get(task_id)?
+            .ok_or_else(|| TaskRepositoryError::NotFound(task_id.clone()))?;
+
+        let plan = self
+            .plans
+            .get(plan_id)?
+            .ok_or_else(|| PlanRepositoryError::NotFound(plan_id.clone()))?;
+
+        if plan.task_id != task.id {
+            return Err(PlannerServiceError::PlanTaskMismatch {
+                task_id: task.id,
+                plan_id: plan.id,
+                plan_task_id: plan.task_id,
+            });
+        }
+
+        task.activate_plan(plan.id);
+
+        self.tasks.update(task.clone())?;
+
+        Ok(task)
+    }
+}
+
+#[derive(Debug)]
+pub enum PlannerServiceError {
+    TaskRepository(TaskRepositoryError),
+    PlanRepository(PlanRepositoryError),
+    Domain(PlanDomainError),
+
+    PlanTaskMismatch {
+        task_id: TaskId,
+        plan_id: PlanId,
+        plan_task_id: TaskId,
+    },
+
+    RevisionOverflow(TaskId),
+}
+
+impl fmt::Display for PlannerServiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TaskRepository(error) => {
+                write!(formatter, "task repository error: {error}")
+            }
+
+            Self::PlanRepository(error) => {
+                write!(formatter, "plan repository error: {error}")
+            }
+
+            Self::Domain(error) => {
+                write!(formatter, "plan domain error: {error}")
+            }
+
+            Self::PlanTaskMismatch {
+                task_id,
+                plan_id,
+                plan_task_id,
+            } => {
+                write!(
+                    formatter,
+                    "plan {plan_id} belongs to task {plan_task_id}, not task {task_id}"
+                )
+            }
+
+            Self::RevisionOverflow(task_id) => {
+                write!(formatter, "plan revision overflow for task {task_id}")
+            }
+        }
+    }
+}
+
+impl Error for PlannerServiceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::TaskRepository(error) => Some(error),
+            Self::PlanRepository(error) => Some(error),
+            Self::Domain(error) => Some(error),
+            Self::PlanTaskMismatch { .. } | Self::RevisionOverflow(_) => None,
+        }
+    }
+}
+
+impl From<TaskRepositoryError> for PlannerServiceError {
+    fn from(error: TaskRepositoryError) -> Self {
+        Self::TaskRepository(error)
+    }
+}
+
+impl From<PlanRepositoryError> for PlannerServiceError {
+    fn from(error: PlanRepositoryError) -> Self {
+        Self::PlanRepository(error)
+    }
+}
+
+impl From<PlanDomainError> for PlannerServiceError {
+    fn from(error: PlanDomainError) -> Self {
+        Self::Domain(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        planner::InMemoryPlanRepository,
+        task_engine::{InMemoryTaskRepository, Task, TaskType},
+    };
+
+    fn service() -> PlannerService<InMemoryTaskRepository, InMemoryPlanRepository> {
+        PlannerService::new(InMemoryTaskRepository::new(), InMemoryPlanRepository::new())
+    }
+
+    fn create_task(
+        service: &PlannerService<InMemoryTaskRepository, InMemoryPlanRepository>,
+        intent: &str,
+    ) -> Task {
+        let task = Task::new(TaskType::Do, intent).unwrap();
+
+        service.task_repository().create(task.clone()).unwrap();
+
+        task
+    }
+
+    #[test]
+    fn creates_first_plan_revision_for_existing_task() {
+        let service = service();
+        let task = create_task(&service, "organize files");
+
+        let plan = service
+            .create_plan(&task.id, "scan and organize files")
+            .unwrap();
+
+        assert_eq!(plan.task_id, task.id);
+        assert_eq!(plan.revision, 1);
+
+        assert_eq!(service.plan_repository().get(&plan.id).unwrap(), Some(plan));
+    }
+
+    #[test]
+    fn increments_revision_for_each_task_independently() {
+        let service = service();
+        let first_task = create_task(&service, "organize files");
+        let second_task = create_task(&service, "send email");
+
+        let first_revision = service.create_plan(&first_task.id, "first plan").unwrap();
+
+        let second_revision = service.create_plan(&first_task.id, "revised plan").unwrap();
+
+        let unrelated = service.create_plan(&second_task.id, "email plan").unwrap();
+
+        assert_eq!(first_revision.revision, 1);
+        assert_eq!(second_revision.revision, 2);
+        assert_eq!(unrelated.revision, 1);
+    }
+
+    #[test]
+    fn rejects_plan_creation_for_unknown_task() {
+        let service = service();
+        let missing_task_id = TaskId::new();
+
+        assert!(matches!(
+            service.create_plan(&missing_task_id, "missing task plan"),
+            Err(PlannerServiceError::TaskRepository(
+                TaskRepositoryError::NotFound(task_id)
+            )) if task_id == missing_task_id
+        ));
+
+        assert!(service.plan_repository().is_empty().unwrap());
+    }
+
+    #[test]
+    fn activates_plan_for_owning_task() {
+        let service = service();
+        let task = create_task(&service, "organize files");
+
+        let plan = service
+            .create_plan(&task.id, "organize files safely")
+            .unwrap();
+
+        let updated = service.activate_plan(&task.id, &plan.id).unwrap();
+
+        assert_eq!(updated.active_plan_id, Some(plan.id.clone()));
+
+        assert_eq!(
+            service
+                .task_repository()
+                .get(&task.id)
+                .unwrap()
+                .unwrap()
+                .active_plan_id,
+            Some(plan.id)
+        );
+    }
+
+    #[test]
+    fn rejects_activation_for_another_tasks_plan() {
+        let service = service();
+        let first_task = create_task(&service, "first task");
+        let second_task = create_task(&service, "second task");
+
+        let plan = service
+            .create_plan(&first_task.id, "first task plan")
+            .unwrap();
+
+        assert!(matches!(
+            service.activate_plan(&second_task.id, &plan.id),
+            Err(PlannerServiceError::PlanTaskMismatch {
+                task_id,
+                plan_id,
+                plan_task_id,
+            }) if task_id == second_task.id
+                && plan_id == plan.id
+                && plan_task_id == first_task.id
+        ));
+
+        assert!(service
+            .task_repository()
+            .get(&second_task.id)
+            .unwrap()
+            .unwrap()
+            .active_plan_id
+            .is_none());
+    }
+
+    #[test]
+    fn rejects_activation_for_unknown_plan() {
+        let service = service();
+        let task = create_task(&service, "organize files");
+        let missing_plan_id = PlanId::new();
+
+        assert!(matches!(
+            service.activate_plan(&task.id, &missing_plan_id),
+            Err(PlannerServiceError::PlanRepository(
+                PlanRepositoryError::NotFound(plan_id)
+            )) if plan_id == missing_plan_id
+        ));
+
+        assert!(service
+            .task_repository()
+            .get(&task.id)
+            .unwrap()
+            .unwrap()
+            .active_plan_id
+            .is_none());
+    }
+}

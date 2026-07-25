@@ -1,4 +1,5 @@
 use super::domain::{Plan, PlanId};
+use crate::task_engine::TaskId;
 use std::{collections::HashMap, error::Error, fmt, sync::RwLock};
 
 pub trait PlanRepository: Send + Sync {
@@ -7,6 +8,8 @@ pub trait PlanRepository: Send + Sync {
     fn get(&self, plan_id: &PlanId) -> Result<Option<Plan>, PlanRepositoryError>;
 
     fn list(&self) -> Result<Vec<Plan>, PlanRepositoryError>;
+
+    fn list_by_task(&self, task_id: &TaskId) -> Result<Vec<Plan>, PlanRepositoryError>;
 
     fn update(&self, plan: Plan) -> Result<(), PlanRepositoryError>;
 
@@ -75,6 +78,27 @@ impl PlanRepository for InMemoryPlanRepository {
         result.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
+                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+        });
+
+        Ok(result)
+    }
+
+    fn list_by_task(&self, task_id: &TaskId) -> Result<Vec<Plan>, PlanRepositoryError> {
+        let plans = self
+            .plans
+            .read()
+            .map_err(|_| PlanRepositoryError::LockPoisoned)?;
+
+        let mut result: Vec<Plan> = plans
+            .values()
+            .filter(|plan| &plan.task_id == task_id)
+            .cloned()
+            .collect();
+
+        result.sort_by(|left, right| {
+            left.revision
+                .cmp(&right.revision)
                 .then_with(|| left.id.as_str().cmp(right.id.as_str()))
         });
 
@@ -225,6 +249,28 @@ mod tests {
         });
 
         assert_eq!(plans, expected);
+    }
+
+    #[test]
+    fn lists_only_plans_for_requested_task_by_revision() {
+        let repository = InMemoryPlanRepository::new();
+        let first_task_id = TaskId::new();
+        let second_task_id = TaskId::new();
+
+        let first_revision = Plan::new(first_task_id.clone(), 1, "first revision").unwrap();
+
+        let second_revision = Plan::new(first_task_id.clone(), 2, "second revision").unwrap();
+
+        let unrelated = Plan::new(second_task_id, 1, "unrelated revision").unwrap();
+
+        repository.create(second_revision.clone()).unwrap();
+        repository.create(unrelated).unwrap();
+        repository.create(first_revision.clone()).unwrap();
+
+        assert_eq!(
+            repository.list_by_task(&first_task_id).unwrap(),
+            vec![first_revision, second_revision]
+        );
     }
 
     #[test]
