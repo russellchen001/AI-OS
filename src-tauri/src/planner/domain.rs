@@ -127,6 +127,22 @@ impl PlanStepStatus {
             Self::Completed | Self::Failed | Self::Skipped | Self::Cancelled
         )
     }
+
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self.is_terminal() {
+            return false;
+        }
+
+        matches!(
+            (self, next),
+            (Self::Pending, Self::Ready | Self::Cancelled)
+                | (Self::Ready, Self::Running | Self::Cancelled)
+                | (
+                    Self::Running,
+                    Self::Completed | Self::Failed | Self::Cancelled
+                )
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,6 +207,20 @@ impl PlanStep {
         }
 
         self
+    }
+
+    pub fn transition_to(&mut self, next: PlanStepStatus) -> Result<(), PlanDomainError> {
+        if !self.status.can_transition_to(next) {
+            return Err(PlanDomainError::InvalidStepStatusTransition {
+                from: self.status,
+                to: next,
+            });
+        }
+
+        self.status = next;
+        self.updated_at = now_ms();
+
+        Ok(())
     }
 }
 
@@ -292,18 +322,34 @@ impl Plan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanDomainError {
+    InvalidStepStatusTransition {
+        from: PlanStepStatus,
+        to: PlanStepStatus,
+    },
+
     EmptyObjective,
     InvalidRevision,
     EmptyStepName,
     EmptyCapability,
     DuplicateStepId(PlanStepId),
 
-    InvalidStatusTransition { from: PlanStatus, to: PlanStatus },
+    InvalidStatusTransition {
+        from: PlanStatus,
+        to: PlanStatus,
+    },
 }
 
 impl fmt::Display for PlanDomainError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidStepStatusTransition { from, to } => {
+                write!(
+                    formatter,
+                    "invalid step status transition {:?} -> {:?}",
+                    from, to
+                )
+            }
+
             Self::EmptyObjective => formatter.write_str("plan objective must not be empty"),
 
             Self::InvalidRevision => formatter.write_str("plan revision must be greater than zero"),
@@ -543,6 +589,51 @@ mod tests {
 
         assert_eq!(plan.status, PlanStatus::Validated);
         assert!(plan.updated_at > 0);
+    }
+
+    #[test]
+    fn supports_valid_step_execution_lifecycle() {
+        let mut step = PlanStep::new("execute task", "test.execute").unwrap();
+
+        assert_eq!(step.status, PlanStepStatus::Pending);
+
+        step.transition_to(PlanStepStatus::Ready).unwrap();
+
+        step.transition_to(PlanStepStatus::Running).unwrap();
+
+        step.transition_to(PlanStepStatus::Completed).unwrap();
+
+        assert_eq!(step.status, PlanStepStatus::Completed);
+    }
+
+    #[test]
+    fn supports_failed_step_execution() {
+        let mut step = PlanStep::new("execute task", "test.execute").unwrap();
+
+        step.transition_to(PlanStepStatus::Ready).unwrap();
+
+        step.transition_to(PlanStepStatus::Running).unwrap();
+
+        step.transition_to(PlanStepStatus::Failed).unwrap();
+
+        assert_eq!(step.status, PlanStepStatus::Failed);
+    }
+
+    #[test]
+    fn rejects_invalid_step_status_transition_without_mutation() {
+        let mut step = PlanStep::new("execute task", "test.execute").unwrap();
+
+        let result = step.transition_to(PlanStepStatus::Completed);
+
+        assert!(matches!(
+            result,
+            Err(PlanDomainError::InvalidStepStatusTransition {
+                from: PlanStepStatus::Pending,
+                to: PlanStepStatus::Completed
+            })
+        ));
+
+        assert_eq!(step.status, PlanStepStatus::Pending);
     }
 
     #[test]
