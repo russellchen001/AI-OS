@@ -236,6 +236,40 @@ impl Plan {
         })
     }
 
+    pub fn can_transition_to(&self, next: PlanStatus) -> bool {
+        if self.status.is_terminal() {
+            return false;
+        }
+
+        matches!(
+            (self.status, next),
+            (PlanStatus::Draft, PlanStatus::Validated)
+                | (PlanStatus::Validated, PlanStatus::Ready)
+                | (
+                    PlanStatus::Ready,
+                    PlanStatus::Executing | PlanStatus::Cancelled
+                )
+                | (
+                    PlanStatus::Executing,
+                    PlanStatus::Completed | PlanStatus::Failed | PlanStatus::Cancelled
+                )
+        )
+    }
+
+    pub fn transition_to(&mut self, next: PlanStatus) -> Result<(), PlanDomainError> {
+        if !self.can_transition_to(next) {
+            return Err(PlanDomainError::InvalidStatusTransition {
+                from: self.status,
+                to: next,
+            });
+        }
+
+        self.status = next;
+        self.updated_at = now_ms();
+
+        Ok(())
+    }
+
     pub fn add_step(&mut self, step: PlanStep) -> Result<(), PlanDomainError> {
         if self.steps.iter().any(|existing| existing.id == step.id) {
             return Err(PlanDomainError::DuplicateStepId(step.id));
@@ -263,6 +297,8 @@ pub enum PlanDomainError {
     EmptyStepName,
     EmptyCapability,
     DuplicateStepId(PlanStepId),
+
+    InvalidStatusTransition { from: PlanStatus, to: PlanStatus },
 }
 
 impl fmt::Display for PlanDomainError {
@@ -278,6 +314,10 @@ impl fmt::Display for PlanDomainError {
 
             Self::DuplicateStepId(step_id) => {
                 write!(formatter, "plan contains duplicate step id {step_id}")
+            }
+
+            Self::InvalidStatusTransition { from, to } => {
+                write!(formatter, "plan cannot transition from {from:?} to {to:?}")
             }
         }
     }
@@ -364,6 +404,145 @@ mod tests {
             plan.add_step(second),
             Err(PlanDomainError::DuplicateStepId(step_id))
         );
+    }
+
+    #[test]
+    fn supports_valid_plan_lifecycle_transitions() {
+        let mut plan = Plan::new(TaskId::new(), 1, "execute workflow").unwrap();
+
+        assert!(plan.can_transition_to(PlanStatus::Validated));
+        plan.transition_to(PlanStatus::Validated).unwrap();
+
+        assert!(plan.can_transition_to(PlanStatus::Ready));
+        plan.transition_to(PlanStatus::Ready).unwrap();
+
+        assert!(plan.can_transition_to(PlanStatus::Executing));
+        plan.transition_to(PlanStatus::Executing).unwrap();
+
+        assert!(plan.can_transition_to(PlanStatus::Completed));
+        plan.transition_to(PlanStatus::Completed).unwrap();
+
+        assert_eq!(plan.status, PlanStatus::Completed);
+        assert!(plan.status.is_terminal());
+    }
+
+    #[test]
+    fn supports_executing_to_failed_transition() {
+        let mut plan = Plan::new(TaskId::new(), 1, "execute workflow").unwrap();
+
+        plan.transition_to(PlanStatus::Validated).unwrap();
+        plan.transition_to(PlanStatus::Ready).unwrap();
+        plan.transition_to(PlanStatus::Executing).unwrap();
+        plan.transition_to(PlanStatus::Failed).unwrap();
+
+        assert_eq!(plan.status, PlanStatus::Failed);
+        assert!(plan.status.is_terminal());
+    }
+
+    #[test]
+    fn supports_cancellation_from_ready_and_executing() {
+        let mut ready = Plan::new(TaskId::new(), 1, "ready workflow").unwrap();
+
+        ready.transition_to(PlanStatus::Validated).unwrap();
+        ready.transition_to(PlanStatus::Ready).unwrap();
+        ready.transition_to(PlanStatus::Cancelled).unwrap();
+
+        assert_eq!(ready.status, PlanStatus::Cancelled);
+
+        let mut executing = Plan::new(TaskId::new(), 1, "executing workflow").unwrap();
+
+        executing.transition_to(PlanStatus::Validated).unwrap();
+        executing.transition_to(PlanStatus::Ready).unwrap();
+        executing.transition_to(PlanStatus::Executing).unwrap();
+        executing.transition_to(PlanStatus::Cancelled).unwrap();
+
+        assert_eq!(executing.status, PlanStatus::Cancelled);
+    }
+
+    #[test]
+    fn rejects_invalid_plan_status_transitions_without_mutation() {
+        let mut plan = Plan::new(TaskId::new(), 1, "execute workflow").unwrap();
+        plan.updated_at = 0;
+
+        assert_eq!(
+            plan.transition_to(PlanStatus::Ready),
+            Err(PlanDomainError::InvalidStatusTransition {
+                from: PlanStatus::Draft,
+                to: PlanStatus::Ready,
+            })
+        );
+
+        assert_eq!(plan.status, PlanStatus::Draft);
+        assert_eq!(plan.updated_at, 0);
+
+        plan.transition_to(PlanStatus::Validated).unwrap();
+
+        let validated_updated_at = plan.updated_at;
+
+        assert_eq!(
+            plan.transition_to(PlanStatus::Executing),
+            Err(PlanDomainError::InvalidStatusTransition {
+                from: PlanStatus::Validated,
+                to: PlanStatus::Executing,
+            })
+        );
+
+        assert_eq!(plan.status, PlanStatus::Validated);
+        assert_eq!(plan.updated_at, validated_updated_at);
+    }
+
+    #[test]
+    fn rejects_ready_to_completed_transition() {
+        let mut plan = Plan::new(TaskId::new(), 1, "execute workflow").unwrap();
+
+        plan.transition_to(PlanStatus::Validated).unwrap();
+        plan.transition_to(PlanStatus::Ready).unwrap();
+
+        assert_eq!(
+            plan.transition_to(PlanStatus::Completed),
+            Err(PlanDomainError::InvalidStatusTransition {
+                from: PlanStatus::Ready,
+                to: PlanStatus::Completed,
+            })
+        );
+
+        assert_eq!(plan.status, PlanStatus::Ready);
+    }
+
+    #[test]
+    fn terminal_plan_states_reject_additional_transitions() {
+        for terminal_status in [
+            PlanStatus::Completed,
+            PlanStatus::Failed,
+            PlanStatus::Cancelled,
+        ] {
+            let mut plan = Plan::new(TaskId::new(), 1, "terminal workflow").unwrap();
+
+            plan.status = terminal_status;
+            plan.updated_at = 0;
+
+            assert_eq!(
+                plan.transition_to(PlanStatus::Executing),
+                Err(PlanDomainError::InvalidStatusTransition {
+                    from: terminal_status,
+                    to: PlanStatus::Executing,
+                })
+            );
+
+            assert_eq!(plan.status, terminal_status);
+            assert_eq!(plan.updated_at, 0);
+        }
+    }
+
+    #[test]
+    fn successful_transition_updates_timestamp() {
+        let mut plan = Plan::new(TaskId::new(), 1, "timestamp workflow").unwrap();
+        plan.updated_at = 0;
+
+        plan.transition_to(PlanStatus::Validated).unwrap();
+
+        assert_eq!(plan.status, PlanStatus::Validated);
+        assert!(plan.updated_at > 0);
     }
 
     #[test]

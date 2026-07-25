@@ -68,7 +68,7 @@ where
 
         validate_plan_structure(&plan)?;
 
-        plan.status = PlanStatus::Validated;
+        plan.transition_to(PlanStatus::Validated)?;
 
         self.plans.update(plan.clone())?;
 
@@ -119,7 +119,7 @@ where
             });
         }
 
-        plan.status = PlanStatus::Ready;
+        plan.transition_to(PlanStatus::Ready)?;
         self.plans.update(plan.clone())?;
 
         task.activate_plan(plan.id);
