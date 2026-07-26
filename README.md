@@ -6,6 +6,12 @@ AI-OS brings local AI runtimes, model tools, gateway connections, system status,
 
 > **Project status:** Active, early-stage development. AI-OS is not yet a stable production release. The current application and packaging are macOS-oriented, and several integrations require their corresponding third-party services to be installed separately.
 
+## Product preview
+
+![AI-OS Services view showing local runtime status and controls](docs/images/services.jpeg)
+
+_A native macOS development build detecting local AI services. Runtime availability depends on what is installed and configured on the host._
+
 ## Why AI-OS?
 
 A local AI setup often spans model servers, container tools, agent gateways, browser interfaces, configuration files, and background processes. AI-OS is developing a common operating layer above those components: one interface for observing their state and coordinating supported lifecycle operations.
