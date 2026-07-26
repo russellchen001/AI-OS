@@ -23,21 +23,7 @@ where
     pub fn start_plan(&self, plan_id: &PlanId) -> Result<Plan, PlanExecutionError> {
         let mut plan = self.load_plan(plan_id)?;
 
-        if plan.status != PlanStatus::Ready {
-            return Err(PlanExecutionError::PlanNotReady {
-                plan_id: plan.id,
-                status: plan.status,
-            });
-        }
-
-        plan.transition_to(PlanStatus::Executing)?;
-
-        for step in &mut plan.steps {
-            if step.status == PlanStepStatus::Pending && step.dependencies.is_empty() {
-                step.transition_to(PlanStepStatus::Ready)?;
-            }
-        }
-
+        prepare_plan_start(&mut plan)?;
         self.persist(plan)
     }
 
@@ -165,6 +151,25 @@ where
         self.plans.update(plan.clone())?;
         Ok(plan)
     }
+}
+
+pub(crate) fn prepare_plan_start(plan: &mut Plan) -> Result<(), PlanExecutionError> {
+    if plan.status != PlanStatus::Ready {
+        return Err(PlanExecutionError::PlanNotReady {
+            plan_id: plan.id.clone(),
+            status: plan.status,
+        });
+    }
+
+    plan.transition_to(PlanStatus::Executing)?;
+
+    for step in &mut plan.steps {
+        if step.status == PlanStepStatus::Pending && step.dependencies.is_empty() {
+            step.transition_to(PlanStepStatus::Ready)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn promote_ready_steps(plan: &mut Plan) -> Result<(), PlanDomainError> {

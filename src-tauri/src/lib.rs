@@ -7,6 +7,7 @@ mod multillm;
 mod openclaw;
 pub mod planner;
 mod runtime;
+pub mod task_plan_orchestration;
 
 use std::process::Command;
 
