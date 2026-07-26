@@ -457,6 +457,41 @@ fn classify_runtime_location(server_url: &str) -> OpenClawRuntimeLocation {
 #[cfg(test)]
 mod runtime_tests {
     use super::*;
+    use std::collections::VecDeque;
+
+    const TEST_REQUEST_ID: &str = "request-123";
+
+    fn run_response_loop(
+        messages: Vec<Value>,
+        events: &mut Vec<Value>,
+    ) -> Result<Value, GatewayFailure> {
+        let mut messages = VecDeque::from(messages);
+
+        wait_for_gateway_response(
+            TEST_REQUEST_ID,
+            17,
+            &mut || {
+                messages
+                    .pop_front()
+                    .ok_or_else(|| "No more test messages.".to_string())
+            },
+            &mut |event| events.push(event),
+        )
+    }
+
+    fn expect_response(result: Result<Value, GatewayFailure>) -> Value {
+        match result {
+            Ok(value) => value,
+            Err(_) => panic!("expected a successful Gateway response"),
+        }
+    }
+
+    fn expect_failure(result: Result<Value, GatewayFailure>) -> GatewayFailure {
+        match result {
+            Ok(_) => panic!("expected a Gateway failure"),
+            Err(failure) => failure,
+        }
+    }
 
     #[test]
     fn classifies_localhost_and_loopback_addresses_as_local() {
@@ -507,6 +542,199 @@ mod runtime_tests {
         for (state, expected) in cases {
             assert_eq!(active_gateway_failure_kind(state), expected);
         }
+    }
+
+    #[test]
+    fn matching_success_response_returns_payload() {
+        let payload = json!({"files": 3});
+        let mut events = Vec::new();
+
+        let result = expect_response(run_response_loop(
+            vec![json!({
+                "id": TEST_REQUEST_ID,
+                "ok": true,
+                "payload": payload.clone()
+            })],
+            &mut events,
+        ));
+
+        assert_eq!(result, payload);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn matching_success_response_without_payload_returns_null() {
+        let mut events = Vec::new();
+
+        let result = expect_response(run_response_loop(
+            vec![json!({"id": TEST_REQUEST_ID, "ok": true})],
+            &mut events,
+        ));
+
+        assert_eq!(result, Value::Null);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn non_response_message_is_forwarded_before_matching_response() {
+        let event = json!({"event": "unknown", "payload": {"step": 1}});
+        let mut events = Vec::new();
+
+        let result = expect_response(run_response_loop(
+            vec![
+                event.clone(),
+                json!({
+                    "id": TEST_REQUEST_ID,
+                    "ok": true,
+                    "payload": {"done": true}
+                }),
+            ],
+            &mut events,
+        ));
+
+        assert_eq!(events, vec![event]);
+        assert_eq!(result, json!({"done": true}));
+    }
+
+    #[test]
+    fn multiple_non_response_messages_are_forwarded_in_order() {
+        let first = json!({"event": "first", "opaque": [1, 2]});
+        let second = json!({"id": "another-request", "value": "second"});
+        let third = json!(["unknown", {"shape": true}]);
+        let mut events = Vec::new();
+
+        expect_response(run_response_loop(
+            vec![
+                first.clone(),
+                second.clone(),
+                third.clone(),
+                json!({"id": TEST_REQUEST_ID, "ok": true, "payload": null}),
+            ],
+            &mut events,
+        ));
+
+        assert_eq!(events, vec![first, second, third]);
+    }
+
+    #[test]
+    fn message_without_id_is_forwarded() {
+        let event = json!({"unknown": {"credential": "opaque"}});
+        let mut events = Vec::new();
+
+        let result = expect_response(run_response_loop(
+            vec![
+                event.clone(),
+                json!({"id": TEST_REQUEST_ID, "ok": true, "payload": 42}),
+            ],
+            &mut events,
+        ));
+
+        assert_eq!(events, vec![event]);
+        assert_eq!(result, json!(42));
+    }
+
+    #[test]
+    fn message_with_other_id_is_forwarded() {
+        let event = json!({"id": "other-request", "ok": true, "payload": "other"});
+        let mut events = Vec::new();
+
+        let result = expect_response(run_response_loop(
+            vec![
+                event.clone(),
+                json!({"id": TEST_REQUEST_ID, "ok": true, "payload": "current"}),
+            ],
+            &mut events,
+        ));
+
+        assert_eq!(events, vec![event]);
+        assert_eq!(result, json!("current"));
+    }
+
+    #[test]
+    fn matching_response_is_never_forwarded() {
+        let success = json!({"id": TEST_REQUEST_ID, "ok": true, "payload": "done"});
+        let mut success_events = Vec::new();
+        expect_response(run_response_loop(vec![success], &mut success_events));
+        assert!(success_events.is_empty());
+
+        let failure = json!({
+            "id": TEST_REQUEST_ID,
+            "ok": false,
+            "error": {"message": "Unauthorized", "code": "UNAUTHORIZED"}
+        });
+        let mut failure_events = Vec::new();
+        let _ = expect_failure(run_response_loop(vec![failure], &mut failure_events));
+        assert!(failure_events.is_empty());
+    }
+
+    #[test]
+    fn matching_error_response_preserves_gateway_failure() {
+        let response = json!({
+            "id": TEST_REQUEST_ID,
+            "ok": false,
+            "error": {
+                "message": "Unauthorized Gateway request.",
+                "code": "UNAUTHORIZED"
+            }
+        });
+        let mut events = Vec::new();
+
+        let failure = expect_failure(run_response_loop(vec![response.clone()], &mut events));
+
+        assert_eq!(failure.state, "unauthorized");
+        assert_eq!(failure.message, "Unauthorized Gateway request.");
+        assert_eq!(failure.payload, Some(response));
+        assert_eq!(failure.latency_ms, Some(17));
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn event_callback_does_not_change_final_result() {
+        let expected = json!({
+            "nested": {"values": [1, null, true]},
+            "text": "unchanged"
+        });
+        let mut events = Vec::new();
+
+        let result = expect_response(run_response_loop(
+            vec![
+                json!({"event": "opaque-one"}),
+                json!({"unknown": "opaque-two"}),
+                json!({
+                    "id": TEST_REQUEST_ID,
+                    "ok": true,
+                    "payload": expected.clone()
+                }),
+            ],
+            &mut events,
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn compatibility_wrapper_discards_non_response_messages() {
+        let mut messages = VecDeque::from(vec![
+            json!({"event": "discarded", "payload": {"sensitive": true}}),
+            json!({
+                "id": TEST_REQUEST_ID,
+                "ok": true,
+                "payload": {"result": "unchanged"}
+            }),
+        ]);
+
+        let result = expect_response(wait_for_gateway_response(
+            TEST_REQUEST_ID,
+            17,
+            &mut || {
+                messages
+                    .pop_front()
+                    .ok_or_else(|| "No more test messages.".to_string())
+            },
+            &mut |_| {},
+        ));
+
+        assert_eq!(result, json!({"result": "unchanged"}));
     }
 }
 
@@ -1039,6 +1267,15 @@ fn invoke_gateway_method(
     method: &str,
     params: Option<Value>,
 ) -> Result<Value, GatewayFailure> {
+    invoke_gateway_method_with_events(session, method, params, &mut |_| {})
+}
+
+fn invoke_gateway_method_with_events(
+    session: &mut GatewaySession,
+    method: &str,
+    params: Option<Value>,
+    on_event: &mut dyn FnMut(Value),
+) -> Result<Value, GatewayFailure> {
     let method = method.trim();
 
     if method.is_empty() {
@@ -1076,17 +1313,32 @@ fn invoke_gateway_method(
             latency_ms: Some(session.latency_ms),
         })?;
 
+    let latency_ms = session.latency_ms;
+
+    wait_for_gateway_response(
+        &request_id,
+        latency_ms,
+        &mut || read_json_message(&mut session.socket),
+        on_event,
+    )
+}
+
+fn wait_for_gateway_response(
+    request_id: &str,
+    latency_ms: u64,
+    read_next: &mut dyn FnMut() -> Result<Value, String>,
+    on_event: &mut dyn FnMut(Value),
+) -> Result<Value, GatewayFailure> {
     loop {
-        let response =
-            read_json_message(&mut session.socket).map_err(|message| GatewayFailure {
-                state: "unreachable".to_string(),
+        let response = read_next().map_err(|message| GatewayFailure {
+            state: "unreachable".to_string(),
 
-                message,
+            message,
 
-                payload: None,
+            payload: None,
 
-                latency_ms: Some(session.latency_ms),
-            })?;
+            latency_ms: Some(latency_ms),
+        })?;
 
         /*
          * OpenClaw 可能在请求响应之间发送事件。
@@ -1094,7 +1346,8 @@ fn invoke_gateway_method(
          */
         let response_id = response.get("id").and_then(Value::as_str);
 
-        if response_id != Some(request_id.as_str()) {
+        if response_id != Some(request_id) {
+            on_event(response);
             continue;
         }
 
@@ -1113,7 +1366,7 @@ fn invoke_gateway_method(
 
             payload: Some(response),
 
-            latency_ms: Some(session.latency_ms),
+            latency_ms: Some(latency_ms),
         });
     }
 }
