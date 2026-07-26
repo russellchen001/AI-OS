@@ -315,6 +315,10 @@ impl Plan {
         self.steps.iter().find(|step| &step.id == id)
     }
 
+    pub fn step_mut(&mut self, id: &PlanStepId) -> Option<&mut PlanStep> {
+        self.steps.iter_mut().find(|step| &step.id == id)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
