@@ -1,7 +1,7 @@
 # AI-OS Master Guide
 
 **Edition:** Foundation Edition  
-**Version:** 2026.1.1 Final Foundation  
+**Version:** 2026.1.2 Final Foundation  
 **Status:** Active Development  
 **Project:** AI-OS
 
@@ -16,6 +16,8 @@ Where this guide conflicts with older roadmap or architecture documents, this gu
 Existing source code represents the current implementation baseline. It must be preserved and evolved incrementally toward the architecture defined here.
 
 Do not discard completed work merely because the target architecture has changed.
+
+The approved AI-OS v1.0 roadmap contains 17 phases, P1 through P17. AI Council and AI Arena are both mandatory v1.0 capabilities. Development sequencing may be refined, but removing either capability from v1.0 requires an explicit approved roadmap revision. Implementation advice must not silently change this frozen product scope.
 
 ---
 
@@ -79,6 +81,7 @@ Users should not need:
 - P14 Memory
 - P15 Core Skills
 - P16 AI Council
+- P17 AI Arena
 
 ## Current Repository Implementation
 
@@ -180,6 +183,24 @@ OpenClaw or another executor
 External result
 ```
 
+## AI-OS v1.0 Product Boundary
+
+AI-OS reaches v1.0 only when the roadmap through P17 is complete and integrated.
+
+The v1.0 product boundary includes, at minimum:
+
+- Reliable Runtime foundation
+- Task Engine and Planner
+- OpenClaw integration
+- Skill Framework
+- AI Center
+- Memory
+- Core Skills
+- AI Council
+- AI Arena
+
+Individual capabilities may exist earlier, but the product is not considered v1.0 until the integrated P17 acceptance boundary is met.
+
 ---
 
 # 3. Product Philosophy
@@ -238,11 +259,21 @@ OpenClaw Adapter / Other Executors
 Computer / Internet / Devices / Services
 ```
 
+AI Council and AI Arena are separate capabilities built on AI Center:
+
+```text
+AI Center
+  ├──→ AI Council
+  └──→ AI Arena
+```
+
 ## Architectural Responsibilities
 
 - **Task Engine** determines what the user wants and owns task state.
 - **Planner** determines how the objective should be achieved.
-- **AI Center** provides and routes intelligence.
+- **AI Center** owns providers, models, routing, fallback, model invocation, and shared multi-model infrastructure.
+- **AI Council** uses multiple AI systems collaboratively to improve decisions and synthesize results.
+- **AI Arena** provides controlled, reproducible comparison and evaluation of multiple AI and model outputs.
 - **Memory** provides relevant context.
 - **Skill Framework** exposes executable capabilities.
 - **Runtime** manages execution lifecycle, sessions, scheduling, retries, and recovery.
@@ -356,14 +387,15 @@ Responsibilities:
 - Model routing
 - Fallback and failover
 - Cost and latency policies
-- Multi-model comparison
-- AI Council orchestration
+- Shared multi-model invocation infrastructure
 
 No module should directly call an AI provider when the request belongs through AI Center.
 
+AI Council and AI Arena must use AI Center for provider and model access rather than create unrelated direct integrations.
+
 ## 5.6 AI Council
 
-AI Council allows multiple AI systems to contribute to difficult decisions.
+AI Council allows multiple AI systems to collaborate on difficult decisions and produce synthesized results.
 
 Potential uses:
 
@@ -373,9 +405,26 @@ Potential uses:
 - High-uncertainty comparison
 - Independent critique
 
-AI Council improves decision quality. It does not replace Planner or Task Engine.
+AI Council improves decision quality. It does not replace Planner or Task Engine, and its product logic does not belong to Runtime.
 
-## 5.7 Memory
+## 5.7 AI Arena
+
+AI Arena is a user-facing, evaluation-oriented multi-model workspace built on AI Center.
+
+Responsibilities:
+
+- Run the same request or evaluation case across multiple models
+- Provide side-by-side result comparison
+- Support blind evaluation where appropriate
+- Support user voting and structured scoring
+- Apply configurable evaluation criteria
+- Preserve prompts, model configuration, outputs, latency, cost, and evaluation metadata for reproducibility
+- Explain meaningful model disagreements
+- Support comparison without changing Task Engine, Planner, or Runtime ownership
+
+AI Arena compares and evaluates model outputs under controlled conditions. It does not replace AI Council collaboration, Planner execution planning, Task Engine state ownership, or Runtime execution management.
+
+## 5.8 Memory
 
 Memory stores useful long-term context.
 
@@ -389,7 +438,7 @@ Potential content:
 
 Memory provides context only. It does not execute tasks or own task state.
 
-## 5.8 Settings Center
+## 5.9 Settings Center
 
 Settings Center is the user's control panel.
 
@@ -638,6 +687,9 @@ Secrets must never be hard-coded or committed to source control.
 7. Prefer readable code over clever code.
 8. Add tests for significant behavior and regressions.
 9. Update this guide only when product direction, architecture, status, or development rules materially change.
+10. Development-order recommendations do not modify the approved product roadmap.
+11. Product scope or phase changes require an explicit update to this guide approved by the project owner.
+12. Codex or another implementation agent must never silently remove, postpone beyond v1.0, rename, or renumber a frozen v1.0 capability.
 
 ## Forbidden Patterns
 
@@ -811,6 +863,38 @@ Goals:
 - Consensus or synthesized recommendations
 - Support for complex decisions and planning
 
+## P17 — AI Arena
+
+Goals:
+
+- Multi-model evaluation workspace
+- Run the same prompt or evaluation case across selected models
+- Side-by-side comparison
+- Blind testing
+- User voting and structured scoring
+- Configurable evaluation criteria
+- Reproducible evaluation records
+- Latency and cost comparison
+- Model disagreement analysis
+- Integration with AI Center and optional use of Memory
+- Clear separation from AI Council collaboration workflows
+
+## AI-OS v1.0 Completion Boundary
+
+AI-OS v1.0 requires completion and integration of P9 through P17 while preserving all accepted work from earlier phases.
+
+Minimum acceptance characteristics:
+
+- Users can submit Ask and Do requests through the normal interface
+- Task Engine and Planner manage the task and plan lifecycle
+- Runtime can execute through OpenClaw and Skills under permissions
+- AI Center supports local and cloud models through replaceable providers
+- Memory supplies relevant context without owning execution
+- Core Skills complete useful real-world workflows
+- AI Council supports multi-AI collaboration and synthesis
+- AI Arena supports controlled, reproducible multi-model comparison and evaluation
+- Architecture, permissions, failure handling, and user-facing reporting work as an integrated product
+
 ---
 
 # 12. Non-Goals
@@ -855,7 +939,10 @@ A modular executable capability.
 The intelligence management layer responsible for providers, models, routing, and multi-model systems.
 
 **AI Council**  
-A multi-AI collaboration capability for complex decisions.
+A multi-AI collaboration and synthesis capability for complex decisions.
+
+**AI Arena**  
+An evaluation-oriented multi-model workspace for controlled, reproducible comparison, blind evaluation, scoring, voting, and disagreement analysis.
 
 **Memory**  
 The long-term context system. Memory supplies context but does not execute tasks.
