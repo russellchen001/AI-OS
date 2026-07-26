@@ -257,6 +257,27 @@ struct GatewayFailure {
     latency_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActiveGatewayMethodResult {
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActiveGatewayFailureKind {
+    NoActiveServer,
+    Unauthorized,
+    PairingRequired,
+    Unreachable,
+    Protocol,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveGatewayMethodFailure {
+    pub kind: ActiveGatewayFailureKind,
+    pub message: String,
+}
+
 /* ===========================
    Result helpers
 =========================== */
@@ -467,6 +488,24 @@ mod runtime_tests {
                 classify_runtime_location(url),
                 OpenClawRuntimeLocation::Invalid
             );
+        }
+    }
+
+    #[test]
+    fn classifies_all_gateway_failure_states_for_runtime() {
+        let cases = [
+            ("unauthorized", ActiveGatewayFailureKind::Unauthorized),
+            (
+                "pairing-required",
+                ActiveGatewayFailureKind::PairingRequired,
+            ),
+            ("unreachable", ActiveGatewayFailureKind::Unreachable),
+            ("error", ActiveGatewayFailureKind::Protocol),
+            ("future-state", ActiveGatewayFailureKind::Unknown),
+        ];
+
+        for (state, expected) in cases {
+            assert_eq!(active_gateway_failure_kind(state), expected);
         }
     }
 }
@@ -1978,6 +2017,51 @@ pub fn import_openclaw_servers(json: String, replace_existing: bool) -> OpenClaw
 /* ===========================
    Unified active Gateway API
 =========================== */
+
+pub(crate) fn invoke_active_gateway_method(
+    method: &str,
+    params: Option<Value>,
+) -> Result<ActiveGatewayMethodResult, ActiveGatewayMethodFailure> {
+    let servers = read_servers().map_err(|message| ActiveGatewayMethodFailure {
+        kind: ActiveGatewayFailureKind::Protocol,
+        message,
+    })?;
+
+    let active = servers
+        .iter()
+        .find(|server| server.active && server.enabled)
+        .ok_or_else(|| ActiveGatewayMethodFailure {
+            kind: ActiveGatewayFailureKind::NoActiveServer,
+            message: "No active OpenClaw server is configured.".to_string(),
+        })?;
+
+    let mut session = open_gateway_session(&active.server_url, &active.gateway_token)
+        .map_err(active_gateway_method_failure)?;
+
+    let result = invoke_gateway_method(&mut session, method, params);
+    let _ = session.socket.close(None);
+
+    result
+        .map(|payload| ActiveGatewayMethodResult { payload })
+        .map_err(active_gateway_method_failure)
+}
+
+fn active_gateway_method_failure(failure: GatewayFailure) -> ActiveGatewayMethodFailure {
+    ActiveGatewayMethodFailure {
+        kind: active_gateway_failure_kind(&failure.state),
+        message: failure.message,
+    }
+}
+
+fn active_gateway_failure_kind(state: &str) -> ActiveGatewayFailureKind {
+    match state {
+        "unauthorized" => ActiveGatewayFailureKind::Unauthorized,
+        "pairing-required" => ActiveGatewayFailureKind::PairingRequired,
+        "unreachable" => ActiveGatewayFailureKind::Unreachable,
+        "error" => ActiveGatewayFailureKind::Protocol,
+        _ => ActiveGatewayFailureKind::Unknown,
+    }
+}
 
 #[tauri::command]
 pub fn invoke_active_openclaw_gateway(request: OpenClawGatewayRequest) -> OpenClawGatewayResponse {

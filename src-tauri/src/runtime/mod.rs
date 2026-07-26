@@ -5,6 +5,7 @@ pub(crate) mod ipc;
 pub(crate) mod lifecycle;
 pub mod models;
 pub(crate) mod openclaw_execution;
+pub(crate) mod openclaw_gateway_adapter;
 pub mod operations;
 pub(crate) mod recovery;
 mod registry;
