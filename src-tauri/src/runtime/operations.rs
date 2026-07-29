@@ -75,6 +75,29 @@ impl RuntimeOperationManager {
         self.admit_operation_at(runtime_id, action, cancellable, Utc::now())
     }
 
+    pub(crate) fn admit_identified_operation(
+        &self,
+        operation_id: &str,
+        runtime_id: &str,
+        action: RuntimeOperationAction,
+        cancellable: bool,
+    ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
+        if operation_id.trim().is_empty() {
+            return Err(safe_error(
+                RuntimeErrorCode::InvalidRequest,
+                "Runtime operation identifier is required.",
+                false,
+            ));
+        }
+        self.admit_operation_at_with_id(
+            runtime_id,
+            action,
+            cancellable,
+            Utc::now(),
+            Some(operation_id),
+        )
+    }
+
     pub fn create_operation(
         &self,
         runtime_id: &str,
@@ -157,6 +180,17 @@ impl RuntimeOperationManager {
         cancellable: bool,
         now: DateTime<Utc>,
     ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
+        self.admit_operation_at_with_id(runtime_id, action, cancellable, now, None)
+    }
+
+    fn admit_operation_at_with_id(
+        &self,
+        runtime_id: &str,
+        action: RuntimeOperationAction,
+        cancellable: bool,
+        now: DateTime<Utc>,
+        requested_operation_id: Option<&str>,
+    ) -> Result<RuntimeOperationAdmission, NormalizedRuntimeError> {
         let is_bulk = runtime_id == RUNTIME_BULK_ID;
         if !is_bulk && !registry::contains_id(runtime_id) {
             return Err(operation_runtime_not_found());
@@ -176,6 +210,12 @@ impl RuntimeOperationManager {
 
         let mut store = self.lock_store()?;
         cleanup(&mut store, now);
+
+        if let Some(operation_id) = requested_operation_id {
+            if let Some(existing_operation) = store.operations.get(operation_id).cloned() {
+                return Ok(RuntimeOperationAdmission::Conflict { existing_operation });
+            }
+        }
 
         if action.reserves_lifecycle_slot() {
             let conflicting_id = if is_bulk {
@@ -214,7 +254,9 @@ impl RuntimeOperationManager {
             });
         }
 
-        let operation_id = Uuid::new_v4().to_string();
+        let operation_id = requested_operation_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         let timestamp = now.to_rfc3339();
         let snapshot = RuntimeOperationSnapshot {
             operation_id: operation_id.clone(),

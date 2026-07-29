@@ -190,6 +190,9 @@ impl std::fmt::Debug for ValidatedRuntimeLifecycleRequest {
 pub(crate) fn validate_runtime_lifecycle_request(
     request: RuntimeLifecycleRequest,
 ) -> Result<ValidatedRuntimeLifecycleRequest, NormalizedRuntimeError> {
+    if request.action == RuntimeOperationAction::Execute {
+        return Err(unsupported());
+    }
     let adapter_kind = registry::adapter_kind(&request.runtime_id).ok_or_else(runtime_not_found)?;
     let restart_supported = match adapter_kind {
         RuntimeAdapterKind::OpenWebui => true,
@@ -454,6 +457,7 @@ impl ContextSource for NativeContextSource {
             RuntimeOperationAction::Start => Some(expected_local_docker_target()?),
             RuntimeOperationAction::Stop => Some(establish_local_docker_target(self.deadline)?),
             RuntimeOperationAction::Restart => None,
+            RuntimeOperationAction::Execute => return Err(unsupported()),
         };
         Ok(DockerContext { target })
     }
@@ -1202,6 +1206,7 @@ fn plan_openclaw(
         ),
         RuntimeOperationAction::Open => unreachable!(),
         RuntimeOperationAction::Restart => return Err(unsupported()),
+        RuntimeOperationAction::Execute => return Err(unsupported()),
     };
     Ok(plan(
         "openclaw",
@@ -1346,6 +1351,7 @@ fn plan_docker(
             &["validating", "opening", "complete"][..],
         ),
         RuntimeOperationAction::Restart => unreachable!(),
+        RuntimeOperationAction::Execute => return Err(unsupported()),
     };
     Ok(plan(
         "docker-desktop",
@@ -1525,6 +1531,7 @@ fn plan_open_webui(
         ),
         RuntimeOperationAction::Restart => return Err(unsupported()),
         RuntimeOperationAction::Open => return Err(invalid_configuration()),
+        RuntimeOperationAction::Execute => return Err(unsupported()),
     };
     Ok(plan(
         "open-webui",
@@ -1560,6 +1567,7 @@ fn plan_cherry(
             &["validating", "opening", "complete"][..],
         ),
         RuntimeOperationAction::Restart => return Err(unsupported()),
+        RuntimeOperationAction::Execute => return Err(unsupported()),
     };
     Ok(plan(
         "cherry-studio",
@@ -2620,6 +2628,18 @@ mod tests {
         assert_eq!(source.ollama_calls.get(), 0);
         assert_eq!(source.docker_calls.get(), 0);
         assert_eq!(source.cherry_calls.get(), 0);
+    }
+
+    #[test]
+    fn lifecycle_request_rejects_execute_action() {
+        let error = validate_runtime_lifecycle_request(request(
+            "openclaw",
+            RuntimeOperationAction::Execute,
+            None,
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, RuntimeErrorCode::UnsupportedOperation);
     }
 
     #[test]

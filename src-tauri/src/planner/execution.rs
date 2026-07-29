@@ -57,6 +57,23 @@ where
         step_id: &PlanStepId,
         output: StepOutput,
     ) -> Result<Plan, PlanExecutionError> {
+        self.complete_step_with_output(plan_id, step_id, Some(output))
+    }
+
+    pub fn complete_step_without_output(
+        &self,
+        plan_id: &PlanId,
+        step_id: &PlanStepId,
+    ) -> Result<Plan, PlanExecutionError> {
+        self.complete_step_with_output(plan_id, step_id, None)
+    }
+
+    fn complete_step_with_output(
+        &self,
+        plan_id: &PlanId,
+        step_id: &PlanStepId,
+        output: Option<StepOutput>,
+    ) -> Result<Plan, PlanExecutionError> {
         let mut plan = self.load_executing_plan(plan_id)?;
         let step = plan
             .step_mut(step_id)
@@ -72,7 +89,7 @@ where
             });
         }
 
-        step.output = Some(output);
+        step.output = output;
         step.transition_to(PlanStepStatus::Completed)?;
         promote_ready_steps(&mut plan)?;
 

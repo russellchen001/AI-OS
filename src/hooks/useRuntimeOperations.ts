@@ -14,6 +14,7 @@ import {
 } from "../services/runtime";
 import type {
   RuntimeOperationAction,
+  RuntimeLifecycleAction,
   RuntimeOperationSnapshot,
   RuntimeErrorCode,
   StartRuntimeOperationRequest,
@@ -47,7 +48,7 @@ const ACTIVE_STATES = new Set([
 ]);
 
 const LIFECYCLE_ACTIONS = new Set<
-RuntimeOperationAction
+RuntimeLifecycleAction
 >([
   "start",
   "stop",
@@ -79,6 +80,8 @@ RuntimeErrorCode
   "container-not-found",
   "container-ambiguous",
   "readiness-timeout",
+  "permission-denied",
+  "invalid-request",
 ]);
 
 const STATIC_CONFIGURATION_CODES = new Set<
@@ -179,6 +182,8 @@ function channelKey(
   return `${runtimeId}:${
     action === "open"
       ? "open"
+      : action === "execute"
+        ? "execute"
       : "lifecycle"
   }`;
 }
@@ -195,6 +200,8 @@ function terminalSuccessMessage(
       return "Runtime restarted.";
     case "open":
       return "Runtime opened.";
+    case "execute":
+      return "Task operation completed.";
   }
 }
 
@@ -307,6 +314,7 @@ export default function useRuntimeOperations({
       }
 
       if (
+        operation.action !== "execute" &&
         LIFECYCLE_ACTIONS.has(
           operation.action,
         )

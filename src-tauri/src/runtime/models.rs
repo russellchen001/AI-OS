@@ -80,6 +80,7 @@ pub enum RuntimeReadiness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeErrorCode {
+    PermissionDenied,
     AuthenticationRequired,
     PairingRequired,
     ConnectionUnavailable,
@@ -96,6 +97,7 @@ pub enum RuntimeErrorCode {
     CancellationTooLate,
     OperationFailed,
     OperationTaskFailed,
+    InvalidRequest,
     DependencyUnavailable,
     DependencyNotInstalled,
     InvalidRuntimeLocation,
@@ -156,6 +158,7 @@ pub enum RuntimeOperationAction {
     Stop,
     Restart,
     Open,
+    Execute,
 }
 
 impl RuntimeOperationAction {

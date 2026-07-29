@@ -1,5 +1,10 @@
 use super::domain::{Task, TaskId};
-use std::{collections::HashMap, error::Error, fmt, sync::RwLock};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt,
+    sync::{Arc, RwLock},
+};
 
 pub trait TaskRepository: Send + Sync {
     fn create(&self, task: Task) -> Result<TaskId, TaskRepositoryError>;
@@ -11,6 +16,31 @@ pub trait TaskRepository: Send + Sync {
     fn update(&self, task: Task) -> Result<(), TaskRepositoryError>;
 
     fn delete(&self, task_id: &TaskId) -> Result<Task, TaskRepositoryError>;
+}
+
+impl<R> TaskRepository for Arc<R>
+where
+    R: TaskRepository + ?Sized,
+{
+    fn create(&self, task: Task) -> Result<TaskId, TaskRepositoryError> {
+        (**self).create(task)
+    }
+
+    fn get(&self, task_id: &TaskId) -> Result<Option<Task>, TaskRepositoryError> {
+        (**self).get(task_id)
+    }
+
+    fn list(&self) -> Result<Vec<Task>, TaskRepositoryError> {
+        (**self).list()
+    }
+
+    fn update(&self, task: Task) -> Result<(), TaskRepositoryError> {
+        (**self).update(task)
+    }
+
+    fn delete(&self, task_id: &TaskId) -> Result<Task, TaskRepositoryError> {
+        (**self).delete(task_id)
+    }
 }
 
 #[derive(Debug, Default)]

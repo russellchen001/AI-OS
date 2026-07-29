@@ -1,11 +1,14 @@
 use crate::{
     planner::{
-        execution::prepare_plan_start, Plan, PlanExecutionError, PlanId, PlanRepository,
-        PlanRepositoryError,
+        execution::prepare_plan_start, Plan, PlanExecutionCoordinator, PlanExecutionError, PlanId,
+        PlanRepository, PlanRepositoryError, PlanStatus, PlanStepId, PlanStepStatus,
+    },
+    runtime::plan_runtime_bridge::{
+        PlanRuntimeExecutionError, PlanRuntimeExecutionRequest, PlanRuntimeExecutor,
     },
     task_engine::{
         Task, TaskId, TaskPlanExecutionError, TaskPlanExecutionPolicy, TaskPlanSynchronization,
-        TaskRepository, TaskRepositoryError,
+        TaskRepository, TaskRepositoryError, TaskStatus,
     },
 };
 use std::{error::Error, fmt};
@@ -89,6 +92,119 @@ where
         Ok(synchronization)
     }
 
+    pub fn execute_plan<R>(
+        &self,
+        task_id: &TaskId,
+        plan_id: &PlanId,
+        runtime: &R,
+    ) -> Result<TaskPlanExecutionStart, TaskPlanOrchestrationError>
+    where
+        R: PlanRuntimeExecutor + ?Sized,
+    {
+        self.start_execution(task_id, plan_id)?;
+        let coordinator = PlanExecutionCoordinator::new(&self.plans);
+
+        loop {
+            let plan = self.load_plan(plan_id)?;
+            if plan.status.is_terminal() {
+                break;
+            }
+            let Some(step) = plan
+                .steps
+                .iter()
+                .find(|step| step.status == PlanStepStatus::Ready)
+                .cloned()
+            else {
+                return Err(TaskPlanOrchestrationError::NoReadyStep { plan_id: plan.id });
+            };
+
+            coordinator
+                .start_step(plan_id, &step.id)
+                .map_err(TaskPlanOrchestrationError::Planner)?;
+            let running_state = DurableTaskPlanState {
+                task_status: TaskStatus::Executing,
+                plan_status: PlanStatus::Executing,
+                step_id: Some(step.id.clone()),
+                step_status: Some(PlanStepStatus::Running),
+            };
+
+            let runtime_result = runtime.execute_step(PlanRuntimeExecutionRequest {
+                plan_id: plan_id.clone(),
+                step_id: step.id.clone(),
+                capability: step.capability,
+                input: step.input,
+            });
+
+            match runtime_result {
+                Ok(result) => {
+                    let completion = match result.output {
+                        Some(output) => coordinator.complete_step(plan_id, &step.id, output),
+                        None => coordinator.complete_step_without_output(plan_id, &step.id),
+                    };
+                    if let Err(persistence_error) = completion {
+                        return Err(
+                            TaskPlanOrchestrationError::ExecutionSucceededButPersistenceFailed {
+                                operation_id: result.operation_id,
+                                persistence_error,
+                                durable_state: running_state,
+                            },
+                        );
+                    }
+                }
+                Err(source) => {
+                    let failed_plan =
+                        match coordinator.fail_step(plan_id, &step.id) {
+                            Ok(plan) => plan,
+                            Err(persistence_error) => return Err(
+                                TaskPlanOrchestrationError::ExecutionFailedAndCompensationFailed {
+                                    runtime_error: source,
+                                    persistence_error,
+                                    durable_state: running_state,
+                                },
+                            ),
+                        };
+                    if let Err(synchronization_error) =
+                        self.synchronize_after_plan_change(task_id, plan_id)
+                    {
+                        return Err(
+                            TaskPlanOrchestrationError::PlanTerminalButTaskSynchronizationFailed {
+                                runtime_error: Some(source),
+                                synchronization_error: Box::new(synchronization_error),
+                                durable_state: DurableTaskPlanState {
+                                    task_status: TaskStatus::Executing,
+                                    plan_status: failed_plan.status,
+                                    step_id: Some(step.id),
+                                    step_status: Some(PlanStepStatus::Failed),
+                                },
+                            },
+                        );
+                    }
+                    return Err(TaskPlanOrchestrationError::Runtime { source });
+                }
+            }
+        }
+
+        let terminal_plan = self.load_plan(plan_id)?;
+        if let Err(synchronization_error) = self.synchronize_after_plan_change(task_id, plan_id) {
+            return Err(
+                TaskPlanOrchestrationError::PlanTerminalButTaskSynchronizationFailed {
+                    runtime_error: None,
+                    synchronization_error: Box::new(synchronization_error),
+                    durable_state: DurableTaskPlanState {
+                        task_status: TaskStatus::Executing,
+                        plan_status: terminal_plan.status,
+                        step_id: None,
+                        step_status: None,
+                    },
+                },
+            );
+        }
+        Ok(TaskPlanExecutionStart {
+            task: self.load_task(task_id)?,
+            plan: self.load_plan(plan_id)?,
+        })
+    }
+
     fn load_task(&self, task_id: &TaskId) -> Result<Task, TaskPlanOrchestrationError> {
         self.tasks
             .get(task_id)
@@ -120,6 +236,14 @@ pub enum TaskPlanAggregate {
     Plan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableTaskPlanState {
+    pub task_status: TaskStatus,
+    pub plan_status: PlanStatus,
+    pub step_id: Option<PlanStepId>,
+    pub step_status: Option<PlanStepStatus>,
+}
+
 impl fmt::Display for TaskPlanAggregate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -135,6 +259,27 @@ pub enum TaskPlanOrchestrationError {
     PlanLoad(PlanRepositoryError),
     Policy(TaskPlanExecutionError),
     Planner(PlanExecutionError),
+    Runtime {
+        source: PlanRuntimeExecutionError,
+    },
+    ExecutionSucceededButPersistenceFailed {
+        operation_id: String,
+        persistence_error: PlanExecutionError,
+        durable_state: DurableTaskPlanState,
+    },
+    ExecutionFailedAndCompensationFailed {
+        runtime_error: PlanRuntimeExecutionError,
+        persistence_error: PlanExecutionError,
+        durable_state: DurableTaskPlanState,
+    },
+    PlanTerminalButTaskSynchronizationFailed {
+        runtime_error: Option<PlanRuntimeExecutionError>,
+        synchronization_error: Box<TaskPlanOrchestrationError>,
+        durable_state: DurableTaskPlanState,
+    },
+    NoReadyStep {
+        plan_id: PlanId,
+    },
     PlanPersistence {
         plan_id: PlanId,
         source: PlanRepositoryError,
@@ -159,6 +304,21 @@ impl fmt::Display for TaskPlanOrchestrationError {
                 write!(formatter, "Task–Plan policy rejected operation: {error}")
             }
             Self::Planner(error) => write!(formatter, "Planner rejected operation: {error}"),
+            Self::Runtime { source } => write!(formatter, "Runtime rejected PlanStep: {source}"),
+            Self::ExecutionSucceededButPersistenceFailed { operation_id, .. } => write!(
+                formatter,
+                "Runtime operation {operation_id} succeeded, but Plan completion was not persisted"
+            ),
+            Self::ExecutionFailedAndCompensationFailed { runtime_error, .. } => write!(
+                formatter,
+                "Runtime failed ({runtime_error}) and Plan failure compensation was not persisted"
+            ),
+            Self::PlanTerminalButTaskSynchronizationFailed { .. } => formatter.write_str(
+                "Plan reached a durable terminal state, but Task synchronization was not persisted",
+            ),
+            Self::NoReadyStep { plan_id } => {
+                write!(formatter, "executing Plan {plan_id} has no ready step")
+            }
             Self::PlanPersistence { plan_id, source } => {
                 write!(formatter, "failed to persist Plan {plan_id}: {source}")
             }
@@ -184,6 +344,18 @@ impl Error for TaskPlanOrchestrationError {
             Self::PlanLoad(error) => Some(error),
             Self::Policy(error) => Some(error),
             Self::Planner(error) => Some(error),
+            Self::Runtime { source } => Some(source),
+            Self::ExecutionSucceededButPersistenceFailed {
+                persistence_error, ..
+            }
+            | Self::ExecutionFailedAndCompensationFailed {
+                persistence_error, ..
+            } => Some(persistence_error),
+            Self::PlanTerminalButTaskSynchronizationFailed {
+                synchronization_error,
+                ..
+            } => Some(synchronization_error.as_ref()),
+            Self::NoReadyStep { .. } => None,
             Self::PlanPersistence { source, .. } => Some(source),
             Self::TaskPersistence { source, .. } => Some(source),
             Self::PartialPersistence { source, .. } => Some(source),
@@ -198,7 +370,11 @@ mod tests {
         planner::{PlanStatus, PlanStep},
         task_engine::{TaskStatus, TaskType},
     };
-    use std::sync::{Arc, Mutex};
+    use serde_json::json;
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
 
     #[derive(Clone)]
     struct RecordingTaskRepository {
@@ -210,6 +386,7 @@ mod tests {
         task: Option<Task>,
         get_error: Option<TaskRepositoryError>,
         update_error: Option<TaskRepositoryError>,
+        fail_update_at: Option<usize>,
         writes: usize,
     }
 
@@ -220,6 +397,7 @@ mod tests {
                     task,
                     get_error: None,
                     update_error: None,
+                    fail_update_at: None,
                     writes: 0,
                 })),
                 order,
@@ -232,6 +410,12 @@ mod tests {
 
         fn fail_update(&self, error: TaskRepositoryError) {
             self.state.lock().unwrap().update_error = Some(error);
+        }
+
+        fn fail_update_at(&self, write: usize, error: TaskRepositoryError) {
+            let mut state = self.state.lock().unwrap();
+            state.fail_update_at = Some(write);
+            state.update_error = Some(error);
         }
 
         fn snapshot(&self) -> Option<Task> {
@@ -266,8 +450,10 @@ mod tests {
             self.order.lock().unwrap().push("task");
             let mut state = self.state.lock().unwrap();
             state.writes += 1;
-            if let Some(error) = state.update_error.take() {
-                return Err(error);
+            if state.fail_update_at.is_none() || state.fail_update_at == Some(state.writes) {
+                if let Some(error) = state.update_error.take() {
+                    return Err(error);
+                }
             }
             state.task = Some(task);
             Ok(())
@@ -293,6 +479,7 @@ mod tests {
         plan: Option<Plan>,
         get_error: Option<PlanRepositoryError>,
         update_error: Option<PlanRepositoryError>,
+        fail_update_at: Option<usize>,
         writes: usize,
     }
 
@@ -303,6 +490,7 @@ mod tests {
                     plan,
                     get_error: None,
                     update_error: None,
+                    fail_update_at: None,
                     writes: 0,
                 })),
                 order,
@@ -315,6 +503,12 @@ mod tests {
 
         fn fail_update(&self, error: PlanRepositoryError) {
             self.state.lock().unwrap().update_error = Some(error);
+        }
+
+        fn fail_update_at(&self, write: usize, error: PlanRepositoryError) {
+            let mut state = self.state.lock().unwrap();
+            state.fail_update_at = Some(write);
+            state.update_error = Some(error);
         }
 
         fn snapshot(&self) -> Option<Plan> {
@@ -357,8 +551,10 @@ mod tests {
             self.order.lock().unwrap().push("plan");
             let mut state = self.state.lock().unwrap();
             state.writes += 1;
-            if let Some(error) = state.update_error.take() {
-                return Err(error);
+            if state.fail_update_at.is_none() || state.fail_update_at == Some(state.writes) {
+                if let Some(error) = state.update_error.take() {
+                    return Err(error);
+                }
             }
             state.plan = Some(plan);
             Ok(())
@@ -376,6 +572,86 @@ mod tests {
 
     type TestOrchestrator =
         TaskPlanExecutionOrchestrator<RecordingTaskRepository, RecordingPlanRepository>;
+
+    struct RecordingRuntime {
+        plans: RecordingPlanRepository,
+        order: Arc<Mutex<Vec<&'static str>>>,
+        calls: Mutex<Vec<PlanRuntimeExecutionRequest>>,
+        outcomes: Mutex<
+            VecDeque<
+                Result<
+                    crate::runtime::plan_runtime_bridge::PlanRuntimeExecutionResult,
+                    PlanRuntimeExecutionError,
+                >,
+            >,
+        >,
+    }
+
+    impl RecordingRuntime {
+        fn new(
+            plans: RecordingPlanRepository,
+            order: Arc<Mutex<Vec<&'static str>>>,
+            outcomes: impl IntoIterator<
+                Item = Result<
+                    crate::runtime::plan_runtime_bridge::PlanRuntimeExecutionResult,
+                    PlanRuntimeExecutionError,
+                >,
+            >,
+        ) -> Self {
+            Self {
+                plans,
+                order,
+                calls: Mutex::new(Vec::new()),
+                outcomes: Mutex::new(outcomes.into_iter().collect()),
+            }
+        }
+    }
+
+    impl PlanRuntimeExecutor for RecordingRuntime {
+        fn execute_step(
+            &self,
+            request: PlanRuntimeExecutionRequest,
+        ) -> Result<
+            crate::runtime::plan_runtime_bridge::PlanRuntimeExecutionResult,
+            PlanRuntimeExecutionError,
+        > {
+            let plan = self.plans.snapshot().unwrap();
+            assert_eq!(
+                plan.steps
+                    .iter()
+                    .find(|step| step.id == request.step_id)
+                    .unwrap()
+                    .status,
+                PlanStepStatus::Running
+            );
+            self.order.lock().unwrap().push("runtime");
+            self.calls.lock().unwrap().push(request);
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("test runtime outcome")
+        }
+    }
+
+    fn runtime_success(
+        operation_id: &str,
+        output: serde_json::Value,
+    ) -> crate::runtime::plan_runtime_bridge::PlanRuntimeExecutionResult {
+        crate::runtime::plan_runtime_bridge::PlanRuntimeExecutionResult {
+            operation_id: operation_id.to_owned(),
+            output: Some(output),
+        }
+    }
+
+    fn runtime_success_without_output(
+        operation_id: &str,
+    ) -> crate::runtime::plan_runtime_bridge::PlanRuntimeExecutionResult {
+        crate::runtime::plan_runtime_bridge::PlanRuntimeExecutionResult {
+            operation_id: operation_id.to_owned(),
+            output: None,
+        }
+    }
 
     fn ready_pair() -> (Task, Plan) {
         let mut task = Task::new(TaskType::Do, "execute workflow").unwrap();
@@ -408,6 +684,214 @@ mod tests {
         let tasks = RecordingTaskRepository::new(task, Arc::clone(&order));
         let plans = RecordingPlanRepository::new(plan, Arc::clone(&order));
         (TaskPlanExecutionOrchestrator::new(tasks, plans), order)
+    }
+
+    #[test]
+    fn execute_plan_persists_running_before_sequential_runtime_success() {
+        let (task, mut plan) = ready_pair();
+        let first_id = plan.steps[0].id.clone();
+        let second = PlanStep::new("verify", "test.verify")
+            .unwrap()
+            .depends_on(first_id.clone());
+        let second_id = second.id.clone();
+        plan.add_step(second).unwrap();
+        let (service, order) = orchestrator(Some(task.clone()), Some(plan.clone()));
+        let runtime = RecordingRuntime::new(
+            service.plan_repository().clone(),
+            Arc::clone(&order),
+            [
+                Ok(runtime_success("operation-1", json!({"first": true}))),
+                Ok(runtime_success("operation-2", json!({"second": true}))),
+            ],
+        );
+
+        let result = service.execute_plan(&task.id, &plan.id, &runtime).unwrap();
+
+        assert_eq!(result.plan.status, PlanStatus::Completed);
+        assert_eq!(result.task.status, TaskStatus::Verifying);
+        assert_eq!(
+            result
+                .plan
+                .steps
+                .iter()
+                .map(|step| step.status)
+                .collect::<Vec<_>>(),
+            vec![PlanStepStatus::Completed, PlanStepStatus::Completed]
+        );
+        assert_eq!(
+            runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|request| request.step_id.clone())
+                .collect::<Vec<_>>(),
+            vec![first_id, second_id]
+        );
+        assert_eq!(
+            &order.lock().unwrap()[..4],
+            ["plan", "task", "plan", "runtime"]
+        );
+    }
+
+    #[test]
+    fn policy_rejection_never_submits_to_runtime() {
+        let (mut task, plan) = ready_pair();
+        task.transition_to(TaskStatus::Executing).unwrap();
+        let (service, order) = orchestrator(Some(task.clone()), Some(plan.clone()));
+        let runtime =
+            RecordingRuntime::new(service.plan_repository().clone(), order, std::iter::empty());
+
+        assert!(matches!(
+            service.execute_plan(&task.id, &plan.id, &runtime),
+            Err(TaskPlanOrchestrationError::Policy(_))
+        ));
+        assert!(runtime.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_denial_fails_step_cancels_remaining_and_synchronizes_task() {
+        let (task, mut plan) = ready_pair();
+        let first_id = plan.steps[0].id.clone();
+        plan.add_step(
+            PlanStep::new("dependent", "test.dependent")
+                .unwrap()
+                .depends_on(first_id),
+        )
+        .unwrap();
+        let (service, order) = orchestrator(Some(task.clone()), Some(plan.clone()));
+        let runtime = RecordingRuntime::new(
+            service.plan_repository().clone(),
+            order,
+            [Err(PlanRuntimeExecutionError::PermissionDenied)],
+        );
+
+        assert!(matches!(
+            service.execute_plan(&task.id, &plan.id, &runtime),
+            Err(TaskPlanOrchestrationError::Runtime {
+                source: PlanRuntimeExecutionError::PermissionDenied
+            })
+        ));
+
+        let persisted_plan = service.plan_repository().snapshot().unwrap();
+        assert_eq!(persisted_plan.status, PlanStatus::Failed);
+        assert_eq!(persisted_plan.steps[0].status, PlanStepStatus::Failed);
+        assert_eq!(persisted_plan.steps[1].status, PlanStepStatus::Cancelled);
+        assert_eq!(
+            service.task_repository().snapshot().unwrap().status,
+            TaskStatus::Failed
+        );
+        assert_eq!(runtime.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runtime_success_with_no_output_persists_none() {
+        let (task, plan) = ready_pair();
+        let (service, order) = orchestrator(Some(task.clone()), Some(plan.clone()));
+        let runtime = RecordingRuntime::new(
+            service.plan_repository().clone(),
+            order,
+            [Ok(runtime_success_without_output("operation-1"))],
+        );
+
+        let result = service.execute_plan(&task.id, &plan.id, &runtime).unwrap();
+
+        assert_eq!(result.plan.steps[0].output, None);
+    }
+
+    #[test]
+    fn runtime_success_plus_completion_persistence_failure_is_typed_partial_success() {
+        let (task, plan) = ready_pair();
+        let (service, order) = orchestrator(Some(task.clone()), Some(plan.clone()));
+        service
+            .plan_repository()
+            .fail_update_at(3, PlanRepositoryError::LockPoisoned);
+        let runtime = RecordingRuntime::new(
+            service.plan_repository().clone(),
+            order,
+            [Ok(runtime_success("operation-1", json!({"done": true})))],
+        );
+
+        let error = service
+            .execute_plan(&task.id, &plan.id, &runtime)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TaskPlanOrchestrationError::ExecutionSucceededButPersistenceFailed {
+                operation_id,
+                durable_state: DurableTaskPlanState {
+                    task_status: TaskStatus::Executing,
+                    plan_status: PlanStatus::Executing,
+                    step_status: Some(PlanStepStatus::Running),
+                    ..
+                },
+                ..
+            } if operation_id == "operation-1"
+        ));
+    }
+
+    #[test]
+    fn runtime_failure_plus_compensation_failure_preserves_both_errors() {
+        let (task, plan) = ready_pair();
+        let (service, order) = orchestrator(Some(task.clone()), Some(plan.clone()));
+        service
+            .plan_repository()
+            .fail_update_at(3, PlanRepositoryError::LockPoisoned);
+        let runtime = RecordingRuntime::new(
+            service.plan_repository().clone(),
+            order,
+            [Err(PlanRuntimeExecutionError::PermissionDenied)],
+        );
+
+        let error = service
+            .execute_plan(&task.id, &plan.id, &runtime)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TaskPlanOrchestrationError::ExecutionFailedAndCompensationFailed {
+                runtime_error: PlanRuntimeExecutionError::PermissionDenied,
+                persistence_error: PlanExecutionError::Repository(
+                    PlanRepositoryError::LockPoisoned
+                ),
+                durable_state: DurableTaskPlanState {
+                    step_status: Some(PlanStepStatus::Running),
+                    ..
+                },
+            }
+        ));
+    }
+
+    #[test]
+    fn terminal_plan_plus_task_sync_failure_reports_durable_partial_state() {
+        let (task, plan) = ready_pair();
+        let (service, order) = orchestrator(Some(task.clone()), Some(plan.clone()));
+        service
+            .task_repository()
+            .fail_update_at(2, TaskRepositoryError::LockPoisoned);
+        let runtime = RecordingRuntime::new(
+            service.plan_repository().clone(),
+            order,
+            [Ok(runtime_success("operation-1", json!({"done": true})))],
+        );
+
+        let error = service
+            .execute_plan(&task.id, &plan.id, &runtime)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TaskPlanOrchestrationError::PlanTerminalButTaskSynchronizationFailed {
+                runtime_error: None,
+                durable_state: DurableTaskPlanState {
+                    task_status: TaskStatus::Executing,
+                    plan_status: PlanStatus::Completed,
+                    ..
+                },
+                ..
+            }
+        ));
     }
 
     #[test]

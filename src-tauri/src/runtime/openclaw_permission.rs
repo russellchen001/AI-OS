@@ -3,6 +3,7 @@ use super::openclaw_execution::{
     OpenClawExecutionProgress, OpenClawExecutionRequest, OpenClawExecutionResult,
 };
 use std::sync::Arc;
+use std::{collections::HashSet, iter::IntoIterator};
 
 const APPROVAL_REQUIRED_MESSAGE: &str = "OpenClaw action requires explicit approval.";
 const PERMISSION_DENIED_MESSAGE: &str = "OpenClaw action is not permitted.";
@@ -25,6 +26,37 @@ pub(crate) trait OpenClawPermissionGate: Send + Sync {
         &self,
         request: &OpenClawExecutionRequest,
     ) -> Result<OpenClawPermissionDecision, OpenClawPermissionCheckError>;
+}
+
+pub(crate) struct ConfiguredCapabilityPermissionGate {
+    allowed_capabilities: HashSet<String>,
+}
+
+impl ConfiguredCapabilityPermissionGate {
+    pub(crate) fn new(allowed_capabilities: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            allowed_capabilities: allowed_capabilities
+                .into_iter()
+                .map(|capability| capability.trim().to_owned())
+                .filter(|capability| !capability.is_empty())
+                .collect(),
+        }
+    }
+}
+
+impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
+    fn authorize(
+        &self,
+        request: &OpenClawExecutionRequest,
+    ) -> Result<OpenClawPermissionDecision, OpenClawPermissionCheckError> {
+        Ok(
+            if self.allowed_capabilities.contains(request.action.as_str()) {
+                OpenClawPermissionDecision::Allowed
+            } else {
+                OpenClawPermissionDecision::Denied
+            },
+        )
+    }
 }
 
 pub(crate) struct PermissionEnforcingOpenClawExecutionAdapter {
@@ -351,6 +383,63 @@ mod tests {
                 .execute(&request(json!({})), &mut |_| {})
                 .unwrap_err();
             assert!(!error.retryable);
+        }
+    }
+
+    #[test]
+    fn configured_capability_is_allowed() {
+        let gate = ConfiguredCapabilityPermissionGate::new(["filesystem.scan".to_owned()]);
+
+        assert_eq!(
+            gate.authorize(&request(json!({}))).unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn unconfigured_or_empty_allowlist_denies() {
+        let empty = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let configured = ConfiguredCapabilityPermissionGate::new(["filesystem.read".to_owned()]);
+
+        assert_eq!(
+            empty.authorize(&request(json!({}))).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+        assert_eq!(
+            configured.authorize(&request(json!({}))).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+    }
+
+    #[test]
+    fn configured_capability_matching_is_exact() {
+        for configured in [
+            "Filesystem.Scan",
+            "filesystem",
+            "filesystem.scan.extra",
+            "*",
+        ] {
+            let gate = ConfiguredCapabilityPermissionGate::new([configured.to_owned()]);
+            assert_eq!(
+                gate.authorize(&request(json!({}))).unwrap(),
+                OpenClawPermissionDecision::Denied
+            );
+        }
+    }
+
+    #[test]
+    fn permission_decision_does_not_depend_on_input_payload() {
+        let gate = ConfiguredCapabilityPermissionGate::new(["filesystem.scan".to_owned()]);
+
+        for input in [
+            json!({}),
+            json!({"credential": "secret"}),
+            json!({"attemptedOverride": "*"}),
+        ] {
+            assert_eq!(
+                gate.authorize(&request(input)).unwrap(),
+                OpenClawPermissionDecision::Allowed
+            );
         }
     }
 }

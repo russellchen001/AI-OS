@@ -1,6 +1,11 @@
 use super::domain::{Plan, PlanId};
 use crate::task_engine::TaskId;
-use std::{collections::HashMap, error::Error, fmt, sync::RwLock};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt,
+    sync::{Arc, RwLock},
+};
 
 pub trait PlanRepository: Send + Sync {
     fn create(&self, plan: Plan) -> Result<PlanId, PlanRepositoryError>;
@@ -14,6 +19,64 @@ pub trait PlanRepository: Send + Sync {
     fn update(&self, plan: Plan) -> Result<(), PlanRepositoryError>;
 
     fn delete(&self, plan_id: &PlanId) -> Result<Plan, PlanRepositoryError>;
+}
+
+impl<P> PlanRepository for &P
+where
+    P: PlanRepository + ?Sized,
+{
+    fn create(&self, plan: Plan) -> Result<PlanId, PlanRepositoryError> {
+        (**self).create(plan)
+    }
+
+    fn get(&self, plan_id: &PlanId) -> Result<Option<Plan>, PlanRepositoryError> {
+        (**self).get(plan_id)
+    }
+
+    fn list(&self) -> Result<Vec<Plan>, PlanRepositoryError> {
+        (**self).list()
+    }
+
+    fn list_by_task(&self, task_id: &TaskId) -> Result<Vec<Plan>, PlanRepositoryError> {
+        (**self).list_by_task(task_id)
+    }
+
+    fn update(&self, plan: Plan) -> Result<(), PlanRepositoryError> {
+        (**self).update(plan)
+    }
+
+    fn delete(&self, plan_id: &PlanId) -> Result<Plan, PlanRepositoryError> {
+        (**self).delete(plan_id)
+    }
+}
+
+impl<P> PlanRepository for Arc<P>
+where
+    P: PlanRepository + ?Sized,
+{
+    fn create(&self, plan: Plan) -> Result<PlanId, PlanRepositoryError> {
+        (**self).create(plan)
+    }
+
+    fn get(&self, plan_id: &PlanId) -> Result<Option<Plan>, PlanRepositoryError> {
+        (**self).get(plan_id)
+    }
+
+    fn list(&self) -> Result<Vec<Plan>, PlanRepositoryError> {
+        (**self).list()
+    }
+
+    fn list_by_task(&self, task_id: &TaskId) -> Result<Vec<Plan>, PlanRepositoryError> {
+        (**self).list_by_task(task_id)
+    }
+
+    fn update(&self, plan: Plan) -> Result<(), PlanRepositoryError> {
+        (**self).update(plan)
+    }
+
+    fn delete(&self, plan_id: &PlanId) -> Result<Plan, PlanRepositoryError> {
+        (**self).delete(plan_id)
+    }
 }
 
 #[derive(Debug, Default)]

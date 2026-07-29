@@ -38,6 +38,11 @@ impl PlanId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_static(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
 }
 
 impl Default for PlanId {

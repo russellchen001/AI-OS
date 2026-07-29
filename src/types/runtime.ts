@@ -73,7 +73,9 @@ export type RuntimeErrorCode =
   | "invalid-runtime-location"
   | "container-not-found"
   | "container-ambiguous"
-  | "readiness-timeout";
+  | "readiness-timeout"
+  | "permission-denied"
+  | "invalid-request";
 
 export type NormalizedRuntimeError = {
   code: RuntimeErrorCode;
@@ -112,15 +114,19 @@ export type RuntimeStatusRequest = {
   openWebUiUrl?: string;
 };
 
-export type RuntimeOperationAction =
+export type RuntimeLifecycleAction =
   | "start"
   | "stop"
   | "restart"
   | "open";
 
+export type RuntimeOperationAction =
+  | RuntimeLifecycleAction
+  | "execute";
+
 export type StartRuntimeOperationRequest = {
   runtimeId: string;
-  action: RuntimeOperationAction;
+  action: RuntimeLifecycleAction;
   endpointUrl?: string;
 };
 

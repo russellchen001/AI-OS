@@ -7,9 +7,11 @@ mod multillm;
 mod openclaw;
 pub mod planner;
 mod runtime;
+mod task_execution;
 pub mod task_plan_orchestration;
 
 use std::process::Command;
+use tauri::Manager;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -101,8 +103,21 @@ echo "$CPU|$MEM_USED_GB|$MEM_TOTAL_GB|$DISK_USED_GB|$DISK_TOTAL_GB"
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let runtime_state = runtime::executor::RuntimeExecutionState::default();
+    let task_runtime_state = runtime_state.clone();
+
     tauri::Builder::default()
-        .manage(runtime::executor::RuntimeExecutionState::default())
+        .manage(runtime_state)
+        .setup(move |app| {
+            let emitter = std::sync::Arc::new(runtime::executor::TauriEventEmitter::new(
+                app.handle().clone(),
+            ));
+            app.manage(task_execution::build_task_execution_state(
+                task_runtime_state.clone(),
+                emitter,
+            ));
+            Ok(())
+        })
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

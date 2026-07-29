@@ -4,9 +4,32 @@ use serde::{Deserialize, Serialize};
 
 use std::{
     fs,
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
+
+pub(crate) fn append_ai_os_diagnostic(message: &str) {
+    let Ok(directory) = log_directory() else {
+        return;
+    };
+    if fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("ai-os.log"))
+    {
+        let _ = writeln!(
+            file,
+            "{} warning AI OS: {}",
+            Utc::now().to_rfc3339(),
+            message
+        );
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

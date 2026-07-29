@@ -1,9 +1,10 @@
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::Arc,
+    sync::{mpsc, Arc},
     time::Instant,
 };
 
+use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use super::{
@@ -16,6 +17,10 @@ use super::{
         NormalizedRuntimeError, RuntimeErrorCode, RuntimeOperationAdmission, RuntimeOperationEvent,
         RuntimeOperationProgress, RuntimeOperationResult, RuntimeOperationSnapshot,
         RuntimeOperationState,
+    },
+    openclaw_execution::{
+        OpenClawExecutionAdapter, OpenClawExecutionError, OpenClawExecutionErrorKind,
+        OpenClawExecutionRequest,
     },
     operations::{
         RuntimeOperationCancellationUpdate, RuntimeOperationManager, RuntimeOperationProgressUpdate,
@@ -71,7 +76,7 @@ trait PreparedOperation: Send {
     fn execute(
         self: Box<Self>,
         report: &mut dyn FnMut(RuntimeOperationProgress),
-    ) -> Result<(), NormalizedRuntimeError>;
+    ) -> Result<Option<Value>, NormalizedRuntimeError>;
 }
 
 trait OperationPipeline: Send + Sync {
@@ -101,9 +106,183 @@ impl PreparedOperation for NativePreparedOperation {
     fn execute(
         self: Box<Self>,
         report: &mut dyn FnMut(RuntimeOperationProgress),
-    ) -> Result<(), NormalizedRuntimeError> {
-        execute_plan(&self.0, report)
+    ) -> Result<Option<Value>, NormalizedRuntimeError> {
+        execute_plan(&self.0, report).map(|()| None)
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RuntimeTaskExecutionRequest {
+    pub operation_id: String,
+    pub plan_id: String,
+    pub step_id: String,
+    pub capability: String,
+    pub input: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ValidatedRuntimeTaskExecutionRequest {
+    operation_id: String,
+    capability: String,
+    input: Value,
+}
+
+impl RuntimeTaskExecutionRequest {
+    pub(crate) fn validate(
+        self,
+    ) -> Result<ValidatedRuntimeTaskExecutionRequest, NormalizedRuntimeError> {
+        let operation_id = self.operation_id.trim().to_owned();
+        let plan_id = self.plan_id.trim();
+        let step_id = self.step_id.trim();
+        let capability = self.capability.trim().to_owned();
+        if operation_id.is_empty()
+            || plan_id.is_empty()
+            || step_id.is_empty()
+            || capability.is_empty()
+        {
+            return Err(NormalizedRuntimeError {
+                code: RuntimeErrorCode::InvalidRequest,
+                message: "Runtime task execution request is invalid.".to_owned(),
+                retryable: false,
+            });
+        }
+        Ok(ValidatedRuntimeTaskExecutionRequest {
+            operation_id,
+            capability,
+            input: self.input,
+        })
+    }
+}
+
+struct OpenClawPreparedOperation {
+    request: OpenClawExecutionRequest,
+    adapter: Arc<dyn OpenClawExecutionAdapter>,
+}
+
+impl PreparedOperation for OpenClawPreparedOperation {
+    fn execute(
+        self: Box<Self>,
+        report: &mut dyn FnMut(RuntimeOperationProgress),
+    ) -> Result<Option<Value>, NormalizedRuntimeError> {
+        let mut openclaw_report =
+            |progress: super::openclaw_execution::OpenClawExecutionProgress| {
+                report(RuntimeOperationProgress {
+                    phase: progress.phase,
+                    completed_units: progress.completed_units,
+                    total_units: progress.total_units,
+                    message: progress.message,
+                })
+            };
+        self.adapter
+            .execute(&self.request, &mut openclaw_report)
+            // The current Gateway contract represents both an absent payload and an
+            // explicit JSON null as `Value::Null`, so null is the truthful no-output
+            // representation until that upstream contract can distinguish them.
+            .map(|result| (!result.output.is_null()).then_some(result.output))
+            .map_err(normalize_openclaw_error)
+    }
+}
+
+fn normalize_openclaw_error(error: OpenClawExecutionError) -> NormalizedRuntimeError {
+    let code = match error.kind {
+        OpenClawExecutionErrorKind::PermissionRequired
+        | OpenClawExecutionErrorKind::PermissionDenied => RuntimeErrorCode::PermissionDenied,
+        OpenClawExecutionErrorKind::AuthenticationRequired => {
+            RuntimeErrorCode::AuthenticationRequired
+        }
+        OpenClawExecutionErrorKind::PairingRequired => RuntimeErrorCode::PairingRequired,
+        OpenClawExecutionErrorKind::ConnectionUnavailable => {
+            RuntimeErrorCode::ConnectionUnavailable
+        }
+        OpenClawExecutionErrorKind::InvalidRequest => RuntimeErrorCode::InvalidRequest,
+        OpenClawExecutionErrorKind::ProtocolFailure
+        | OpenClawExecutionErrorKind::ExecutionRejected
+        | OpenClawExecutionErrorKind::ExecutionFailed => RuntimeErrorCode::OperationFailed,
+    };
+    NormalizedRuntimeError {
+        code,
+        message: error.message,
+        retryable: error.retryable,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RuntimeTaskExecutionResult {
+    pub operation_id: String,
+    pub output: Option<Value>,
+}
+
+pub(crate) fn execute_runtime_task(
+    manager: Arc<RuntimeOperationManager>,
+    scheduler: RuntimeScheduler,
+    emitter: Arc<dyn OperationEventEmitter>,
+    request: RuntimeTaskExecutionRequest,
+    adapter: Arc<dyn OpenClawExecutionAdapter>,
+) -> Result<RuntimeTaskExecutionResult, NormalizedRuntimeError> {
+    let request = request.validate()?;
+    let admission = manager.admit_identified_operation(
+        &request.operation_id,
+        "openclaw",
+        super::models::RuntimeOperationAction::Execute,
+        false,
+    )?;
+    let operation = match admission {
+        RuntimeOperationAdmission::Accepted { operation } => operation,
+        RuntimeOperationAdmission::Conflict { .. } => {
+            return Err(NormalizedRuntimeError {
+                code: RuntimeErrorCode::OperationConflict,
+                message: "A Runtime task operation with this identifier already exists.".to_owned(),
+                retryable: false,
+            })
+        }
+        RuntimeOperationAdmission::Rejected { error } => return Err(error),
+    };
+    emit_best_effort(emitter.as_ref(), operation);
+    let openclaw_request = OpenClawExecutionRequest::new(
+        request.operation_id.clone(),
+        request.capability,
+        request.input,
+    )
+    .map_err(normalize_openclaw_error)?;
+    let prepared: Box<dyn PreparedOperation> = Box::new(OpenClawPreparedOperation {
+        request: openclaw_request,
+        adapter,
+    });
+    let operation_id = request.operation_id.clone();
+    let task_manager = Arc::clone(&manager);
+    let task_emitter = Arc::clone(&emitter);
+    let (result_sender, result_receiver) = mpsc::sync_channel(1);
+    let task = Box::new(move || {
+        let result = run_supervised_prepared_operation(
+            task_manager,
+            operation_id,
+            task_emitter,
+            prepared,
+            None,
+        );
+        let _ = result_sender.send(result);
+    });
+    let scheduled = catch_unwind(AssertUnwindSafe(|| scheduler.enqueue(task)))
+        .ok()
+        .and_then(Result::ok)
+        .is_some();
+    if !scheduled {
+        let error = operation_task_failed();
+        let _ = fail_operation(
+            manager.as_ref(),
+            &request.operation_id,
+            error.clone(),
+            emitter.as_ref(),
+        );
+        return Err(error);
+    }
+    let output = result_receiver
+        .recv()
+        .map_err(|_| operation_task_failed())??;
+    Ok(RuntimeTaskExecutionResult {
+        operation_id: request.operation_id,
+        output,
+    })
 }
 
 pub(crate) struct TauriEventEmitter {
@@ -239,26 +418,51 @@ fn run_operation_supervisor(
     pipeline: Arc<dyn OperationPipeline>,
     recovery: Option<RecoveryCoordinator>,
 ) {
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        run_operation_supervisor_inner(
-            &manager,
+    let deadline = Instant::now() + PREPARATION_TIMEOUT;
+    let prepared = match pipeline.prepare(&request, deadline) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            if let Some(recovery) = recovery.as_ref() {
+                let _ = recovery.evaluate(&error);
+            }
+            let _ = fail_operation(&manager, &operation_id, error, emitter.as_ref());
+            return;
+        }
+    };
+    let _ = run_supervised_prepared_operation(manager, operation_id, emitter, prepared, recovery);
+}
+
+fn run_supervised_prepared_operation(
+    manager: Arc<RuntimeOperationManager>,
+    operation_id: String,
+    emitter: Arc<dyn OperationEventEmitter>,
+    prepared: Box<dyn PreparedOperation>,
+    recovery: Option<RecoveryCoordinator>,
+) -> Result<Option<Value>, NormalizedRuntimeError> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        run_prepared_operation_supervisor(
+            manager.as_ref(),
             &operation_id,
-            &request,
             emitter.as_ref(),
-            pipeline.as_ref(),
+            prepared,
             recovery.as_ref(),
         )
-    }));
-    if outcome.is_err() {
-        let _ = fail_operation(
-            &manager,
-            &operation_id,
-            operation_task_failed(),
-            emitter.as_ref(),
-        );
+    })) {
+        Ok(result) => result,
+        Err(_) => {
+            let error = operation_task_failed();
+            let _ = fail_operation(
+                manager.as_ref(),
+                &operation_id,
+                error.clone(),
+                emitter.as_ref(),
+            );
+            Err(error)
+        }
     }
 }
 
+#[cfg(test)]
 fn run_operation_supervisor_inner(
     manager: &RuntimeOperationManager,
     operation_id: &str,
@@ -266,23 +470,22 @@ fn run_operation_supervisor_inner(
     emitter: &dyn OperationEventEmitter,
     pipeline: &dyn OperationPipeline,
     recovery: Option<&RecoveryCoordinator>,
-) {
-    let deadline = Instant::now() + PREPARATION_TIMEOUT;
-    let prepared = match pipeline.prepare(request, deadline) {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            if let Some(recovery) = recovery {
-                let _ = recovery.evaluate(&error);
-            }
-            let _ = fail_operation(manager, operation_id, error, emitter);
-            return;
-        }
-    };
+) -> Result<Option<Value>, NormalizedRuntimeError> {
+    let prepared = pipeline.prepare(request, Instant::now() + PREPARATION_TIMEOUT)?;
+    run_prepared_operation_supervisor(manager, operation_id, emitter, prepared, recovery)
+}
 
+fn run_prepared_operation_supervisor(
+    manager: &RuntimeOperationManager,
+    operation_id: &str,
+    emitter: &dyn OperationEventEmitter,
+    prepared: Box<dyn PreparedOperation>,
+    recovery: Option<&RecoveryCoordinator>,
+) -> Result<Option<Value>, NormalizedRuntimeError> {
     let running = match manager.transition(operation_id, RuntimeOperationState::Running, None, None)
     {
         Ok(snapshot) => snapshot,
-        Err(_) => return,
+        Err(error) => return Err(error),
     };
     emit_best_effort(emitter, running);
 
@@ -294,7 +497,7 @@ fn run_operation_supervisor_inner(
     };
     let execution = prepared.execute(&mut report);
     match execution {
-        Ok(()) => {
+        Ok(output) => {
             if let Ok(snapshot) = manager.transition(
                 operation_id,
                 RuntimeOperationState::Succeeded,
@@ -306,12 +509,14 @@ fn run_operation_supervisor_inner(
             ) {
                 emit_best_effort(emitter, snapshot);
             }
+            Ok(output)
         }
         Err(error) => {
             if let Some(recovery) = recovery {
                 let _ = recovery.evaluate(&error);
             }
-            let _ = fail_operation(manager, operation_id, error, emitter);
+            let _ = fail_operation(manager, operation_id, error.clone(), emitter);
+            Err(error)
         }
     }
 }
@@ -369,6 +574,7 @@ pub(crate) fn execute_validated_request(
     NativePipeline
         .prepare(request, Instant::now() + PREPARATION_TIMEOUT)?
         .execute(report)
+        .map(|_| ())
 }
 
 pub(crate) fn emit_best_effort(
@@ -397,7 +603,9 @@ mod tests {
     use crate::runtime::{
         lifecycle::{validate_runtime_lifecycle_request, RuntimeLifecycleRequest},
         models::RuntimeOperationAction,
+        openclaw_execution::{OpenClawExecutionProgress, OpenClawExecutionResult},
     };
+    use serde_json::json;
 
     #[derive(Default)]
     struct RecordingEmitter {
@@ -461,6 +669,144 @@ mod tests {
         }
     }
 
+    struct TaskAdapter {
+        calls: Arc<Mutex<usize>>,
+        outcome: Result<OpenClawExecutionResult, OpenClawExecutionError>,
+        panic: bool,
+    }
+
+    impl OpenClawExecutionAdapter for TaskAdapter {
+        fn execute(
+            &self,
+            _request: &OpenClawExecutionRequest,
+            report: &mut dyn FnMut(OpenClawExecutionProgress),
+        ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+            *self.calls.lock().unwrap() += 1;
+            if self.panic {
+                panic!("private task adapter panic");
+            }
+            report(OpenClawExecutionProgress {
+                phase: "executing".to_owned(),
+                completed_units: Some(1),
+                total_units: Some(1),
+                message: "Executing trusted automation.".to_owned(),
+            });
+            self.outcome.clone()
+        }
+    }
+
+    fn task_request(capability: &str) -> RuntimeTaskExecutionRequest {
+        RuntimeTaskExecutionRequest {
+            operation_id: "plan-step:6:plan-a:6:step-a".to_owned(),
+            plan_id: "plan-a".to_owned(),
+            step_id: "step-a".to_owned(),
+            capability: capability.to_owned(),
+            input: json!({"path": "/safe"}),
+        }
+    }
+
+    #[test]
+    fn valid_task_execution_uses_supervisor_and_completes_operation() {
+        let manager = Arc::new(RuntimeOperationManager::default());
+        let calls = Arc::new(Mutex::new(0));
+        let emitter = Arc::new(RecordingEmitter::default());
+        let result = execute_runtime_task(
+            Arc::clone(&manager),
+            RuntimeScheduler::default(),
+            emitter.clone(),
+            task_request("filesystem.scan"),
+            Arc::new(TaskAdapter {
+                calls: Arc::clone(&calls),
+                outcome: Ok(OpenClawExecutionResult {
+                    output: json!({"files": 2}),
+                    summary: None,
+                }),
+                panic: false,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(result.output, Some(json!({"files": 2})));
+        assert_eq!(*calls.lock().unwrap(), 1);
+        let operation = manager.get_operation(&result.operation_id).unwrap();
+        assert_eq!(operation.action, RuntimeOperationAction::Execute);
+        assert_eq!(operation.state, RuntimeOperationState::Succeeded);
+        assert_eq!(operation.progress.unwrap().phase, "executing");
+        assert_eq!(
+            emitter
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|snapshot| snapshot.state)
+                .collect::<Vec<_>>(),
+            vec![
+                RuntimeOperationState::Queued,
+                RuntimeOperationState::Running,
+                RuntimeOperationState::Running,
+                RuntimeOperationState::Succeeded,
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_task_capability_is_rejected_before_admission() {
+        let manager = Arc::new(RuntimeOperationManager::default());
+        let error = execute_runtime_task(
+            Arc::clone(&manager),
+            RuntimeScheduler::default(),
+            Arc::new(RecordingEmitter::default()),
+            task_request(" \t "),
+            Arc::new(TaskAdapter {
+                calls: Arc::new(Mutex::new(0)),
+                outcome: Ok(OpenClawExecutionResult {
+                    output: json!(null),
+                    summary: None,
+                }),
+                panic: false,
+            }),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, RuntimeErrorCode::InvalidRequest);
+        assert_eq!(
+            manager
+                .get_operation("plan-step:6:plan-a:6:step-a")
+                .unwrap_err()
+                .code,
+            RuntimeErrorCode::OperationNotFound
+        );
+    }
+
+    #[test]
+    fn task_supervisor_panic_is_sanitized_and_terminalized() {
+        let manager = Arc::new(RuntimeOperationManager::default());
+        let request = task_request("filesystem.scan");
+        let operation_id = request.operation_id.clone();
+        let error = execute_runtime_task(
+            Arc::clone(&manager),
+            RuntimeScheduler::default(),
+            Arc::new(RecordingEmitter::default()),
+            request,
+            Arc::new(TaskAdapter {
+                calls: Arc::new(Mutex::new(0)),
+                outcome: Ok(OpenClawExecutionResult {
+                    output: json!(null),
+                    summary: None,
+                }),
+                panic: true,
+            }),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, operation_task_failed());
+        assert!(!format!("{error:?}").contains("private task adapter panic"));
+        assert_eq!(
+            manager.get_operation(&operation_id).unwrap().state,
+            RuntimeOperationState::Failed
+        );
+    }
+
     struct FakePipeline {
         preparation: Mutex<Option<Result<FakePrepared, NormalizedRuntimeError>>>,
     }
@@ -491,7 +837,7 @@ mod tests {
         fn execute(
             self: Box<Self>,
             report: &mut dyn FnMut(RuntimeOperationProgress),
-        ) -> Result<(), NormalizedRuntimeError> {
+        ) -> Result<Option<Value>, NormalizedRuntimeError> {
             if let Some(executed) = &self.executed {
                 executed.store(true, Ordering::SeqCst);
             }
@@ -501,7 +847,7 @@ mod tests {
             for progress in self.progress {
                 report(progress);
             }
-            self.result
+            self.result.map(|()| None)
         }
     }
 
@@ -877,7 +1223,7 @@ mod tests {
             fn execute(
                 self: Box<Self>,
                 _report: &mut dyn FnMut(RuntimeOperationProgress),
-            ) -> Result<(), NormalizedRuntimeError> {
+            ) -> Result<Option<Value>, NormalizedRuntimeError> {
                 panic!("native panic details")
             }
         }
@@ -938,7 +1284,7 @@ mod tests {
             }))),
         };
         let emitter = RecordingEmitter::default();
-        run_operation_supervisor_inner(
+        let _ = run_operation_supervisor_inner(
             &manager,
             &queued.operation_id,
             &request(),

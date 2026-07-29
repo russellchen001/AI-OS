@@ -8,9 +8,11 @@ pub(crate) mod openclaw_execution;
 pub(crate) mod openclaw_gateway_adapter;
 pub(crate) mod openclaw_permission;
 pub mod operations;
+pub(crate) mod plan_runtime_bridge;
 pub(crate) mod recovery;
 mod registry;
 pub(crate) mod scheduler;
+pub(crate) mod trusted_automation;
 
 use models::{RuntimeDefinition, RuntimeStatus, RuntimeStatusRequest};
 

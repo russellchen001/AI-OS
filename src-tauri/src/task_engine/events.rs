@@ -1,6 +1,10 @@
 use super::domain::{TaskId, TaskStatus};
 use serde::{Deserialize, Serialize};
-use std::{error::Error, fmt, sync::Mutex};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -26,6 +30,15 @@ pub enum TaskEvent {
 
 pub trait TaskEventSink: Send + Sync {
     fn publish(&self, event: TaskEvent) -> Result<(), TaskEventError>;
+}
+
+impl<E> TaskEventSink for Arc<E>
+where
+    E: TaskEventSink + ?Sized,
+{
+    fn publish(&self, event: TaskEvent) -> Result<(), TaskEventError> {
+        (**self).publish(event)
+    }
 }
 
 #[derive(Debug, Default)]
