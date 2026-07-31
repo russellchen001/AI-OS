@@ -86,7 +86,7 @@ Council is not model comparison. Experts represent useful perspectives, not nece
 
 ## 13. AI Arena / AI 竞技场
 
-Arena supports Compare, Debate, Collaboration, Competition, Role Play, Game, and Simulation. Setup defines mode, objective, participants, roles, models, rules, rounds, judging/voting, user or audience participation, limits, cost budget, and stopping conditions. Live view shows turns, state, events, participation controls, scores, and moderation. Results include replay/history and a reproducible record.
+Arena supports Compare, Debate, Collaboration, Competition, Role Play, Game, and Simulation. Setup defines mode, objective, a user-chosen bounded number of participants, each participant's model and role, independent or team grouping, rules, rounds, judging/voting, user or audience participation, limits, cost budget, and stopping conditions. Arena must not assume 1v1: valid formations include 1v1v1, 2v2, free-for-all, uneven teams, and other rule-compatible arrangements. Presets accelerate setup but never constrain the underlying formation. Live view shows turns, state, events, participation controls, scores, and moderation. Results include replay/history and a reproducible record.
 
 Werewolf is a representative extensible Game/Role Play template, not an architectural special case. Compare retains blind review, side-by-side outputs, scoring, cost, and latency. Arena serves controlled interaction, experimentation, entertainment, and research; Council serves user decisions. Every model call passes through AI Center.
 

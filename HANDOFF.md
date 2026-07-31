@@ -30,6 +30,18 @@ This update does **not** mark the UI Refactor complete and does **not** start or
 
 Product-owner decisions on 2026-08-01: approved the five-document baseline, authorized a documentation-only commit, approved the UI Refactor Final → validation → P12 sequence, and requested a brighter white-first light theme. The UI Spec, Design System, and Figma Blueprint were updated accordingly; white is the dominant light workspace field, with near-white neutral separation and dark mode retained.
 
+## 2026-08-01 UI Refactor Final Pass
+
+Implemented the approved white-first premium workspace direction across Chat, Sidebar, My AI, Agents, AI Arena, AI Council, Artifacts, and Settings. The primary navigation now includes Workspace, Artifacts, My AI, Agents, AI Council, AI Arena, Skills, and Settings; selecting Workspace no longer creates a conversation because New conversation remains a separate action.
+
+AI Arena now presents all seven target modes while keeping unavailable modes visibly disabled. AI Council presents the Brief → Assemble → Discuss → Synthesize target flow and explicitly labels the current saved-role implementation as the current workflow; dynamic Chief of Staff assembly remains P16 work. Settings and Artifacts retain their existing functionality while adopting the shared page, control, responsive, focus, and state language.
+
+Validation: `npm run build` passed with TypeScript and Vite production output (2672 modules). `git diff --check` remains required immediately before any UI commit. This pass does not start P12. Product-owner visual review and repository-scope review remain before declaring the full UI Refactor milestone closed.
+
+Desktop visual QA was subsequently completed in an isolated Chromium Agent Window for Workspace, AI Council in dark mode, Settings in the approved white-first light mode, and AI Arena in light mode. QA found and fixed: unreadable Recent-conversation text on the light sidebar, legacy Dashboard Header leakage into Council/Artifacts, missing dark-theme treatment for new Council surfaces, and the unstructured Settings About metadata block. The browser Agent Window could not be resized programmatically, so responsive behavior is covered by CSS rules and build validation but still needs a real narrow-viewport screenshot before final milestone closure.
+
+Product-owner Arena clarification: Arena formations are not fixed to 1v1. The UI now provides a variable roster (2–12 participants in the current guardrail), connected-model selection through AI Center, Independent or Team A–D grouping, add/remove controls, and editable 1v1, 1v1v1, and 2v2 presets. The specifications now explicitly support free-for-all, uneven teams, and other custom formations. This is setup UI and product contract work only; P17 execution remains unavailable and Start arena remains disabled.
+
 ---
 
 ## Development Stage

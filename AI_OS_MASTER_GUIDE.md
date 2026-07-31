@@ -417,7 +417,7 @@ AI Arena（AI 竞技场）is AI-OS's multi-AI interaction platform. Under explic
 Responsibilities:
 
 - Support at least Compare, Debate, Collaboration, Competition, Role Play, Game, and Simulation modes
-- Configure rules, roles, models, rounds, audience or user participation, and stopping conditions
+- Configure an arbitrary bounded number of participants, their models, roles, teams or independent sides, rules, rounds, audience or user participation, and stopping conditions
 - Support live interaction, replay, and history
 - Use social-deduction games such as Werewolf as representative Game/Role Play cases without hard-coding one game into the architecture
 - Run the same request or evaluation case across multiple models when using Compare mode
@@ -878,6 +878,7 @@ Goals:
 Goals:
 
 - Multi-AI interaction platform with Compare, Debate, Collaboration, Competition, Role Play, Game, and Simulation modes
+- Flexible participant-count and formation configuration, including independent multi-party and team-based arrangements rather than a fixed 1v1 structure
 - Rule, role, model, round, audience, participation, and stopping-condition configuration
 - Live interaction, user participation, voting, scoring, replay, and history
 - Representative extensible game templates, including social-deduction play, without hard-coded game architecture

@@ -34,3 +34,11 @@ openclaw.log
 *.analytics-backup
 .openclaw-integration-backup-*/
 .chatgpt-review/
+.tokensave
+
+# Local development and investigation artifacts
+.serena/
+*-investigation.txt
+*-source-bundle.txt
+*.save
+*.before-*

@@ -638,6 +638,13 @@ function AiCouncilPage({
         return;
       }
 
+      if (configuredProviders.length === 0) {
+        onMessage(
+          "Unable to run Council: no legacy MultiLLM provider is configured. Connected models from My AI will be integrated through AI Center in P16.",
+        );
+        return;
+      }
+
       const activeMembers =
         ROLE_ORDER
           .map((role) =>
@@ -1381,11 +1388,12 @@ function AiCouncilPage({
     <section className="page-section council-page">
       <div className="page-heading">
         <div>
+          <p className="settings-kicker">AI 智囊团 · Decision support</p>
           <h1>
             AI Council
           </h1>
           <p>
-            Multiple specialised AI roles collaborate, critique and produce one final answer.
+            Bring the right perspectives together, surface disagreement, and turn them into one clear recommendation.
           </p>
         </div>
 
@@ -1404,7 +1412,7 @@ function AiCouncilPage({
               );
             }}
           >
-            Reset Members
+            Reset team
           </button>
 
           <button
@@ -1414,10 +1422,41 @@ function AiCouncilPage({
               persistMembers
             }
           >
-            Save Council
+            Save team
           </button>
         </div>
       </div>
+
+      <div className="council-process" aria-label="Council process">
+        {[
+          ["01", "Brief", "Define the decision"],
+          ["02", "Assemble", "Chief of Staff proposes expertise"],
+          ["03", "Discuss", "Experts challenge assumptions"],
+          ["04", "Synthesize", "One decision report"],
+        ].map(([index, title, description], stepIndex) => (
+          <div key={title} className={stepIndex === 0 ? "council-process-step council-process-active" : "council-process-step"}>
+            <span>{index}</span>
+            <strong>{title}</strong>
+            <small>{description}</small>
+          </div>
+        ))}
+      </div>
+
+      <div className="council-current-note">
+        <span>Current workflow</span>
+        <p>This build uses your saved specialist roles. Dynamic Chief of Staff team assembly is planned for P16.</p>
+      </div>
+
+      {configuredProviders.length === 0 && (
+        <div className="council-provider-notice" role="status">
+          <strong>Council provider setup required</strong>
+          <p>
+            AI Council currently uses the legacy MultiLLM execution path.
+            Models connected in My AI are already available to Chat and AI Arena,
+            but Council will move to the shared AI Center during P16.
+          </p>
+        </div>
+      )}
 
       <div className="council-members-grid">
         {members.map(
@@ -1495,6 +1534,11 @@ function AiCouncilPage({
                     )
                   }
                 >
+                  {providers.length === 0 && (
+                    <option value={member.providerId}>
+                      No legacy Council provider configured
+                    </option>
+                  )}
                   {providers.map(
                     (item) => (
                       <option
@@ -1704,31 +1748,31 @@ function AiCouncilPage({
                 active member(s)
               </span>
 
-              <button
-                type="button"
-                className="danger-button"
-                disabled={
-                  !isRunning
-                }
-                onClick={() => {
-                  void stopCouncil();
-                }}
-              >
-                Stop
-              </button>
+              {isRunning && (
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={() => {
+                    void stopCouncil();
+                  }}
+                >
+                  Stop
+                </button>
+              )}
 
               <button
                 type="button"
                 className="action-button"
                 disabled={
                   isRunning ||
-                  !prompt.trim()
+                  !prompt.trim() ||
+                  configuredProviders.length === 0
                 }
                 onClick={() => {
                   void runCouncil();
                 }}
               >
-                🏛 Run Council
+                Run Council
               </button>
             </div>
           </div>

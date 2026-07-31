@@ -1499,10 +1499,10 @@ function ArtifactsPage({
       <div className="page-heading">
         <div>
           <h1>
-            Artifacts Workspace
+            Artifacts
           </h1>
           <p>
-            Projects, generated code, documents, diagrams and local exports.
+            Everything AI‑OS creates, organised with its source and project context.
           </p>
         </div>
 
@@ -1514,7 +1514,7 @@ function ArtifactsPage({
               void importWorkspace();
             }}
           >
-            Import Workspace
+            Import
           </button>
 
           <button
@@ -1524,7 +1524,7 @@ function ArtifactsPage({
               void exportWorkspace();
             }}
           >
-            Export Workspace
+            Export
           </button>
 
           <button
@@ -1540,7 +1540,7 @@ function ArtifactsPage({
               );
             }}
           >
-            ＋ New Project
+            ＋ New project
           </button>
         </div>
       </div>

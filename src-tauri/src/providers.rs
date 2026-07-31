@@ -1,0 +1,1103 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
+use tauri::{AppHandle, Emitter};
+use tokio_util::sync::CancellationToken;
+
+const KEYCHAIN_SERVICE: &str = "com.ai-os.provider";
+const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25300;
+static AI_CENTER_REQUESTS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
+
+fn ai_center_requests() -> &'static Mutex<HashMap<String, CancellationToken>> {
+    AI_CENTER_REQUESTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderCredentialInput {
+    provider_instance_id: String,
+    secret: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderCredentialQuery {
+    provider_instance_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderCredentialStatus {
+    provider_instance_id: String,
+    has_credential: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderAdapterQuery {
+    provider_id: String,
+    provider_instance_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DiscoveredProviderModel {
+    id: String,
+    display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderAdapterResult {
+    provider_id: String,
+    level: String,
+    message: String,
+    models: Vec<DiscoveredProviderModel>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BeginOAuthInput {
+    provider_id: String,
+    provider_instance_id: String,
+    client_id: String,
+    authorization_url: String,
+    token_url: String,
+    redirect_uri: String,
+    scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BeginOAuthResult {
+    authorization_url: String,
+    state: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthSession {
+    provider_instance_id: String,
+    client_id: String,
+    token_url: String,
+    redirect_uri: String,
+    verifier: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompleteOAuthInput {
+    provider_id: String,
+    state: String,
+    code: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompleteOAuthResult {
+    provider_instance_id: String,
+    expires_at: Option<String>,
+    refreshable: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GenerateProviderResponseInput {
+    provider_id: String,
+    provider_instance_id: String,
+    model_id: String,
+    prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GenerateProviderResponseResult {
+    provider_id: String,
+    model_id: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StreamProviderResponseInput {
+    operation_id: String,
+    provider_id: String,
+    provider_instance_id: String,
+    model_id: String,
+    messages: Vec<ProviderChatMessage>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiCenterChunkEvent {
+    operation_id: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiCenterDoneEvent {
+    operation_id: String,
+    cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiCenterErrorEvent {
+    operation_id: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AuthStyle {
+    Bearer,
+    Anthropic,
+    Google,
+    None,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProviderAdapterSpec {
+    id: &'static str,
+    models_url: &'static str,
+    auth: AuthStyle,
+}
+
+fn adapter_spec(provider_id: &str) -> Result<ProviderAdapterSpec, String> {
+    match provider_id {
+        "openai" => Ok(ProviderAdapterSpec {
+            id: "openai",
+            models_url: "https://api.openai.com/v1/models",
+            auth: AuthStyle::Bearer,
+        }),
+        "anthropic" => Ok(ProviderAdapterSpec {
+            id: "anthropic",
+            models_url: "https://api.anthropic.com/v1/models",
+            auth: AuthStyle::Anthropic,
+        }),
+        "google" => Ok(ProviderAdapterSpec {
+            id: "google",
+            models_url: "https://generativelanguage.googleapis.com/v1beta/models",
+            auth: AuthStyle::Google,
+        }),
+        "grok" => Ok(ProviderAdapterSpec {
+            id: "grok",
+            models_url: "https://api.x.ai/v1/models",
+            auth: AuthStyle::Bearer,
+        }),
+        "deepseek" => Ok(ProviderAdapterSpec {
+            id: "deepseek",
+            models_url: "https://api.deepseek.com/v1/models",
+            auth: AuthStyle::Bearer,
+        }),
+        "ollama" => Ok(ProviderAdapterSpec {
+            id: "ollama",
+            models_url: "http://127.0.0.1:11434/api/tags",
+            auth: AuthStyle::None,
+        }),
+        _ => Err("this Provider does not have a native AI-OS Adapter yet".to_owned()),
+    }
+}
+
+fn validate_instance_id(value: &str) -> Result<&str, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 128 {
+        return Err("provider instance id is invalid".to_owned());
+    }
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
+    {
+        return Err("provider instance id contains unsupported characters".to_owned());
+    }
+    Ok(value)
+}
+
+#[cfg(target_os = "macos")]
+fn store_secret(account: &str, secret: &[u8]) -> Result<(), String> {
+    security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, account, secret)
+        .map_err(|_| "macOS Keychain could not store the Provider credential".to_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn store_secret(_account: &str, _secret: &[u8]) -> Result<(), String> {
+    Err("secure Provider credentials are not supported on this platform".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn secret_exists(account: &str) -> Result<bool, String> {
+    match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account) {
+        Ok(secret) => Ok(!secret.is_empty()),
+        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(false),
+        Err(_) => Err("macOS Keychain credential status is unavailable".to_owned()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_secret(account: &str) -> Result<Vec<u8>, String> {
+    security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account)
+        .map_err(|_| "Provider credential is missing from macOS Keychain".to_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_secret(_account: &str) -> Result<Vec<u8>, String> {
+    Err("secure Provider credentials are not supported on this platform".to_owned())
+}
+
+async fn refresh_oauth_token(account: &str, token: &Value) -> Result<Value, String> {
+    let refresh_token = token
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Provider account sign-in must be renewed".to_owned())?;
+    let metadata = token
+        .get("_aios")
+        .ok_or_else(|| "OAuth refresh metadata is missing".to_owned())?;
+    let token_url = metadata
+        .get("tokenUrl")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OAuth token URL is missing".to_owned())?;
+    let client_id = metadata
+        .get("clientId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OAuth client ID is missing".to_owned())?;
+    validate_https_url(token_url, "OAuth token URL")?;
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "AI-OS could not initialize OAuth refresh".to_owned())?
+        .post(token_url)
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", client_id),
+        ])
+        .send()
+        .await
+        .map_err(|_| "OAuth token service could not be reached".to_owned())?;
+    if !response.status().is_success() {
+        return Err("Provider account sign-in must be renewed".to_owned());
+    }
+    let refreshed: Value = response
+        .json()
+        .await
+        .map_err(|_| "OAuth provider returned an invalid refresh token".to_owned())?;
+    let mut merged = token.clone();
+    let object = merged
+        .as_object_mut()
+        .ok_or_else(|| "OAuth token record is invalid".to_owned())?;
+    if let Some(refreshed_object) = refreshed.as_object() {
+        for (key, value) in refreshed_object {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    let expires_at = refreshed
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .map(|seconds| (chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339());
+    if let Some(metadata) = object.get_mut("_aios").and_then(Value::as_object_mut) {
+        metadata.insert(
+            "expiresAt".to_owned(),
+            expires_at.map(Value::String).unwrap_or(Value::Null),
+        );
+    }
+    store_secret(
+        account,
+        &serde_json::to_vec(&merged)
+            .map_err(|_| "AI-OS could not secure the refreshed OAuth token".to_owned())?,
+    )?;
+    Ok(merged)
+}
+
+async fn read_current_access_token(account: &str) -> Result<String, String> {
+    let secret = read_secret(account)?;
+    let Ok(mut token) = serde_json::from_slice::<Value>(&secret) else {
+        return String::from_utf8(secret)
+            .map_err(|_| "Provider credential in Keychain is invalid".to_owned());
+    };
+    let should_refresh = token
+        .pointer("/_aios/expiresAt")
+        .and_then(Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|expires_at| {
+            expires_at.with_timezone(&chrono::Utc)
+                <= chrono::Utc::now() + chrono::Duration::seconds(60)
+        })
+        .unwrap_or(false);
+    if should_refresh {
+        token = refresh_oauth_token(account, &token).await?;
+    }
+    token
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "OAuth response did not contain an access token".to_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn secret_exists(_account: &str) -> Result<bool, String> {
+    Err("secure Provider credentials are not supported on this platform".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn remove_secret(account: &str) -> Result<(), String> {
+    match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, account) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(()),
+        Err(_) => Err("macOS Keychain could not remove the Provider credential".to_owned()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn remove_secret(_account: &str) -> Result<(), String> {
+    Err("secure Provider credentials are not supported on this platform".to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn set_provider_credential(
+    input: ProviderCredentialInput,
+) -> Result<ProviderCredentialStatus, String> {
+    let account = validate_instance_id(&input.provider_instance_id)?;
+    if input.secret.trim().is_empty() {
+        return Err("provider credential must not be empty".to_owned());
+    }
+
+    store_secret(account, input.secret.as_bytes())?;
+    Ok(ProviderCredentialStatus {
+        provider_instance_id: account.to_owned(),
+        has_credential: true,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn get_provider_credential_status(
+    query: ProviderCredentialQuery,
+) -> Result<ProviderCredentialStatus, String> {
+    let account = validate_instance_id(&query.provider_instance_id)?;
+    Ok(ProviderCredentialStatus {
+        provider_instance_id: account.to_owned(),
+        has_credential: secret_exists(account)?,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn delete_provider_credential(
+    query: ProviderCredentialQuery,
+) -> Result<ProviderCredentialStatus, String> {
+    let account = validate_instance_id(&query.provider_instance_id)?;
+    remove_secret(account)?;
+    Ok(ProviderCredentialStatus {
+        provider_instance_id: account.to_owned(),
+        has_credential: false,
+    })
+}
+
+fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProviderModel>, String> {
+    let items = body
+        .get(if matches!(provider_id, "ollama" | "google") {
+            "models"
+        } else {
+            "data"
+        })
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Provider returned an invalid model list".to_owned())?;
+
+    let mut models: Vec<DiscoveredProviderModel> = items
+        .iter()
+        .filter_map(|item| {
+            let id = if provider_id == "ollama" {
+                item.get("model")
+                    .or_else(|| item.get("name"))
+                    .and_then(Value::as_str)
+            } else if provider_id == "google" {
+                item.get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| name.strip_prefix("models/").unwrap_or(name))
+            } else {
+                item.get("id").and_then(Value::as_str)
+            }?;
+            let display_name = item
+                .get("display_name")
+                .or_else(|| item.get("displayName"))
+                .and_then(Value::as_str)
+                .unwrap_or(id);
+            Some(DiscoveredProviderModel {
+                id: id.to_owned(),
+                display_name: display_name.to_owned(),
+            })
+        })
+        .collect();
+    models.sort_by(|left, right| left.id.cmp(&right.id));
+    models.dedup_by(|left, right| left.id == right.id);
+    Ok(models)
+}
+
+async fn discover_models(
+    query: &ProviderAdapterQuery,
+) -> Result<Vec<DiscoveredProviderModel>, String> {
+    let instance_id = validate_instance_id(&query.provider_instance_id)?;
+    let spec = adapter_spec(query.provider_id.trim())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|_| "AI-OS could not initialize the Provider connection".to_owned())?;
+    let mut request = client.get(spec.models_url);
+
+    if !matches!(spec.auth, AuthStyle::None) {
+        let secret = read_current_access_token(instance_id).await?;
+        request = match spec.auth {
+            AuthStyle::Bearer => request.bearer_auth(secret),
+            AuthStyle::Anthropic => request
+                .header("x-api-key", secret)
+                .header("anthropic-version", "2023-06-01"),
+            AuthStyle::Google => request.header("x-goog-api-key", secret),
+            AuthStyle::None => request,
+        };
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|_| format!("{} could not be reached", spec.id))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            401 | 403 => "Provider rejected this credential".to_owned(),
+            429 => "Provider rate limit reached; try again shortly".to_owned(),
+            _ => format!("Provider connection failed with status {}", status.as_u16()),
+        });
+    }
+    let body = response
+        .json::<Value>()
+        .await
+        .map_err(|_| "Provider returned an unreadable model list".to_owned())?;
+    parse_models(spec.id, body)
+}
+
+fn validate_https_url(value: &str, label: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(value).map_err(|_| format!("{label} is invalid"))?;
+    if parsed.scheme() != "https" {
+        return Err(format!("{label} must use HTTPS"));
+    }
+    Ok(parsed)
+}
+
+fn oauth_session_account(provider_id: &str, state: &str) -> String {
+    format!("oauth.{provider_id}.{state}")
+}
+
+#[tauri::command]
+pub(crate) fn begin_provider_oauth(input: BeginOAuthInput) -> Result<BeginOAuthResult, String> {
+    let instance_id = validate_instance_id(&input.provider_instance_id)?;
+    let provider_id = input.provider_id.trim();
+    adapter_spec(provider_id)?;
+    if input.client_id.trim().is_empty() {
+        return Err("OAuth client ID is not configured".to_owned());
+    }
+    let mut authorization_url =
+        validate_https_url(&input.authorization_url, "OAuth authorization URL")?;
+    validate_https_url(&input.token_url, "OAuth token URL")?;
+    let redirect_uri = url::Url::parse(&input.redirect_uri)
+        .map_err(|_| "OAuth redirect URI is invalid".to_owned())?;
+    if !matches!(redirect_uri.scheme(), "https" | "http") {
+        return Err("OAuth redirect URI must use HTTP or HTTPS".to_owned());
+    }
+
+    let state = uuid::Uuid::new_v4().simple().to_string();
+    let verifier = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let session = OAuthSession {
+        provider_instance_id: instance_id.to_owned(),
+        client_id: input.client_id.trim().to_owned(),
+        token_url: input.token_url,
+        redirect_uri: input.redirect_uri,
+        verifier,
+    };
+    let session_bytes = serde_json::to_vec(&session)
+        .map_err(|_| "AI-OS could not create the OAuth session".to_owned())?;
+    store_secret(&oauth_session_account(provider_id, &state), &session_bytes)?;
+
+    authorization_url
+        .query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", &session.client_id)
+        .append_pair("redirect_uri", &session.redirect_uri)
+        .append_pair("scope", &input.scopes.join(" "))
+        .append_pair("state", &state)
+        .append_pair("code_challenge", &challenge)
+        .append_pair("code_challenge_method", "S256");
+
+    Ok(BeginOAuthResult {
+        authorization_url: authorization_url.to_string(),
+        state,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn complete_provider_oauth(
+    input: CompleteOAuthInput,
+) -> Result<CompleteOAuthResult, String> {
+    let provider_id = input.provider_id.trim();
+    adapter_spec(provider_id)?;
+    if input.code.trim().is_empty() || input.state.trim().is_empty() {
+        return Err("OAuth callback is incomplete".to_owned());
+    }
+    let session_account = oauth_session_account(provider_id, input.state.trim());
+    let session: OAuthSession = serde_json::from_slice(&read_secret(&session_account)?)
+        .map_err(|_| "OAuth session is invalid or expired".to_owned())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "AI-OS could not initialize the OAuth connection".to_owned())?;
+    let response = client
+        .post(&session.token_url)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", session.client_id.as_str()),
+            ("code", input.code.trim()),
+            ("redirect_uri", session.redirect_uri.as_str()),
+            ("code_verifier", session.verifier.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|_| "OAuth token service could not be reached".to_owned())?;
+    if !response.status().is_success() {
+        return Err("OAuth provider rejected the authorization code".to_owned());
+    }
+    let mut token: Value = response
+        .json()
+        .await
+        .map_err(|_| "OAuth provider returned an invalid token".to_owned())?;
+    token
+        .get("access_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OAuth response did not contain an access token".to_owned())?;
+    let expires_at = token
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .map(|seconds| (chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339());
+    token
+        .as_object_mut()
+        .ok_or_else(|| "OAuth provider returned an invalid token".to_owned())?
+        .insert(
+            "_aios".to_owned(),
+            serde_json::json!({
+                "clientId": session.client_id,
+                "tokenUrl": session.token_url,
+                "expiresAt": expires_at.clone(),
+            }),
+        );
+    let stored = serde_json::to_vec(&token)
+        .map_err(|_| "AI-OS could not secure the OAuth token".to_owned())?;
+    store_secret(&session.provider_instance_id, &stored)?;
+    remove_secret(&session_account)?;
+    Ok(CompleteOAuthResult {
+        provider_instance_id: session.provider_instance_id,
+        expires_at,
+        refreshable: token.get("refresh_token").is_some(),
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn discover_provider_models(
+    query: ProviderAdapterQuery,
+) -> Result<ProviderAdapterResult, String> {
+    let models = discover_models(&query).await?;
+    Ok(ProviderAdapterResult {
+        provider_id: query.provider_id,
+        level: "live".to_owned(),
+        message: format!("Connection tested. {} models found.", models.len()),
+        models,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn test_provider_connection(
+    query: ProviderAdapterQuery,
+) -> Result<ProviderAdapterResult, String> {
+    discover_provider_models(query).await
+}
+
+fn validate_model_id(value: &str) -> Result<&str, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 200 {
+        return Err("model ID is invalid".to_owned());
+    }
+    if value.chars().any(|character| {
+        character.is_control() || character.is_whitespace() || "?#".contains(character)
+    }) {
+        return Err("model ID contains unsupported characters".to_owned());
+    }
+    Ok(value)
+}
+
+fn extract_openai_response_text(body: &Value) -> Option<String> {
+    if let Some(text) = body.get("output_text").and_then(Value::as_str) {
+        return Some(text.to_owned());
+    }
+    body.get("output")
+        .and_then(Value::as_array)?
+        .iter()
+        .flat_map(|item| {
+            item.get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .find_map(|content| content.get("text").and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+#[tauri::command]
+pub(crate) async fn generate_provider_response(
+    input: GenerateProviderResponseInput,
+) -> Result<GenerateProviderResponseResult, String> {
+    let instance_id = validate_instance_id(&input.provider_instance_id)?;
+    let provider_id = input.provider_id.trim();
+    let model_id = validate_model_id(&input.model_id)?;
+    let prompt = input.prompt.trim();
+    if prompt.is_empty() || prompt.len() > 100_000 {
+        return Err("message is empty or too large".to_owned());
+    }
+    let spec = adapter_spec(provider_id)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
+    let secret = if matches!(spec.auth, AuthStyle::None) {
+        None
+    } else {
+        Some(read_current_access_token(instance_id).await?)
+    };
+
+    let (mut request, body) = match provider_id {
+        "openai" => (
+            client.post("https://api.openai.com/v1/responses"),
+            serde_json::json!({"model": model_id, "input": prompt}),
+        ),
+        "anthropic" => (
+            client.post("https://api.anthropic.com/v1/messages"),
+            serde_json::json!({
+                "model": model_id,
+                "max_tokens": 2048,
+                "messages": [{"role": "user", "content": prompt}]
+            }),
+        ),
+        "google" => (
+            client.post(format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent"
+            )),
+            serde_json::json!({"contents": [{"parts": [{"text": prompt}]}]}),
+        ),
+        "grok" => (
+            client.post("https://api.x.ai/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}]
+            }),
+        ),
+        "deepseek" => (
+            client.post("https://api.deepseek.com/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}]
+            }),
+        ),
+        "ollama" => (
+            client.post("http://127.0.0.1:11434/api/chat"),
+            serde_json::json!({
+                "model": model_id,
+                "stream": false,
+                "messages": [{"role": "user", "content": prompt}]
+            }),
+        ),
+        _ => return Err("this Provider cannot answer through AI Center yet".to_owned()),
+    };
+
+    if let Some(secret) = secret {
+        request = match spec.auth {
+            AuthStyle::Bearer => request.bearer_auth(secret),
+            AuthStyle::Anthropic => request
+                .header("x-api-key", secret)
+                .header("anthropic-version", "2023-06-01"),
+            AuthStyle::Google => request.header("x-goog-api-key", secret),
+            AuthStyle::None => request,
+        };
+    }
+    let response = request
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "AI Center could not reach the selected Provider".to_owned())?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            401 | 403 => "The selected Provider needs to be reconnected".to_owned(),
+            429 => "The selected Provider is busy or rate limited".to_owned(),
+            _ => format!("The selected Provider returned status {}", status.as_u16()),
+        });
+    }
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|_| "The selected Provider returned an unreadable response".to_owned())?;
+    let text = match provider_id {
+        "openai" => extract_openai_response_text(&body),
+        "anthropic" => body
+            .pointer("/content/0/text")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "google" => body
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "ollama" => body
+            .pointer("/message/content")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        _ => body
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
+    .filter(|text| !text.trim().is_empty())
+    .ok_or_else(|| "The selected Provider returned no text".to_owned())?;
+
+    Ok(GenerateProviderResponseResult {
+        provider_id: provider_id.to_owned(),
+        model_id: model_id.to_owned(),
+        text,
+    })
+}
+
+fn stream_text(provider_id: &str, value: &Value) -> Option<String> {
+    match provider_id {
+        "openai" => value
+            .get("delta")
+            .and_then(Value::as_str)
+            .filter(|_| {
+                value.get("type").and_then(Value::as_str) == Some("response.output_text.delta")
+            })
+            .map(str::to_owned),
+        "anthropic" => value
+            .pointer("/delta/text")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "google" => value
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "ollama" => value
+            .pointer("/message/content")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        _ => value
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn start_provider_response_stream(
+    app: AppHandle,
+    input: StreamProviderResponseInput,
+) -> Result<(), String> {
+    let operation_id = validate_instance_id(input.operation_id.trim())?.to_owned();
+    let instance_id = validate_instance_id(&input.provider_instance_id)?;
+    let provider_id = input.provider_id.trim();
+    let model_id = validate_model_id(&input.model_id)?;
+    if input.messages.is_empty() || input.messages.len() > 100 {
+        return Err("conversation is empty or too long".to_owned());
+    }
+    let total_chars: usize = input
+        .messages
+        .iter()
+        .map(|message| message.content.len())
+        .sum();
+    if total_chars > 200_000
+        || input.messages.iter().any(|message| {
+            !matches!(message.role.as_str(), "user" | "assistant")
+                || message.content.trim().is_empty()
+        })
+    {
+        return Err("conversation contains invalid messages".to_owned());
+    }
+    let messages = &input.messages;
+    let spec = adapter_spec(provider_id)?;
+    let token = CancellationToken::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
+    let secret = if matches!(spec.auth, AuthStyle::None) {
+        None
+    } else {
+        Some(read_current_access_token(instance_id).await?)
+    };
+    let (mut request, body) = match provider_id {
+        "openai" => (
+            client.post("https://api.openai.com/v1/responses"),
+            serde_json::json!({"model": model_id, "input": messages, "stream": true}),
+        ),
+        "anthropic" => (
+            client.post("https://api.anthropic.com/v1/messages"),
+            serde_json::json!({
+                "model": model_id, "max_tokens": 2048, "stream": true,
+                "messages": messages
+            }),
+        ),
+        "google" => (
+            client.post(format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:streamGenerateContent?alt=sse"
+            )),
+            serde_json::json!({
+                "contents": messages.iter().map(|message| serde_json::json!({
+                    "role": if message.role == "assistant" { "model" } else { "user" },
+                    "parts": [{"text": message.content}]
+                })).collect::<Vec<_>>()
+            }),
+        ),
+        "grok" => (
+            client.post("https://api.x.ai/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id, "stream": true,
+                "messages": messages
+            }),
+        ),
+        "deepseek" => (
+            client.post("https://api.deepseek.com/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id, "stream": true,
+                "messages": messages
+            }),
+        ),
+        "ollama" => (
+            client.post("http://127.0.0.1:11434/api/chat"),
+            serde_json::json!({
+                "model": model_id, "stream": true,
+                "messages": messages
+            }),
+        ),
+        _ => return Err("this Provider cannot stream through AI Center yet".to_owned()),
+    };
+    if let Some(secret) = secret {
+        request = match spec.auth {
+            AuthStyle::Bearer => request.bearer_auth(secret),
+            AuthStyle::Anthropic => request
+                .header("x-api-key", secret)
+                .header("anthropic-version", "2023-06-01"),
+            AuthStyle::Google => request.header("x-goog-api-key", secret),
+            AuthStyle::None => request,
+        };
+    }
+    ai_center_requests()
+        .lock()
+        .map_err(|_| "AI Center request state is unavailable".to_owned())?
+        .insert(operation_id.clone(), token.clone());
+
+    let response = tokio::select! {
+        _ = token.cancelled() => {
+            ai_center_requests().lock().ok().map(|mut map| map.remove(&operation_id));
+            let _ = app.emit("ai-center://done", AiCenterDoneEvent {
+                operation_id: operation_id.clone(), cancelled: true
+            });
+            return Ok(());
+        }
+        response = request.json(&body).send() => {
+            match response {
+                Ok(response) => response,
+                Err(_) => {
+                    ai_center_requests().lock().ok().map(|mut map| map.remove(&operation_id));
+                    let message = "AI Center could not reach the selected Provider".to_owned();
+                    let _ = app.emit("ai-center://error", AiCenterErrorEvent {
+                        operation_id: operation_id.clone(),
+                        message: message.clone(),
+                    });
+                    return Err(message);
+                }
+            }
+        }
+    };
+    if !response.status().is_success() {
+        let message = match response.status().as_u16() {
+            401 | 403 => "The selected Provider needs to be reconnected",
+            429 => "The selected Provider is busy or rate limited",
+            _ => "The selected Provider rejected the streaming request",
+        }
+        .to_owned();
+        let _ = app.emit(
+            "ai-center://error",
+            AiCenterErrorEvent {
+                operation_id: operation_id.clone(),
+                message: message.clone(),
+            },
+        );
+        ai_center_requests()
+            .lock()
+            .ok()
+            .map(|mut map| map.remove(&operation_id));
+        return Err(message);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut cancelled = false;
+    loop {
+        let next = tokio::select! {
+            _ = token.cancelled() => {
+                cancelled = true;
+                None
+            }
+            item = stream.next() => item
+        };
+        let Some(item) = next else { break };
+        let bytes = match item {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let _ = app.emit(
+                    "ai-center://error",
+                    AiCenterErrorEvent {
+                        operation_id: operation_id.clone(),
+                        message: "The Provider stream was interrupted".to_owned(),
+                    },
+                );
+                break;
+            }
+        };
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(position) = buffer.find('\n') {
+            let line = buffer[..position].trim().to_owned();
+            buffer.drain(..=position);
+            let data = if provider_id == "ollama" {
+                line.as_str()
+            } else {
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                data.trim()
+            };
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<Value>(data) {
+                if let Some(text) = stream_text(provider_id, &value) {
+                    let _ = app.emit(
+                        "ai-center://chunk",
+                        AiCenterChunkEvent {
+                            operation_id: operation_id.clone(),
+                            text,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    ai_center_requests()
+        .lock()
+        .ok()
+        .map(|mut map| map.remove(&operation_id));
+    let _ = app.emit(
+        "ai-center://done",
+        AiCenterDoneEvent {
+            operation_id,
+            cancelled,
+        },
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn cancel_provider_response_stream(operation_id: String) -> Result<(), String> {
+    let operation_id = validate_instance_id(operation_id.trim())?;
+    if let Some(token) = ai_center_requests()
+        .lock()
+        .map_err(|_| "AI Center request state is unavailable".to_owned())?
+        .get(operation_id)
+        .cloned()
+    {
+        token.cancel();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_instance_ids_are_bounded_and_path_free() {
+        assert_eq!(
+            validate_instance_id("grok-personal").unwrap(),
+            "grok-personal"
+        );
+        assert!(validate_instance_id("../secret").is_err());
+        assert!(validate_instance_id("").is_err());
+    }
+
+    #[test]
+    fn parses_openai_and_ollama_model_lists() {
+        let openai =
+            parse_models("openai", serde_json::json!({"data": [{"id": "gpt-test"}]})).unwrap();
+        assert_eq!(openai[0].id, "gpt-test");
+
+        let ollama = parse_models(
+            "ollama",
+            serde_json::json!({"models": [{"name": "qwen:test"}]}),
+        )
+        .unwrap();
+        assert_eq!(ollama[0].id, "qwen:test");
+    }
+
+    #[test]
+    fn pkce_rejects_insecure_provider_endpoints() {
+        assert!(validate_https_url("http://example.com/oauth", "OAuth URL").is_err());
+    }
+
+    #[test]
+    fn extracts_text_from_responses_api_output() {
+        let body = serde_json::json!({
+            "output": [{"content": [{"type": "output_text", "text": "hello"}]}]
+        });
+        assert_eq!(
+            extract_openai_response_text(&body).as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn extracts_stream_text_for_supported_protocols() {
+        assert_eq!(
+            stream_text(
+                "openai",
+                &serde_json::json!({
+                    "type": "response.output_text.delta",
+                    "delta": "A"
+                })
+            )
+            .as_deref(),
+            Some("A")
+        );
+        assert_eq!(
+            stream_text("ollama", &serde_json::json!({"message": {"content": "B"}})).as_deref(),
+            Some("B")
+        );
+    }
+}

@@ -9,6 +9,7 @@ import {
 } from "../config/constants";
 
 import type {
+  PageName,
   Settings,
   ThemeMode,
 } from "../types/index";
@@ -25,6 +26,7 @@ type SettingsPageProps = {
   ) => void;
 
   onReset: () => void;
+  onOpenSection: (page: PageName) => void;
 };
 
 function SettingsPage({
@@ -32,17 +34,19 @@ function SettingsPage({
   cardStyle,
   onUpdateSetting,
   onReset,
+  onOpenSection,
 }: SettingsPageProps) {
   return (
     <section className="page-section">
-      <div className="section-header">
+      <div className="page-heading settings-page-heading">
         <div>
-          <h2>Settings</h2>
+          <p className="settings-kicker">Workspace controls</p>
+          <h1>Settings</h1>
 
           <p>
-            Configure service URLs,
-            refresh behavior, logs,
-            backups and appearance.
+            Manage your AI, Agents,
+            tools, privacy and advanced
+            system controls.
           </p>
         </div>
 
@@ -51,8 +55,35 @@ function SettingsPage({
           className="secondary-button"
           onClick={onReset}
         >
-          Reset Defaults
+          Reset defaults
         </button>
+      </div>
+
+      <div className="settings-management-grid">
+        {[
+          ["My AI", "Providers, accounts and models", "My AI"],
+          ["Agents", "OpenClaw, Hermes and custom agents", "Agents"],
+          ["Skills", "MCP servers and tool connections", "MCP"],
+          ["Runtime", "Services, health and local execution", "Services"],
+          ["OpenClaw", "Gateway connections and permissions", "OpenClaw"],
+          ["Local models", "Ollama models on this Mac", "Models"],
+          ["Backups", "Create, restore and manage backups", "Backup"],
+          ["Logs", "Diagnostics and activity records", "Logs"],
+          ["Advanced AI", "Routing and multi-model controls", "MultiLLM"],
+          ["Prompts", "Reusable prompt library", "Prompt Library"],
+          ["System overview", "Metrics and service status", "Dashboard"],
+        ].map(([title, description, page]) => (
+          <button
+            key={title}
+            type="button"
+            className="settings-management-card"
+            onClick={() => onOpenSection(page as PageName)}
+          >
+            <span>{title}</span>
+            <small>{description}</small>
+            <strong>→</strong>
+          </button>
+        ))}
       </div>
 
       <div className="settings-layout">

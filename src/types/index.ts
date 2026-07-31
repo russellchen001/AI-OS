@@ -18,6 +18,8 @@ export type Service = {
 };
 
 export type PageName =
+  | "Chat"
+  | "My AI"
   | "Dashboard"
   | "Services"
   | "OpenClaw"
@@ -29,6 +31,8 @@ export type PageName =
   | "Prompt Library"
   | "Artifacts"
   | "AI Council"
+  | "AI Arena"
+  | "Agents"
   | "Settings";
 
 export type ThemeMode =

@@ -88,7 +88,7 @@ Frames: Council home; decision brief; Chief of Staff clarification; proposed dyn
 
 ### AI Arena / AI 竞技场
 
-Home and setup frames cover all modes: Compare, Debate, Collaboration, Competition, Role Play, Game, Simulation. For each mode show objective, participant/role/model setup, rules, rounds, judging/voting, audience/user participation, cost limit, and stopping conditions.
+Home and setup frames cover all modes: Compare, Debate, Collaboration, Competition, Role Play, Game, Simulation. For each mode show objective, variable participant-count roster, participant role/model selection, independent or team grouping, rules, rounds, judging/voting, audience/user participation, cost limit, and stopping conditions. Include 1v1, 1v1v1, 2v2, free-for-all, uneven-team, and custom-formation examples; presets must remain editable rather than define fixed architecture.
 
 Live frames cover stage, participant state, current turn, event/timeline, private-information treatment, moderation, user/audience action, vote/score, pause/stop, and connection failure. Result frames cover winner/outcome where applicable, score rubric, disagreement, cost/latency, replay, reproducible configuration, clone/rematch, and history. Include Werewolf as one social-deduction template; its role secrecy and phase flow demonstrate extensibility but do not define the underlying architecture.
 

@@ -1,4 +1,5 @@
 mod backup;
+mod conversations;
 mod health;
 mod logs;
 mod mcp;
@@ -6,6 +7,7 @@ mod models;
 mod multillm;
 mod openclaw;
 pub mod planner;
+mod providers;
 mod runtime;
 mod task_execution;
 pub mod task_plan_orchestration;
@@ -124,6 +126,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             system_metrics,
+            conversations::list_native_conversations,
+            conversations::save_native_conversation,
+            conversations::delete_native_conversation,
+            conversations::import_native_conversations,
             health::health_check,
             backup::create_backup,
             backup::cancel_backup,
@@ -167,6 +173,21 @@ pub fn run() {
             runtime::bulk::start_runtime_bulk_operation,
             runtime::ipc::get_runtime_operation,
             runtime::ipc::cancel_runtime_operation,
+            task_execution::submit_chat_task,
+            task_execution::start_chat_task_execution,
+            task_execution::complete_chat_task_execution,
+            task_execution::fail_chat_task_execution,
+            task_execution::execute_chat_work_task,
+            providers::set_provider_credential,
+            providers::get_provider_credential_status,
+            providers::delete_provider_credential,
+            providers::discover_provider_models,
+            providers::test_provider_connection,
+            providers::begin_provider_oauth,
+            providers::complete_provider_oauth,
+            providers::generate_provider_response,
+            providers::start_provider_response_stream,
+            providers::cancel_provider_response_stream,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

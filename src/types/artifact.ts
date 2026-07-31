@@ -19,6 +19,7 @@ export type ArtifactSource =
   | "Compare"
   | "Router"
   | "Council"
+  | "Chat"
   | "MultiLLM"
   | "Manual"
   | "Imported";

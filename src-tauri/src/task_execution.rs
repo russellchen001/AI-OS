@@ -1,18 +1,20 @@
 use crate::{
-    planner::InMemoryPlanRepository,
+    planner::{InMemoryPlanRepository, PlanRepository, PlanStep, PlannerService},
     runtime::{
         executor::{OperationEventEmitter, RuntimeExecutionState},
         plan_runtime_bridge::{PlanRuntimeExecutor, RuntimeBackedPlanExecutor},
     },
     task_engine::{
-        InMemoryTaskEventBus, InMemoryTaskRepository, TaskId, TaskLifecycleManager, TaskRepository,
-        TaskRepositoryError,
+        InMemoryTaskEventBus, InMemoryTaskRepository, Task, TaskId, TaskLifecycleManager,
+        TaskRepository, TaskRepositoryError, TaskStatus, TaskType,
     },
     task_plan_orchestration::{
         TaskPlanExecutionOrchestrator, TaskPlanExecutionStart, TaskPlanOrchestrationError,
     },
 };
+use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt, sync::Arc};
+use tauri::State;
 
 /// Process-local P11 composition. Task and Plan state is intentionally lost when
 /// the application exits; persistent repositories are deferred beyond P11.
@@ -38,6 +40,265 @@ impl TaskExecutionState {
     fn plan_repository(&self) -> Arc<InMemoryPlanRepository> {
         Arc::clone(&self.plans)
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubmitChatTaskRequest {
+    prompt: String,
+    task_type: TaskType,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubmitChatTaskResponse {
+    task_id: String,
+    status: TaskStatus,
+    task_type: TaskType,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChatTaskLifecycleInput {
+    task_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompleteChatTaskInput {
+    task_id: String,
+    provider_id: String,
+    model_id: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FailChatTaskInput {
+    task_id: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExecuteWorkTaskInput {
+    task_id: String,
+    agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExecuteWorkTaskResponse {
+    task_id: String,
+    plan_id: String,
+    agent_id: String,
+    status: TaskStatus,
+    output: Option<serde_json::Value>,
+}
+
+fn resolve_chat_task_id(
+    state: &TaskExecutionState,
+    task_id: &str,
+) -> Result<crate::task_engine::domain::TaskId, String> {
+    state
+        .lifecycle
+        .list()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|task| task.id.as_str() == task_id)
+        .map(|task| task.id)
+        .ok_or_else(|| "chat Task was not found".to_owned())
+}
+
+fn transition_chat_task(
+    state: &TaskExecutionState,
+    task_id: &str,
+    statuses: &[TaskStatus],
+) -> Result<SubmitChatTaskResponse, String> {
+    let task_id = resolve_chat_task_id(state, task_id)?;
+    let mut task = None;
+    for status in statuses {
+        task = Some(
+            state
+                .lifecycle
+                .transition(&task_id, *status)
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    let task = task.ok_or_else(|| "chat Task transition is empty".to_owned())?;
+    Ok(SubmitChatTaskResponse {
+        task_id: task.id.to_string(),
+        status: task.status,
+        task_type: task.task_type,
+    })
+}
+
+fn store_chat_task_result(
+    state: &TaskExecutionState,
+    task_id: &str,
+    result: serde_json::Value,
+) -> Result<(), String> {
+    let task_id = resolve_chat_task_id(state, task_id)?;
+    let mut task = state
+        .lifecycle
+        .get(&task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "chat Task was not found".to_owned())?;
+    task.result = Some(result);
+    state.tasks.update(task).map_err(|error| error.to_string())
+}
+
+fn submit_chat_task_inner(
+    state: &TaskExecutionState,
+    request: SubmitChatTaskRequest,
+) -> Result<SubmitChatTaskResponse, String> {
+    let task = Task::new(request.task_type, request.prompt).map_err(|error| error.to_string())?;
+    let task_id = state
+        .lifecycle
+        .create(task)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .lifecycle
+        .transition(&task_id, TaskStatus::Understanding)
+        .map_err(|error| error.to_string())?;
+
+    let next = match request.task_type {
+        TaskType::Ask => TaskStatus::Ready,
+        TaskType::Do => TaskStatus::Planning,
+    };
+    let task = state
+        .lifecycle
+        .transition(&task_id, next)
+        .map_err(|error| error.to_string())?;
+
+    Ok(SubmitChatTaskResponse {
+        task_id: task.id.to_string(),
+        status: task.status,
+        task_type: task.task_type,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn submit_chat_task(
+    request: SubmitChatTaskRequest,
+    state: State<'_, TaskExecutionState>,
+) -> Result<SubmitChatTaskResponse, String> {
+    submit_chat_task_inner(&state, request)
+}
+
+#[tauri::command]
+pub(crate) fn start_chat_task_execution(
+    state: tauri::State<'_, TaskExecutionState>,
+    input: ChatTaskLifecycleInput,
+) -> Result<SubmitChatTaskResponse, String> {
+    transition_chat_task(&state, input.task_id.trim(), &[TaskStatus::Executing])
+}
+
+#[tauri::command]
+pub(crate) fn complete_chat_task_execution(
+    state: tauri::State<'_, TaskExecutionState>,
+    input: CompleteChatTaskInput,
+) -> Result<SubmitChatTaskResponse, String> {
+    transition_chat_task(&state, input.task_id.trim(), &[TaskStatus::Verifying])?;
+    store_chat_task_result(
+        &state,
+        input.task_id.trim(),
+        serde_json::json!({
+            "kind": "ai-center-answer",
+            "providerId": input.provider_id,
+            "modelId": input.model_id,
+            "text": input.text,
+        }),
+    )?;
+    transition_chat_task(&state, input.task_id.trim(), &[TaskStatus::Completed])
+}
+
+#[tauri::command]
+pub(crate) fn fail_chat_task_execution(
+    state: tauri::State<'_, TaskExecutionState>,
+    input: FailChatTaskInput,
+) -> Result<SubmitChatTaskResponse, String> {
+    let response = transition_chat_task(&state, input.task_id.trim(), &[TaskStatus::Failed])?;
+    store_chat_task_result(
+        &state,
+        input.task_id.trim(),
+        serde_json::json!({
+            "kind": "ai-center-error",
+            "reason": input.reason,
+        }),
+    )?;
+    Ok(response)
+}
+
+#[tauri::command]
+pub(crate) fn execute_chat_work_task(
+    state: tauri::State<'_, TaskExecutionState>,
+    input: ExecuteWorkTaskInput,
+) -> Result<ExecuteWorkTaskResponse, String> {
+    let agent_id = input.agent_id.trim();
+    if agent_id != "openclaw" {
+        return Err("The selected Agent does not have a Runtime Adapter yet".to_owned());
+    }
+    let task_id = resolve_chat_task_id(&state, input.task_id.trim())?;
+    let task = state
+        .tasks
+        .get(&task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "chat Task was not found".to_owned())?;
+    if task.task_type != TaskType::Do || task.status != TaskStatus::Planning {
+        return Err("Only a planning Work task can be sent to an Agent".to_owned());
+    }
+
+    let planner = PlannerService::new(Arc::clone(&state.tasks), Arc::clone(&state.plans));
+    let mut plan = planner
+        .create_plan(&task_id, task.intent.clone())
+        .map_err(|error| error.to_string())?;
+    let mut step = PlanStep::new("Execute with OpenClaw", "sessions.create")
+        .map_err(|error| error.to_string())?
+        .with_description("Send the requested outcome through the selected Agent Runtime.");
+    step.input
+        .insert("message".to_owned(), serde_json::Value::String(task.intent));
+    step.input.insert(
+        "agentId".to_owned(),
+        serde_json::Value::String(agent_id.to_owned()),
+    );
+    step.input.insert(
+        "label".to_owned(),
+        serde_json::Value::String("AI-OS Work".to_owned()),
+    );
+    step.input.insert(
+        "idempotencyKey".to_owned(),
+        serde_json::Value::String(format!("ai-os-{}", task_id)),
+    );
+    plan.add_step(step).map_err(|error| error.to_string())?;
+    state
+        .plans
+        .update(plan.clone())
+        .map_err(|error| error.to_string())?;
+    let plan = planner
+        .validate_plan(&plan.id)
+        .map_err(|error| error.to_string())?;
+    planner
+        .activate_plan(&task_id, &plan.id)
+        .map_err(|error| error.to_string())?;
+    let execution = state
+        .service()
+        .execute_task(&task_id)
+        .map_err(|error| error.to_string())?;
+    let output = execution
+        .plan
+        .steps
+        .last()
+        .and_then(|step| step.output.clone());
+
+    Ok(ExecuteWorkTaskResponse {
+        task_id: execution.task.id.to_string(),
+        plan_id: execution.plan.id.to_string(),
+        agent_id: agent_id.to_owned(),
+        status: execution.task.status,
+        output,
+    })
 }
 
 pub(crate) struct TaskExecutionService {
@@ -156,6 +417,101 @@ mod tests {
         assert!(Arc::ptr_eq(&state.tasks, &state.task_repository()));
         assert!(Arc::ptr_eq(&state.plans, &state.plan_repository()));
         let _ = state.service();
+    }
+
+    #[test]
+    fn submit_chat_task_creates_ask_task_ready_for_ai_center() {
+        let state = build_task_execution_state(
+            RuntimeExecutionState::default(),
+            Arc::new(RecordingEmitter::default()),
+        );
+
+        let response = submit_chat_task_inner(
+            &state,
+            SubmitChatTaskRequest {
+                prompt: "Explain this file".to_owned(),
+                task_type: TaskType::Ask,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.status, TaskStatus::Ready);
+        assert_eq!(response.task_type, TaskType::Ask);
+        let stored = state.task_repository().list().unwrap();
+        assert!(stored
+            .iter()
+            .any(|task| task.id.to_string() == response.task_id));
+    }
+
+    #[test]
+    fn ask_task_reaches_completed_after_ai_center_answer() {
+        let state = build_task_execution_state(
+            RuntimeExecutionState::default(),
+            Arc::new(RecordingEmitter::default()),
+        );
+        let submitted = submit_chat_task_inner(
+            &state,
+            SubmitChatTaskRequest {
+                prompt: "Explain this file".to_owned(),
+                task_type: TaskType::Ask,
+            },
+        )
+        .unwrap();
+
+        let executing =
+            transition_chat_task(&state, &submitted.task_id, &[TaskStatus::Executing]).unwrap();
+        assert_eq!(executing.status, TaskStatus::Executing);
+        store_chat_task_result(
+            &state,
+            &submitted.task_id,
+            serde_json::json!({
+                "kind": "ai-center-answer",
+                "providerId": "openai",
+                "modelId": "test-model",
+                "text": "answer"
+            }),
+        )
+        .unwrap();
+
+        let completed = transition_chat_task(
+            &state,
+            &submitted.task_id,
+            &[TaskStatus::Verifying, TaskStatus::Completed],
+        )
+        .unwrap();
+        assert_eq!(completed.status, TaskStatus::Completed);
+        let stored = state
+            .task_repository()
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|task| task.id.to_string() == submitted.task_id)
+            .unwrap();
+        assert_eq!(
+            stored.result.unwrap()["text"],
+            serde_json::Value::String("answer".to_owned())
+        );
+    }
+
+    #[test]
+    fn ask_task_failure_is_terminal_when_ai_center_fails() {
+        let state = build_task_execution_state(
+            RuntimeExecutionState::default(),
+            Arc::new(RecordingEmitter::default()),
+        );
+        let submitted = submit_chat_task_inner(
+            &state,
+            SubmitChatTaskRequest {
+                prompt: "Explain this file".to_owned(),
+                task_type: TaskType::Ask,
+            },
+        )
+        .unwrap();
+        transition_chat_task(&state, &submitted.task_id, &[TaskStatus::Executing]).unwrap();
+
+        let failed =
+            transition_chat_task(&state, &submitted.task_id, &[TaskStatus::Failed]).unwrap();
+        assert_eq!(failed.status, TaskStatus::Failed);
     }
 
     struct SuccessfulRuntime;

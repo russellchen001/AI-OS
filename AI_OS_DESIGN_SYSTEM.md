@@ -99,7 +99,7 @@ All interactive components define default, hover, focus-visible, pressed, select
 - **CouncilTeamProposal:** Chief of Staff rationale, expert roles, editable assembly, consent state.
 - **CouncilDiscussion/Report:** speaker role, claims/evidence, dissent, consensus, assumptions, confidence.
 - **ArenaModeCard:** mode identity, purpose, participant/rule requirements.
-- **ArenaParticipant:** role, model, provider abstraction, status, turn, score, hidden-info treatment.
+- **ArenaParticipant/Roster:** variable participant count, model, role, independent or team grouping, status, turn, score, add/remove controls, formation presets, and hidden-information treatment. Layout must not encode a fixed 1v1 assumption.
 - **ArenaStage/Timeline:** round, event, live state, audience controls, moderation, replay.
 - **ArtifactCard/Preview:** type, thumbnail, title, provenance, related task, storage/export actions.
 

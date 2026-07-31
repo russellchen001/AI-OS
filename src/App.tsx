@@ -24,6 +24,19 @@ import AiCouncilPage from "./pages/AiCouncilPage";
 import OpenClawPage from "./pages/OpenClawPage";
 import ServicesPage from "./pages/ServicesPage";
 import SettingsPage from "./pages/SettingsPage";
+import ChatPage from "./pages/ChatPage";
+import MyAiPage from "./pages/MyAiPage";
+import AiArenaPage from "./pages/AiArenaPage";
+import AgentsPage from "./pages/AgentsPage";
+import {
+  CONVERSATIONS_CHANGED_EVENT,
+  createConversation,
+  deleteConversation,
+  ensureConversation,
+  initializeConversations,
+  listConversations,
+  renameConversation,
+} from "./services/conversations";
 
 import useBackup from "./hooks/useBackup";
 import useLogs from "./hooks/useLogs";
@@ -113,12 +126,37 @@ function App() {
     activePage,
     setActivePage,
   ] = useState<PageName>(
-    "Dashboard",
+    "Chat",
   );
   const [
     commandPaletteOpen,
     setCommandPaletteOpen,
   ] = useState(false);
+  const [activeConversationId, setActiveConversationId] = useState(
+    () => ensureConversation().id,
+  );
+  const [conversations, setConversations] = useState(() => listConversations());
+
+  useEffect(() => {
+    const refresh = () => setConversations(listConversations());
+    window.addEventListener(CONVERSATIONS_CHANGED_EVENT, refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    void initializeConversations().then((loaded) => {
+      const current =
+        loaded.find((conversation) => conversation.id === activeConversationId) ??
+        loaded[0] ??
+        createConversation();
+      setActiveConversationId(current.id);
+      setConversations(listConversations());
+    });
+  }, []);
 
   useEffect(() => {
     const handleCommandPaletteShortcut =
@@ -194,6 +232,14 @@ function App() {
         nextMessage: string,
         explicitType?: RuntimeNotificationSeverity,
       ) => {
+        if (
+          activePage === "Chat" &&
+          nextMessage ===
+            "Runtime action updates are unavailable. Individual runtime controls are disabled."
+        ) {
+          return;
+        }
+
         const normalized =
           nextMessage.toLowerCase();
 
@@ -247,7 +293,7 @@ function App() {
           4500,
         );
       },
-      [],
+      [activePage],
     );
 
 
@@ -573,9 +619,6 @@ function App() {
         activePage={
           activePage
         }
-        settings={
-          settings
-        }
         onPageChange={
           setActivePage
         }
@@ -584,17 +627,74 @@ function App() {
             true,
           )
         }
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onNewConversation={() => {
+          const conversation = createConversation();
+          setConversations(listConversations());
+          setActiveConversationId(conversation.id);
+          setActivePage("Chat");
+        }}
+        onSelectConversation={(conversationId) => {
+          setActiveConversationId(conversationId);
+          setActivePage("Chat");
+        }}
+        onRenameConversation={(conversationId, title) => {
+          renameConversation(conversationId, title);
+          setConversations(listConversations());
+        }}
+        onDeleteConversation={(conversationId) => {
+          deleteConversation(conversationId);
+          const remaining = listConversations();
+          if (conversationId === activeConversationId) {
+            const next = remaining[0] ?? createConversation();
+            setActiveConversationId(next.id);
+          }
+          setConversations(listConversations());
+        }}
       />
 
       <main className="main-content">
-        <Header
+        {!["Chat", "My AI", "Settings", "Agents", "AI Arena", "AI Council", "Artifacts"].includes(activePage) && <Header
           isChecking={
             isChecking
           }
           lastUpdated={
             lastUpdated
           }
-        />
+        />}
+
+        {activePage === "Chat" && (
+          <ChatPage
+            conversationId={activeConversationId}
+            onOpenMyAi={() =>
+              setActivePage("My AI")
+            }
+            onAddAgent={() =>
+              handleMessage(
+                "Agent management will let you add Hermes Agent and other Runtime adapters without replacing OpenClaw.",
+                "info",
+              )
+            }
+          />
+        )}
+
+        {activePage === "My AI" && (
+          <MyAiPage
+            localModels={models.models}
+            onConnect={(provider, method) =>
+              handleMessage(
+                method === "account"
+                  ? `${provider} account sign-in requires its OAuth client configuration.`
+                  : `${provider} is connected and its available models were discovered.`,
+                "info",
+              )
+            }
+            onManageLocalModels={() =>
+              setActivePage("Models")
+            }
+          />
+        )}
 
         {activePage ===
           "Dashboard" && (
@@ -1133,6 +1233,18 @@ function App() {
           />
         )}
 
+        {activePage === "AI Arena" && (
+          <AiArenaPage
+            onOpenMyAi={() =>
+              setActivePage("My AI")
+            }
+          />
+        )}
+
+        {activePage === "Agents" && (
+          <AgentsPage onMessage={handleMessage} />
+        )}
+
         {activePage ===
           "Settings" && (
           <SettingsPage
@@ -1147,6 +1259,9 @@ function App() {
             }
             onReset={
               resetSettings
+            }
+            onOpenSection={
+              setActivePage
             }
           />
         )}
