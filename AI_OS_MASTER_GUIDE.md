@@ -1,7 +1,7 @@
 # AI-OS Master Guide
 
 **Edition:** Foundation Edition  
-**Version:** 2026.1.2 Final Foundation  
+**Version:** 2026.2
 **Status:** Active Development  
 **Project:** AI-OS
 
@@ -12,6 +12,8 @@
 This document defines the current product direction, target architecture, and development roadmap for AI-OS.
 
 Where this guide conflicts with older roadmap or architecture documents, this guide takes precedence.
+
+Companion documents have narrower authority: `AI_OS_PRODUCT_VISION.md` owns brand and vision; `AI_OS_UI_SPEC.md` owns information architecture and experience; `AI_OS_DESIGN_SYSTEM.md` owns visual and component rules; and `AI_OS_FIGMA_BLUEPRINT.md` owns design-file and screen-delivery specifications. If any companion document conflicts with this guide, this guide prevails.
 
 Existing source code represents the current implementation baseline. It must be preserved and evolved incrementally toward the architecture defined here.
 
@@ -68,14 +70,15 @@ Users should not need:
 - Runtime recovery
 - Runtime operation management
 - Runtime scheduling foundation
+- P10 Task Engine and Planner
+- P11 OpenClaw Integration
 
 **Current priority:**
 
-- P10 Task Engine
+- Complete and validate the approved UI Refactor documentation and implementation without starting P12
 
 **Next milestones:**
 
-- P11 OpenClaw Integration
 - P12 Skill Framework
 - P13 AI Center
 - P14 Memory
@@ -272,8 +275,8 @@ AI Center
 - **Task Engine** determines what the user wants and owns task state.
 - **Planner** determines how the objective should be achieved.
 - **AI Center** owns providers, models, routing, fallback, model invocation, and shared multi-model infrastructure.
-- **AI Council** uses multiple AI systems collaboratively to improve decisions and synthesize results.
-- **AI Arena** provides controlled, reproducible comparison and evaluation of multiple AI and model outputs.
+- **AI Council** dynamically assembles and coordinates an expert organization to improve user decision quality and synthesize recommendations.
+- **AI Arena** provides controlled multi-AI interaction for comparison, debate, collaboration, competition, role play, games, simulation, entertainment, and research.
 - **Memory** provides relevant context.
 - **Skill Framework** exposes executable capabilities.
 - **Runtime** manages execution lifecycle, sessions, scheduling, retries, and recovery.
@@ -395,7 +398,7 @@ AI Council and AI Arena must use AI Center for provider and model access rather 
 
 ## 5.6 AI Council
 
-AI Council allows multiple AI systems to collaborate on difficult decisions and produce synthesized results.
+AI Council（AI 智囊团）is AI-OS's multi-AI collaborative decision system. It is not a fixed expert list. It dynamically assembles a professional advisory team from the user's objective, organizes discussion, synthesizes perspectives, and produces a final recommendation. The Chief of Staff（战略幕僚）understands the need, assembles the team, facilitates discussion, and delivers the conclusion.
 
 Potential uses:
 
@@ -405,16 +408,20 @@ Potential uses:
 - High-uncertainty comparison
 - Independent critique
 
-AI Council improves decision quality. It does not replace Planner or Task Engine, and its product logic does not belong to Runtime.
+AI Council improves decision quality for the user. It is not horizontal model comparison and does not replace Task Engine, Planner, AI Center, or Runtime. It obtains all model access through AI Center; its product logic does not belong to Runtime.
 
 ## 5.7 AI Arena
 
-AI Arena is a user-facing, evaluation-oriented multi-model workspace built on AI Center.
+AI Arena（AI 竞技场）is AI-OS's multi-AI interaction platform. Under explicit, shared rules, multiple AIs can compare, debate, collaborate, compete, role-play, play games, and run simulations. Model comparison is one Arena mode, not the whole product. Arena explores AI behavior, capability, and collaboration as well as evaluation.
 
 Responsibilities:
 
-- Run the same request or evaluation case across multiple models
-- Provide side-by-side result comparison
+- Support at least Compare, Debate, Collaboration, Competition, Role Play, Game, and Simulation modes
+- Configure rules, roles, models, rounds, audience or user participation, and stopping conditions
+- Support live interaction, replay, and history
+- Use social-deduction games such as Werewolf as representative Game/Role Play cases without hard-coding one game into the architecture
+- Run the same request or evaluation case across multiple models when using Compare mode
+- Provide side-by-side result comparison where appropriate
 - Support blind evaluation where appropriate
 - Support user voting and structured scoring
 - Apply configurable evaluation criteria
@@ -422,7 +429,9 @@ Responsibilities:
 - Explain meaningful model disagreements
 - Support comparison without changing Task Engine, Planner, or Runtime ownership
 
-AI Arena compares and evaluates model outputs under controlled conditions. It does not replace AI Council collaboration, Planner execution planning, Task Engine state ownership, or Runtime execution management.
+Every reproducible Arena record preserves applicable rules, roles, rounds, prompts, model configuration, outputs, scores or votes, cost, latency, and evaluation metadata. Arena must use AI Center for all model access.
+
+AI Arena does not replace AI Council, Planner, Task Engine, AI Center, or Runtime. Council helps the user make better decisions; Arena enables controlled multi-AI interaction, experimentation, entertainment, and research.
 
 ## 5.8 Memory
 
@@ -829,8 +838,8 @@ Goals:
 - Provider and model management
 - Local and cloud model support
 - Routing and fallback
-- Multi-model comparison
-- AI Council foundation
+- Shared multi-model invocation for AI Council and AI Arena
+- Provider-independent routing, observability, cost, and latency metadata
 
 ## P14 — Memory
 
@@ -858,26 +867,24 @@ Initial capability areas:
 
 Goals:
 
-- Multi-AI collaboration
-- Independent comparison and critique
-- Consensus or synthesized recommendations
-- Support for complex decisions and planning
+- Dynamic expert-team assembly from the user's objective
+- Chief of Staff facilitation and expert discussion
+- Independent critique, consensus, and synthesized recommendations
+- Decision-support reports for complex decisions and planning
+- Provider-independent model access through AI Center
 
 ## P17 — AI Arena
 
 Goals:
 
-- Multi-model evaluation workspace
-- Run the same prompt or evaluation case across selected models
-- Side-by-side comparison
-- Blind testing
-- User voting and structured scoring
-- Configurable evaluation criteria
-- Reproducible evaluation records
-- Latency and cost comparison
-- Model disagreement analysis
-- Integration with AI Center and optional use of Memory
-- Clear separation from AI Council collaboration workflows
+- Multi-AI interaction platform with Compare, Debate, Collaboration, Competition, Role Play, Game, and Simulation modes
+- Rule, role, model, round, audience, participation, and stopping-condition configuration
+- Live interaction, user participation, voting, scoring, replay, and history
+- Representative extensible game templates, including social-deduction play, without hard-coded game architecture
+- Reproducible records of prompts, rules, roles, rounds, model configuration, outputs, votes or scores, cost, and latency
+- Blind testing, configurable evaluation criteria, and disagreement analysis where applicable
+- Provider-independent integration through AI Center and optional use of Memory
+- Clear separation from AI Council decision-support workflows
 
 ## AI-OS v1.0 Completion Boundary
 
@@ -891,8 +898,8 @@ Minimum acceptance characteristics:
 - AI Center supports local and cloud models through replaceable providers
 - Memory supplies relevant context without owning execution
 - Core Skills complete useful real-world workflows
-- AI Council supports multi-AI collaboration and synthesis
-- AI Arena supports controlled, reproducible multi-model comparison and evaluation
+- AI Council dynamically assembles expert teams under a Chief of Staff and produces decision-support synthesis
+- AI Arena supports controlled, reproducible multi-AI interaction across its required modes while retaining comparison and evaluation records
 - Architecture, permissions, failure handling, and user-facing reporting work as an integrated product
 
 ---
@@ -939,10 +946,10 @@ A modular executable capability.
 The intelligence management layer responsible for providers, models, routing, and multi-model systems.
 
 **AI Council**  
-A multi-AI collaboration and synthesis capability for complex decisions.
+AI 智囊团: a dynamic multi-AI expert organization for collaborative decision support, facilitated by a Chief of Staff and powered through AI Center.
 
 **AI Arena**  
-An evaluation-oriented multi-model workspace for controlled, reproducible comparison, blind evaluation, scoring, voting, and disagreement analysis.
+AI 竞技场: a controlled multi-AI interaction platform for comparison, debate, collaboration, competition, role play, games, simulation, entertainment, experimentation, and research, powered through AI Center and preserving reproducible records.
 
 **Memory**  
 The long-term context system. Memory supplies context but does not execute tasks.
@@ -952,6 +959,16 @@ The user-facing interface for managing AI providers, models, Skills, integration
 
 **Milestone**  
 A focused development phase with defined goals and boundaries.
+
+---
+
+# Change Log
+
+## 2026-08-01 — Version 2026.2
+
+- Formalized AI Council as a dynamic expert organization led by a Chief of Staff for user decision support.
+- Expanded AI Arena from evaluation-only framing to a controlled multi-AI interaction platform while retaining reproducible evaluation capabilities.
+- Clarified companion-document authority and preserved the frozen P1–P17 v1.0 scope.
 
 ---
 
