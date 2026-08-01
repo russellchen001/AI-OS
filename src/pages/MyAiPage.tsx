@@ -486,22 +486,34 @@ function MyAiPage({
   }
 
   async function finishProviderSetup() {
-    if (!setup || setup.phase !== "models" || !setup.defaultModelId) return;
-    const instance = createProviderInstance({
-      id: providerInstanceId(setup.providerId),
-      providerId: setup.providerId,
-      displayName: setup.provider,
-      credentialKind: setup.method === "account" ? "oauth" : "api-key",
-      models: setup.models,
-      defaultModelId: setup.defaultModelId,
-      liveTested: setup.liveTested,
-      credentialExpiresAt: setup.credentialExpiresAt,
-      credentialRefreshable: setup.credentialRefreshable,
-    });
-    await saveProviderInstance(instance);
-    setProviderInstances(listProviderInstances());
-    onConnect(setup.provider, setup.method);
-    setSetup(null);
+    if (!setup || setup.phase !== "models" || !setup.defaultModelId || isConnecting) return;
+    setIsConnecting(true);
+    setSetupError("");
+    try {
+      const instance = createProviderInstance({
+        id: providerInstanceId(setup.providerId),
+        providerId: setup.providerId,
+        displayName: setup.provider,
+        credentialKind: setup.method === "account" ? "oauth" : "api-key",
+        models: setup.models,
+        defaultModelId: setup.defaultModelId,
+        liveTested: setup.liveTested,
+        credentialExpiresAt: setup.credentialExpiresAt,
+        credentialRefreshable: setup.credentialRefreshable,
+      });
+      await saveProviderInstance(instance);
+      setProviderInstances(listProviderInstances());
+      onConnect(setup.provider, setup.method);
+      setSetup(null);
+    } catch (error) {
+      setSetupError(
+        error instanceof Error
+          ? error.message
+          : "AI‑OS could not save this Provider.",
+      );
+    } finally {
+      setIsConnecting(false);
+    }
   }
 
   async function disconnectProvider() {
@@ -905,9 +917,19 @@ function MyAiPage({
                 type="button"
                 className="provider-setup-continue"
                 disabled={isConnecting || (setup.phase === "credential" && setup.method === "api-key" && !apiKey.trim())}
-                onClick={() => setup.phase === "models" ? finishProviderSetup() : void continueSetup()}
+                onClick={() => setup.phase === "models" ? void finishProviderSetup() : void continueSetup()}
               >
-                {isConnecting ? (setup.method === "account" ? "Waiting for sign-in…" : "Saving…") : setup.phase === "models" ? "Save Provider" : setup.method === "account" ? "Continue in browser" : "Save and choose model"}
+                {isConnecting
+                  ? setup.phase === "models"
+                    ? "Saving Provider…"
+                    : setup.method === "account"
+                      ? "Waiting for sign-in…"
+                      : "Saving…"
+                  : setup.phase === "models"
+                    ? "Save Provider"
+                    : setup.method === "account"
+                      ? "Continue in browser"
+                      : "Save and choose model"}
                 <span>→</span>
               </button>
             </footer>}
