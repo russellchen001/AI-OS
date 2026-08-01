@@ -16,6 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const KEYCHAIN_SERVICE: &str = "com.ai-os.provider";
+const OAUTH_CLIENT_KEYCHAIN_SERVICE: &str = "com.ai-os.oauth-client";
 
 const PROVIDER_INSTANCES_FILE: &str = "provider-instances.json";
 
@@ -406,18 +407,54 @@ pub(crate) struct BeginOAuthResult {
     state: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone, PartialEq, Eq)]
 struct OAuthSession {
     provider_id: String,
     provider_instance_id: String,
     client_id: String,
+    client_secret: Option<String>,
     token_url: String,
     resource_project_id: Option<String>,
     redirect_uri: String,
     verifier: String,
     created_at: u64,
     expires_at: u64,
+}
+
+impl std::fmt::Debug for OAuthSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OAuthSession")
+            .field("provider_id", &self.provider_id)
+            .field("provider_instance_id", &self.provider_instance_id)
+            .field("client_id", &self.client_id)
+            .field("client_secret_configured", &self.client_secret.is_some())
+            .field("token_url", &self.token_url)
+            .field("resource_project_id", &self.resource_project_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_oauth_client_secret(provider_id: &str) -> Result<Option<String>, String> {
+    match security_framework::passwords::get_generic_password(
+        OAUTH_CLIENT_KEYCHAIN_SERVICE,
+        provider_id,
+    ) {
+        Ok(secret) => String::from_utf8(secret)
+            .map(Some)
+            .map_err(|_| "OAuth client credential in Keychain is invalid".to_owned()),
+        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
+        Err(_) => Err("AI-OS could not read the OAuth client credential".to_owned()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_oauth_client_secret(_provider_id: &str) -> Result<Option<String>, String> {
+    Ok(None)
 }
 
 impl OAuthSession {
@@ -899,17 +936,26 @@ async fn refresh_oauth_token(account: &str, token: &Value) -> Result<Value, Stri
         .get("clientId")
         .and_then(Value::as_str)
         .ok_or_else(|| "OAuth client ID is missing".to_owned())?;
+    let provider_id = metadata
+        .get("providerId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OAuth Provider identity is missing".to_owned())?;
+    let client_secret = read_oauth_client_secret(provider_id)?;
     validate_https_url(token_url, "OAuth token URL")?;
+    let mut form = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", client_id),
+    ];
+    if let Some(secret) = client_secret.as_deref() {
+        form.push(("client_secret", secret));
+    }
     let response = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|_| "AI-OS could not initialize OAuth refresh".to_owned())?
         .post(token_url)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", client_id),
-        ])
+        .form(&form)
         .send()
         .await
         .map_err(|_| "OAuth token service could not be reached".to_owned())?;
@@ -1363,15 +1409,19 @@ async fn complete_oauth_exchange(
         .build()
         .map_err(|_| "AI-OS could not initialize the OAuth connection".to_owned())?;
 
+    let mut form = vec![
+        ("grant_type", "authorization_code"),
+        ("client_id", session.client_id.as_str()),
+        ("code", code.trim()),
+        ("redirect_uri", session.redirect_uri.as_str()),
+        ("code_verifier", session.verifier.as_str()),
+    ];
+    if let Some(secret) = session.client_secret.as_deref() {
+        form.push(("client_secret", secret));
+    }
     let response = client
         .post(&session.token_url)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", session.client_id.as_str()),
-            ("code", code.trim()),
-            ("redirect_uri", session.redirect_uri.as_str()),
-            ("code_verifier", session.verifier.as_str()),
-        ])
+        .form(&form)
         .send()
         .await
         .map_err(|_| "OAuth token service could not be reached".to_owned())?;
@@ -1403,6 +1453,7 @@ async fn complete_oauth_exchange(
         .insert(
             "_aios".to_owned(),
             serde_json::json!({
+                "providerId": session.provider_id,
                 "clientId": session.client_id,
                 "tokenUrl": session.token_url,
                 "expiresAt": expires_at.clone(),
@@ -1620,6 +1671,7 @@ pub(crate) async fn begin_provider_oauth(
         provider_id: provider_id.to_owned(),
         provider_instance_id: instance_id.to_owned(),
         client_id: input.client_id.trim().to_owned(),
+        client_secret: read_oauth_client_secret(provider_id)?,
         token_url: input.token_url,
         resource_project_id: input.resource_project_id,
         redirect_uri: redirect_uri.clone(),
@@ -2449,6 +2501,7 @@ mod tests {
             provider_id: "openai".to_owned(),
             provider_instance_id: "openai-default".to_owned(),
             client_id: "client".to_owned(),
+            client_secret: Some("must-not-appear".to_owned()),
             token_url: "https://example.com/token".to_owned(),
             resource_project_id: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
@@ -2456,6 +2509,11 @@ mod tests {
             created_at: now,
             expires_at: now + 60,
         };
+
+        let debug = format!("{session:?}");
+        assert!(debug.contains("client_secret_configured"));
+        assert!(!debug.contains("must-not-appear"));
+        assert!(!debug.contains("verifier"));
 
         store_oauth_session(&state, session.clone()).unwrap();
 
@@ -2471,6 +2529,7 @@ mod tests {
             provider_id: "openai".to_owned(),
             provider_instance_id: "openai-default".to_owned(),
             client_id: "client".to_owned(),
+            client_secret: None,
             token_url: "https://example.com/token".to_owned(),
             resource_project_id: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
@@ -2502,6 +2561,7 @@ mod tests {
             provider_id: "google".to_owned(),
             provider_instance_id: "google-default".to_owned(),
             client_id: "client".to_owned(),
+            client_secret: None,
             token_url: "https://example.com/token".to_owned(),
             resource_project_id: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
@@ -2524,6 +2584,7 @@ mod tests {
             provider_id: "openai".to_owned(),
             provider_instance_id: "openai-default".to_owned(),
             client_id: "client".to_owned(),
+            client_secret: None,
             token_url: "https://example.com/token".to_owned(),
             resource_project_id: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
