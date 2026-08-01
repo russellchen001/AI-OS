@@ -691,11 +691,9 @@ function App() {
         {activePage === "My AI" && (
           <MyAiPage
             localModels={models.models}
-            onConnect={(provider, method) =>
+            onConnect={(provider) =>
               handleMessage(
-                method === "account"
-                  ? `${provider} account sign-in requires its OAuth client configuration.`
-                  : `${provider} is connected and its available models were discovered.`,
+                `${provider} is connected and its available models were discovered.`,
                 "info",
               )
             }

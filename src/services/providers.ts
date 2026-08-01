@@ -49,6 +49,9 @@ export type OAuthProviderConfiguration = {
   tokenUrl: string;
   scopes: string[];
   resourceProjectId?: string;
+  callbackPort?: number;
+  callbackPath?: string;
+  authorizationParams?: Record<string, string>;
 };
 
 export type BeginOAuthResult = {
@@ -88,10 +91,39 @@ const PROVIDER_OAUTH_CONFIGURATION_REGISTRY: Record<string, string> = {
   google: "GOOGLE",
 };
 
+const OPENAI_CODEX_OAUTH_CONFIGURATION = {
+  clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
+  authorizationUrl: "https://auth.openai.com/oauth/authorize",
+  tokenUrl: "https://auth.openai.com/oauth/token",
+  scopes: [
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+    "api.connectors.read",
+    "api.connectors.invoke",
+  ],
+  callbackPort: 1455,
+  callbackPath: "/auth/callback",
+  authorizationParams: {
+    id_token_add_organizations: "true",
+    codex_cli_simplified_flow: "true",
+    originator: "ai-os",
+  },
+} satisfies Omit<OAuthProviderConfiguration, "providerId" | "providerInstanceId">;
+
 export function getProviderOAuthConfiguration(
   providerId: string,
   providerInstanceId: string,
 ): OAuthProviderConfiguration | undefined {
+  if (providerId === "openai") {
+    return {
+      providerId,
+      providerInstanceId,
+      ...OPENAI_CODEX_OAUTH_CONFIGURATION,
+    };
+  }
+
   const prefix = PROVIDER_OAUTH_CONFIGURATION_REGISTRY[providerId];
   if (!prefix) return undefined;
 

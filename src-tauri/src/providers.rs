@@ -402,6 +402,9 @@ pub(crate) struct BeginOAuthInput {
     token_url: String,
     scopes: Vec<String>,
     resource_project_id: Option<String>,
+    callback_port: Option<u16>,
+    callback_path: Option<String>,
+    authorization_params: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -420,6 +423,7 @@ struct OAuthSession {
     client_secret: Option<String>,
     token_url: String,
     resource_project_id: Option<String>,
+    route_kind: Option<String>,
     redirect_uri: String,
     verifier: String,
     created_at: u64,
@@ -710,10 +714,13 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             "openai",
             "OpenAI",
             ProviderAdapterKind::Native,
-            &[ProviderCredentialKind::ApiKey],
+            &[
+                ProviderCredentialKind::OAuth,
+                ProviderCredentialKind::ApiKey,
+            ],
             &["chat", "reasoning", "vision", "tool-use"],
             true,
-            false,
+            true,
             Some(ProviderAdapterSpec {
                 id: "openai",
                 models_url: "https://api.openai.com/v1/models",
@@ -1042,6 +1049,8 @@ struct CurrentProviderCredential {
     value: String,
     oauth: bool,
     resource_project_id: Option<String>,
+    route_kind: Option<String>,
+    account_id: Option<String>,
 }
 
 async fn read_current_credential(account: &str) -> Result<CurrentProviderCredential, String> {
@@ -1052,6 +1061,8 @@ async fn read_current_credential(account: &str) -> Result<CurrentProviderCredent
                 value,
                 oauth: false,
                 resource_project_id: None,
+                route_kind: None,
+                account_id: None,
             })
             .map_err(|_| "Provider credential in Keychain is invalid".to_owned());
     };
@@ -1076,10 +1087,20 @@ async fn read_current_credential(account: &str) -> Result<CurrentProviderCredent
         .pointer("/_aios/resourceProjectId")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let route_kind = token
+        .pointer("/_aios/routeKind")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let account_id = token
+        .pointer("/_aios/accountId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     Ok(CurrentProviderCredential {
         value,
         oauth: true,
         resource_project_id,
+        route_kind,
+        account_id,
     })
 }
 
@@ -1089,7 +1110,21 @@ fn authenticate_provider_request(
     credential: CurrentProviderCredential,
 ) -> reqwest::RequestBuilder {
     match auth {
-        AuthStyle::Bearer => request.bearer_auth(credential.value),
+        AuthStyle::Bearer => {
+            let request = request.bearer_auth(credential.value);
+            if credential.route_kind.as_deref() == Some("openai-codex") {
+                let request = request
+                    .header("OpenAI-Beta", "codex-1")
+                    .header("originator", "ai-os");
+                if let Some(account_id) = credential.account_id {
+                    request.header("ChatGPT-Account-ID", account_id)
+                } else {
+                    request
+                }
+            } else {
+                request
+            }
+        }
         AuthStyle::Anthropic => request
             .header("x-api-key", credential.value)
             .header("anthropic-version", "2023-06-01"),
@@ -1171,6 +1206,7 @@ fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProvider
         } else {
             "data"
         })
+        .or_else(|| body.get("models"))
         .and_then(Value::as_array)
         .ok_or_else(|| "Provider returned an invalid model list".to_owned())?;
 
@@ -1186,7 +1222,9 @@ fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProvider
                     .and_then(Value::as_str)
                     .map(|name| name.strip_prefix("models/").unwrap_or(name))
             } else {
-                item.get("id").and_then(Value::as_str)
+                item.get("id")
+                    .or_else(|| item.get("slug"))
+                    .and_then(Value::as_str)
             }?;
             let display_name = item
                 .get("display_name")
@@ -1213,10 +1251,23 @@ async fn discover_models(
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|_| "AI-OS could not initialize the Provider connection".to_owned())?;
-    let mut request = client.get(spec.models_url);
+    let credential = if !matches!(spec.auth, AuthStyle::None) {
+        Some(read_current_credential(instance_id).await?)
+    } else {
+        None
+    };
+    let models_url = if credential
+        .as_ref()
+        .and_then(|credential| credential.route_kind.as_deref())
+        == Some("openai-codex")
+    {
+        "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0"
+    } else {
+        spec.models_url
+    };
+    let mut request = client.get(models_url);
 
-    if !matches!(spec.auth, AuthStyle::None) {
-        let credential = read_current_credential(instance_id).await?;
+    if let Some(credential) = credential {
         request = authenticate_provider_request(request, spec.auth, credential);
     }
 
@@ -1236,7 +1287,11 @@ async fn discover_models(
         .json::<Value>()
         .await
         .map_err(|_| "Provider returned an unreadable model list".to_owned())?;
-    parse_models(spec.id, body)
+    let models = parse_models(spec.id, body)?;
+    if models.is_empty() {
+        return Err("Provider returned no usable models".to_owned());
+    }
+    Ok(models)
 }
 
 fn oauth_loopback_html(title: &str, message: &str) -> String {
@@ -1345,7 +1400,7 @@ fn parse_oauth_loopback_request(request: &str, expected_state: &str) -> Result<S
     let callback_url = url::Url::parse(&format!("http://127.0.0.1{target}"))
         .map_err(|_| "OAuth callback URL is invalid".to_owned())?;
 
-    if callback_url.path() != OAUTH_LOOPBACK_PATH {
+    if !matches!(callback_url.path(), OAUTH_LOOPBACK_PATH | "/auth/callback") {
         return Err("OAuth callback path is invalid".to_owned());
     }
 
@@ -1443,6 +1498,15 @@ async fn complete_oauth_exchange(
         .and_then(Value::as_i64)
         .map(|seconds| (chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339());
 
+    let account_id = token
+        .get("id_token")
+        .and_then(Value::as_str)
+        .and_then(chatgpt_account_id_from_jwt);
+
+    if session.route_kind.as_deref() == Some("openai-codex") && account_id.is_none() {
+        return Err("OpenAI Codex sign-in did not identify a ChatGPT account".to_owned());
+    }
+
     token
         .as_object_mut()
         .ok_or_else(|| "OAuth provider returned an invalid token".to_owned())?
@@ -1454,6 +1518,8 @@ async fn complete_oauth_exchange(
                 "tokenUrl": session.token_url,
                 "expiresAt": expires_at.clone(),
                 "resourceProjectId": session.resource_project_id,
+                "routeKind": session.route_kind,
+                "accountId": account_id,
             }),
         );
 
@@ -1469,6 +1535,18 @@ async fn complete_oauth_exchange(
         expires_at,
         refreshable,
     })
+}
+
+fn chatgpt_account_id_from_jwt(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: Value = serde_json::from_slice(&decoded).ok()?;
+    claims
+        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
+        .or_else(|| claims.get("chatgpt_account_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty() && value.len() <= 256)
+        .map(str::to_owned)
 }
 
 fn oauth_token_rejection(status: u16, payload: Option<&Value>) -> String {
@@ -1639,7 +1717,20 @@ pub(crate) async fn begin_provider_oauth(
 
     validate_https_url(&input.token_url, "OAuth token URL")?;
 
-    let listener = TcpListener::bind(("127.0.0.1", 0))
+    let callback_port = input.callback_port.unwrap_or(0);
+    let callback_path = input
+        .callback_path
+        .as_deref()
+        .unwrap_or(OAUTH_LOOPBACK_PATH)
+        .trim();
+    if !callback_path.starts_with('/')
+        || callback_path.len() > 128
+        || callback_path.contains(['?', '#'])
+    {
+        return Err("OAuth callback path is invalid".to_owned());
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", callback_port))
         .await
         .map_err(|_| "AI-OS could not open a local OAuth callback listener".to_owned())?;
 
@@ -1647,7 +1738,12 @@ pub(crate) async fn begin_provider_oauth(
         .local_addr()
         .map_err(|_| "AI-OS could not determine the OAuth callback address".to_owned())?;
 
-    let redirect_uri = format!("http://127.0.0.1:{}{}", address.port(), OAUTH_LOOPBACK_PATH);
+    let callback_host = if provider_id == "openai" {
+        "localhost"
+    } else {
+        "127.0.0.1"
+    };
+    let redirect_uri = format!("http://{callback_host}:{}{}", address.port(), callback_path);
 
     let state = uuid::Uuid::new_v4().simple().to_string();
     let verifier = format!(
@@ -1670,6 +1766,7 @@ pub(crate) async fn begin_provider_oauth(
         client_secret: read_oauth_client_secret(provider_id)?,
         token_url: input.token_url,
         resource_project_id: input.resource_project_id,
+        route_kind: (provider_id == "openai").then(|| "openai-codex".to_owned()),
         redirect_uri: redirect_uri.clone(),
         verifier,
         created_at,
@@ -1699,6 +1796,27 @@ pub(crate) async fn begin_provider_oauth(
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
+    if let Some(parameters) = input.authorization_params {
+        for (key, value) in parameters {
+            if !matches!(
+                key.as_str(),
+                "response_type"
+                    | "client_id"
+                    | "redirect_uri"
+                    | "scope"
+                    | "state"
+                    | "code_challenge"
+                    | "code_challenge_method"
+            ) && !key.trim().is_empty()
+                && key.len() <= 128
+                && value.len() <= 1024
+            {
+                authorization_url
+                    .query_pairs_mut()
+                    .append_pair(&key, &value);
+            }
+        }
+    }
 
     tauri::async_runtime::spawn(run_oauth_loopback_listener(
         app,
@@ -1810,11 +1928,23 @@ pub(crate) async fn generate_provider_response(
     } else {
         Some(read_current_credential(instance_id).await?)
     };
+    let uses_openai_codex = secret
+        .as_ref()
+        .and_then(|credential| credential.route_kind.as_deref())
+        == Some("openai-codex");
 
     let (mut request, body) = match provider_id {
         "openai" => (
-            client.post("https://api.openai.com/v1/responses"),
-            serde_json::json!({"model": model_id, "input": prompt}),
+            client.post(if uses_openai_codex {
+                "https://chatgpt.com/backend-api/codex/responses"
+            } else {
+                "https://api.openai.com/v1/responses"
+            }),
+            serde_json::json!({
+                "model": model_id,
+                "input": prompt,
+                "store": !uses_openai_codex
+            }),
         ),
         "anthropic" => (
             client.post("https://api.anthropic.com/v1/messages"),
@@ -1969,10 +2099,23 @@ pub(crate) async fn start_provider_response_stream(
     } else {
         Some(read_current_credential(instance_id).await?)
     };
+    let uses_openai_codex = secret
+        .as_ref()
+        .and_then(|credential| credential.route_kind.as_deref())
+        == Some("openai-codex");
     let (mut request, body) = match provider_id {
         "openai" => (
-            client.post("https://api.openai.com/v1/responses"),
-            serde_json::json!({"model": model_id, "input": messages, "stream": true}),
+            client.post(if uses_openai_codex {
+                "https://chatgpt.com/backend-api/codex/responses"
+            } else {
+                "https://api.openai.com/v1/responses"
+            }),
+            serde_json::json!({
+                "model": model_id,
+                "input": messages,
+                "stream": true,
+                "store": !uses_openai_codex
+            }),
         ),
         "anthropic" => (
             client.post("https://api.anthropic.com/v1/messages"),
@@ -2168,6 +2311,16 @@ mod tests {
             parse_models("openai", serde_json::json!({"data": [{"id": "gpt-test"}]})).unwrap();
         assert_eq!(openai[0].id, "gpt-test");
 
+        let codex = parse_models(
+            "openai",
+            serde_json::json!({
+                "models": [{"slug": "gpt-codex", "display_name": "GPT Codex"}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(codex[0].id, "gpt-codex");
+        assert_eq!(codex[0].display_name, "GPT Codex");
+
         let ollama = parse_models(
             "ollama",
             serde_json::json!({"models": [{"name": "qwen:test"}]}),
@@ -2216,6 +2369,8 @@ mod tests {
                 value: "oauth-access".to_owned(),
                 oauth: true,
                 resource_project_id: Some("ai-os-test".to_owned()),
+                route_kind: None,
+                account_id: None,
             },
         )
         .build()
@@ -2231,12 +2386,55 @@ mod tests {
                 value: "api-key".to_owned(),
                 oauth: false,
                 resource_project_id: None,
+                route_kind: None,
+                account_id: None,
             },
         )
         .build()
         .unwrap();
         assert_eq!(api_key.headers()["x-goog-api-key"], "api-key");
         assert!(!api_key.headers().contains_key("authorization"));
+    }
+
+    #[test]
+    fn openai_codex_authentication_is_account_scoped() {
+        let request = authenticate_provider_request(
+            reqwest::Client::new().get("https://chatgpt.com/backend-api/codex/models"),
+            AuthStyle::Bearer,
+            CurrentProviderCredential {
+                value: "codex-access".to_owned(),
+                oauth: true,
+                resource_project_id: None,
+                route_kind: Some("openai-codex".to_owned()),
+                account_id: Some("account-123".to_owned()),
+            },
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(request.headers()["authorization"], "Bearer codex-access");
+        assert_eq!(request.headers()["ChatGPT-Account-ID"], "account-123");
+        assert_eq!(request.headers()["OpenAI-Beta"], "codex-1");
+        assert_eq!(request.headers()["originator"], "ai-os");
+    }
+
+    #[test]
+    fn extracts_chatgpt_account_id_from_id_token() {
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "account-123"
+                }
+            }))
+            .unwrap(),
+        );
+        let token = format!("header.{payload}.signature");
+
+        assert_eq!(
+            chatgpt_account_id_from_jwt(&token).as_deref(),
+            Some("account-123")
+        );
+        assert!(chatgpt_account_id_from_jwt("invalid").is_none());
     }
 
     #[test]
@@ -2436,8 +2634,11 @@ mod tests {
         assert_eq!(value["displayName"], "OpenAI");
         assert_eq!(value["adapterKind"], "native");
         assert_eq!(value["supportsModelDiscovery"], true);
-        assert_eq!(value["supportsTokenRefresh"], false);
-        assert_eq!(value["credentialKinds"], serde_json::json!(["api-key"]));
+        assert_eq!(value["supportsTokenRefresh"], true);
+        assert_eq!(
+            value["credentialKinds"],
+            serde_json::json!(["oauth", "api-key"])
+        );
         assert!(value["capabilities"].is_array());
     }
 
@@ -2473,9 +2674,13 @@ mod tests {
 
         assert_eq!(
             openai.authentication_methods,
-            vec![ProviderAuthenticationMethod::ApiKey]
+            vec![
+                ProviderAuthenticationMethod::OAuthPkce,
+                ProviderAuthenticationMethod::OAuthLoopback,
+                ProviderAuthenticationMethod::ApiKey,
+            ]
         );
-        assert!(!openai.supports_token_refresh);
+        assert!(openai.supports_token_refresh);
         assert!(!openai.supports_multiple_credentials);
 
         let google = get_provider_adapter("google".to_owned()).unwrap();
@@ -2508,6 +2713,7 @@ mod tests {
             client_secret: Some("must-not-appear".to_owned()),
             token_url: "https://example.com/token".to_owned(),
             resource_project_id: None,
+            route_kind: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
             created_at: now,
@@ -2536,6 +2742,7 @@ mod tests {
             client_secret: None,
             token_url: "https://example.com/token".to_owned(),
             resource_project_id: None,
+            route_kind: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
             created_at: now,
@@ -2568,6 +2775,7 @@ mod tests {
             client_secret: None,
             token_url: "https://example.com/token".to_owned(),
             resource_project_id: None,
+            route_kind: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
             created_at: now.saturating_sub(120),
@@ -2591,6 +2799,7 @@ mod tests {
             client_secret: None,
             token_url: "https://example.com/token".to_owned(),
             resource_project_id: None,
+            route_kind: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
             created_at: now,
