@@ -12,6 +12,7 @@ pub(crate) mod plan_runtime_bridge;
 pub(crate) mod recovery;
 mod registry;
 pub(crate) mod scheduler;
+pub(crate) mod skills;
 pub(crate) mod trusted_automation;
 
 use models::{RuntimeDefinition, RuntimeStatus, RuntimeStatusRequest};
