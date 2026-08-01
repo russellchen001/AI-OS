@@ -1377,7 +1377,9 @@ async fn complete_oauth_exchange(
         .map_err(|_| "OAuth token service could not be reached".to_owned())?;
 
     if !response.status().is_success() {
-        return Err("OAuth provider rejected the authorization code".to_owned());
+        let status = response.status().as_u16();
+        let payload = response.json::<Value>().await.ok();
+        return Err(oauth_token_rejection(status, payload.as_ref()));
     }
 
     let mut token: Value = response
@@ -1420,6 +1422,24 @@ async fn complete_oauth_exchange(
         expires_at,
         refreshable,
     })
+}
+
+fn oauth_token_rejection(status: u16, payload: Option<&Value>) -> String {
+    let error_code = payload
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        });
+
+    match error_code {
+        Some(code) => format!("OAuth provider rejected the authorization code ({code})"),
+        None => format!("OAuth provider rejected the authorization code (HTTP {status})"),
+    }
 }
 
 async fn run_oauth_loopback_listener(
@@ -1505,7 +1525,7 @@ async fn run_oauth_loopback_listener(
                         &mut stream,
                         "400 Bad Request",
                         "Connection failed",
-                        "AI-OS could not complete the account connection.",
+                        &message,
                     )
                     .await;
 
@@ -2554,6 +2574,27 @@ Host: 127.0.0.1\r\n\r\n";
         assert_eq!(
             parse_oauth_loopback_request(request, "expected").unwrap(),
             "abc123"
+        );
+    }
+
+    #[test]
+    fn oauth_token_rejection_exposes_only_a_bounded_error_code() {
+        let payload = serde_json::json!({
+            "error": "invalid_grant",
+            "error_description": "authorization code and token details must stay private"
+        });
+
+        assert_eq!(
+            oauth_token_rejection(400, Some(&payload)),
+            "OAuth provider rejected the authorization code (invalid_grant)"
+        );
+
+        let unsafe_payload = serde_json::json!({
+            "error": "invalid_grant<script>alert(1)</script>"
+        });
+        assert_eq!(
+            oauth_token_rejection(400, Some(&unsafe_payload)),
+            "OAuth provider rejected the authorization code (HTTP 400)"
         );
     }
 
