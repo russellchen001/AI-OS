@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
@@ -311,10 +311,24 @@ pub(crate) fn remove_provider_instance(instance_id: String) -> Result<bool, Stri
 }
 
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25300;
+const OAUTH_SESSION_TTL_SECONDS: u64 = 10 * 60;
+
 static AI_CENTER_REQUESTS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
+static OAUTH_SESSIONS: OnceLock<Mutex<HashMap<String, OAuthSession>>> = OnceLock::new();
 
 fn ai_center_requests() -> &'static Mutex<HashMap<String, CancellationToken>> {
     AI_CENTER_REQUESTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn oauth_sessions() -> &'static Mutex<HashMap<String, OAuthSession>> {
+    OAUTH_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn unix_timestamp_seconds() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| "System clock is unavailable".to_owned())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -379,14 +393,74 @@ pub(crate) struct BeginOAuthResult {
     state: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OAuthSession {
+    provider_id: String,
     provider_instance_id: String,
     client_id: String,
     token_url: String,
     redirect_uri: String,
     verifier: String,
+    created_at: u64,
+    expires_at: u64,
+}
+
+impl OAuthSession {
+    fn is_expired_at(&self, now: u64) -> bool {
+        now >= self.expires_at
+    }
+}
+
+fn oauth_session_key(provider_id: &str, state: &str) -> String {
+    format!("{provider_id}:{state}")
+}
+
+fn store_oauth_session(state: &str, session: OAuthSession) -> Result<(), String> {
+    let key = oauth_session_key(&session.provider_id, state);
+    let mut sessions = oauth_sessions()
+        .lock()
+        .map_err(|_| "OAuth session state is unavailable".to_owned())?;
+
+    sessions.retain(|_, candidate| {
+        unix_timestamp_seconds()
+            .map(|now| !candidate.is_expired_at(now))
+            .unwrap_or(false)
+    });
+
+    if sessions.contains_key(&key) {
+        return Err("OAuth session already exists".to_owned());
+    }
+
+    sessions.insert(key, session);
+    Ok(())
+}
+
+fn consume_oauth_session(provider_id: &str, state: &str) -> Result<OAuthSession, String> {
+    let provider_id = provider_id.trim();
+    let state = state.trim();
+
+    if provider_id.is_empty() || state.is_empty() {
+        return Err("OAuth callback is incomplete".to_owned());
+    }
+
+    let key = oauth_session_key(provider_id, state);
+    let session = oauth_sessions()
+        .lock()
+        .map_err(|_| "OAuth session state is unavailable".to_owned())?
+        .remove(&key)
+        .ok_or_else(|| "OAuth session is invalid or expired".to_owned())?;
+
+    let now = unix_timestamp_seconds()?;
+    if session.is_expired_at(now) {
+        return Err("OAuth session is invalid or expired".to_owned());
+    }
+
+    if session.provider_id != provider_id {
+        return Err("OAuth session Provider does not match".to_owned());
+    }
+
+    Ok(session)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -975,10 +1049,6 @@ fn validate_https_url(value: &str, label: &str) -> Result<url::Url, String> {
     Ok(parsed)
 }
 
-fn oauth_session_account(provider_id: &str, state: &str) -> String {
-    format!("oauth.{provider_id}.{state}")
-}
-
 #[tauri::command]
 pub(crate) fn begin_provider_oauth(input: BeginOAuthInput) -> Result<BeginOAuthResult, String> {
     let instance_id = validate_instance_id(&input.provider_instance_id)?;
@@ -1003,16 +1073,23 @@ pub(crate) fn begin_provider_oauth(input: BeginOAuthInput) -> Result<BeginOAuthR
         uuid::Uuid::new_v4().simple()
     );
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let created_at = unix_timestamp_seconds()?;
+    let expires_at = created_at
+        .checked_add(OAUTH_SESSION_TTL_SECONDS)
+        .ok_or_else(|| "OAuth session expiry is invalid".to_owned())?;
+
     let session = OAuthSession {
+        provider_id: provider_id.to_owned(),
         provider_instance_id: instance_id.to_owned(),
         client_id: input.client_id.trim().to_owned(),
         token_url: input.token_url,
         redirect_uri: input.redirect_uri,
         verifier,
+        created_at,
+        expires_at,
     };
-    let session_bytes = serde_json::to_vec(&session)
-        .map_err(|_| "AI-OS could not create the OAuth session".to_owned())?;
-    store_secret(&oauth_session_account(provider_id, &state), &session_bytes)?;
+
+    store_oauth_session(&state, session.clone())?;
 
     authorization_url
         .query_pairs_mut()
@@ -1039,9 +1116,7 @@ pub(crate) async fn complete_provider_oauth(
     if input.code.trim().is_empty() || input.state.trim().is_empty() {
         return Err("OAuth callback is incomplete".to_owned());
     }
-    let session_account = oauth_session_account(provider_id, input.state.trim());
-    let session: OAuthSession = serde_json::from_slice(&read_secret(&session_account)?)
-        .map_err(|_| "OAuth session is invalid or expired".to_owned())?;
+    let session = consume_oauth_session(provider_id, input.state.trim())?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
@@ -1087,7 +1162,6 @@ pub(crate) async fn complete_provider_oauth(
     let stored = serde_json::to_vec(&token)
         .map_err(|_| "AI-OS could not secure the OAuth token".to_owned())?;
     store_secret(&session.provider_instance_id, &stored)?;
-    remove_secret(&session_account)?;
     Ok(CompleteOAuthResult {
         provider_instance_id: session.provider_instance_id,
         expires_at,
@@ -1754,6 +1828,69 @@ mod tests {
             ollama.authentication_methods,
             vec![ProviderAuthenticationMethod::Local]
         );
+    }
+
+    #[test]
+    fn oauth_session_is_consumed_exactly_once() {
+        let state = format!("state-{}", uuid::Uuid::new_v4().simple());
+        let now = unix_timestamp_seconds().unwrap();
+        let session = OAuthSession {
+            provider_id: "openai".to_owned(),
+            provider_instance_id: "openai-default".to_owned(),
+            client_id: "client".to_owned(),
+            token_url: "https://example.com/token".to_owned(),
+            redirect_uri: "http://127.0.0.1/callback".to_owned(),
+            verifier: "verifier".to_owned(),
+            created_at: now,
+            expires_at: now + 60,
+        };
+
+        store_oauth_session(&state, session.clone()).unwrap();
+
+        assert_eq!(consume_oauth_session("openai", &state).unwrap(), session);
+        assert!(consume_oauth_session("openai", &state).is_err());
+    }
+
+    #[test]
+    fn expired_oauth_session_fails_closed_and_is_consumed() {
+        let state = format!("expired-{}", uuid::Uuid::new_v4().simple());
+        let now = unix_timestamp_seconds().unwrap();
+        let session = OAuthSession {
+            provider_id: "google".to_owned(),
+            provider_instance_id: "google-default".to_owned(),
+            client_id: "client".to_owned(),
+            token_url: "https://example.com/token".to_owned(),
+            redirect_uri: "http://127.0.0.1/callback".to_owned(),
+            verifier: "verifier".to_owned(),
+            created_at: now.saturating_sub(120),
+            expires_at: now,
+        };
+
+        store_oauth_session(&state, session).unwrap();
+
+        assert!(consume_oauth_session("google", &state).is_err());
+        assert!(consume_oauth_session("google", &state).is_err());
+    }
+
+    #[test]
+    fn oauth_session_provider_identity_is_part_of_lookup_key() {
+        let state = format!("provider-{}", uuid::Uuid::new_v4().simple());
+        let now = unix_timestamp_seconds().unwrap();
+        let session = OAuthSession {
+            provider_id: "openai".to_owned(),
+            provider_instance_id: "openai-default".to_owned(),
+            client_id: "client".to_owned(),
+            token_url: "https://example.com/token".to_owned(),
+            redirect_uri: "http://127.0.0.1/callback".to_owned(),
+            verifier: "verifier".to_owned(),
+            created_at: now,
+            expires_at: now + 60,
+        };
+
+        store_oauth_session(&state, session.clone()).unwrap();
+
+        assert!(consume_oauth_session("google", &state).is_err());
+        assert_eq!(consume_oauth_session("openai", &state).unwrap(), session);
     }
 
     #[test]
