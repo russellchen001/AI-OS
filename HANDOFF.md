@@ -14,12 +14,22 @@ This section supersedes the older current-status snapshots below. Historical P11
 
 - Repository: `/Users/russellchen/AI-OS/dashboard`
 - Branch: `feature/p13-ai-center`
-- HEAD: `5cf0d19 feat(p13): connect OpenAI Codex accounts`
-- Working tree before this handoff update: clean; `HANDOFF.md` is now the only modified file
-- Active milestone: P13, account-based Provider connectivity
-- Next work item: Anthropic/Claude Code subscription connection through the official local Claude Code CLI
+- HEAD: `079d78e docs(p13): update provider auth handoff`
+- Working tree: intentionally dirty with the uncommitted Claude Code and Auto-routing hardening implementation
+- Active milestone: P13-M4, AI Center invocation observability — completed
+- Next work item: define the next P13 milestone from the remaining AI Center goals before implementation
 
 ## Completed P13 Account Connections
+
+### OpenRouter, Kimi Code, and Meta Model API
+
+The current uncommitted P13 implementation also adds three truthful native Provider paths:
+
+- OpenRouter supports its official PKCE account connection, which creates a user-controlled OpenRouter API key, plus a separate manually entered API-key path. The generated key is stored only in macOS Keychain; AI-OS supports the official OpenAI-compatible API and live model discovery. Its catalog currently returns more than 300 routed models with their provider-supplied names.
+- Kimi Code supports the official RFC 8628 device authorization flow from Moonshot AI's public Kimi Code client, subscription-backed model discovery and chat through `api.kimi.com/coding/v1`, refresh metadata, cancellation, and a separate Kimi Code API-key path.
+- Meta now targets the current Meta Model API and Muse Spark 1.1 through `api.meta.ai/v1`; it deliberately does not claim that a consumer Meta AI login can authorize third-party inference. The supported connection is a Meta Model API developer key.
+
+Protocol validation completed without exposing credentials: the Kimi device endpoint returned the expected device-code contract with a `www.kimi.com` verification page, OpenRouter returned a live model catalog, and the unauthenticated Kimi and Meta model endpoints both correctly returned HTTP 401. The owner currently has no OpenRouter, Kimi Code, or Meta Model API account, so real account authorization and authenticated inference for these three Providers remain explicitly pending.
 
 ### Google Gemini
 
@@ -42,7 +52,24 @@ Related commits, newest first:
 - `0d3f286 fix(p13): surface provider save failures`
 - Earlier Google OAuth callback, exchange, Keychain, discovery, and metadata commits remain in this branch history.
 
-## Anthropic Decision and Current Blocker
+### xAI Grok Account and API Connections; DeepSeek API Connection
+
+xAI supports both official Grok account OAuth and developer API keys. DeepSeek remains API-key-only. API keys and OAuth tokens are passed directly to the native security layer, stored in macOS Keychain, and never persisted in browser or Provider configuration state.
+
+The uncommitted P13 hardening now provides:
+
+- xAI language-model discovery through the official `/v1/language-models` catalog, excluding image- and video-generation-only models
+- Official xAI Grok Build RFC 8628 device authorization with the public xAI client, bounded polling, cancellation, refresh metadata, and Keychain storage
+- Separate Grok account routing through `cli-chat-proxy.grok.com` with the required `X-XAI-Token-Auth` identity and Responses protocol
+- Separate Grok API-key chat completion and streaming through the official xAI developer API
+- DeepSeek model discovery and chat completion/streaming through the current official non-`/v1` endpoints
+- Current DeepSeek V4 Flash and V4 Pro naming and reasoning capability reporting
+- `Sign in with Grok` plus `Use API key` as two truthful, independent connection options; DeepSeek remains API-key-first
+- Truthful connection errors and automatic removal of a newly stored Keychain credential when live verification fails
+
+The live xAI device-code endpoint returned the complete expected contract for the public Grok Build client. Real Grok account authorization and inference also passed: the browser reported that the device was authorized, the account catalog returned `grok-4.5`, the Provider saved as Connected, Workspace selected `xAI · grok-4.5`, and the real response exactly matched `Grok UI verified`. DeepSeek real validation remains pending a key entered through AI-OS. No token or key should be pasted into chat or committed to the repository.
+
+### Anthropic Claude Code Subscription
 
 Do not invent or advertise a third-party Anthropic OAuth client. Anthropic does not provide AI-OS with a documented public/native third-party client registration equivalent to the Google client or OpenAI Codex client.
 
@@ -54,35 +81,106 @@ The approved safe architecture is to use the official Claude Code CLI as a local
 - Anthropic API-key mode remains a separate Provider credential path.
 - Subscription-backed Claude Code execution must remain distinct from Anthropic API execution in routing, capability reporting, and persistence.
 
-Official Claude Code was installed during this session:
+Official Claude Code is installed and authenticated:
 
 - Version: `2.1.220`
 - Binary: `/Users/russellchen/.local/bin/claude`
+- Authentication method: `claude.ai`
+- API provider: Anthropic first-party
+- Subscription: Claude Pro
 
-However, CLI authentication is **not complete**. The authoritative check currently returns:
+The authoritative status check now returns `loggedIn: true`. A real minimal request was executed with `ANTHROPIC_API_KEY` removed from the environment, structured JSON output enabled, permission mode set to `dontAsk`, and tools disabled. It returned the expected verification text successfully.
 
-```json
-{
-  "loggedIn": false,
-  "authMethod": "none",
-  "apiProvider": "firstParty"
-}
-```
+The uncommitted implementation adds:
 
-The user is logged into Claude Desktop with a paid Pro account, but that does not authenticate the separately installed CLI. Attempts to run `claude auth login --claudeai` opened Claude Desktop or its Code screen rather than successfully returning the OAuth callback to the CLI. No authorization code was visible. Forcing the `BROWSER` environment variable to Google Chrome still did not result in CLI credentials being saved.
+- Claude binary discovery with an optional explicit override and standard macOS paths
+- Authentication status and version reporting without reading Claude's credential
+- Bounded structured execution with `ANTHROPIC_API_KEY` removed
+- Disabled tool execution for AI Center chat requests
+- Timeout termination, process-scoped cancellation, operation-ID validation, and cleanup
+- Bounded credential-shaped error sanitization
+- Claude Sonnet, Opus, and Haiku model mapping
+- A truthful `local` Provider credential kind for the Claude Code subscription path
+- A first-class `cli-account` authentication method in the shared Rust/TypeScript Provider contract
+- Separate routing from the existing Anthropic API-key path
+- My AI connection, model selection, management, and disconnect behavior
+- Workspace model selection, normal response routing, and Stop response behavior
+- Deterministic Auto routing: each connected Provider's default model is tried before its other enabled models
+- Auto fallback only when a candidate fails before producing output; explicit model selection never silently switches Provider or model
 
-Do not ask the user to paste tokens, secrets, complete OAuth URLs, or authorization codes into AI-OS or a chat. If diagnosis resumes, ask only for a redacted screenshot or nonsensitive final error line from the visible Terminal.
+AI-OS does not read, copy, export, or persist Claude Code's OAuth credential. Provider persistence records only the local connection and model preference.
+
+## My AI Entry and Local Model State Correction
+
+The redundant top-right `Add AI` action was removed because it opened the same generic Provider setup as the `Other AI` catalog entry. The catalog entry is now the single generic Provider path.
+
+The Ollama card now consumes canonical Runtime status instead of treating every model-discovery failure as an empty model catalog. It distinguishes not installed, stopped, starting, running without models, and ready states; offers `Start Ollama`, `Add first model`, or `Manage local models` as appropriate; and includes a refresh action that rechecks both Runtime and model state. On the owner's Mac, Ollama 0.31.1 is installed but was not running, which explains the earlier misleading `No local models installed` display.
+
+Workspace model selection now also consumes the live Ollama catalog instead of reading only connected cloud Provider instances. When Ollama is running, its installed models appear as explicit `Ollama · <model>` choices and route through the existing local Ollama backend. Auto routing follows AI-OS's Local First principle: available local Ollama models are attempted before connected cloud defaults, while cloud models remain fallback candidates if local inference fails before producing output. Stopping Ollama removes the unavailable local choices rather than leaving stale selector entries.
+
+Real local validation passed on the owner's Mac. Ollama found the existing 14 GB model library containing `qwen2.5:7b`, `qwen3:8b`, and `deepseek-r1:8b`; a direct `qwen2.5:7b` inference returned the exact expected `Local AI verified` response.
+
+Final M3 desktop acceptance also passed in a freshly built application with an isolated bundle identifier. Workspace displayed all three Ollama choices. Explicitly selecting `Ollama · qwen2.5:7b` returned the exact `Local UI verified` response. For the Auto-routing proof, `qwen2.5:7b` was first unloaded from memory; an Auto request then returned the exact `Auto Local First verified` response, and `ollama ps` confirmed that `qwen2.5:7b` had been reloaded on the GPU. This proves the real desktop Auto path selected the local candidate before cloud fallbacks. M3 is accepted as complete.
+
+## P13-M4 AI Center Invocation Observability — Completed
+
+The authoritative M4 specification and acceptance checklist now live in `docs/Milestones/P13-M4_AI_CENTER_OBSERVABILITY.md`. The scope follows `AI_OS_MASTER_GUIDE.md`: AI Center owns Provider-independent routing observability, cost, latency, and shared invocation metadata. Workspace may render and persist that canonical record, but it must not reconstruct routing decisions itself. Provider ranking, billing reconciliation, user-configurable policy, and Council/Arena execution remain outside M4.
+
+The current uncommitted first implementation adds:
+
+- A canonical AI Center invocation record containing invocation ID, Auto or manual route mode, local or cloud source, actual Provider instance, Provider, model, start/completion time, total latency, estimated input/output tokens, pricing-match state, optional estimated USD cost, fallback state, and ordered attempt records
+- Safe attempt outcomes and normalized error categories without prompts, outputs, raw Provider responses, credentials, tokens, or authorization URLs
+- Local First attempt ordering inherited from accepted M3 behavior
+- Shared metadata generation for normal and streaming AI Center calls, including Claude Code and cancellation results
+- One existing-Analytics success event per completed invocation using the same Provider, model, latency, token estimates, pricing state, route mode, source, fallback flag, and attempt count
+- Optional invocation metadata on persisted conversation messages
+- A compact Workspace response provenance row showing On this Mac or Cloud, Provider/model, latency, truthful cost availability, and fallback attempt count
+- Unknown pricing is displayed as unavailable rather than falsely shown as zero; Ollama uses the existing verified local zero-cost wildcard and may show `$0.00 estimated`
+
+M4 is now complete. The pure observability test passes, the frontend production build passes, all 394 Rust library tests pass, Rust formatting and `cargo check` pass with the same four pre-existing warnings, and `git diff --check` passes.
+
+Real desktop acceptance passed in a freshly rebuilt application with the previously isolated acceptance identifier:
+
+- Explicit Ollama selection returned the exact `M4 Manual verified` response and displayed `On this Mac · ollama · qwen2.5:7b`, measured latency, and `$0.00 estimated`.
+- Reload preserved the complete provenance row with the conversation.
+- Auto returned the exact `M4 Auto verified` response through local `qwen2.5:7b`, with no fallback marker.
+- Explicit xAI selection returned the exact `M4 Cloud verified` response and displayed `Cloud · grok · grok-4.5`, measured latency, and a nonzero estimated cost.
+- Cancelling a long local response preserved partial output plus canonical invocation metadata and did not record a success Analytics event.
+- Deterministic tests cover safe error normalization, ordered pre-output fallback records, manual/no-output/cancellation routing decisions, the rule that emitted output forbids fallback, verified versus unavailable pricing, local zero cost, and Analytics field parity.
+
+The next session should not reopen M4 unless a regression is discovered. Before starting new implementation, define the next P13 milestone against the remaining Master Guide goals, especially shared multi-model invocation readiness and any still-missing Provider-independent policy boundary.
+
+## Real Desktop Validation
+
+A temporary Debug application bundle with a distinct development identifier was used because the installed AI OS application and the unbundled development process share the production bundle identifier. The temporary application was closed after validation and did not change the checked-in Tauri configuration.
+
+The following real UI flows passed:
+
+1. Anthropic displayed operational `Sign in with Claude` when the authenticated CLI was available.
+2. `Verify Claude Code` confirmed the local subscription connection.
+3. Claude Sonnet, Opus, and Haiku appeared and Sonnet could be saved as default.
+4. The Anthropic Provider saved as Connected without a Keychain secret.
+5. Workspace explicitly selected `Anthropic · Claude Sonnet`.
+6. A real message returned the exact expected `Claude UI verified` response.
+7. A long request displayed `Stop response` and cancellation terminated the owned request.
+8. The UI truthfully reported that the response stopped before text was received.
+9. xAI displayed operational `Sign in with Grok` alongside the separate API-key path.
+10. The official xAI device page accepted the generated code and reported the device authorized.
+11. Grok account model discovery returned `grok-4.5`, and the Provider saved as Connected.
+12. Workspace explicitly selected `xAI · grok-4.5`; a real message returned the exact expected `Grok UI verified` response.
+
+Desktop QA also found and fixed stale browser-oriented copy in the Claude Code flow: `Continue in browser` became `Verify Claude Code`, and `Waiting for sign-in…` became `Checking Claude Code…`.
+
+Do not ask the user to paste tokens, secrets, complete OAuth URLs, or authorization codes into AI-OS or a chat.
 
 ## Exact Resume Steps
 
-1. Reconfirm the repository is still clean and on `feature/p13-ai-center` at or after `5cf0d19`.
-2. Recheck `/Users/russellchen/.local/bin/claude auth status --json`.
-3. Resolve official CLI login using Anthropic's supported flow. Prefer running interactive `claude`, then `/login`, and approving in a normal browser. The official troubleshooting documentation says a code is shown only when the browser cannot reach the local callback; native macOS normally completes by callback without showing a code.
-4. Once `loggedIn: true`, verify a minimal non-mutating CLI request using structured output. Ensure no `ANTHROPIC_API_KEY` environment variable overrides subscription OAuth.
-5. Implement a Claude Code capability/connection adapter with binary discovery, authentication status, bounded process execution, cancellation/timeout, structured error sanitization, and model/capability mapping.
-6. Keep `credentialKind`, backend route, and canonical Provider metadata truthful. Do not serialize Claude Code's private OAuth credential into the AI-OS Provider store.
-7. Expose Anthropic account sign-in only when the official CLI is installed and the supported bridge is available; otherwise retain an accurate unavailable/Coming later state and API-key option.
-8. Run the P13 validation suite and perform a real manual end-to-end connection before committing.
+1. Reconfirm branch `feature/p13-ai-center`, HEAD `079d78e` or later, and the intentional uncommitted files listed below.
+2. Review the Claude Code diff without discarding, staging, or committing it unless the owner explicitly requests that action.
+3. Preserve the separation between Claude Code subscription execution and Anthropic API-key execution.
+4. Preserve the rule that Claude Code owns its credential and AI-OS stores no Claude OAuth token.
+5. If implementation continues before a commit, add only explicitly approved P13 hardening or tests.
+6. Immediately before any future commit, rerun Rust formatting, all Rust library tests, `cargo check`, the frontend production build, and `git diff --check`.
 
 Official references used for this decision:
 
@@ -92,16 +190,40 @@ Official references used for this decision:
 
 ## Last Known Validation
 
-For commit `5cf0d19`:
+For the current uncommitted Claude Code implementation:
 
-- Provider-focused Rust tests: 33 passed
-- Full Rust library tests: 384 passed
+- Claude Code-focused Rust tests: 4 passed
+- Full Rust library tests: 388 passed
 - `cargo check`: passed with four pre-existing warnings
 - Frontend production build: passed
 - Formatting and diff checks: passed
-- Real OpenAI Codex account-login E2E: passed, seven models discovered and Provider saved
+- Real Claude Code CLI request: passed
+- Real Claude Code desktop UI E2E: connection, model selection, Provider persistence, chat response, and cancellation passed
+- Auto-routing hardening: TypeScript production build, full Rust tests, Rust check, formatting, and diff checks passed
+- xAI/DeepSeek API hardening: frontend production build passed; full Rust suite now has 389 passing tests; Rust check and diff checks passed
+- Grok OAuth correction: official device endpoint handshake and real account/UI/chat E2E passed; frontend build passed; full Rust suite now has 391 passing tests
+- OpenRouter/Kimi Code/Meta expansion: frontend production build passed; full Rust suite now has 394 passing tests; Rust check passed with the same four pre-existing warnings; official Kimi device handshake and live endpoint status checks passed; formatting and diff checks passed
+- Ollama Workspace selector integration: frontend production build passed; full Rust suite remains 394 passing tests; Rust check passed with the same four pre-existing warnings; direct local inference passed
+- M3 final desktop acceptance: all three Ollama models appeared in Workspace; explicit local selection passed; Auto Local First routing passed with runtime-level confirmation that `qwen2.5:7b` was loaded locally
+- M4 invocation observability: pure tests, frontend build, Rust formatting, 394 Rust tests, Rust check, diff check, isolated desktop build, manual local, Auto Local First, manual cloud, persistence, cost/latency provenance, cancellation, and Analytics parity all passed
 
-No Anthropic source changes were made after this commit, and no new commit is required for today's handoff documentation unless explicitly requested.
+Uncommitted implementation files:
+
+- `src-tauri/src/claude_code.rs` — new
+- `src-tauri/src/lib.rs` — registers Claude Code status, generation, and cancellation commands
+- `src-tauri/src/providers.rs` — advertises the truthful Claude Code CLI-account authentication contract
+- `src/pages/MyAiPage.tsx` — Claude Code connection and model-selection UI
+- `src/services/aiCenter.ts` — Claude Code routing, cancellation, deterministic Auto ordering, safe pre-output fallback, and live Ollama model registration
+- `src/App.tsx` — synchronizes running Ollama models into Workspace model selection
+- `src/services/aiCenterObservability.ts` — new canonical M4 invocation, attempt, token estimate, cost, latency, and Analytics helpers
+- `src/services/conversations.ts` — persists optional canonical invocation metadata with assistant messages
+- `src/pages/ChatPage.tsx` — attaches and renders canonical response provenance without owning routing decisions
+- `docs/Milestones/P13-M4_AI_CENTER_OBSERVABILITY.md` — new M4 specification and acceptance checklist
+- `scripts/milestones/p13_m4_observability.ts` — deterministic M4 observability, fallback-policy, redaction, pricing, and Analytics tests
+- `src/types/provider.ts` — shared frontend `cli-account` authentication contract
+- `HANDOFF.md` — this handoff update
+
+The owner requested delivery without Git operations in this session. Nothing was staged, committed, or pushed by this implementation or handoff update.
 
 ---
 
