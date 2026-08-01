@@ -429,6 +429,7 @@ impl OAuthSession {
 struct ProviderOAuthCompletedEvent {
     provider_id: String,
     provider_instance_id: String,
+    state: String,
     expires_at: Option<String>,
     refreshable: bool,
 }
@@ -437,6 +438,8 @@ struct ProviderOAuthCompletedEvent {
 #[serde(rename_all = "camelCase")]
 struct ProviderOAuthErrorEvent {
     provider_id: String,
+    provider_instance_id: String,
+    state: String,
     message: String,
 }
 
@@ -1327,6 +1330,7 @@ async fn run_oauth_loopback_listener(
     app: AppHandle,
     listener: TcpListener,
     provider_id: String,
+    provider_instance_id: String,
     expected_state: String,
     cancellation: CancellationToken,
 ) {
@@ -1392,6 +1396,7 @@ async fn run_oauth_loopback_listener(
                         ProviderOAuthCompletedEvent {
                             provider_id: provider_id.clone(),
                             provider_instance_id: result.provider_instance_id,
+                            state: expected_state.clone(),
                             expires_at: result.expires_at,
                             refreshable: result.refreshable,
                         },
@@ -1438,6 +1443,8 @@ async fn run_oauth_loopback_listener(
         "provider-oauth://error",
         ProviderOAuthErrorEvent {
             provider_id,
+            provider_instance_id,
+            state: expected_state,
             message: error,
         },
     );
@@ -1532,6 +1539,7 @@ pub(crate) async fn begin_provider_oauth(
         app,
         listener,
         provider_id.to_owned(),
+        session.provider_instance_id.clone(),
         state.clone(),
         cancellation,
     ));

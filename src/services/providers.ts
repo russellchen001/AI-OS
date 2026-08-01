@@ -65,12 +65,15 @@ export type CompleteOAuthResult = {
 export type ProviderOAuthCompletedEvent = {
   providerId: string;
   providerInstanceId: string;
+  state: string;
   expiresAt: string | null;
   refreshable: boolean;
 };
 
 export type ProviderOAuthErrorEvent = {
   providerId: string;
+  providerInstanceId: string;
+  state: string;
   message: string;
 };
 

@@ -289,8 +289,13 @@ function MyAiPage({
       let rejectPending: ((reason: Error) => void) | undefined;
       const cleanup = () => {
         completedUnlisten?.();
+        completedUnlisten = undefined;
         errorUnlisten?.();
-        if (timeoutId) clearTimeout(timeoutId);
+        errorUnlisten = undefined;
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = undefined;
+        }
       };
 
       try {
@@ -300,30 +305,6 @@ function MyAiPage({
             rejectPending = reject;
           },
         );
-
-        completedUnlisten = await listen<ProviderOAuthCompletedEvent>(
-          "provider-oauth://completed",
-          ({ payload }) => {
-            if (
-              payload.providerId !== setup.providerId ||
-              payload.providerInstanceId !== instanceId
-            ) return;
-            settled = true;
-            resolvePending?.(payload);
-          },
-        );
-        errorUnlisten = await listen<ProviderOAuthErrorEvent>(
-          "provider-oauth://error",
-          ({ payload }) => {
-            if (payload.providerId !== setup.providerId) return;
-            settled = true;
-            rejectPending?.(new Error(payload.message));
-          },
-        );
-        timeoutId = setTimeout(() => {
-          settled = true;
-          rejectPending?.(new Error("Account sign-in timed out. Please try again."));
-        }, OAUTH_FRONTEND_TIMEOUT_MS);
 
         cancelOAuthRef.current = () => {
           cancelled = true;
@@ -336,6 +317,46 @@ function MyAiPage({
             });
           }
         };
+
+        const unlistenCompleted = await listen<ProviderOAuthCompletedEvent>(
+          "provider-oauth://completed",
+          ({ payload }) => {
+            if (
+              payload.providerId !== setup.providerId ||
+              payload.providerInstanceId !== instanceId ||
+              payload.state !== oauthState
+            ) return;
+            settled = true;
+            resolvePending?.(payload);
+          },
+        );
+        if (cancelled) {
+          unlistenCompleted();
+          return;
+        }
+        completedUnlisten = unlistenCompleted;
+
+        const unlistenError = await listen<ProviderOAuthErrorEvent>(
+          "provider-oauth://error",
+          ({ payload }) => {
+            if (
+              payload.providerId !== setup.providerId ||
+              payload.providerInstanceId !== instanceId ||
+              payload.state !== oauthState
+            ) return;
+            settled = true;
+            rejectPending?.(new Error(payload.message));
+          },
+        );
+        if (cancelled) {
+          unlistenError();
+          return;
+        }
+        errorUnlisten = unlistenError;
+        timeoutId = setTimeout(() => {
+          settled = true;
+          rejectPending?.(new Error("Account sign-in timed out. Please try again."));
+        }, OAUTH_FRONTEND_TIMEOUT_MS);
 
         const oauth = await startProviderOAuth(setup.providerId, instanceId);
         oauthState = oauth.state;
