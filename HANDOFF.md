@@ -1,8 +1,107 @@
 # AI-OS Project Handoff
 
-> Last Updated: 2026-08-01
+> Last Updated: 2026-08-02
 > Updated By: ChatGPT / Codex
 > Purpose: Resume AI-OS development quickly in a new ChatGPT or Codex session.
+
+---
+
+# 0. Current P13 Handoff (Authoritative Resume Point)
+
+This section supersedes the older current-status snapshots below. Historical P11 and UI Refactor notes are retained for context.
+
+## Repository State
+
+- Repository: `/Users/russellchen/AI-OS/dashboard`
+- Branch: `feature/p13-ai-center`
+- HEAD: `5cf0d19 feat(p13): connect OpenAI Codex accounts`
+- Working tree before this handoff update: clean; `HANDOFF.md` is now the only modified file
+- Active milestone: P13, account-based Provider connectivity
+- Next work item: Anthropic/Claude Code subscription connection through the official local Claude Code CLI
+
+## Completed P13 Account Connections
+
+### Google Gemini
+
+Google native/public PKCE OAuth is working end to end with a real configured Google OAuth client. The flow opens the system browser, receives the loopback callback, exchanges the authorization code, tests the connection, discovers live models, allows default-model selection, and saves a canonical `ProviderInstance` with truthful OAuth metadata.
+
+The real manual validation completed successfully: Google returned 50 models and the Provider saved as connected.
+
+### OpenAI Codex / ChatGPT Account
+
+Commit `5cf0d19` added account login through the official OpenAI Codex public OAuth client and fixed callback at port 1455. It includes PKCE, token refresh metadata, ChatGPT account-ID extraction from the namespaced JWT claim, account-scoped headers, and a separate Codex backend route rather than pretending a ChatGPT subscription is an OpenAI Platform API key.
+
+The real manual validation completed successfully: seven Codex models were discovered, `GPT-5.6-Sol` was selected, and the canonical Provider saved as connected.
+
+Related commits, newest first:
+
+- `5cf0d19 feat(p13): connect OpenAI Codex accounts`
+- `f7d186e fix(p13): advertise only configured oauth providers`
+- `47f941a fix(p13): align oauth credential schema`
+- `9d64fc9 fix(p13): pin provider save errors above actions`
+- `0d3f286 fix(p13): surface provider save failures`
+- Earlier Google OAuth callback, exchange, Keychain, discovery, and metadata commits remain in this branch history.
+
+## Anthropic Decision and Current Blocker
+
+Do not invent or advertise a third-party Anthropic OAuth client. Anthropic does not provide AI-OS with a documented public/native third-party client registration equivalent to the Google client or OpenAI Codex client.
+
+The approved safe architecture is to use the official Claude Code CLI as a local authorization and execution proxy:
+
+- AI-OS launches and queries the official `claude` binary.
+- Claude Code owns the Claude Pro/Max subscription OAuth credential.
+- AI-OS must not read, copy, export, or persist Claude's OAuth token.
+- Anthropic API-key mode remains a separate Provider credential path.
+- Subscription-backed Claude Code execution must remain distinct from Anthropic API execution in routing, capability reporting, and persistence.
+
+Official Claude Code was installed during this session:
+
+- Version: `2.1.220`
+- Binary: `/Users/russellchen/.local/bin/claude`
+
+However, CLI authentication is **not complete**. The authoritative check currently returns:
+
+```json
+{
+  "loggedIn": false,
+  "authMethod": "none",
+  "apiProvider": "firstParty"
+}
+```
+
+The user is logged into Claude Desktop with a paid Pro account, but that does not authenticate the separately installed CLI. Attempts to run `claude auth login --claudeai` opened Claude Desktop or its Code screen rather than successfully returning the OAuth callback to the CLI. No authorization code was visible. Forcing the `BROWSER` environment variable to Google Chrome still did not result in CLI credentials being saved.
+
+Do not ask the user to paste tokens, secrets, complete OAuth URLs, or authorization codes into AI-OS or a chat. If diagnosis resumes, ask only for a redacted screenshot or nonsensitive final error line from the visible Terminal.
+
+## Exact Resume Steps
+
+1. Reconfirm the repository is still clean and on `feature/p13-ai-center` at or after `5cf0d19`.
+2. Recheck `/Users/russellchen/.local/bin/claude auth status --json`.
+3. Resolve official CLI login using Anthropic's supported flow. Prefer running interactive `claude`, then `/login`, and approving in a normal browser. The official troubleshooting documentation says a code is shown only when the browser cannot reach the local callback; native macOS normally completes by callback without showing a code.
+4. Once `loggedIn: true`, verify a minimal non-mutating CLI request using structured output. Ensure no `ANTHROPIC_API_KEY` environment variable overrides subscription OAuth.
+5. Implement a Claude Code capability/connection adapter with binary discovery, authentication status, bounded process execution, cancellation/timeout, structured error sanitization, and model/capability mapping.
+6. Keep `credentialKind`, backend route, and canonical Provider metadata truthful. Do not serialize Claude Code's private OAuth credential into the AI-OS Provider store.
+7. Expose Anthropic account sign-in only when the official CLI is installed and the supported bridge is available; otherwise retain an accurate unavailable/Coming later state and API-key option.
+8. Run the P13 validation suite and perform a real manual end-to-end connection before committing.
+
+Official references used for this decision:
+
+- `https://code.claude.com/docs/en/authentication`
+- `https://code.claude.com/docs/en/troubleshoot-install`
+- `https://code.claude.com/docs/en/desktop-quickstart`
+
+## Last Known Validation
+
+For commit `5cf0d19`:
+
+- Provider-focused Rust tests: 33 passed
+- Full Rust library tests: 384 passed
+- `cargo check`: passed with four pre-existing warnings
+- Frontend production build: passed
+- Formatting and diff checks: passed
+- Real OpenAI Codex account-login E2E: passed, seven models discovered and Provider saved
+
+No Anthropic source changes were made after this commit, and no new commit is required for today's handoff documentation unless explicitly requested.
 
 ---
 
