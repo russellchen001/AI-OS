@@ -1128,7 +1128,7 @@ mod tests {
             if executed.load(Ordering::SeqCst) {
                 break;
             }
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(executed.load(Ordering::SeqCst));
         assert!(manager
