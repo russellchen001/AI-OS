@@ -47,12 +47,12 @@ export type OAuthProviderConfiguration = {
   clientId: string;
   authorizationUrl: string;
   tokenUrl: string;
-  redirectUri: string;
   scopes: string[];
 };
 
 export type BeginOAuthResult = {
   authorizationUrl: string;
+  redirectUri: string;
   state: string;
 };
 
