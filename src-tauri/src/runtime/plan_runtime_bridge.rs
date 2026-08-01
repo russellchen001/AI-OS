@@ -9,6 +9,7 @@ use super::{
     openclaw_permission::{
         ConfiguredCapabilityPermissionGate, PermissionEnforcingOpenClawExecutionAdapter,
     },
+    skills,
     trusted_automation::{load_trusted_automation_settings, TrustedAutomationConfigError},
 };
 use crate::planner::{PlanId, PlanStepId, StepInput, StepOutput};
@@ -34,9 +35,22 @@ pub struct PlanRuntimeExecutionResult {
 pub enum PlanRuntimeExecutionError {
     Configuration,
     InvalidRequest,
+    SkillNotFound {
+        capability: String,
+    },
+    UnsupportedExecutor {
+        capability: String,
+        executor: String,
+    },
     PermissionDenied,
-    Admission { message: String, retryable: bool },
-    Runtime { message: String, retryable: bool },
+    Admission {
+        message: String,
+        retryable: bool,
+    },
+    Runtime {
+        message: String,
+        retryable: bool,
+    },
 }
 
 impl fmt::Display for PlanRuntimeExecutionError {
@@ -46,6 +60,19 @@ impl fmt::Display for PlanRuntimeExecutionError {
                 formatter.write_str("trusted automation configuration is unavailable")
             }
             Self::InvalidRequest => formatter.write_str("Plan runtime request is invalid"),
+            Self::SkillNotFound { capability } => {
+                write!(
+                    formatter,
+                    "No registered Skill supports capability: {capability}"
+                )
+            }
+            Self::UnsupportedExecutor {
+                capability,
+                executor,
+            } => write!(
+                formatter,
+                "Skill capability {capability} requires unsupported executor: {executor}"
+            ),
             Self::PermissionDenied => formatter.write_str("OpenClaw action is not permitted."),
             Self::Admission { message, .. } | Self::Runtime { message, .. } => {
                 formatter.write_str(message)
@@ -126,6 +153,20 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
         &self,
         request: PlanRuntimeExecutionRequest,
     ) -> Result<PlanRuntimeExecutionResult, PlanRuntimeExecutionError> {
+        let capability = request.capability.trim().to_owned();
+        let skill = skills::resolver::resolve(&capability).ok_or_else(|| {
+            PlanRuntimeExecutionError::SkillNotFound {
+                capability: capability.clone(),
+            }
+        })?;
+
+        if skill.executor.kind != "openclaw" {
+            return Err(PlanRuntimeExecutionError::UnsupportedExecutor {
+                capability,
+                executor: skill.executor.kind,
+            });
+        }
+
         let attempt_id = Uuid::new_v4().to_string();
         let operation_id = operation_identity(&request.plan_id, &request.step_id, &attempt_id);
         let input = Value::Object(request.input.into_iter().collect::<Map<_, _>>());
@@ -133,7 +174,7 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
             operation_id,
             plan_id: request.plan_id.as_str().to_owned(),
             step_id: request.step_id.as_str().to_owned(),
-            capability: request.capability,
+            capability,
             input,
         };
         execute_runtime_task(
@@ -238,6 +279,51 @@ mod tests {
             capability: "filesystem.scan".to_owned(),
             input: [("path".to_owned(), json!("/safe"))].into_iter().collect(),
         }
+    }
+
+    #[test]
+    fn unknown_capability_is_rejected_before_runtime_execution() {
+        let adapter = Arc::new(RecordingAdapter {
+            requests: Mutex::new(Vec::new()),
+            outcome: Ok(OpenClawExecutionResult {
+                output: Value::Null,
+                summary: None,
+            }),
+        });
+        let executor = bridge(adapter.clone());
+        let mut unknown = request("plan", "step");
+        unknown.capability = "unknown.capability".to_owned();
+
+        assert_eq!(
+            executor.execute_step(unknown),
+            Err(PlanRuntimeExecutionError::SkillNotFound {
+                capability: "unknown.capability".to_owned(),
+            })
+        );
+        assert!(adapter.requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unsupported_skill_executor_is_rejected_before_openclaw() {
+        let adapter = Arc::new(RecordingAdapter {
+            requests: Mutex::new(Vec::new()),
+            outcome: Ok(OpenClawExecutionResult {
+                output: Value::Null,
+                summary: None,
+            }),
+        });
+        let executor = bridge(adapter.clone());
+        let mut browser = request("plan", "step");
+        browser.capability = "browser.search".to_owned();
+
+        assert_eq!(
+            executor.execute_step(browser),
+            Err(PlanRuntimeExecutionError::UnsupportedExecutor {
+                capability: "browser.search".to_owned(),
+                executor: "mcp".to_owned(),
+            })
+        );
+        assert!(adapter.requests.lock().unwrap().is_empty());
     }
 
     #[test]
