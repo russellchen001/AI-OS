@@ -395,6 +395,7 @@ pub(crate) struct BeginOAuthInput {
     authorization_url: String,
     token_url: String,
     scopes: Vec<String>,
+    resource_project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -412,6 +413,7 @@ struct OAuthSession {
     provider_instance_id: String,
     client_id: String,
     token_url: String,
+    resource_project_id: Option<String>,
     redirect_uri: String,
     verifier: String,
     created_at: u64,
@@ -994,10 +996,21 @@ pub(crate) async fn refresh_provider_oauth(
     })
 }
 
-async fn read_current_access_token(account: &str) -> Result<String, String> {
+struct CurrentProviderCredential {
+    value: String,
+    oauth: bool,
+    resource_project_id: Option<String>,
+}
+
+async fn read_current_credential(account: &str) -> Result<CurrentProviderCredential, String> {
     let secret = read_secret(account)?;
     let Ok(mut token) = serde_json::from_slice::<Value>(&secret) else {
         return String::from_utf8(secret)
+            .map(|value| CurrentProviderCredential {
+                value,
+                oauth: false,
+                resource_project_id: None,
+            })
             .map_err(|_| "Provider credential in Keychain is invalid".to_owned());
     };
     let should_refresh = token
@@ -1012,11 +1025,43 @@ async fn read_current_access_token(account: &str) -> Result<String, String> {
     if should_refresh {
         token = refresh_oauth_token(account, &token).await?;
     }
-    token
+    let value = token
         .get("access_token")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| "OAuth response did not contain an access token".to_owned())
+        .ok_or_else(|| "OAuth response did not contain an access token".to_owned())?;
+    let resource_project_id = token
+        .pointer("/_aios/resourceProjectId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Ok(CurrentProviderCredential {
+        value,
+        oauth: true,
+        resource_project_id,
+    })
+}
+
+fn authenticate_provider_request(
+    request: reqwest::RequestBuilder,
+    auth: AuthStyle,
+    credential: CurrentProviderCredential,
+) -> reqwest::RequestBuilder {
+    match auth {
+        AuthStyle::Bearer => request.bearer_auth(credential.value),
+        AuthStyle::Anthropic => request
+            .header("x-api-key", credential.value)
+            .header("anthropic-version", "2023-06-01"),
+        AuthStyle::Google if credential.oauth => {
+            let request = request.bearer_auth(credential.value);
+            if let Some(project_id) = credential.resource_project_id {
+                request.header("x-goog-user-project", project_id)
+            } else {
+                request
+            }
+        }
+        AuthStyle::Google => request.header("x-goog-api-key", credential.value),
+        AuthStyle::None => request,
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1129,15 +1174,8 @@ async fn discover_models(
     let mut request = client.get(spec.models_url);
 
     if !matches!(spec.auth, AuthStyle::None) {
-        let secret = read_current_access_token(instance_id).await?;
-        request = match spec.auth {
-            AuthStyle::Bearer => request.bearer_auth(secret),
-            AuthStyle::Anthropic => request
-                .header("x-api-key", secret)
-                .header("anthropic-version", "2023-06-01"),
-            AuthStyle::Google => request.header("x-goog-api-key", secret),
-            AuthStyle::None => request,
-        };
+        let credential = read_current_credential(instance_id).await?;
+        request = authenticate_provider_request(request, spec.auth, credential);
     }
 
     let response = request
@@ -1366,6 +1404,7 @@ async fn complete_oauth_exchange(
                 "clientId": session.client_id,
                 "tokenUrl": session.token_url,
                 "expiresAt": expires_at.clone(),
+                "resourceProjectId": session.resource_project_id,
             }),
         );
 
@@ -1562,6 +1601,7 @@ pub(crate) async fn begin_provider_oauth(
         provider_instance_id: instance_id.to_owned(),
         client_id: input.client_id.trim().to_owned(),
         token_url: input.token_url,
+        resource_project_id: input.resource_project_id,
         redirect_uri: redirect_uri.clone(),
         verifier,
         created_at,
@@ -1700,7 +1740,7 @@ pub(crate) async fn generate_provider_response(
     let secret = if matches!(spec.auth, AuthStyle::None) {
         None
     } else {
-        Some(read_current_access_token(instance_id).await?)
+        Some(read_current_credential(instance_id).await?)
     };
 
     let (mut request, body) = match provider_id {
@@ -1747,15 +1787,8 @@ pub(crate) async fn generate_provider_response(
         _ => return Err("this Provider cannot answer through AI Center yet".to_owned()),
     };
 
-    if let Some(secret) = secret {
-        request = match spec.auth {
-            AuthStyle::Bearer => request.bearer_auth(secret),
-            AuthStyle::Anthropic => request
-                .header("x-api-key", secret)
-                .header("anthropic-version", "2023-06-01"),
-            AuthStyle::Google => request.header("x-goog-api-key", secret),
-            AuthStyle::None => request,
-        };
+    if let Some(credential) = secret {
+        request = authenticate_provider_request(request, spec.auth, credential);
     }
     let response = request
         .json(&body)
@@ -1866,7 +1899,7 @@ pub(crate) async fn start_provider_response_stream(
     let secret = if matches!(spec.auth, AuthStyle::None) {
         None
     } else {
-        Some(read_current_access_token(instance_id).await?)
+        Some(read_current_credential(instance_id).await?)
     };
     let (mut request, body) = match provider_id {
         "openai" => (
@@ -1914,15 +1947,8 @@ pub(crate) async fn start_provider_response_stream(
         ),
         _ => return Err("this Provider cannot stream through AI Center yet".to_owned()),
     };
-    if let Some(secret) = secret {
-        request = match spec.auth {
-            AuthStyle::Bearer => request.bearer_auth(secret),
-            AuthStyle::Anthropic => request
-                .header("x-api-key", secret)
-                .header("anthropic-version", "2023-06-01"),
-            AuthStyle::Google => request.header("x-goog-api-key", secret),
-            AuthStyle::None => request,
-        };
+    if let Some(credential) = secret {
+        request = authenticate_provider_request(request, spec.auth, credential);
     }
     ai_center_requests()
         .lock()
@@ -2110,6 +2136,39 @@ mod tests {
         ] {
             assert_eq!(oauth_credential_metadata(&token), (None, false));
         }
+    }
+
+    #[test]
+    fn google_authentication_distinguishes_oauth_from_api_keys() {
+        let client = reqwest::Client::new();
+        let oauth = authenticate_provider_request(
+            client.get("https://example.com/models"),
+            AuthStyle::Google,
+            CurrentProviderCredential {
+                value: "oauth-access".to_owned(),
+                oauth: true,
+                resource_project_id: Some("ai-os-test".to_owned()),
+            },
+        )
+        .build()
+        .unwrap();
+        assert_eq!(oauth.headers()["authorization"], "Bearer oauth-access");
+        assert_eq!(oauth.headers()["x-goog-user-project"], "ai-os-test");
+        assert!(!oauth.headers().contains_key("x-goog-api-key"));
+
+        let api_key = authenticate_provider_request(
+            client.get("https://example.com/models"),
+            AuthStyle::Google,
+            CurrentProviderCredential {
+                value: "api-key".to_owned(),
+                oauth: false,
+                resource_project_id: None,
+            },
+        )
+        .build()
+        .unwrap();
+        assert_eq!(api_key.headers()["x-goog-api-key"], "api-key");
+        assert!(!api_key.headers().contains_key("authorization"));
     }
 
     #[test]
@@ -2371,6 +2430,7 @@ mod tests {
             provider_instance_id: "openai-default".to_owned(),
             client_id: "client".to_owned(),
             token_url: "https://example.com/token".to_owned(),
+            resource_project_id: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
             created_at: now,
@@ -2392,6 +2452,7 @@ mod tests {
             provider_instance_id: "openai-default".to_owned(),
             client_id: "client".to_owned(),
             token_url: "https://example.com/token".to_owned(),
+            resource_project_id: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
             created_at: now,
@@ -2422,6 +2483,7 @@ mod tests {
             provider_instance_id: "google-default".to_owned(),
             client_id: "client".to_owned(),
             token_url: "https://example.com/token".to_owned(),
+            resource_project_id: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
             created_at: now.saturating_sub(120),
@@ -2443,6 +2505,7 @@ mod tests {
             provider_instance_id: "openai-default".to_owned(),
             client_id: "client".to_owned(),
             token_url: "https://example.com/token".to_owned(),
+            resource_project_id: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
             created_at: now,

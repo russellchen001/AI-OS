@@ -48,6 +48,7 @@ export type OAuthProviderConfiguration = {
   authorizationUrl: string;
   tokenUrl: string;
   scopes: string[];
+  resourceProjectId?: string;
 };
 
 export type BeginOAuthResult = {
@@ -108,12 +109,19 @@ export function getProviderOAuthConfiguration(
   const clientId = read("CLIENT_ID");
   const authorizationUrl = read("AUTHORIZATION_URL");
   const tokenUrl = read("TOKEN_URL");
+  const resourceProjectId = read("RESOURCE_PROJECT_ID");
   const scopes = read("SCOPES")
     .split(/[ ,]+/)
     .map((scope) => scope.trim())
     .filter(Boolean);
 
-  if (!clientId || !authorizationUrl || !tokenUrl || scopes.length === 0) {
+  if (
+    !clientId ||
+    !authorizationUrl ||
+    !tokenUrl ||
+    scopes.length === 0 ||
+    (providerId === "google" && !resourceProjectId)
+  ) {
     return undefined;
   }
 
@@ -124,6 +132,7 @@ export function getProviderOAuthConfiguration(
     authorizationUrl,
     tokenUrl,
     scopes,
+    resourceProjectId: resourceProjectId || undefined,
   };
 }
 

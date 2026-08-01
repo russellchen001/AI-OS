@@ -11,6 +11,20 @@ VITE_AI_OS_PROVIDER_OAUTH_TOKEN_URL=https://provider.example/token
 VITE_AI_OS_PROVIDER_OAUTH_SCOPES=scope-one scope-two
 ```
 
+Google OAuth also requires the quota/resource project used for Gemini API calls:
+
+```dotenv
+VITE_AI_OS_GOOGLE_OAUTH_RESOURCE_PROJECT_ID=your-google-cloud-project-id
+```
+
+For the Google Gemini OAuth path, use these official endpoints and scopes:
+
+```dotenv
+VITE_AI_OS_GOOGLE_OAUTH_AUTHORIZATION_URL=https://accounts.google.com/o/oauth2/v2/auth
+VITE_AI_OS_GOOGLE_OAUTH_TOKEN_URL=https://oauth2.googleapis.com/token
+VITE_AI_OS_GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever
+```
+
 Use a public/native OAuth client that supports Authorization Code with PKCE and loopback redirects. Do not put a client secret in Vite environment variables; Vite values are part of the application bundle. Register loopback HTTP redirects with the Provider according to its native-app policy. AI-OS chooses an ephemeral `127.0.0.1` port for each attempt.
 
 ## End-to-end verification
