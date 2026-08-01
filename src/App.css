@@ -2823,6 +2823,22 @@ a {
   color: #24242a;
 }
 
+.message-invocation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.message-invocation span {
+  padding: 3px 7px;
+  border: 1px solid var(--workspace-line);
+  border-radius: 999px;
+  background: var(--workspace-panel);
+}
+
 .conversation-history {
   border-top: 1px solid rgb(120 125 140 / 14%);
   display: grid;
@@ -8034,6 +8050,29 @@ a {
 
 .manage-models-button {
   padding: 0 12px;
+}
+
+.local-provider-actions {
+  display: grid;
+  grid-template-columns: minmax(132px, 1fr) auto;
+  gap: 7px;
+}
+
+.local-provider-primary {
+  border-color: #277c61;
+  background: #176b52;
+  color: #fff;
+}
+
+.local-provider-refresh {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .manage-models-button span {

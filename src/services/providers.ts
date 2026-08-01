@@ -28,11 +28,12 @@ const KNOWN_MODELS: Record<string, Array<{ id: string; name: string }>> = {
   grok: [{ id: "grok-4.5", name: "Grok 4.5" }],
   deepseek: [
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
-    { id: "deepseek-reasoner", name: "DeepSeek Reasoner" },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
   ],
+  openrouter: [{ id: "openrouter/auto", name: "OpenRouter Auto" }],
   doubao: [{ id: "doubao-seed", name: "Doubao Seed" }],
-  kimi: [{ id: "kimi-k2", name: "Kimi K2" }],
-  meta: [{ id: "llama", name: "Llama (host model)" }],
+  kimi: [{ id: "kimi-for-coding", name: "Kimi for Coding" }],
+  meta: [{ id: "muse-spark-1.1", name: "Muse Spark 1.1" }],
   compatible: [{ id: "default", name: "Default model" }],
 };
 
@@ -112,6 +113,15 @@ const OPENAI_CODEX_OAUTH_CONFIGURATION = {
   },
 } satisfies Omit<OAuthProviderConfiguration, "providerId" | "providerInstanceId">;
 
+const OPENROUTER_OAUTH_CONFIGURATION = {
+  // OpenRouter's PKCE exchange does not require a registered client ID.
+  // This local identifier is retained only in AI-OS session metadata.
+  clientId: "ai-os-openrouter-pkce",
+  authorizationUrl: "https://openrouter.ai/auth",
+  tokenUrl: "https://openrouter.ai/api/v1/auth/keys",
+  scopes: [],
+} satisfies Omit<OAuthProviderConfiguration, "providerId" | "providerInstanceId">;
+
 export function getProviderOAuthConfiguration(
   providerId: string,
   providerInstanceId: string,
@@ -121,6 +131,14 @@ export function getProviderOAuthConfiguration(
       providerId,
       providerInstanceId,
       ...OPENAI_CODEX_OAUTH_CONFIGURATION,
+    };
+  }
+
+  if (providerId === "openrouter") {
+    return {
+      providerId,
+      providerInstanceId,
+      ...OPENROUTER_OAUTH_CONFIGURATION,
     };
   }
 

@@ -26,6 +26,16 @@ import {
 
 type ChatMessage = ConversationMessage;
 
+function invocationCost(message: ChatMessage): string {
+  const metadata = message.invocation;
+  if (!metadata) return "";
+  if (!metadata.pricingMatched || metadata.estimatedCostUsd === undefined) {
+    return "Cost unavailable";
+  }
+  if (metadata.estimatedCostUsd === 0) return "$0.00 estimated";
+  return `$${metadata.estimatedCostUsd.toFixed(4)} estimated`;
+}
+
 type ChatPageProps = {
   conversationId: string;
   onOpenMyAi: () => void;
@@ -152,6 +162,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                     ...message,
                     content:
                       message.content || "Response stopped before any text was received.",
+                    invocation: answer.metadata,
                   }
                 : message,
             ),
@@ -166,6 +177,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 role: "assistant",
                 content: answer.text || "Response stopped before any text was received.",
                 createdAt: new Date().toISOString(),
+                invocation: answer.metadata,
               },
             ],
           });
@@ -176,6 +188,13 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
           modelId: answer.modelId,
           text: answer.text,
         });
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantMessageId
+              ? { ...message, invocation: answer.metadata }
+              : message,
+          ),
+        );
         saveConversation({
           ...nextConversation,
           messages: [
@@ -185,6 +204,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               role: "assistant",
               content: answer.text,
               createdAt: new Date().toISOString(),
+              invocation: answer.metadata,
             },
           ],
         });
@@ -282,6 +302,17 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                   fallback={isSubmitting ? "Thinking…" : ""}
                   artifactSource="Chat"
                 />
+                {message.invocation && (
+                  <div className="message-invocation" aria-label="AI response details">
+                    <span>{message.invocation.source === "local" ? "On this Mac" : "Cloud"}</span>
+                    <span>{message.invocation.providerId} · {message.invocation.modelId}</span>
+                    <span>{message.invocation.latencyMs.toLocaleString()} ms</span>
+                    <span>{invocationCost(message)}</span>
+                    {message.invocation.fallbackOccurred && (
+                      <span>{message.invocation.attempts.length} attempts</span>
+                    )}
+                  </div>
+                )}
                 {message.content && (
                   <button
                     type="button"

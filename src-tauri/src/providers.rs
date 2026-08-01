@@ -38,6 +38,8 @@ pub(crate) enum ProviderCredentialKind {
 pub(crate) enum ProviderAuthenticationMethod {
     ApiKey,
 
+    CliAccount,
+
     #[serde(rename = "oauth-pkce")]
     OAuthPkce,
 
@@ -329,6 +331,23 @@ const OAUTH_LOOPBACK_MAX_CONNECTIONS: usize = 8;
 static AI_CENTER_REQUESTS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
 static OAUTH_SESSIONS: OnceLock<Mutex<HashMap<String, OAuthSession>>> = OnceLock::new();
 static OAUTH_CANCELLATIONS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
+static GROK_DEVICE_SESSIONS: OnceLock<Mutex<HashMap<String, GrokDeviceSession>>> = OnceLock::new();
+static KIMI_DEVICE_SESSIONS: OnceLock<Mutex<HashMap<String, GrokDeviceSession>>> = OnceLock::new();
+
+const GROK_OAUTH_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+const GROK_OAUTH_ISSUER: &str = "https://auth.x.ai";
+const GROK_OAUTH_SCOPES: &str = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write";
+const KIMI_OAUTH_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
+const KIMI_OAUTH_ISSUER: &str = "https://auth.kimi.com";
+
+#[derive(Clone)]
+struct GrokDeviceSession {
+    provider_instance_id: String,
+    device_code: String,
+    interval_seconds: u64,
+    expires_at: u64,
+    cancellation: CancellationToken,
+}
 
 fn ai_center_requests() -> &'static Mutex<HashMap<String, CancellationToken>> {
     AI_CENTER_REQUESTS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -340,6 +359,14 @@ fn oauth_sessions() -> &'static Mutex<HashMap<String, OAuthSession>> {
 
 fn oauth_cancellations() -> &'static Mutex<HashMap<String, CancellationToken>> {
     OAUTH_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn grok_device_sessions() -> &'static Mutex<HashMap<String, GrokDeviceSession>> {
+    GROK_DEVICE_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn kimi_device_sessions() -> &'static Mutex<HashMap<String, GrokDeviceSession>> {
+    KIMI_DEVICE_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn unix_timestamp_seconds() -> Result<u64, String> {
@@ -593,6 +620,31 @@ pub(crate) struct RefreshOAuthResult {
     refreshable: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BeginGrokDeviceAuthResult {
+    state: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    user_code: String,
+    expires_in: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrokDeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+    interval: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrokDeviceTokenError {
+    error: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GenerateProviderResponseInput {
@@ -709,7 +761,7 @@ fn provider_adapter(
 }
 
 fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
-    vec![
+    let mut registrations = vec![
         provider_adapter(
             "openai",
             "OpenAI",
@@ -731,7 +783,10 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             "anthropic",
             "Anthropic",
             ProviderAdapterKind::Native,
-            &[ProviderCredentialKind::ApiKey],
+            &[
+                ProviderCredentialKind::ApiKey,
+                ProviderCredentialKind::Local,
+            ],
             &["chat", "reasoning", "vision", "tool-use"],
             true,
             false,
@@ -762,13 +817,16 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             "grok",
             "xAI",
             ProviderAdapterKind::Native,
-            &[ProviderCredentialKind::ApiKey],
+            &[
+                ProviderCredentialKind::OAuth,
+                ProviderCredentialKind::ApiKey,
+            ],
             &["chat", "reasoning", "vision", "tool-use"],
             true,
-            false,
+            true,
             Some(ProviderAdapterSpec {
                 id: "grok",
-                models_url: "https://api.x.ai/v1/models",
+                models_url: "https://api.x.ai/v1/language-models",
                 auth: AuthStyle::Bearer,
             }),
         ),
@@ -777,12 +835,29 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             "DeepSeek",
             ProviderAdapterKind::Native,
             &[ProviderCredentialKind::ApiKey],
-            &["chat", "tool-use"],
+            &["chat", "reasoning", "tool-use"],
             true,
             false,
             Some(ProviderAdapterSpec {
                 id: "deepseek",
-                models_url: "https://api.deepseek.com/v1/models",
+                models_url: "https://api.deepseek.com/models",
+                auth: AuthStyle::Bearer,
+            }),
+        ),
+        provider_adapter(
+            "openrouter",
+            "OpenRouter",
+            ProviderAdapterKind::Native,
+            &[
+                ProviderCredentialKind::OAuth,
+                ProviderCredentialKind::ApiKey,
+            ],
+            &["chat", "reasoning", "vision", "tool-use"],
+            true,
+            false,
+            Some(ProviderAdapterSpec {
+                id: "openrouter",
+                models_url: "https://openrouter.ai/api/v1/models",
                 auth: AuthStyle::Bearer,
             }),
         ),
@@ -798,23 +873,34 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
         ),
         provider_adapter(
             "kimi",
-            "Kimi",
-            ProviderAdapterKind::Catalog,
-            &[ProviderCredentialKind::ApiKey],
-            &["chat", "tool-use"],
+            "Kimi Code",
+            ProviderAdapterKind::Native,
+            &[
+                ProviderCredentialKind::OAuth,
+                ProviderCredentialKind::ApiKey,
+            ],
+            &["chat", "reasoning", "vision", "tool-use"],
             true,
-            false,
-            None,
+            true,
+            Some(ProviderAdapterSpec {
+                id: "kimi",
+                models_url: "https://api.kimi.com/coding/v1/models",
+                auth: AuthStyle::Bearer,
+            }),
         ),
         provider_adapter(
             "meta",
-            "Meta",
-            ProviderAdapterKind::Catalog,
+            "Meta Model API",
+            ProviderAdapterKind::Native,
             &[ProviderCredentialKind::ApiKey],
-            &["chat", "tool-use"],
+            &["chat", "reasoning", "vision", "tool-use"],
             true,
             false,
-            None,
+            Some(ProviderAdapterSpec {
+                id: "meta",
+                models_url: "https://api.meta.ai/v1/models",
+                auth: AuthStyle::Bearer,
+            }),
         ),
         provider_adapter(
             "compatible",
@@ -840,7 +926,55 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
                 auth: AuthStyle::None,
             }),
         ),
-    ]
+    ];
+
+    if let Some(anthropic) = registrations
+        .iter_mut()
+        .find(|registration| registration.descriptor.provider_id == "anthropic")
+    {
+        anthropic
+            .descriptor
+            .authentication_methods
+            .retain(|method| *method != ProviderAuthenticationMethod::Local);
+        anthropic
+            .descriptor
+            .authentication_methods
+            .push(ProviderAuthenticationMethod::CliAccount);
+    }
+
+    if let Some(grok) = registrations
+        .iter_mut()
+        .find(|registration| registration.descriptor.provider_id == "grok")
+    {
+        grok.descriptor.authentication_methods.retain(|method| {
+            !matches!(
+                method,
+                ProviderAuthenticationMethod::OAuthPkce
+                    | ProviderAuthenticationMethod::OAuthLoopback
+            )
+        });
+        grok.descriptor
+            .authentication_methods
+            .insert(0, ProviderAuthenticationMethod::DeviceCode);
+    }
+
+    if let Some(kimi) = registrations
+        .iter_mut()
+        .find(|registration| registration.descriptor.provider_id == "kimi")
+    {
+        kimi.descriptor.authentication_methods.retain(|method| {
+            !matches!(
+                method,
+                ProviderAuthenticationMethod::OAuthPkce
+                    | ProviderAuthenticationMethod::OAuthLoopback
+            )
+        });
+        kimi.descriptor
+            .authentication_methods
+            .insert(0, ProviderAuthenticationMethod::DeviceCode);
+    }
+
+    registrations
 }
 
 fn find_provider_adapter(provider_id: &str) -> Option<ProviderAdapterRegistration> {
@@ -1045,6 +1179,370 @@ pub(crate) async fn refresh_provider_oauth(
     })
 }
 
+#[tauri::command]
+pub(crate) async fn begin_grok_device_auth(
+    query: ProviderCredentialQuery,
+) -> Result<BeginGrokDeviceAuthResult, String> {
+    let instance_id = validate_instance_id(&query.provider_instance_id)?.to_owned();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "AI-OS could not initialize Grok sign-in".to_owned())?;
+    let response = client
+        .post(format!("{GROK_OAUTH_ISSUER}/oauth2/device/code"))
+        .header("x-grok-client-surface", "ui")
+        .header("x-grok-client-version", env!("CARGO_PKG_VERSION"))
+        .form(&[
+            ("client_id", GROK_OAUTH_CLIENT_ID),
+            ("scope", GROK_OAUTH_SCOPES),
+            ("referrer", "grok-build"),
+        ])
+        .send()
+        .await
+        .map_err(|_| "Grok sign-in service could not be reached".to_owned())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Grok sign-in could not start (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
+    let device: GrokDeviceCodeResponse = response
+        .json()
+        .await
+        .map_err(|_| "Grok returned an invalid sign-in response".to_owned())?;
+    validate_https_url(&device.verification_uri, "Grok verification URL")?;
+    if let Some(url) = device.verification_uri_complete.as_deref() {
+        validate_https_url(url, "Grok verification URL")?;
+    }
+    if device.user_code.is_empty()
+        || !device
+            .user_code
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return Err("Grok returned an invalid verification code".to_owned());
+    }
+    let state = uuid::Uuid::new_v4().simple().to_string();
+    let expires_at = unix_timestamp_seconds()?
+        .checked_add(device.expires_in)
+        .ok_or_else(|| "Grok sign-in expiry is invalid".to_owned())?;
+    grok_device_sessions()
+        .lock()
+        .map_err(|_| "Grok sign-in state is unavailable".to_owned())?
+        .insert(
+            state.clone(),
+            GrokDeviceSession {
+                provider_instance_id: instance_id,
+                device_code: device.device_code,
+                interval_seconds: device.interval.unwrap_or(5).max(1),
+                expires_at,
+                cancellation: CancellationToken::new(),
+            },
+        );
+    Ok(BeginGrokDeviceAuthResult {
+        state,
+        verification_uri: device.verification_uri,
+        verification_uri_complete: device.verification_uri_complete,
+        user_code: device.user_code,
+        expires_in: device.expires_in,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn complete_grok_device_auth(
+    state: String,
+) -> Result<CompleteOAuthResult, String> {
+    let session = grok_device_sessions()
+        .lock()
+        .map_err(|_| "Grok sign-in state is unavailable".to_owned())?
+        .get(state.trim())
+        .cloned()
+        .ok_or_else(|| "Grok sign-in is invalid or expired".to_owned())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "AI-OS could not initialize Grok sign-in".to_owned())?;
+    let mut interval = Duration::from_secs(session.interval_seconds);
+    loop {
+        if unix_timestamp_seconds()? >= session.expires_at {
+            break;
+        }
+        tokio::select! {
+            _ = session.cancellation.cancelled() => {
+                grok_device_sessions().lock().ok().map(|mut sessions| sessions.remove(state.trim()));
+                return Err("Grok sign-in was cancelled".to_owned());
+            }
+            _ = tokio::time::sleep(interval) => {}
+        }
+        let response = client
+            .post(format!("{GROK_OAUTH_ISSUER}/oauth2/token"))
+            .header("x-grok-client-surface", "ui")
+            .header("x-grok-client-version", env!("CARGO_PKG_VERSION"))
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", session.device_code.as_str()),
+                ("client_id", GROK_OAUTH_CLIENT_ID),
+            ])
+            .send()
+            .await
+            .map_err(|_| "Grok sign-in service could not be reached".to_owned())?;
+        if response.status().is_success() {
+            let mut token: Value = response
+                .json()
+                .await
+                .map_err(|_| "Grok returned an invalid token".to_owned())?;
+            token
+                .get("access_token")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Grok sign-in returned no access token".to_owned())?;
+            let expires_at = token
+                .get("expires_in")
+                .and_then(Value::as_i64)
+                .map(|seconds| {
+                    (chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339()
+                });
+            let account_id = token
+                .get("access_token")
+                .and_then(Value::as_str)
+                .and_then(jwt_subject);
+            token
+                .as_object_mut()
+                .ok_or_else(|| "Grok returned an invalid token".to_owned())?
+                .insert(
+                    "_aios".to_owned(),
+                    serde_json::json!({
+                        "providerId": "grok",
+                        "clientId": GROK_OAUTH_CLIENT_ID,
+                        "tokenUrl": format!("{GROK_OAUTH_ISSUER}/oauth2/token"),
+                        "expiresAt": expires_at.clone(),
+                        "routeKind": "grok-oauth",
+                        "accountId": account_id,
+                    }),
+                );
+            let refreshable = token.get("refresh_token").is_some();
+            store_secret(
+                &session.provider_instance_id,
+                &serde_json::to_vec(&token)
+                    .map_err(|_| "AI-OS could not secure the Grok token".to_owned())?,
+            )?;
+            grok_device_sessions()
+                .lock()
+                .ok()
+                .map(|mut sessions| sessions.remove(state.trim()));
+            return Ok(CompleteOAuthResult {
+                provider_instance_id: session.provider_instance_id,
+                expires_at,
+                refreshable,
+            });
+        }
+        let error: GrokDeviceTokenError = response
+            .json()
+            .await
+            .map_err(|_| "Grok returned an invalid sign-in status".to_owned())?;
+        match error.error.as_str() {
+            "authorization_pending" => {}
+            "slow_down" => interval += Duration::from_secs(5),
+            "access_denied" => {
+                grok_device_sessions()
+                    .lock()
+                    .ok()
+                    .map(|mut sessions| sessions.remove(state.trim()));
+                return Err("Grok sign-in was denied".to_owned());
+            }
+            "expired_token" => break,
+            _ => return Err("Grok token exchange failed".to_owned()),
+        }
+    }
+    grok_device_sessions()
+        .lock()
+        .ok()
+        .map(|mut sessions| sessions.remove(state.trim()));
+    Err("Grok sign-in expired. Please try again.".to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn cancel_grok_device_auth(state: String) -> Result<bool, String> {
+    let session = grok_device_sessions()
+        .lock()
+        .map_err(|_| "Grok sign-in state is unavailable".to_owned())?
+        .remove(state.trim());
+    if let Some(session) = session {
+        session.cancellation.cancel();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn begin_kimi_device_auth(
+    query: ProviderCredentialQuery,
+) -> Result<BeginGrokDeviceAuthResult, String> {
+    let instance_id = validate_instance_id(&query.provider_instance_id)?.to_owned();
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "AI-OS could not initialize Kimi Code sign-in".to_owned())?
+        .post(format!(
+            "{KIMI_OAUTH_ISSUER}/api/oauth/device_authorization"
+        ))
+        .form(&[("client_id", KIMI_OAUTH_CLIENT_ID)])
+        .send()
+        .await
+        .map_err(|_| "Kimi Code sign-in service could not be reached".to_owned())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Kimi Code sign-in could not start (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
+    let device: GrokDeviceCodeResponse = response
+        .json()
+        .await
+        .map_err(|_| "Kimi Code returned an invalid sign-in response".to_owned())?;
+    validate_https_url(&device.verification_uri, "Kimi Code verification URL")?;
+    if let Some(url) = device.verification_uri_complete.as_deref() {
+        validate_https_url(url, "Kimi Code verification URL")?;
+    }
+    let state = uuid::Uuid::new_v4().simple().to_string();
+    let expires_at = unix_timestamp_seconds()?
+        .checked_add(device.expires_in)
+        .ok_or_else(|| "Kimi Code sign-in expiry is invalid".to_owned())?;
+    kimi_device_sessions()
+        .lock()
+        .map_err(|_| "Kimi Code sign-in state is unavailable".to_owned())?
+        .insert(
+            state.clone(),
+            GrokDeviceSession {
+                provider_instance_id: instance_id,
+                device_code: device.device_code,
+                interval_seconds: device.interval.unwrap_or(5).max(1),
+                expires_at,
+                cancellation: CancellationToken::new(),
+            },
+        );
+    Ok(BeginGrokDeviceAuthResult {
+        state,
+        verification_uri: device.verification_uri,
+        verification_uri_complete: device.verification_uri_complete,
+        user_code: device.user_code,
+        expires_in: device.expires_in,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn complete_kimi_device_auth(
+    state: String,
+) -> Result<CompleteOAuthResult, String> {
+    let session = kimi_device_sessions()
+        .lock()
+        .map_err(|_| "Kimi Code sign-in state is unavailable".to_owned())?
+        .get(state.trim())
+        .cloned()
+        .ok_or_else(|| "Kimi Code sign-in is invalid or expired".to_owned())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "AI-OS could not initialize Kimi Code sign-in".to_owned())?;
+    let mut interval = Duration::from_secs(session.interval_seconds);
+    loop {
+        if unix_timestamp_seconds()? >= session.expires_at {
+            break;
+        }
+        tokio::select! {
+            _ = session.cancellation.cancelled() => {
+                kimi_device_sessions().lock().ok().map(|mut sessions| sessions.remove(state.trim()));
+                return Err("Kimi Code sign-in was cancelled".to_owned());
+            }
+            _ = tokio::time::sleep(interval) => {}
+        }
+        let response = client
+            .post(format!("{KIMI_OAUTH_ISSUER}/api/oauth/token"))
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", session.device_code.as_str()),
+                ("client_id", KIMI_OAUTH_CLIENT_ID),
+            ])
+            .send()
+            .await
+            .map_err(|_| "Kimi Code sign-in service could not be reached".to_owned())?;
+        if response.status().is_success() {
+            let mut token: Value = response
+                .json()
+                .await
+                .map_err(|_| "Kimi Code returned an invalid token".to_owned())?;
+            token
+                .get("access_token")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Kimi Code sign-in returned no access token".to_owned())?;
+            let expires_at = token
+                .get("expires_in")
+                .and_then(Value::as_i64)
+                .map(|seconds| {
+                    (chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339()
+                });
+            token
+                .as_object_mut()
+                .ok_or_else(|| "Kimi Code returned an invalid token".to_owned())?
+                .insert(
+                    "_aios".to_owned(),
+                    serde_json::json!({
+                        "providerId": "kimi",
+                        "clientId": KIMI_OAUTH_CLIENT_ID,
+                        "tokenUrl": format!("{KIMI_OAUTH_ISSUER}/api/oauth/token"),
+                        "expiresAt": expires_at.clone(),
+                        "routeKind": "kimi-code-oauth"
+                    }),
+                );
+            let refreshable = token.get("refresh_token").is_some();
+            store_secret(
+                &session.provider_instance_id,
+                &serde_json::to_vec(&token)
+                    .map_err(|_| "AI-OS could not secure the Kimi Code token".to_owned())?,
+            )?;
+            kimi_device_sessions()
+                .lock()
+                .ok()
+                .map(|mut sessions| sessions.remove(state.trim()));
+            return Ok(CompleteOAuthResult {
+                provider_instance_id: session.provider_instance_id,
+                expires_at,
+                refreshable,
+            });
+        }
+        let error: GrokDeviceTokenError = response
+            .json()
+            .await
+            .map_err(|_| "Kimi Code returned an invalid sign-in status".to_owned())?;
+        match error.error.as_str() {
+            "authorization_pending" => {}
+            "slow_down" => interval += Duration::from_secs(5),
+            "access_denied" => return Err("Kimi Code sign-in was denied".to_owned()),
+            "expired_token" => break,
+            _ => return Err("Kimi Code token exchange failed".to_owned()),
+        }
+    }
+    kimi_device_sessions()
+        .lock()
+        .ok()
+        .map(|mut sessions| sessions.remove(state.trim()));
+    Err("Kimi Code sign-in expired. Please try again.".to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn cancel_kimi_device_auth(state: String) -> Result<bool, String> {
+    let session = kimi_device_sessions()
+        .lock()
+        .map_err(|_| "Kimi Code sign-in state is unavailable".to_owned())?
+        .remove(state.trim());
+    if let Some(session) = session {
+        session.cancellation.cancel();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 struct CurrentProviderCredential {
     value: String,
     oauth: bool,
@@ -1118,6 +1616,16 @@ fn authenticate_provider_request(
                     .header("originator", "ai-os");
                 if let Some(account_id) = credential.account_id {
                     request.header("ChatGPT-Account-ID", account_id)
+                } else {
+                    request
+                }
+            } else if credential.route_kind.as_deref() == Some("grok-oauth") {
+                let request = request
+                    .header("X-XAI-Token-Auth", "xai-grok-cli")
+                    .header("x-grok-client-version", env!("CARGO_PKG_VERSION"))
+                    .header("x-grok-client-mode", "ui");
+                if let Some(account_id) = credential.account_id {
+                    request.header("x-userid", account_id)
                 } else {
                     request
                 }
@@ -1229,6 +1737,7 @@ fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProvider
             let display_name = item
                 .get("display_name")
                 .or_else(|| item.get("displayName"))
+                .or_else(|| item.get("name"))
                 .and_then(Value::as_str)
                 .unwrap_or(id);
             Some(DiscoveredProviderModel {
@@ -1256,14 +1765,14 @@ async fn discover_models(
     } else {
         None
     };
-    let models_url = if credential
+    let route_kind = credential
         .as_ref()
         .and_then(|credential| credential.route_kind.as_deref())
-        == Some("openai-codex")
-    {
-        "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0"
-    } else {
-        spec.models_url
+        .unwrap_or_default();
+    let models_url = match route_kind {
+        "openai-codex" => "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+        "grok-oauth" => "https://cli-chat-proxy.grok.com/v1/models",
+        _ => spec.models_url,
     };
     let mut request = client.get(models_url);
 
@@ -1460,22 +1969,30 @@ async fn complete_oauth_exchange(
         .build()
         .map_err(|_| "AI-OS could not initialize the OAuth connection".to_owned())?;
 
-    let mut form = vec![
-        ("grant_type", "authorization_code"),
-        ("client_id", session.client_id.as_str()),
-        ("code", code.trim()),
-        ("redirect_uri", session.redirect_uri.as_str()),
-        ("code_verifier", session.verifier.as_str()),
-    ];
-    if let Some(secret) = session.client_secret.as_deref() {
-        form.push(("client_secret", secret));
+    let response = if provider_id == "openrouter" {
+        client
+            .post(&session.token_url)
+            .json(&serde_json::json!({
+                "code": code.trim(),
+                "code_verifier": session.verifier.as_str(),
+                "code_challenge_method": "S256"
+            }))
+            .send()
+            .await
+    } else {
+        let mut form = vec![
+            ("grant_type", "authorization_code"),
+            ("client_id", session.client_id.as_str()),
+            ("code", code.trim()),
+            ("redirect_uri", session.redirect_uri.as_str()),
+            ("code_verifier", session.verifier.as_str()),
+        ];
+        if let Some(secret) = session.client_secret.as_deref() {
+            form.push(("client_secret", secret));
+        }
+        client.post(&session.token_url).form(&form).send().await
     }
-    let response = client
-        .post(&session.token_url)
-        .form(&form)
-        .send()
-        .await
-        .map_err(|_| "OAuth token service could not be reached".to_owned())?;
+    .map_err(|_| "OAuth token service could not be reached".to_owned())?;
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
@@ -1487,6 +2004,21 @@ async fn complete_oauth_exchange(
         .json()
         .await
         .map_err(|_| "OAuth provider returned an invalid token".to_owned())?;
+
+    if provider_id == "openrouter" {
+        let key = token
+            .get("key")
+            .and_then(Value::as_str)
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| "OpenRouter account connection returned no API key".to_owned())?
+            .to_owned();
+        let user_id = token.get("user_id").cloned().unwrap_or(Value::Null);
+        token = serde_json::json!({
+            "access_token": key,
+            "token_type": "Bearer",
+            "openrouter_user_id": user_id
+        });
+    }
 
     token
         .get("access_token")
@@ -1544,6 +2076,17 @@ fn chatgpt_account_id_from_jwt(token: &str) -> Option<String> {
     claims
         .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
         .or_else(|| claims.get("chatgpt_account_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty() && value.len() <= 256)
+        .map(str::to_owned)
+}
+
+fn jwt_subject(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: Value = serde_json::from_slice(&decoded).ok()?;
+    claims
+        .get("sub")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty() && value.len() <= 256)
         .map(str::to_owned)
@@ -1766,7 +2309,11 @@ pub(crate) async fn begin_provider_oauth(
         client_secret: read_oauth_client_secret(provider_id)?,
         token_url: input.token_url,
         resource_project_id: input.resource_project_id,
-        route_kind: (provider_id == "openai").then(|| "openai-codex".to_owned()),
+        route_kind: match provider_id {
+            "openai" => Some("openai-codex".to_owned()),
+            "openrouter" => Some("openrouter-oauth".to_owned()),
+            _ => None,
+        },
         redirect_uri: redirect_uri.clone(),
         verifier,
         created_at,
@@ -1787,15 +2334,24 @@ pub(crate) async fn begin_provider_oauth(
         return Err("OAuth cancellation session already exists".to_owned());
     }
 
-    authorization_url
-        .query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &session.client_id)
-        .append_pair("redirect_uri", &session.redirect_uri)
-        .append_pair("scope", &input.scopes.join(" "))
-        .append_pair("state", &state)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256");
+    if provider_id == "openrouter" {
+        let callback_url = format!("{}?state={state}", session.redirect_uri);
+        authorization_url
+            .query_pairs_mut()
+            .append_pair("callback_url", &callback_url)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256");
+    } else {
+        authorization_url
+            .query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &session.client_id)
+            .append_pair("redirect_uri", &session.redirect_uri)
+            .append_pair("scope", &input.scopes.join(" "))
+            .append_pair("state", &state)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256");
+    }
     if let Some(parameters) = input.authorization_params {
         for (key, value) in parameters {
             if !matches!(
@@ -1932,6 +2488,10 @@ pub(crate) async fn generate_provider_response(
         .as_ref()
         .and_then(|credential| credential.route_kind.as_deref())
         == Some("openai-codex");
+    let uses_grok_oauth = secret
+        .as_ref()
+        .and_then(|credential| credential.route_kind.as_deref())
+        == Some("grok-oauth");
 
     let (mut request, body) = match provider_id {
         "openai" => (
@@ -1961,14 +2521,43 @@ pub(crate) async fn generate_provider_response(
             serde_json::json!({"contents": [{"parts": [{"text": prompt}]}]}),
         ),
         "grok" => (
-            client.post("https://api.x.ai/v1/chat/completions"),
+            client.post(if uses_grok_oauth {
+                "https://cli-chat-proxy.grok.com/v1/responses"
+            } else {
+                "https://api.x.ai/v1/chat/completions"
+            }),
+            if uses_grok_oauth {
+                serde_json::json!({"model": model_id, "input": prompt, "store": false})
+            } else {
+                serde_json::json!({
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": prompt}]
+                })
+            },
+        ),
+        "deepseek" => (
+            client.post("https://api.deepseek.com/chat/completions"),
             serde_json::json!({
                 "model": model_id,
                 "messages": [{"role": "user", "content": prompt}]
             }),
         ),
-        "deepseek" => (
-            client.post("https://api.deepseek.com/v1/chat/completions"),
+        "openrouter" => (
+            client.post("https://openrouter.ai/api/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}]
+            }),
+        ),
+        "kimi" => (
+            client.post("https://api.kimi.com/coding/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}]
+            }),
+        ),
+        "meta" => (
+            client.post("https://api.meta.ai/v1/chat/completions"),
             serde_json::json!({
                 "model": model_id,
                 "messages": [{"role": "user", "content": prompt}]
@@ -2007,6 +2596,7 @@ pub(crate) async fn generate_provider_response(
         .map_err(|_| "The selected Provider returned an unreadable response".to_owned())?;
     let text = match provider_id {
         "openai" => extract_openai_response_text(&body),
+        "grok" if uses_grok_oauth => extract_openai_response_text(&body),
         "anthropic" => body
             .pointer("/content/0/text")
             .and_then(Value::as_str)
@@ -2034,9 +2624,9 @@ pub(crate) async fn generate_provider_response(
     })
 }
 
-fn stream_text(provider_id: &str, value: &Value) -> Option<String> {
+fn stream_text(provider_id: &str, uses_responses_api: bool, value: &Value) -> Option<String> {
     match provider_id {
-        "openai" => value
+        _ if uses_responses_api => value
             .get("delta")
             .and_then(Value::as_str)
             .filter(|_| {
@@ -2103,6 +2693,10 @@ pub(crate) async fn start_provider_response_stream(
         .as_ref()
         .and_then(|credential| credential.route_kind.as_deref())
         == Some("openai-codex");
+    let uses_grok_oauth = secret
+        .as_ref()
+        .and_then(|credential| credential.route_kind.as_deref())
+        == Some("grok-oauth");
     let (mut request, body) = match provider_id {
         "openai" => (
             client.post(if uses_openai_codex {
@@ -2136,14 +2730,43 @@ pub(crate) async fn start_provider_response_stream(
             }),
         ),
         "grok" => (
-            client.post("https://api.x.ai/v1/chat/completions"),
+            client.post(if uses_grok_oauth {
+                "https://cli-chat-proxy.grok.com/v1/responses"
+            } else {
+                "https://api.x.ai/v1/chat/completions"
+            }),
+            if uses_grok_oauth {
+                serde_json::json!({"model": model_id, "input": messages, "stream": true, "store": false})
+            } else {
+                serde_json::json!({
+                    "model": model_id, "stream": true,
+                    "messages": messages
+                })
+            },
+        ),
+        "deepseek" => (
+            client.post("https://api.deepseek.com/chat/completions"),
             serde_json::json!({
                 "model": model_id, "stream": true,
                 "messages": messages
             }),
         ),
-        "deepseek" => (
-            client.post("https://api.deepseek.com/v1/chat/completions"),
+        "openrouter" => (
+            client.post("https://openrouter.ai/api/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id, "stream": true,
+                "messages": messages
+            }),
+        ),
+        "kimi" => (
+            client.post("https://api.kimi.com/coding/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id, "stream": true,
+                "messages": messages
+            }),
+        ),
+        "meta" => (
+            client.post("https://api.meta.ai/v1/chat/completions"),
             serde_json::json!({
                 "model": model_id, "stream": true,
                 "messages": messages
@@ -2251,7 +2874,9 @@ pub(crate) async fn start_provider_response_stream(
                 continue;
             }
             if let Ok(value) = serde_json::from_str::<Value>(data) {
-                if let Some(text) = stream_text(provider_id, &value) {
+                if let Some(text) =
+                    stream_text(provider_id, uses_openai_codex || uses_grok_oauth, &value)
+                {
                     let _ = app.emit(
                         "ai-center://chunk",
                         AiCenterChunkEvent {
@@ -2327,6 +2952,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ollama[0].id, "qwen:test");
+    }
+
+    #[test]
+    fn parses_openrouter_display_names() {
+        let models = parse_models(
+            "openrouter",
+            serde_json::json!({"data": [{"id": "vendor/model", "name": "Vendor Model"}]}),
+        )
+        .unwrap();
+
+        assert_eq!(models[0].id, "vendor/model");
+        assert_eq!(models[0].display_name, "Vendor Model");
     }
 
     #[test]
@@ -2497,6 +3134,7 @@ mod tests {
         assert_eq!(
             stream_text(
                 "openai",
+                true,
                 &serde_json::json!({
                     "type": "response.output_text.delta",
                     "delta": "A"
@@ -2506,7 +3144,12 @@ mod tests {
             Some("A")
         );
         assert_eq!(
-            stream_text("ollama", &serde_json::json!({"message": {"content": "B"}})).as_deref(),
+            stream_text(
+                "ollama",
+                false,
+                &serde_json::json!({"message": {"content": "B"}})
+            )
+            .as_deref(),
             Some("B")
         );
     }
@@ -2616,6 +3259,7 @@ mod tests {
                 "google",
                 "grok",
                 "deepseek",
+                "openrouter",
                 "doubao",
                 "kimi",
                 "meta",
@@ -2650,6 +3294,9 @@ mod tests {
             "google",
             "grok",
             "deepseek",
+            "openrouter",
+            "kimi",
+            "meta",
             "ollama",
         ] {
             let descriptor = get_provider_adapter(provider_id.to_owned()).unwrap();
@@ -2661,11 +3308,78 @@ mod tests {
     }
 
     #[test]
-    fn catalog_provider_is_visible_but_not_claimed_as_native() {
-        let descriptor = get_provider_adapter("kimi".to_owned()).unwrap();
+    fn grok_and_deepseek_use_current_official_api_key_model_catalogs() {
+        let grok = adapter_spec("grok").unwrap();
+        let deepseek = adapter_spec("deepseek").unwrap();
+
+        assert_eq!(grok.models_url, "https://api.x.ai/v1/language-models");
+        assert_eq!(deepseek.models_url, "https://api.deepseek.com/models");
+        assert!(matches!(grok.auth, AuthStyle::Bearer));
+        assert!(matches!(deepseek.auth, AuthStyle::Bearer));
+    }
+
+    #[test]
+    fn grok_advertises_device_login_and_api_key_without_generic_oauth() {
+        let grok = get_provider_adapter("grok".to_owned()).unwrap();
+
+        assert_eq!(
+            grok.authentication_methods,
+            vec![
+                ProviderAuthenticationMethod::DeviceCode,
+                ProviderAuthenticationMethod::ApiKey,
+            ]
+        );
+        assert!(grok.supports_token_refresh);
+    }
+
+    #[test]
+    fn kimi_code_advertises_official_device_login_and_api_key() {
+        let kimi = get_provider_adapter("kimi".to_owned()).unwrap();
+
+        assert_eq!(
+            kimi.authentication_methods,
+            vec![
+                ProviderAuthenticationMethod::DeviceCode,
+                ProviderAuthenticationMethod::ApiKey,
+            ]
+        );
+        assert_eq!(kimi.adapter_kind, ProviderAdapterKind::Native);
+        assert!(kimi.supports_token_refresh);
+        assert_eq!(
+            adapter_spec("kimi").unwrap().models_url,
+            "https://api.kimi.com/coding/v1/models"
+        );
+    }
+
+    #[test]
+    fn openrouter_advertises_pkce_account_connection_and_api_key() {
+        let openrouter = get_provider_adapter("openrouter".to_owned()).unwrap();
+
+        assert_eq!(
+            openrouter.authentication_methods,
+            vec![
+                ProviderAuthenticationMethod::OAuthPkce,
+                ProviderAuthenticationMethod::OAuthLoopback,
+                ProviderAuthenticationMethod::ApiKey,
+            ]
+        );
+        assert_eq!(openrouter.adapter_kind, ProviderAdapterKind::Native);
+        assert!(!openrouter.supports_token_refresh);
+    }
+
+    #[test]
+    fn jwt_subject_extracts_only_a_bounded_subject() {
+        let token = "header.eyJzdWIiOiJ4YWktdXNlci0xMjMifQ.signature";
+        assert_eq!(jwt_subject(token).as_deref(), Some("xai-user-123"));
+        assert_eq!(jwt_subject("invalid"), None);
+    }
+
+    #[test]
+    fn remaining_catalog_provider_is_visible_but_not_claimed_as_native() {
+        let descriptor = get_provider_adapter("doubao".to_owned()).unwrap();
 
         assert_eq!(descriptor.adapter_kind, ProviderAdapterKind::Catalog);
-        assert!(adapter_spec("kimi").is_err());
+        assert!(adapter_spec("doubao").is_err());
     }
 
     #[test]
@@ -2682,6 +3396,22 @@ mod tests {
         );
         assert!(openai.supports_token_refresh);
         assert!(!openai.supports_multiple_credentials);
+
+        let anthropic = get_provider_adapter("anthropic".to_owned()).unwrap();
+        assert_eq!(
+            anthropic.authentication_methods,
+            vec![
+                ProviderAuthenticationMethod::ApiKey,
+                ProviderAuthenticationMethod::CliAccount,
+            ]
+        );
+        assert_eq!(
+            anthropic.credential_kinds,
+            vec![
+                ProviderCredentialKind::ApiKey,
+                ProviderCredentialKind::Local
+            ]
+        );
 
         let google = get_provider_adapter("google".to_owned()).unwrap();
         assert_eq!(

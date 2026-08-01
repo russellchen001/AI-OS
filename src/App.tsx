@@ -41,6 +41,7 @@ import {
 import {
   initializeProviderInstances,
 } from "./services/providers";
+import { setLocalOllamaModels } from "./services/aiCenter";
 
 import useBackup from "./hooks/useBackup";
 import useLogs from "./hooks/useLogs";
@@ -546,6 +547,11 @@ function App() {
         handleMessage,
     });
 
+  useEffect(() => {
+    const ollama = runtimes.statuses.find((runtime) => runtime.id === "ollama");
+    setLocalOllamaModels(ollama?.lifecycle === "running" ? models.models : []);
+  }, [models.models, runtimes.statuses]);
+
   const mcp =
     useMcp({
       onMessage:
@@ -691,6 +697,8 @@ function App() {
         {activePage === "My AI" && (
           <MyAiPage
             localModels={models.models}
+            ollamaRuntime={runtimes.statuses.find((runtime) => runtime.id === "ollama")}
+            localModelsLoading={models.status === "loading"}
             onConnect={(provider) =>
               handleMessage(
                 `${provider} is connected and its available models were discovered.`,
@@ -700,6 +708,11 @@ function App() {
             onManageLocalModels={() =>
               setActivePage("Models")
             }
+            onRefreshLocalModels={() => {
+              void runtimes.refreshStatuses().catch(() => undefined);
+              void models.refreshModels();
+            }}
+            onStartOllama={() => startService("ollama")}
           />
         )}
 

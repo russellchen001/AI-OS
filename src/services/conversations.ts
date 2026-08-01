@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AiCenterInvocationMetadata } from "./aiCenterObservability";
 
 export const CONVERSATIONS_CHANGED_EVENT = "ai-os:conversations-changed";
 const CONVERSATIONS_KEY = "ai-os.conversations.v1";
@@ -20,6 +21,7 @@ export type ConversationMessage = {
   content: string;
   createdAt: string;
   attachments?: ConversationAttachment[];
+  invocation?: AiCenterInvocationMetadata;
 };
 
 export type Conversation = {

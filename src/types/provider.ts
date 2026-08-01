@@ -4,6 +4,7 @@ export type ProviderId =
   | "google"
   | "grok"
   | "deepseek"
+  | "openrouter"
   | "doubao"
   | "kimi"
   | "meta"
@@ -17,6 +18,7 @@ export type ProviderCredentialKind =
 
 export type ProviderAuthenticationMethod =
   | "api-key"
+  | "cli-account"
   | "oauth-pkce"
   | "oauth-loopback"
   | "device-code"

@@ -1,7 +1,9 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import type { OllamaModel } from "../types/index";
+import type { RuntimeStatus } from "../types/runtime";
 import type {
   ProviderAdapterDescriptor,
   ProviderModelEntry,
@@ -25,11 +27,23 @@ import {
 } from "../services/providers";
 
 const OAUTH_FRONTEND_TIMEOUT_MS = 5 * 60 * 1000;
+type ClaudeCodeStatus = { installed: boolean; authenticated: boolean; message: string };
+type DeviceAuth = {
+  state: string;
+  verificationUri: string;
+  verificationUriComplete?: string;
+  userCode: string;
+  expiresIn: number;
+};
 
 type MyAiPageProps = {
   localModels: OllamaModel[];
+  ollamaRuntime?: RuntimeStatus;
+  localModelsLoading: boolean;
   onConnect: (provider: string, method: "account" | "api-key") => void;
   onManageLocalModels: () => void;
+  onRefreshLocalModels: () => void;
+  onStartOllama: () => void;
 };
 
 type CloudProviderCard = {
@@ -72,14 +86,38 @@ const cloudProviders: CloudProviderCard[] = [
     name: "xAI",
     description: "Grok models",
     models: ["Grok 4.5"],
-    accountLabel: "Connect xAI account",
+    accountLabel: "Sign in with Grok",
   },
   {
     id: "deepseek",
     mark: "D",
     name: "DeepSeek",
     description: "DeepSeek chat and reasoning models",
-    models: ["DeepSeek V4 Flash", "DeepSeek Reasoner"],
+    models: ["DeepSeek V4 Flash", "DeepSeek V4 Pro"],
+    accountLabel: "",
+  },
+  {
+    id: "openrouter",
+    mark: "R",
+    name: "OpenRouter",
+    description: "One connection for models from many providers",
+    models: ["Auto Router", "Open models"],
+    accountLabel: "Sign in with OpenRouter",
+  },
+  {
+    id: "kimi",
+    mark: "K",
+    name: "Kimi Code",
+    description: "Kimi coding subscription and API models",
+    models: ["Kimi for Coding"],
+    accountLabel: "Sign in with Kimi",
+  },
+  {
+    id: "meta",
+    mark: "M",
+    name: "Meta",
+    description: "Muse Spark through Meta Model API",
+    models: ["Muse Spark 1.1"],
     accountLabel: "",
   },
 ];
@@ -91,20 +129,6 @@ const providerCatalog = [
     name: "Doubao",
     description: "Doubao and Seed models",
     connection: "API key",
-  },
-  {
-    id: "kimi",
-    mark: "K",
-    name: "Kimi",
-    description: "Moonshot and Kimi models",
-    connection: "API key or account",
-  },
-  {
-    id: "meta",
-    mark: "M",
-    name: "Meta",
-    description: "Llama models from your chosen host",
-    connection: "Hosted or local",
   },
   {
     id: "compatible",
@@ -139,14 +163,47 @@ function loadConfiguredProviderIds(): Set<string> {
 
 function MyAiPage({
   localModels,
+  ollamaRuntime,
+  localModelsLoading,
   onConnect,
   onManageLocalModels,
+  onRefreshLocalModels,
+  onStartOllama,
 }: MyAiPageProps) {
   const [providerInstances, setProviderInstances] = useState(() => listProviderInstances());
   const [providerAdapters, setProviderAdapters] = useState<
     ProviderAdapterDescriptor[]
   >([]);
   const [ollamaAdapterModels, setOllamaAdapterModels] = useState<ProviderModelEntry[]>([]);
+  const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
+  const localModelCount = ollamaAdapterModels.length || localModels.length;
+  const ollamaInstalled = ollamaRuntime?.availability !== "not-installed";
+  const ollamaRunning = ollamaRuntime?.lifecycle === "running";
+  const ollamaStarting = ollamaRuntime?.lifecycle === "starting";
+  const ollamaState = !ollamaInstalled
+    ? {
+        badge: "Not installed",
+        description: "Install Ollama to run private models on this Mac.",
+      }
+    : ollamaStarting
+      ? {
+          badge: "Starting",
+          description: "Ollama is starting. Models will appear when it is ready.",
+        }
+      : !ollamaRunning
+        ? {
+            badge: "Stopped",
+            description: "Ollama is installed but not running.",
+          }
+        : localModelCount === 0
+          ? {
+              badge: "No models",
+              description: "Ollama is ready. Download your first local model.",
+            }
+          : {
+              badge: "Ready",
+              description: `${localModelCount} local model${localModelCount === 1 ? "" : "s"} available`,
+            };
   const configuredProviderIds = new Set([
     ...loadConfiguredProviderIds(),
     ...providerInstances.map((instance) => instance.providerId),
@@ -229,6 +286,20 @@ function MyAiPage({
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    void invoke<ClaudeCodeStatus>("get_claude_code_status")
+      .then((status) => {
+        if (active) setClaudeCodeStatus(status);
+      })
+      .catch(() => {
+        if (active) setClaudeCodeStatus(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   function openSetup(provider: string, method: "account" | "api-key", providerId?: string) {
     setApiKey("");
     setSetupError("");
@@ -256,7 +327,10 @@ function MyAiPage({
     setSetup({
       providerId: instance.providerId,
       provider: instance.displayName,
-      method: instance.credential.kind === "oauth" ? "account" : "api-key",
+      method:
+        instance.credential.kind === "oauth" || instance.credential.kind === "local"
+          ? "account"
+          : "api-key",
       phase: "manage",
       models: instance.models,
       defaultModelId:
@@ -322,6 +396,100 @@ function MyAiPage({
       const instanceId = providerInstanceId(setup.providerId);
       setIsConnecting(true);
       setSetupError("");
+
+      if (setup.providerId === "anthropic") {
+        try {
+          const status = await invoke<ClaudeCodeStatus>("get_claude_code_status");
+          setClaudeCodeStatus(status);
+          if (!status.installed || !status.authenticated) throw new Error(status.message);
+          const models: ProviderModelEntry[] = [
+            ["sonnet", "Claude Sonnet"],
+            ["opus", "Claude Opus"],
+            ["haiku", "Claude Haiku"],
+          ].map(([id, displayName], index) => ({
+            id: `${instanceId}:${id}`,
+            providerInstanceId: instanceId,
+            remoteModelId: id,
+            displayName,
+            capabilities: ["chat", "reasoning", "vision", "tool-use"],
+            enabled: true,
+            isDefault: index === 0,
+          }));
+          setSetup({
+            ...setup,
+            phase: "models",
+            models,
+            defaultModelId: models[0].id,
+            verificationMessage: "Official Claude Code subscription connection verified on this Mac.",
+            liveTested: true,
+            credentialRefreshable: false,
+          });
+        } catch (error) {
+          setSetupError(error instanceof Error ? error.message : "Claude Code could not be verified.");
+        } finally {
+          setIsConnecting(false);
+        }
+        return;
+      }
+
+      if (setup.providerId === "grok" || setup.providerId === "kimi") {
+        const isKimi = setup.providerId === "kimi";
+        const commandPrefix = isKimi ? "kimi" : "grok";
+        let auth: DeviceAuth | undefined;
+        let cancelled = false;
+        try {
+          auth = await invoke<DeviceAuth>(`begin_${commandPrefix}_device_auth`, {
+            query: { providerInstanceId: instanceId },
+          });
+          setSetup((current) =>
+            current
+              ? {
+                  ...current,
+                  verificationMessage: `${isKimi ? "Kimi Code" : "Grok"} verification code: ${auth?.userCode}`,
+                }
+              : current,
+          );
+          cancelOAuthRef.current = () => {
+            cancelled = true;
+            if (auth) {
+              void invoke(`cancel_${commandPrefix}_device_auth`, { state: auth.state });
+            }
+          };
+          await openUrl(auth.verificationUriComplete ?? auth.verificationUri);
+          const completed = await invoke<{
+            expiresAt: string | null;
+            refreshable: boolean;
+          }>(`complete_${commandPrefix}_device_auth`, { state: auth.state });
+          if (cancelled) return;
+          const adapter = await getProviderAdapter(setup.providerId);
+          const verification = await adapter.testConnection(instanceId);
+          const models = verification.discoveredModels;
+          setSetup({
+            ...setup,
+            phase: "models",
+            models,
+            defaultModelId: models[0]?.id ?? "",
+            verificationMessage: verification.message,
+            liveTested: verification.level === "live" && verification.ok,
+            credentialExpiresAt: completed.expiresAt ?? undefined,
+            credentialRefreshable: completed.refreshable,
+          });
+        } catch (error) {
+          if (!cancelled) {
+            setSetupError(
+              typeof error === "string"
+                ? error
+                : error instanceof Error
+                  ? error.message
+                  : `${isKimi ? "Kimi Code" : "Grok"} account sign-in could not be completed.`,
+            );
+          }
+        } finally {
+          cancelOAuthRef.current = null;
+          setIsConnecting(false);
+        }
+        return;
+      }
 
       let completedUnlisten: UnlistenFn | undefined;
       let errorUnlisten: UnlistenFn | undefined;
@@ -457,9 +625,11 @@ function MyAiPage({
 
     setIsConnecting(true);
     setSetupError("");
+    let credentialSaved = false;
     try {
       const instanceId = providerInstanceId(setup.providerId);
       await saveProviderApiKey(instanceId, apiKey);
+      credentialSaved = true;
       const adapter =
         await getProviderAdapter(
           setup.providerId,
@@ -478,8 +648,19 @@ function MyAiPage({
         verificationMessage: verification.message,
         liveTested: verification.level === "live" && verification.ok,
       });
-    } catch {
-      setSetupError("AI‑OS could not store this key in macOS Keychain.");
+    } catch (error) {
+      if (credentialSaved) {
+        await deleteProviderCredential(
+          providerInstanceId(setup.providerId),
+        ).catch(() => undefined);
+      }
+      setSetupError(
+        typeof error === "string"
+          ? error
+          : error instanceof Error
+            ? error.message
+            : "AI‑OS could not verify this Provider connection.",
+      );
     } finally {
       setIsConnecting(false);
     }
@@ -494,7 +675,12 @@ function MyAiPage({
         id: providerInstanceId(setup.providerId),
         providerId: setup.providerId,
         displayName: setup.provider,
-        credentialKind: setup.method === "account" ? "oauth" : "api-key",
+        credentialKind:
+          setup.providerId === "anthropic" && setup.method === "account"
+            ? "local"
+            : setup.method === "account"
+              ? "oauth"
+              : "api-key",
         models: setup.models,
         defaultModelId: setup.defaultModelId,
         liveTested: setup.liveTested,
@@ -524,7 +710,10 @@ function MyAiPage({
     setSetupError("");
     const instanceId = providerInstanceId(setup.providerId);
     try {
-      await deleteProviderCredential(instanceId);
+      const instance = providerInstances.find((candidate) => candidate.id === instanceId);
+      if (instance?.credential.kind !== "local") {
+        await deleteProviderCredential(instanceId);
+      }
       await removeProviderInstance(instanceId);
       setProviderInstances(listProviderInstances());
       setSetup(null);
@@ -543,9 +732,6 @@ function MyAiPage({
           <h1>My AI</h1>
           <p>Connect the AI accounts and local models you want AI‑OS to use.</p>
         </div>
-        <button type="button" className="add-provider-button" onClick={() => openSetup("Other AI", "api-key", "compatible")}>
-          <span>+</span> Add AI
-        </button>
       </header>
 
       <div className="provider-section-heading">
@@ -561,18 +747,23 @@ function MyAiPage({
           const supportsApiKey =
             descriptor?.authenticationMethods.includes("api-key") === true;
           const supportsAccountSignIn =
-            isProviderOAuthConfigured(provider.id) &&
-            descriptor?.authenticationMethods.some(
-              (method) =>
-                method === "oauth-pkce" ||
-                method === "oauth-loopback" ||
-                method === "device-code" ||
-                method === "imported-credential",
-            ) === true;
+            provider.id === "anthropic"
+              ? claudeCodeStatus?.installed === true &&
+                descriptor?.authenticationMethods.includes("cli-account") === true
+              : descriptor?.authenticationMethods.includes("device-code") === true ||
+                (isProviderOAuthConfigured(provider.id) &&
+                descriptor?.authenticationMethods.some(
+                  (method) =>
+                    method === "oauth-pkce" ||
+                    method === "oauth-loopback" ||
+                    method === "device-code" ||
+                    method === "imported-credential",
+                ) === true);
           const instance = providerInstances.find(
             (candidate) => candidate.providerId === provider.id,
           );
           const legacyConnected = configuredProviderIds.has(provider.id) && !instance;
+          const apiKeyOnly = supportsApiKey && !supportsAccountSignIn;
           const statusLabel =
             instance?.connectionState === "connected"
               ? "Connected"
@@ -606,15 +797,6 @@ function MyAiPage({
               <button
                 type="button"
                 className="provider-primary"
-                disabled={
-                  !instance &&
-                  !supportsAccountSignIn
-                }
-                title={
-                  !instance && !supportsAccountSignIn
-                    ? "Account sign-in is not operational yet. API key connection is available."
-                    : undefined
-                }
                 onClick={() => {
                   if (instance) {
                     openManage(instance.id);
@@ -625,15 +807,18 @@ function MyAiPage({
                     openSetup(provider.name, "account", provider.id);
                     return;
                   }
+                  if (apiKeyOnly) {
+                    openSetup(provider.name, "api-key", provider.id);
+                  }
                 }}
               >
                 {configuredProviderIds.has(provider.id)
                   ? "Manage connection"
                   : supportsAccountSignIn
                     ? provider.accountLabel
-                    : "Account sign-in · Coming later"}
+                    : "Use API key"}
               </button>
-              {supportsApiKey && (
+              {supportsApiKey && !apiKeyOnly && (
                   <button
                     type="button"
                     className="provider-secondary"
@@ -664,10 +849,10 @@ function MyAiPage({
           <div className="provider-mark provider-mark-ollama">O</div>
           <div>
             <h3>Ollama</h3>
-            <p>{(ollamaAdapterModels.length || localModels.length) ? `${ollamaAdapterModels.length || localModels.length} local model${(ollamaAdapterModels.length || localModels.length) === 1 ? "" : "s"} available` : "No local models installed"}</p>
+            <p>{ollamaState.description}</p>
           </div>
-          <span className={`connection-badge ${(ollamaAdapterModels.length || localModels.length) ? "connection-badge-ready" : ""}`}>
-            {(ollamaAdapterModels.length || localModels.length) ? "Available" : "Set up"}
+          <span className={`connection-badge ${ollamaRunning && localModelCount > 0 ? "connection-badge-ready" : ""}`}>
+            {ollamaState.badge}
           </span>
         </div>
         {(ollamaAdapterModels.length > 0 || localModels.length > 0) && (
@@ -682,9 +867,34 @@ function MyAiPage({
             ))}
           </div>
         )}
-        <button type="button" className="manage-models-button" onClick={onManageLocalModels}>
-          Manage local models <span>→</span>
-        </button>
+        <div className="local-provider-actions">
+          {ollamaInstalled && !ollamaRunning ? (
+            <button
+              type="button"
+              className="manage-models-button local-provider-primary"
+              disabled={ollamaStarting}
+              onClick={onStartOllama}
+            >
+              {ollamaStarting ? "Starting Ollama…" : "Start Ollama"}
+            </button>
+          ) : ollamaRunning && localModelCount === 0 ? (
+            <button type="button" className="manage-models-button local-provider-primary" onClick={onManageLocalModels}>
+              Add first model <span>→</span>
+            </button>
+          ) : (
+            <button type="button" className="manage-models-button local-provider-primary" onClick={onManageLocalModels}>
+              Manage local models <span>→</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="local-provider-refresh"
+            disabled={localModelsLoading || ollamaStarting}
+            onClick={onRefreshLocalModels}
+          >
+            {localModelsLoading ? "Checking…" : "Refresh"}
+          </button>
+        </div>
       </article>
 
       <div className="provider-section-heading catalog-heading">
@@ -720,14 +930,18 @@ function MyAiPage({
             descriptor.providerId === setup.providerId,
         );
         const accountSignInAvailable =
-          isProviderOAuthConfigured(setup.providerId) &&
-          setupDescriptor?.authenticationMethods.some(
-            (method) =>
-              method === "oauth-pkce" ||
-              method === "oauth-loopback" ||
-              method === "device-code" ||
-              method === "imported-credential",
-          ) === true;
+          setup.providerId === "anthropic"
+            ? claudeCodeStatus?.installed === true &&
+              setupDescriptor?.authenticationMethods.includes("cli-account") === true
+            : setupDescriptor?.authenticationMethods.includes("device-code") === true ||
+              (isProviderOAuthConfigured(setup.providerId) &&
+              setupDescriptor?.authenticationMethods.some(
+                (method) =>
+                  method === "oauth-pkce" ||
+                  method === "oauth-loopback" ||
+                  method === "device-code" ||
+                  method === "imported-credential",
+              ) === true);
 
         return (
         <div className="provider-setup-backdrop" role="presentation" onMouseDown={(event) => {
@@ -821,7 +1035,14 @@ function MyAiPage({
                     <button
                       type="button"
                       className="provider-refresh-button"
-                      disabled={!isProviderOAuthConfigured(setup.providerId)}
+                      disabled={
+                        setup.providerId === "anthropic"
+                          ? claudeCodeStatus?.authenticated !== true
+                          : setupDescriptor?.authenticationMethods.includes(
+                                "device-code",
+                              ) !== true &&
+                            !isProviderOAuthConfigured(setup.providerId)
+                      }
                       onClick={() => openSetup(setup.provider, "account", setup.providerId)}
                     >
                       Sign in again
@@ -840,7 +1061,9 @@ function MyAiPage({
               ) : setup.phase === "models" ? (
                 <>
                   <h3>Choose the default model</h3>
-                  <p>The credential is safely stored. These models come from the AI‑OS adapter catalog; live Provider discovery will replace this list when that adapter is enabled.</p>
+                  <p>{setup.providerId === "anthropic" && setup.method === "account"
+                    ? "Claude Code manages the subscription credential. AI‑OS stores only this connection and your model preference."
+                    : "The credential is safely stored. These models were returned by the Provider connection."}</p>
                   <div className="provider-model-choice">
                     {setup.models.map((model) => (
                       <label key={model.id}>
@@ -866,12 +1089,33 @@ function MyAiPage({
                 </>
               ) : setup.method === "account" ? (
                 <>
-                  <h3>Sign in in your browser</h3>
-                  <p>AI‑OS will open the official {setup.provider} sign-in page. Your password is never entered into AI‑OS.</p>
+                  <h3>{setup.providerId === "anthropic" ? "Use Claude Code on this Mac" : "Sign in in your browser"}</h3>
+                  <p>{setup.providerId === "anthropic"
+                    ? "AI‑OS uses the official Claude Code CLI and never reads or stores its subscription credential."
+                    : setup.providerId === "grok"
+                      ? "AI‑OS will open the official xAI device authorization page for your SuperGrok or X Premium+ account."
+                      : setup.providerId === "kimi"
+                        ? "AI‑OS will open Kimi Code's official device authorization page for your coding account."
+                      : `AI‑OS will open the official ${setup.provider} sign-in page. Your password is never entered into AI‑OS.`}</p>
                   <div className="provider-security-note">
                     <span>✓</span>
-                    <p><strong>Protected connection</strong><small>AI‑OS uses PKCE and a one-time local callback. The authorization code and tokens stay in the native security layer.</small></p>
+                    <p><strong>Protected connection</strong><small>{setup.providerId === "anthropic"
+                      ? "Claude Code owns authentication. AI‑OS only checks its status and sends bounded requests through the local CLI."
+                      : setup.providerId === "grok"
+                        ? "AI‑OS uses xAI's official Grok Build device flow. Tokens stay in macOS Keychain and account traffic uses the dedicated Grok CLI route."
+                        : setup.providerId === "kimi"
+                          ? "AI‑OS uses Kimi Code's official device flow. Tokens stay in macOS Keychain and requests use the managed coding API."
+                        : "AI‑OS uses PKCE and a one-time local callback. The authorization code and tokens stay in the native security layer."}</small></p>
                   </div>
+                  {(setup.providerId === "grok" || setup.providerId === "kimi") && setup.verificationMessage && (
+                    <div className="provider-security-note">
+                      <span>→</span>
+                      <p>
+                        <strong>Confirm the code shown by {setup.providerId === "kimi" ? "Kimi Code" : "xAI"}</strong>
+                        <small>{setup.verificationMessage}</small>
+                      </p>
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
@@ -910,12 +1154,16 @@ function MyAiPage({
                   ? setup.phase === "models"
                     ? "Saving Provider…"
                     : setup.method === "account"
-                      ? "Waiting for sign-in…"
+                      ? setup.providerId === "anthropic"
+                        ? "Checking Claude Code…"
+                        : "Waiting for sign-in…"
                       : "Saving…"
                   : setup.phase === "models"
                     ? "Save Provider"
                     : setup.method === "account"
-                      ? "Continue in browser"
+                      ? setup.providerId === "anthropic"
+                        ? "Verify Claude Code"
+                        : "Continue in browser"
                       : "Save and choose model"}
                 <span>→</span>
               </button>

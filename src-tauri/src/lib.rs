@@ -1,4 +1,5 @@
 mod backup;
+mod claude_code;
 mod conversations;
 mod health;
 mod logs;
@@ -191,12 +192,21 @@ pub fn run() {
             providers::discover_provider_models,
             providers::test_provider_connection,
             providers::begin_provider_oauth,
+            providers::begin_grok_device_auth,
+            providers::complete_grok_device_auth,
+            providers::cancel_grok_device_auth,
+            providers::begin_kimi_device_auth,
+            providers::complete_kimi_device_auth,
+            providers::cancel_kimi_device_auth,
             providers::complete_provider_oauth,
             providers::cancel_provider_oauth,
             providers::refresh_provider_oauth,
             providers::generate_provider_response,
             providers::start_provider_response_stream,
             providers::cancel_provider_response_stream,
+            claude_code::get_claude_code_status,
+            claude_code::generate_claude_code_response,
+            claude_code::cancel_claude_code_request,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
