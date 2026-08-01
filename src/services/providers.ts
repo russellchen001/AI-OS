@@ -58,14 +58,14 @@ export type BeginOAuthResult = {
 
 export type CompleteOAuthResult = {
   providerInstanceId: string;
-  expiresAt?: string;
+  expiresAt: string | null;
   refreshable: boolean;
 };
 
 export type ProviderOAuthCompletedEvent = {
   providerId: string;
   providerInstanceId: string;
-  expiresAt?: string;
+  expiresAt: string | null;
   refreshable: boolean;
 };
 
@@ -340,6 +340,8 @@ export function createProviderInstance(input: {
   models: ProviderModelEntry[];
   defaultModelId: string;
   liveTested?: boolean;
+  credentialExpiresAt?: string;
+  credentialRefreshable?: boolean;
 }): ProviderInstance {
   const now = new Date().toISOString();
   return {
@@ -350,7 +352,13 @@ export function createProviderInstance(input: {
       kind: input.credentialKind,
       keychainAccount:
         input.credentialKind === "local" ? undefined : input.id,
-      refreshable: input.credentialKind === "oauth",
+      expiresAt:
+        input.credentialKind === "oauth"
+          ? input.credentialExpiresAt
+          : undefined,
+      refreshable:
+        input.credentialKind === "oauth" &&
+        input.credentialRefreshable === true,
     },
     connectionState: input.liveTested ? "connected" : "ready-for-test",
     models: input.models.map((model) => ({

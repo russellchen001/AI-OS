@@ -160,6 +160,8 @@ function MyAiPage({
     defaultModelId: string;
     verificationMessage: string;
     liveTested: boolean;
+    credentialExpiresAt?: string;
+    credentialRefreshable?: boolean;
   } | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [setupError, setSetupError] = useState("");
@@ -345,7 +347,7 @@ function MyAiPage({
           return;
         }
         await openUrl(oauth.authorizationUrl);
-        await completion;
+        const completed = await completion;
 
         const adapter = await getProviderAdapter(setup.providerId);
         const verification = await adapter.testConnection(instanceId);
@@ -358,6 +360,8 @@ function MyAiPage({
           defaultModelId: models[0]?.id ?? "",
           verificationMessage: verification.message,
           liveTested: verification.level === "live" && verification.ok,
+          credentialExpiresAt: completed.expiresAt ?? undefined,
+          credentialRefreshable: completed.refreshable,
         });
       } catch (error) {
         if (oauthState) {
@@ -426,6 +430,8 @@ function MyAiPage({
       models: setup.models,
       defaultModelId: setup.defaultModelId,
       liveTested: setup.liveTested,
+      credentialExpiresAt: setup.credentialExpiresAt,
+      credentialRefreshable: setup.credentialRefreshable,
     });
     await saveProviderInstance(instance);
     setProviderInstances(listProviderInstances());
