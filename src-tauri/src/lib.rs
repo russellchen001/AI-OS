@@ -192,6 +192,7 @@ pub fn run() {
             providers::test_provider_connection,
             providers::begin_provider_oauth,
             providers::complete_provider_oauth,
+            providers::cancel_provider_oauth,
             providers::generate_provider_response,
             providers::start_provider_response_stream,
             providers::cancel_provider_response_stream,

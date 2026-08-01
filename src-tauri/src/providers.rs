@@ -322,6 +322,7 @@ const OAUTH_LOOPBACK_MAX_CONNECTIONS: usize = 8;
 
 static AI_CENTER_REQUESTS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
 static OAUTH_SESSIONS: OnceLock<Mutex<HashMap<String, OAuthSession>>> = OnceLock::new();
+static OAUTH_CANCELLATIONS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
 
 fn ai_center_requests() -> &'static Mutex<HashMap<String, CancellationToken>> {
     AI_CENTER_REQUESTS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -329,6 +330,10 @@ fn ai_center_requests() -> &'static Mutex<HashMap<String, CancellationToken>> {
 
 fn oauth_sessions() -> &'static Mutex<HashMap<String, OAuthSession>> {
     OAUTH_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn oauth_cancellations() -> &'static Mutex<HashMap<String, CancellationToken>> {
+    OAUTH_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn unix_timestamp_seconds() -> Result<u64, String> {
@@ -486,12 +491,39 @@ fn consume_oauth_session(provider_id: &str, state: &str) -> Result<OAuthSession,
     Ok(session)
 }
 
+fn discard_oauth_session(provider_id: &str, state: &str) -> Result<bool, String> {
+    let key = oauth_session_key(provider_id.trim(), state.trim());
+    let session_removed = oauth_sessions()
+        .lock()
+        .map_err(|_| "OAuth session state is unavailable".to_owned())?
+        .remove(&key)
+        .is_some();
+
+    let token = oauth_cancellations()
+        .lock()
+        .map_err(|_| "OAuth cancellation state is unavailable".to_owned())?
+        .remove(&key);
+    if let Some(token) = token {
+        token.cancel();
+        return Ok(true);
+    }
+
+    Ok(session_removed)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompleteOAuthInput {
     provider_id: String,
     state: String,
     code: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CancelOAuthInput {
+    provider_id: String,
+    state: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -596,10 +628,13 @@ fn provider_adapter(
             credential_kinds: credential_kinds.to_vec(),
             authentication_methods: credential_kinds
                 .iter()
-                .filter_map(|credential_kind| match credential_kind {
-                    ProviderCredentialKind::ApiKey => Some(ProviderAuthenticationMethod::ApiKey),
-                    ProviderCredentialKind::Local => Some(ProviderAuthenticationMethod::Local),
-                    ProviderCredentialKind::OAuth => None,
+                .flat_map(|credential_kind| match credential_kind {
+                    ProviderCredentialKind::ApiKey => vec![ProviderAuthenticationMethod::ApiKey],
+                    ProviderCredentialKind::Local => vec![ProviderAuthenticationMethod::Local],
+                    ProviderCredentialKind::OAuth => vec![
+                        ProviderAuthenticationMethod::OAuthPkce,
+                        ProviderAuthenticationMethod::OAuthLoopback,
+                    ],
                 })
                 .collect(),
             capabilities: capabilities
@@ -1293,6 +1328,7 @@ async fn run_oauth_loopback_listener(
     listener: TcpListener,
     provider_id: String,
     expected_state: String,
+    cancellation: CancellationToken,
 ) {
     let listener_future = async {
         for _ in 0..OAUTH_LOOPBACK_MAX_CONNECTIONS {
@@ -1380,11 +1416,17 @@ async fn run_oauth_loopback_listener(
         Err("OAuth callback connection limit was reached".to_owned())
     };
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(OAUTH_SESSION_TTL_SECONDS),
-        listener_future,
-    )
-    .await;
+    let result = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return;
+        }
+        result = tokio::time::timeout(
+            Duration::from_secs(OAUTH_SESSION_TTL_SECONDS),
+            listener_future,
+        ) => result,
+    };
+
+    let _ = discard_oauth_session(&provider_id, &expected_state);
 
     let error = match result {
         Ok(Ok(())) => return,
@@ -1464,6 +1506,18 @@ pub(crate) async fn begin_provider_oauth(
 
     store_oauth_session(&state, session.clone())?;
 
+    let cancellation = CancellationToken::new();
+    let cancellation_key = oauth_session_key(provider_id, &state);
+    if oauth_cancellations()
+        .lock()
+        .map_err(|_| "OAuth cancellation state is unavailable".to_owned())?
+        .insert(cancellation_key, cancellation.clone())
+        .is_some()
+    {
+        let _ = discard_oauth_session(provider_id, &state);
+        return Err("OAuth cancellation session already exists".to_owned());
+    }
+
     authorization_url
         .query_pairs_mut()
         .append_pair("response_type", "code")
@@ -1479,6 +1533,7 @@ pub(crate) async fn begin_provider_oauth(
         listener,
         provider_id.to_owned(),
         state.clone(),
+        cancellation,
     ));
 
     Ok(BeginOAuthResult {
@@ -1486,6 +1541,17 @@ pub(crate) async fn begin_provider_oauth(
         redirect_uri,
         state,
     })
+}
+
+#[tauri::command]
+pub(crate) fn cancel_provider_oauth(input: CancelOAuthInput) -> Result<bool, String> {
+    let provider_id = input.provider_id.trim();
+    adapter_spec(provider_id)?;
+    if input.state.trim().is_empty() {
+        return Err("OAuth state is required".to_owned());
+    }
+
+    discard_oauth_session(provider_id, input.state.trim())
 }
 
 #[tauri::command]
@@ -2146,11 +2212,12 @@ mod tests {
 
         assert_eq!(
             openai.authentication_methods,
-            vec![ProviderAuthenticationMethod::ApiKey]
+            vec![
+                ProviderAuthenticationMethod::OAuthPkce,
+                ProviderAuthenticationMethod::OAuthLoopback,
+                ProviderAuthenticationMethod::ApiKey,
+            ]
         );
-        assert!(!openai
-            .authentication_methods
-            .contains(&ProviderAuthenticationMethod::OAuthPkce));
         assert!(!openai.supports_multiple_credentials);
 
         let ollama = get_provider_adapter("ollama".to_owned()).unwrap();
@@ -2180,6 +2247,36 @@ mod tests {
 
         assert_eq!(consume_oauth_session("openai", &state).unwrap(), session);
         assert!(consume_oauth_session("openai", &state).is_err());
+    }
+
+    #[test]
+    fn oauth_session_cancellation_is_provider_scoped_and_consumes_state() {
+        let state = format!("cancel-{}", uuid::Uuid::new_v4().simple());
+        let now = unix_timestamp_seconds().unwrap();
+        let session = OAuthSession {
+            provider_id: "openai".to_owned(),
+            provider_instance_id: "openai-default".to_owned(),
+            client_id: "client".to_owned(),
+            token_url: "https://example.com/token".to_owned(),
+            redirect_uri: "http://127.0.0.1/callback".to_owned(),
+            verifier: "verifier".to_owned(),
+            created_at: now,
+            expires_at: now + 60,
+        };
+        let token = CancellationToken::new();
+
+        store_oauth_session(&state, session).unwrap();
+        oauth_cancellations()
+            .lock()
+            .unwrap()
+            .insert(oauth_session_key("openai", &state), token.clone());
+
+        assert!(!discard_oauth_session("google", &state).unwrap());
+        assert!(!token.is_cancelled());
+        assert!(discard_oauth_session("openai", &state).unwrap());
+        assert!(token.is_cancelled());
+        assert!(consume_oauth_session("openai", &state).is_err());
+        assert!(!discard_oauth_session("openai", &state).unwrap());
     }
 
     #[test]

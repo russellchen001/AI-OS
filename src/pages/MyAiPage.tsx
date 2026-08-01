@@ -12,6 +12,7 @@ import {
 } from "../services/providerAdapters";
 import {
   createProviderInstance,
+  cancelProviderOAuth,
   deleteProviderCredential,
   listProviderInstances,
   removeProviderInstance,
@@ -281,6 +282,7 @@ function MyAiPage({
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       let settled = false;
       let cancelled = false;
+      let oauthState: string | undefined;
       let resolvePending: ((event: ProviderOAuthCompletedEvent) => void) | undefined;
       let rejectPending: ((reason: Error) => void) | undefined;
       const cleanup = () => {
@@ -325,9 +327,23 @@ function MyAiPage({
           cancelled = true;
           if (!settled) rejectPending?.(new Error("Account sign-in was cancelled."));
           cleanup();
+          if (oauthState) {
+            void cancelProviderOAuth({
+              providerId: setup.providerId,
+              state: oauthState,
+            });
+          }
         };
 
         const oauth = await startProviderOAuth(setup.providerId, instanceId);
+        oauthState = oauth.state;
+        if (cancelled) {
+          await cancelProviderOAuth({
+            providerId: setup.providerId,
+            state: oauth.state,
+          });
+          return;
+        }
         await openUrl(oauth.authorizationUrl);
         await completion;
 
@@ -344,6 +360,12 @@ function MyAiPage({
           liveTested: verification.level === "live" && verification.ok,
         });
       } catch (error) {
+        if (oauthState) {
+          await cancelProviderOAuth({
+            providerId: setup.providerId,
+            state: oauthState,
+          }).catch(() => false);
+        }
         if (!cancelled) {
           setSetupError(
             error instanceof Error

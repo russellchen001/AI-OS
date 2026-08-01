@@ -176,6 +176,13 @@ export async function completeProviderOAuth(input: {
   return invoke<CompleteOAuthResult>("complete_provider_oauth", { input });
 }
 
+export async function cancelProviderOAuth(input: {
+  providerId: string;
+  state: string;
+}): Promise<boolean> {
+  return invoke<boolean>("cancel_provider_oauth", { input });
+}
+
 function isProviderInstance(value: unknown): value is ProviderInstance {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<ProviderInstance>;
