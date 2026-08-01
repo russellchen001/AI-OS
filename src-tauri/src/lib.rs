@@ -183,6 +183,8 @@ pub fn run() {
             providers::list_provider_instances,
             providers::save_provider_instance,
             providers::remove_provider_instance,
+            providers::list_provider_adapters,
+            providers::get_provider_adapter,
             providers::set_provider_credential,
             providers::get_provider_credential_status,
             providers::delete_provider_credential,

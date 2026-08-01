@@ -63,9 +63,14 @@ export type ProviderInstance = {
   lastTestedAt?: string;
 };
 
+export type ProviderAdapterKind =
+  | "native"
+  | "catalog";
+
 export type ProviderAdapterDescriptor = {
   providerId: ProviderId;
   displayName: string;
+  adapterKind: ProviderAdapterKind;
   credentialKinds: ProviderCredentialKind[];
   capabilities: ProviderCapability[];
   supportsModelDiscovery: boolean;

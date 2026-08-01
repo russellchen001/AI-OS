@@ -36,6 +36,25 @@ pub(crate) enum ProviderConnectionState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ProviderAdapterKind {
+    Native,
+    Catalog,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderAdapterDescriptor {
+    pub provider_id: String,
+    pub display_name: String,
+    pub adapter_kind: ProviderAdapterKind,
+    pub credential_kinds: Vec<ProviderCredentialKind>,
+    pub capabilities: Vec<String>,
+    pub supports_model_discovery: bool,
+    pub supports_token_refresh: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProviderCredentialRef {
     pub kind: ProviderCredentialKind,
@@ -438,40 +457,213 @@ struct ProviderAdapterSpec {
     auth: AuthStyle,
 }
 
-fn adapter_spec(provider_id: &str) -> Result<ProviderAdapterSpec, String> {
-    match provider_id {
-        "openai" => Ok(ProviderAdapterSpec {
-            id: "openai",
-            models_url: "https://api.openai.com/v1/models",
-            auth: AuthStyle::Bearer,
-        }),
-        "anthropic" => Ok(ProviderAdapterSpec {
-            id: "anthropic",
-            models_url: "https://api.anthropic.com/v1/models",
-            auth: AuthStyle::Anthropic,
-        }),
-        "google" => Ok(ProviderAdapterSpec {
-            id: "google",
-            models_url: "https://generativelanguage.googleapis.com/v1beta/models",
-            auth: AuthStyle::Google,
-        }),
-        "grok" => Ok(ProviderAdapterSpec {
-            id: "grok",
-            models_url: "https://api.x.ai/v1/models",
-            auth: AuthStyle::Bearer,
-        }),
-        "deepseek" => Ok(ProviderAdapterSpec {
-            id: "deepseek",
-            models_url: "https://api.deepseek.com/v1/models",
-            auth: AuthStyle::Bearer,
-        }),
-        "ollama" => Ok(ProviderAdapterSpec {
-            id: "ollama",
-            models_url: "http://127.0.0.1:11434/api/tags",
-            auth: AuthStyle::None,
-        }),
-        _ => Err("this Provider does not have a native AI-OS Adapter yet".to_owned()),
+#[derive(Debug, Clone)]
+struct ProviderAdapterRegistration {
+    descriptor: ProviderAdapterDescriptor,
+    native: Option<ProviderAdapterSpec>,
+}
+
+fn provider_adapter(
+    provider_id: &str,
+    display_name: &str,
+    adapter_kind: ProviderAdapterKind,
+    credential_kinds: &[ProviderCredentialKind],
+    capabilities: &[&str],
+    supports_model_discovery: bool,
+    supports_token_refresh: bool,
+    native: Option<ProviderAdapterSpec>,
+) -> ProviderAdapterRegistration {
+    ProviderAdapterRegistration {
+        descriptor: ProviderAdapterDescriptor {
+            provider_id: provider_id.to_owned(),
+            display_name: display_name.to_owned(),
+            adapter_kind,
+            credential_kinds: credential_kinds.to_vec(),
+            capabilities: capabilities
+                .iter()
+                .map(|capability| (*capability).to_owned())
+                .collect(),
+            supports_model_discovery,
+            supports_token_refresh,
+        },
+        native,
     }
+}
+
+fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
+    vec![
+        provider_adapter(
+            "openai",
+            "OpenAI",
+            ProviderAdapterKind::Native,
+            &[
+                ProviderCredentialKind::OAuth,
+                ProviderCredentialKind::ApiKey,
+            ],
+            &["chat", "reasoning", "vision", "tool-use"],
+            true,
+            true,
+            Some(ProviderAdapterSpec {
+                id: "openai",
+                models_url: "https://api.openai.com/v1/models",
+                auth: AuthStyle::Bearer,
+            }),
+        ),
+        provider_adapter(
+            "anthropic",
+            "Anthropic",
+            ProviderAdapterKind::Native,
+            &[
+                ProviderCredentialKind::OAuth,
+                ProviderCredentialKind::ApiKey,
+            ],
+            &["chat", "reasoning", "vision", "tool-use"],
+            true,
+            true,
+            Some(ProviderAdapterSpec {
+                id: "anthropic",
+                models_url: "https://api.anthropic.com/v1/models",
+                auth: AuthStyle::Anthropic,
+            }),
+        ),
+        provider_adapter(
+            "google",
+            "Google",
+            ProviderAdapterKind::Native,
+            &[
+                ProviderCredentialKind::OAuth,
+                ProviderCredentialKind::ApiKey,
+            ],
+            &["chat", "reasoning", "vision", "tool-use"],
+            true,
+            true,
+            Some(ProviderAdapterSpec {
+                id: "google",
+                models_url: "https://generativelanguage.googleapis.com/v1beta/models",
+                auth: AuthStyle::Google,
+            }),
+        ),
+        provider_adapter(
+            "grok",
+            "xAI",
+            ProviderAdapterKind::Native,
+            &[
+                ProviderCredentialKind::OAuth,
+                ProviderCredentialKind::ApiKey,
+            ],
+            &["chat", "reasoning", "vision", "tool-use"],
+            true,
+            true,
+            Some(ProviderAdapterSpec {
+                id: "grok",
+                models_url: "https://api.x.ai/v1/models",
+                auth: AuthStyle::Bearer,
+            }),
+        ),
+        provider_adapter(
+            "deepseek",
+            "DeepSeek",
+            ProviderAdapterKind::Native,
+            &[ProviderCredentialKind::ApiKey],
+            &["chat", "tool-use"],
+            true,
+            false,
+            Some(ProviderAdapterSpec {
+                id: "deepseek",
+                models_url: "https://api.deepseek.com/v1/models",
+                auth: AuthStyle::Bearer,
+            }),
+        ),
+        provider_adapter(
+            "doubao",
+            "Doubao",
+            ProviderAdapterKind::Catalog,
+            &[ProviderCredentialKind::ApiKey],
+            &["chat", "tool-use"],
+            true,
+            false,
+            None,
+        ),
+        provider_adapter(
+            "kimi",
+            "Kimi",
+            ProviderAdapterKind::Catalog,
+            &[ProviderCredentialKind::ApiKey],
+            &["chat", "tool-use"],
+            true,
+            false,
+            None,
+        ),
+        provider_adapter(
+            "meta",
+            "Meta",
+            ProviderAdapterKind::Catalog,
+            &[ProviderCredentialKind::ApiKey],
+            &["chat", "tool-use"],
+            true,
+            false,
+            None,
+        ),
+        provider_adapter(
+            "compatible",
+            "Other AI",
+            ProviderAdapterKind::Catalog,
+            &[ProviderCredentialKind::ApiKey],
+            &["chat"],
+            false,
+            false,
+            None,
+        ),
+        provider_adapter(
+            "ollama",
+            "Ollama",
+            ProviderAdapterKind::Native,
+            &[ProviderCredentialKind::Local],
+            &["chat", "tool-use"],
+            true,
+            false,
+            Some(ProviderAdapterSpec {
+                id: "ollama",
+                models_url: "http://127.0.0.1:11434/api/tags",
+                auth: AuthStyle::None,
+            }),
+        ),
+    ]
+}
+
+fn find_provider_adapter(provider_id: &str) -> Option<ProviderAdapterRegistration> {
+    let provider_id = provider_id.trim();
+
+    if provider_id.is_empty() {
+        return None;
+    }
+
+    provider_adapter_registry()
+        .into_iter()
+        .find(|registration| registration.descriptor.provider_id == provider_id)
+}
+
+fn adapter_spec(provider_id: &str) -> Result<ProviderAdapterSpec, String> {
+    find_provider_adapter(provider_id)
+        .and_then(|registration| registration.native)
+        .ok_or_else(|| "this Provider does not have a native AI-OS Adapter yet".to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn list_provider_adapters() -> Vec<ProviderAdapterDescriptor> {
+    provider_adapter_registry()
+        .into_iter()
+        .map(|registration| registration.descriptor)
+        .collect()
+}
+
+#[tauri::command]
+pub(crate) fn get_provider_adapter(
+    provider_id: String,
+) -> Result<ProviderAdapterDescriptor, String> {
+    find_provider_adapter(&provider_id)
+        .map(|registration| registration.descriptor)
+        .ok_or_else(|| format!("Provider Adapter was not found: {}", provider_id.trim()))
 }
 
 fn validate_instance_id(value: &str) -> Result<&str, String> {
@@ -1451,5 +1643,74 @@ mod tests {
         duplicate.models.push(duplicate.models[0].clone());
 
         assert!(validate_provider_instance(duplicate).is_err());
+    }
+    #[test]
+    fn provider_adapter_registry_has_stable_order_and_ids() {
+        let adapters = list_provider_adapters();
+
+        assert_eq!(
+            adapters
+                .iter()
+                .map(|adapter| adapter.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "openai",
+                "anthropic",
+                "google",
+                "grok",
+                "deepseek",
+                "doubao",
+                "kimi",
+                "meta",
+                "compatible",
+                "ollama",
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_adapter_serialization_matches_frontend_contract() {
+        let descriptor = get_provider_adapter("openai".to_owned()).unwrap();
+        let value = serde_json::to_value(descriptor).unwrap();
+
+        assert_eq!(value["providerId"], "openai");
+        assert_eq!(value["displayName"], "OpenAI");
+        assert_eq!(value["adapterKind"], "native");
+        assert_eq!(value["supportsModelDiscovery"], true);
+        assert_eq!(value["supportsTokenRefresh"], true);
+        assert!(value["credentialKinds"].is_array());
+        assert!(value["capabilities"].is_array());
+    }
+
+    #[test]
+    fn native_specs_and_public_registry_share_the_same_provider_ids() {
+        for provider_id in [
+            "openai",
+            "anthropic",
+            "google",
+            "grok",
+            "deepseek",
+            "ollama",
+        ] {
+            let descriptor = get_provider_adapter(provider_id.to_owned()).unwrap();
+            let native = adapter_spec(provider_id).unwrap();
+
+            assert_eq!(descriptor.provider_id, native.id);
+            assert_eq!(descriptor.adapter_kind, ProviderAdapterKind::Native);
+        }
+    }
+
+    #[test]
+    fn catalog_provider_is_visible_but_not_claimed_as_native() {
+        let descriptor = get_provider_adapter("kimi".to_owned()).unwrap();
+
+        assert_eq!(descriptor.adapter_kind, ProviderAdapterKind::Catalog);
+        assert!(adapter_spec("kimi").is_err());
+    }
+
+    #[test]
+    fn unknown_provider_adapter_is_rejected() {
+        assert!(get_provider_adapter("unknown".to_owned()).is_err());
+        assert!(get_provider_adapter("   ".to_owned()).is_err());
     }
 }

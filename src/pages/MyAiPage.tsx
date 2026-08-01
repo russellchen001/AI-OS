@@ -168,7 +168,9 @@ function MyAiPage({
   useEffect(() => {
     let active = true;
     void getProviderAdapter("ollama")
-      .testConnection("ollama-local")
+      .then((adapter) =>
+        adapter.testConnection("ollama-local"),
+      )
       .then((result) => {
         if (active) setOllamaAdapterModels(result.discoveredModels);
       })
@@ -241,8 +243,14 @@ function MyAiPage({
     try {
       const instanceId = providerInstanceId(setup.providerId);
       await saveProviderApiKey(instanceId, apiKey);
-      const adapter = getProviderAdapter(setup.providerId);
-      const verification = await adapter.testConnection(instanceId);
+      const adapter =
+        await getProviderAdapter(
+          setup.providerId,
+        );
+      const verification =
+        await adapter.testConnection(
+          instanceId,
+        );
       const models = verification.discoveredModels;
       setApiKey("");
       setSetup({
