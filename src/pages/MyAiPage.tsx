@@ -608,19 +608,12 @@ function MyAiPage({
                 className="provider-primary"
                 disabled={
                   !instance &&
-                  !supportsAccountSignIn &&
-                  !supportsApiKey
+                  !supportsAccountSignIn
                 }
                 title={
-                  !instance &&
-                  !supportsAccountSignIn &&
-                  !supportsApiKey
-                    ? "This Provider has no operational authentication method."
-                    : !instance &&
-                        !supportsAccountSignIn &&
-                        supportsApiKey
-                      ? "Account sign-in is not operational yet. API key connection is available."
-                      : undefined
+                  !instance && !supportsAccountSignIn
+                    ? "Account sign-in is not operational yet. API key connection is available."
+                    : undefined
                 }
                 onClick={() => {
                   if (instance) {
@@ -632,24 +625,15 @@ function MyAiPage({
                     openSetup(provider.name, "account", provider.id);
                     return;
                   }
-
-                  if (supportsApiKey) {
-                    openSetup(provider.name, "api-key", provider.id);
-                  }
                 }}
               >
                 {configuredProviderIds.has(provider.id)
                   ? "Manage connection"
                   : supportsAccountSignIn
                     ? provider.accountLabel
-                    : supportsApiKey &&
-                        descriptor?.credentialKinds.length === 1
-                      ? `Connect ${provider.name}`
-                      : "Account sign-in · Coming later"}
+                    : "Account sign-in · Coming later"}
               </button>
-              {supportsApiKey &&
-                (supportsAccountSignIn ||
-                  descriptor?.credentialKinds.includes("oauth")) && (
+              {supportsApiKey && (
                   <button
                     type="button"
                     className="provider-secondary"

@@ -710,13 +710,10 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             "openai",
             "OpenAI",
             ProviderAdapterKind::Native,
-            &[
-                ProviderCredentialKind::OAuth,
-                ProviderCredentialKind::ApiKey,
-            ],
+            &[ProviderCredentialKind::ApiKey],
             &["chat", "reasoning", "vision", "tool-use"],
             true,
-            true,
+            false,
             Some(ProviderAdapterSpec {
                 id: "openai",
                 models_url: "https://api.openai.com/v1/models",
@@ -727,13 +724,10 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             "anthropic",
             "Anthropic",
             ProviderAdapterKind::Native,
-            &[
-                ProviderCredentialKind::OAuth,
-                ProviderCredentialKind::ApiKey,
-            ],
+            &[ProviderCredentialKind::ApiKey],
             &["chat", "reasoning", "vision", "tool-use"],
             true,
-            true,
+            false,
             Some(ProviderAdapterSpec {
                 id: "anthropic",
                 models_url: "https://api.anthropic.com/v1/models",
@@ -761,13 +755,10 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             "grok",
             "xAI",
             ProviderAdapterKind::Native,
-            &[
-                ProviderCredentialKind::OAuth,
-                ProviderCredentialKind::ApiKey,
-            ],
+            &[ProviderCredentialKind::ApiKey],
             &["chat", "reasoning", "vision", "tool-use"],
             true,
-            true,
+            false,
             Some(ProviderAdapterSpec {
                 id: "grok",
                 models_url: "https://api.x.ai/v1/models",
@@ -2445,8 +2436,8 @@ mod tests {
         assert_eq!(value["displayName"], "OpenAI");
         assert_eq!(value["adapterKind"], "native");
         assert_eq!(value["supportsModelDiscovery"], true);
-        assert_eq!(value["supportsTokenRefresh"], true);
-        assert!(value["credentialKinds"].is_array());
+        assert_eq!(value["supportsTokenRefresh"], false);
+        assert_eq!(value["credentialKinds"], serde_json::json!(["api-key"]));
         assert!(value["capabilities"].is_array());
     }
 
@@ -2482,13 +2473,21 @@ mod tests {
 
         assert_eq!(
             openai.authentication_methods,
+            vec![ProviderAuthenticationMethod::ApiKey]
+        );
+        assert!(!openai.supports_token_refresh);
+        assert!(!openai.supports_multiple_credentials);
+
+        let google = get_provider_adapter("google".to_owned()).unwrap();
+        assert_eq!(
+            google.authentication_methods,
             vec![
                 ProviderAuthenticationMethod::OAuthPkce,
                 ProviderAuthenticationMethod::OAuthLoopback,
                 ProviderAuthenticationMethod::ApiKey,
             ]
         );
-        assert!(!openai.supports_multiple_credentials);
+        assert!(google.supports_token_refresh);
 
         let ollama = get_provider_adapter("ollama".to_owned()).unwrap();
 

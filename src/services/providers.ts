@@ -85,13 +85,7 @@ export type ProviderOAuthErrorEvent = {
 };
 
 const PROVIDER_OAUTH_CONFIGURATION_REGISTRY: Record<string, string> = {
-  openai: "OPENAI",
-  anthropic: "ANTHROPIC",
   google: "GOOGLE",
-  grok: "GROK",
-  deepseek: "DEEPSEEK",
-  doubao: "DOUBAO",
-  kimi: "KIMI",
 };
 
 export function getProviderOAuthConfiguration(
