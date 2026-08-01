@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import type { OllamaModel } from "../types/index";
-import type { ProviderModelEntry } from "../types/provider";
-import { getProviderAdapter } from "../services/providerAdapters";
+import type {
+  ProviderAdapterDescriptor,
+  ProviderModelEntry,
+} from "../types/provider";
+import {
+  getProviderAdapter,
+  listProviderAdapters,
+} from "../services/providerAdapters";
 import {
   createProviderInstance,
   deleteProviderCredential,
@@ -24,8 +30,6 @@ type CloudProviderCard = {
   description: string;
   models: string[];
   accountLabel: string;
-  apiKeyOnly?: boolean;
-  accountSignInAvailable?: boolean;
 };
 
 const cloudProviders: CloudProviderCard[] = [
@@ -36,7 +40,6 @@ const cloudProviders: CloudProviderCard[] = [
     description: "GPT and Codex models",
     models: ["GPT‑5.6", "GPT‑5.6 Codex"],
     accountLabel: "Sign in with OpenAI",
-    accountSignInAvailable: false,
   },
   {
     id: "anthropic",
@@ -45,7 +48,6 @@ const cloudProviders: CloudProviderCard[] = [
     description: "Claude models",
     models: ["Claude Opus", "Claude Sonnet"],
     accountLabel: "Sign in with Claude",
-    accountSignInAvailable: false,
   },
   {
     id: "google",
@@ -54,7 +56,6 @@ const cloudProviders: CloudProviderCard[] = [
     description: "Gemini models",
     models: ["Gemini Pro", "Gemini Flash"],
     accountLabel: "Sign in with Google",
-    accountSignInAvailable: false,
   },
   {
     id: "grok",
@@ -63,7 +64,6 @@ const cloudProviders: CloudProviderCard[] = [
     description: "Grok models",
     models: ["Grok 4.5"],
     accountLabel: "Connect xAI account",
-    accountSignInAvailable: false,
   },
   {
     id: "deepseek",
@@ -72,7 +72,6 @@ const cloudProviders: CloudProviderCard[] = [
     description: "DeepSeek chat and reasoning models",
     models: ["DeepSeek V4 Flash", "DeepSeek Reasoner"],
     accountLabel: "",
-    apiKeyOnly: true,
   },
 ];
 
@@ -135,6 +134,9 @@ function MyAiPage({
   onManageLocalModels,
 }: MyAiPageProps) {
   const [providerInstances, setProviderInstances] = useState(() => listProviderInstances());
+  const [providerAdapters, setProviderAdapters] = useState<
+    ProviderAdapterDescriptor[]
+  >([]);
   const [ollamaAdapterModels, setOllamaAdapterModels] = useState<ProviderModelEntry[]>([]);
   const configuredProviderIds = new Set([
     ...loadConfiguredProviderIds(),
@@ -164,6 +166,26 @@ function MyAiPage({
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [setup]);
+
+  useEffect(() => {
+    let active = true;
+
+    void listProviderAdapters()
+      .then((descriptors) => {
+        if (active) {
+          setProviderAdapters(descriptors);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setProviderAdapters([]);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -322,6 +344,19 @@ function MyAiPage({
 
       <div className="provider-grid">
         {cloudProviders.map((provider) => {
+          const descriptor = providerAdapters.find(
+            (candidate) => candidate.providerId === provider.id,
+          );
+          const supportsApiKey =
+            descriptor?.authenticationMethods.includes("api-key") === true;
+          const supportsAccountSignIn =
+            descriptor?.authenticationMethods.some(
+              (method) =>
+                method === "oauth-pkce" ||
+                method === "oauth-loopback" ||
+                method === "device-code" ||
+                method === "imported-credential",
+            ) === true;
           const instance = providerInstances.find(
             (candidate) => candidate.providerId === provider.id,
           );
@@ -357,15 +392,19 @@ function MyAiPage({
                 className="provider-primary"
                 disabled={
                   !instance &&
-                  !provider.apiKeyOnly &&
-                  provider.accountSignInAvailable !== true
+                  !supportsAccountSignIn &&
+                  !supportsApiKey
                 }
                 title={
                   !instance &&
-                  !provider.apiKeyOnly &&
-                  provider.accountSignInAvailable !== true
-                    ? "Account sign-in is not configured yet. Use an API key."
-                    : undefined
+                  !supportsAccountSignIn &&
+                  !supportsApiKey
+                    ? "This Provider has no operational authentication method."
+                    : !instance &&
+                        !supportsAccountSignIn &&
+                        supportsApiKey
+                      ? "Account sign-in is not operational yet. API key connection is available."
+                      : undefined
                 }
                 onClick={() => {
                   if (instance) {
@@ -373,29 +412,42 @@ function MyAiPage({
                     return;
                   }
 
-                  if (provider.apiKeyOnly) {
-                    openSetup(provider.name, "api-key", provider.id);
+                  if (supportsAccountSignIn) {
+                    openSetup(provider.name, "account", provider.id);
                     return;
                   }
 
-                  if (provider.accountSignInAvailable === true) {
-                    openSetup(provider.name, "account", provider.id);
+                  if (supportsApiKey) {
+                    openSetup(provider.name, "api-key", provider.id);
                   }
                 }}
               >
                 {configuredProviderIds.has(provider.id)
                   ? "Manage connection"
-                  : provider.apiKeyOnly
-                    ? "Connect DeepSeek"
-                    : provider.accountSignInAvailable === true
-                      ? provider.accountLabel
+                  : supportsAccountSignIn
+                    ? provider.accountLabel
+                    : supportsApiKey &&
+                        descriptor?.credentialKinds.length === 1
+                      ? `Connect ${provider.name}`
                       : "Account sign-in · Coming later"}
               </button>
-              {!provider.apiKeyOnly && (
-                <button type="button" className="provider-secondary" onClick={() => openSetup(provider.name, "api-key", provider.id)}>
-                  Use API key
-                </button>
-              )}
+              {supportsApiKey &&
+                (supportsAccountSignIn ||
+                  descriptor?.credentialKinds.includes("oauth")) && (
+                  <button
+                    type="button"
+                    className="provider-secondary"
+                    onClick={() =>
+                      openSetup(
+                        provider.name,
+                        "api-key",
+                        provider.id,
+                      )
+                    }
+                  >
+                    Use API key
+                  </button>
+                )}
             </div>
           </article>
           );
@@ -462,7 +514,21 @@ function MyAiPage({
         ))}
       </div>
 
-      {setup && (
+      {setup && (() => {
+        const setupDescriptor = providerAdapters.find(
+          (descriptor) =>
+            descriptor.providerId === setup.providerId,
+        );
+        const accountSignInAvailable =
+          setupDescriptor?.authenticationMethods.some(
+            (method) =>
+              method === "oauth-pkce" ||
+              method === "oauth-loopback" ||
+              method === "device-code" ||
+              method === "imported-credential",
+          ) === true;
+
+        return (
         <div className="provider-setup-backdrop" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget) setSetup(null);
         }}>
@@ -480,13 +546,29 @@ function MyAiPage({
               <button
                 type="button"
                 role="tab"
-                aria-selected={false}
-                aria-disabled="true"
-                disabled
-                title="Account sign-in requires a configured OAuth Provider Adapter."
+                aria-selected={setup.method === "account"}
+                aria-disabled={!accountSignInAvailable}
+                disabled={!accountSignInAvailable}
+                title={
+                  accountSignInAvailable
+                    ? undefined
+                    : "Account sign-in requires an operational Provider authentication adapter."
+                }
+                onClick={() =>
+                  setSetup((current) =>
+                    current && {
+                      ...current,
+                      method: "account",
+                    },
+                  )
+                }
               >
                 <span>Account sign-in</span>
-                <small>Not configured yet</small>
+                <small>
+                  {accountSignInAvailable
+                    ? "Connect your Provider account"
+                    : "Coming later"}
+                </small>
               </button>
               <button
                 type="button"
@@ -598,7 +680,8 @@ function MyAiPage({
             </footer>}
           </section>
         </div>
-      )}
+        );
+      })()}
     </section>
   );
 }

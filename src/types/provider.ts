@@ -15,6 +15,14 @@ export type ProviderCredentialKind =
   | "api-key"
   | "local";
 
+export type ProviderAuthenticationMethod =
+  | "api-key"
+  | "oauth-pkce"
+  | "oauth-loopback"
+  | "device-code"
+  | "imported-credential"
+  | "local";
+
 export type ProviderConnectionState =
   | "not-configured"
   | "connecting"
@@ -72,9 +80,11 @@ export type ProviderAdapterDescriptor = {
   displayName: string;
   adapterKind: ProviderAdapterKind;
   credentialKinds: ProviderCredentialKind[];
+  authenticationMethods: ProviderAuthenticationMethod[];
   capabilities: ProviderCapability[];
   supportsModelDiscovery: boolean;
   supportsTokenRefresh: boolean;
+  supportsMultipleCredentials: boolean;
 };
 
 export type ProviderConnectionTest = {

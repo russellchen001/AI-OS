@@ -255,12 +255,17 @@ function fallbackDescriptor(
     credentialKinds: [
       "api-key",
     ],
+    authenticationMethods: [
+      "api-key",
+    ],
     capabilities: [
       "chat",
     ],
     supportsModelDiscovery:
       false,
     supportsTokenRefresh:
+      false,
+    supportsMultipleCredentials:
       false,
   };
 }

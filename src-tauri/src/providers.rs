@@ -25,6 +25,22 @@ pub(crate) enum ProviderCredentialKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub(crate) enum ProviderAuthenticationMethod {
+    ApiKey,
+
+    #[serde(rename = "oauth-pkce")]
+    OAuthPkce,
+
+    #[serde(rename = "oauth-loopback")]
+    OAuthLoopback,
+
+    DeviceCode,
+    ImportedCredential,
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum ProviderConnectionState {
     NotConfigured,
     Connecting,
@@ -49,9 +65,11 @@ pub(crate) struct ProviderAdapterDescriptor {
     pub display_name: String,
     pub adapter_kind: ProviderAdapterKind,
     pub credential_kinds: Vec<ProviderCredentialKind>,
+    pub authentication_methods: Vec<ProviderAuthenticationMethod>,
     pub capabilities: Vec<String>,
     pub supports_model_discovery: bool,
     pub supports_token_refresh: bool,
+    pub supports_multiple_credentials: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,12 +497,21 @@ fn provider_adapter(
             display_name: display_name.to_owned(),
             adapter_kind,
             credential_kinds: credential_kinds.to_vec(),
+            authentication_methods: credential_kinds
+                .iter()
+                .filter_map(|credential_kind| match credential_kind {
+                    ProviderCredentialKind::ApiKey => Some(ProviderAuthenticationMethod::ApiKey),
+                    ProviderCredentialKind::Local => Some(ProviderAuthenticationMethod::Local),
+                    ProviderCredentialKind::OAuth => None,
+                })
+                .collect(),
             capabilities: capabilities
                 .iter()
                 .map(|capability| (*capability).to_owned())
                 .collect(),
             supports_model_discovery,
             supports_token_refresh,
+            supports_multiple_credentials: false,
         },
         native,
     }
@@ -1706,6 +1733,55 @@ mod tests {
 
         assert_eq!(descriptor.adapter_kind, ProviderAdapterKind::Catalog);
         assert!(adapter_spec("kimi").is_err());
+    }
+
+    #[test]
+    fn authentication_methods_only_claim_operational_flows() {
+        let openai = get_provider_adapter("openai".to_owned()).unwrap();
+
+        assert_eq!(
+            openai.authentication_methods,
+            vec![ProviderAuthenticationMethod::ApiKey]
+        );
+        assert!(!openai
+            .authentication_methods
+            .contains(&ProviderAuthenticationMethod::OAuthPkce));
+        assert!(!openai.supports_multiple_credentials);
+
+        let ollama = get_provider_adapter("ollama".to_owned()).unwrap();
+
+        assert_eq!(
+            ollama.authentication_methods,
+            vec![ProviderAuthenticationMethod::Local]
+        );
+    }
+
+    #[test]
+    fn authentication_method_serialization_is_frontend_compatible() {
+        assert_eq!(
+            serde_json::to_value(ProviderAuthenticationMethod::ApiKey).unwrap(),
+            serde_json::json!("api-key")
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderAuthenticationMethod::OAuthPkce).unwrap(),
+            serde_json::json!("oauth-pkce")
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderAuthenticationMethod::OAuthLoopback).unwrap(),
+            serde_json::json!("oauth-loopback")
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderAuthenticationMethod::DeviceCode).unwrap(),
+            serde_json::json!("device-code")
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderAuthenticationMethod::ImportedCredential).unwrap(),
+            serde_json::json!("imported-credential")
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderAuthenticationMethod::Local).unwrap(),
+            serde_json::json!("local")
+        );
     }
 
     #[test]
