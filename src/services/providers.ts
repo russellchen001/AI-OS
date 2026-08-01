@@ -62,6 +62,12 @@ export type CompleteOAuthResult = {
   refreshable: boolean;
 };
 
+export type RefreshOAuthResult = {
+  providerInstanceId: string;
+  expiresAt: string | null;
+  refreshable: boolean;
+};
+
 export type ProviderOAuthCompletedEvent = {
   providerId: string;
   providerInstanceId: string;
@@ -186,6 +192,14 @@ export async function cancelProviderOAuth(input: {
   return invoke<boolean>("cancel_provider_oauth", { input });
 }
 
+export async function refreshProviderOAuth(
+  providerInstanceId: string,
+): Promise<RefreshOAuthResult> {
+  return invoke<RefreshOAuthResult>("refresh_provider_oauth", {
+    query: { providerInstanceId },
+  });
+}
+
 function isProviderInstance(value: unknown): value is ProviderInstance {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<ProviderInstance>;
@@ -223,8 +237,34 @@ function replaceProviderCache(
   return listProviderInstances();
 }
 
+export function oauthConnectionState(
+  instance: ProviderInstance,
+  now = Date.now(),
+): ProviderInstance["connectionState"] {
+  if (instance.credential.kind !== "oauth" || !instance.credential.expiresAt) {
+    return instance.connectionState;
+  }
+
+  const expiresAt = Date.parse(instance.credential.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt > now) {
+    return instance.connectionState;
+  }
+
+  return instance.credential.refreshable ? "refresh-required" : "expired";
+}
+
+export function withCurrentOAuthState(
+  instance: ProviderInstance,
+  now = Date.now(),
+): ProviderInstance {
+  const connectionState = oauthConnectionState(instance, now);
+  return connectionState === instance.connectionState
+    ? instance
+    : { ...instance, connectionState };
+}
+
 export function listProviderInstances(): ProviderInstance[] {
-  return [...providerInstanceCache];
+  return providerInstanceCache.map((instance) => withCurrentOAuthState(instance));
 }
 
 export function initializeProviderInstances():

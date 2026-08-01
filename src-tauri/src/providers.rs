@@ -537,6 +537,14 @@ pub(crate) struct CompleteOAuthResult {
     refreshable: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RefreshOAuthResult {
+    provider_instance_id: String,
+    expires_at: Option<String>,
+    refreshable: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GenerateProviderResponseInput {
@@ -910,12 +918,36 @@ async fn refresh_oauth_token(account: &str, token: &Value) -> Result<Value, Stri
         .json()
         .await
         .map_err(|_| "OAuth provider returned an invalid refresh token".to_owned())?;
+    let merged = merge_refreshed_oauth_token(token, &refreshed)?;
+    store_secret(
+        account,
+        &serde_json::to_vec(&merged)
+            .map_err(|_| "AI-OS could not secure the refreshed OAuth token".to_owned())?,
+    )?;
+    Ok(merged)
+}
+
+fn merge_refreshed_oauth_token(token: &Value, refreshed: &Value) -> Result<Value, String> {
+    if !refreshed
+        .get("access_token")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err("OAuth response did not contain an access token".to_owned());
+    }
+
     let mut merged = token.clone();
     let object = merged
         .as_object_mut()
         .ok_or_else(|| "OAuth token record is invalid".to_owned())?;
     if let Some(refreshed_object) = refreshed.as_object() {
         for (key, value) in refreshed_object {
+            if key == "_aios"
+                || (key == "refresh_token"
+                    && !value.as_str().is_some_and(|value| !value.trim().is_empty()))
+            {
+                continue;
+            }
             object.insert(key.clone(), value.clone());
         }
     }
@@ -929,12 +961,37 @@ async fn refresh_oauth_token(account: &str, token: &Value) -> Result<Value, Stri
             expires_at.map(Value::String).unwrap_or(Value::Null),
         );
     }
-    store_secret(
-        account,
-        &serde_json::to_vec(&merged)
-            .map_err(|_| "AI-OS could not secure the refreshed OAuth token".to_owned())?,
-    )?;
     Ok(merged)
+}
+
+fn oauth_credential_metadata(token: &Value) -> (Option<String>, bool) {
+    let expires_at = token
+        .pointer("/_aios/expiresAt")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let refreshable = token
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    (expires_at, refreshable)
+}
+
+#[tauri::command]
+pub(crate) async fn refresh_provider_oauth(
+    query: ProviderCredentialQuery,
+) -> Result<RefreshOAuthResult, String> {
+    let account = validate_instance_id(&query.provider_instance_id)?;
+    let secret = read_secret(account)?;
+    let token = serde_json::from_slice::<Value>(&secret)
+        .map_err(|_| "Provider credential is not an OAuth token".to_owned())?;
+    let refreshed = refresh_oauth_token(account, &token).await?;
+    let (expires_at, refreshable) = oauth_credential_metadata(&refreshed);
+
+    Ok(RefreshOAuthResult {
+        provider_instance_id: account.to_owned(),
+        expires_at,
+        refreshable,
+    })
 }
 
 async fn read_current_access_token(account: &str) -> Result<String, String> {
@@ -2028,6 +2085,75 @@ mod tests {
     #[test]
     fn pkce_rejects_insecure_provider_endpoints() {
         assert!(validate_https_url("http://example.com/oauth", "OAuth URL").is_err());
+    }
+
+    #[test]
+    fn oauth_credential_metadata_uses_real_token_values() {
+        let token = serde_json::json!({
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "_aios": {"expiresAt": "2026-08-02T00:00:00Z"}
+        });
+
+        assert_eq!(
+            oauth_credential_metadata(&token),
+            (Some("2026-08-02T00:00:00Z".to_owned()), true)
+        );
+    }
+
+    #[test]
+    fn oauth_credential_metadata_does_not_invent_refresh_support() {
+        for token in [
+            serde_json::json!({"access_token": "access"}),
+            serde_json::json!({"access_token": "access", "refresh_token": null}),
+            serde_json::json!({"access_token": "access", "refresh_token": "  "}),
+        ] {
+            assert_eq!(oauth_credential_metadata(&token), (None, false));
+        }
+    }
+
+    #[test]
+    fn refreshed_oauth_token_preserves_local_metadata_and_existing_refresh_token() {
+        let current = serde_json::json!({
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "_aios": {
+                "clientId": "trusted-client",
+                "tokenUrl": "https://trusted.example/token",
+                "expiresAt": "2026-08-01T00:00:00Z"
+            }
+        });
+        let refreshed = serde_json::json!({
+            "access_token": "new-access",
+            "refresh_token": null,
+            "expires_in": 3600,
+            "_aios": {
+                "clientId": "attacker-client",
+                "tokenUrl": "https://attacker.example/token"
+            }
+        });
+
+        let merged = merge_refreshed_oauth_token(&current, &refreshed).unwrap();
+
+        assert_eq!(merged["access_token"], "new-access");
+        assert_eq!(merged["refresh_token"], "old-refresh");
+        assert_eq!(merged["_aios"]["clientId"], "trusted-client");
+        assert_eq!(merged["_aios"]["tokenUrl"], "https://trusted.example/token");
+        assert!(merged["_aios"]["expiresAt"].is_string());
+    }
+
+    #[test]
+    fn refreshed_oauth_token_requires_a_real_access_token() {
+        let current = serde_json::json!({"access_token": "old-access"});
+
+        assert!(
+            merge_refreshed_oauth_token(&current, &serde_json::json!({"expires_in": 3600}))
+                .is_err()
+        );
+        assert!(
+            merge_refreshed_oauth_token(&current, &serde_json::json!({"access_token": "  "}))
+                .is_err()
+        );
     }
 
     #[test]

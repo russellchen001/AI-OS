@@ -266,9 +266,53 @@ function MyAiPage({
       verificationMessage:
         instance.connectionState === "connected"
           ? "This Provider passed a live adapter test."
+          : instance.connectionState === "refresh-required"
+            ? "This account token has expired and can be refreshed securely."
+            : instance.connectionState === "expired"
+              ? "This account token has expired. Sign in again to reconnect."
           : "The credential is saved. Live adapter testing is not enabled yet.",
       liveTested: instance.connectionState === "connected",
+      credentialExpiresAt: instance.credential.expiresAt,
+      credentialRefreshable: instance.credential.refreshable,
     });
+  }
+
+  async function refreshAccountCredential() {
+    if (!setup || setup.phase !== "manage" || isConnecting) return;
+    const instanceId = providerInstanceId(setup.providerId);
+    setIsConnecting(true);
+    setSetupError("");
+    try {
+      const adapter = await getProviderAdapter(setup.providerId);
+      const refreshed = await adapter.refreshCredential(instanceId);
+      setProviderInstances(listProviderInstances());
+      setSetup({
+        ...setup,
+        verificationMessage: "Account access was refreshed successfully.",
+        liveTested: refreshed.connectionState === "connected",
+        credentialExpiresAt: refreshed.credential.expiresAt,
+        credentialRefreshable: refreshed.credential.refreshable,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Provider account sign-in must be renewed.";
+      const instance = providerInstances.find((candidate) => candidate.id === instanceId);
+      if (instance) {
+        await saveProviderInstance({
+          ...instance,
+          connectionState: message.includes("must be renewed")
+            ? "expired"
+            : "refresh-required",
+          updatedAt: new Date().toISOString(),
+        });
+        setProviderInstances(listProviderInstances());
+      }
+      setSetupError(message);
+    } finally {
+      setIsConnecting(false);
+    }
   }
 
   async function continueSetup() {
@@ -520,6 +564,10 @@ function MyAiPage({
               ? "Connected"
               : instance?.connectionState === "ready-for-test"
                 ? "Saved"
+                : instance?.connectionState === "refresh-required"
+                  ? "Refresh needed"
+                  : instance?.connectionState === "expired"
+                    ? "Sign in again"
                 : legacyConnected
                   ? "Connected"
                   : "Not connected";
@@ -750,7 +798,37 @@ function MyAiPage({
                       <span>Credential</span>
                       <strong>{setup.method === "account" ? "Account sign-in" : "macOS Keychain"}</strong>
                     </div>
+                    {setup.method === "account" && <div>
+                      <span>Account access</span>
+                      <strong>
+                        {setup.credentialExpiresAt
+                          ? new Date(setup.credentialExpiresAt).getTime() <= Date.now()
+                            ? "Expired"
+                            : `Until ${new Date(setup.credentialExpiresAt).toLocaleString()}`
+                          : "No expiry reported"}
+                      </strong>
+                    </div>}
                   </div>
+                  {setup.method === "account" && setup.credentialRefreshable && (
+                    <button
+                      type="button"
+                      className="provider-refresh-button"
+                      disabled={isConnecting}
+                      onClick={() => void refreshAccountCredential()}
+                    >
+                      {isConnecting ? "Refreshing…" : "Refresh account access"}
+                    </button>
+                  )}
+                  {setup.method === "account" && (
+                    <button
+                      type="button"
+                      className="provider-refresh-button"
+                      disabled={!isProviderOAuthConfigured(setup.providerId)}
+                      onClick={() => openSetup(setup.provider, "account", setup.providerId)}
+                    >
+                      Sign in again
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="provider-disconnect-button"

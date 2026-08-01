@@ -13,6 +13,8 @@ import {
   discoverKnownModels,
   getProviderCredentialStatus,
   listProviderInstances,
+  refreshProviderOAuth,
+  saveProviderInstance,
 } from "./providers";
 
 
@@ -103,11 +105,30 @@ implements ProviderAdapterContract {
   }
 
 
-  async refreshCredential():
-  Promise<ProviderInstance> {
-    throw new Error(
-      "Token refresh is not available until OAuth is enabled.",
+  async refreshCredential(
+    instanceId: string,
+  ): Promise<ProviderInstance> {
+    const instance = listProviderInstances().find(
+      (candidate) => candidate.id === instanceId,
     );
+    if (!instance || instance.credential.kind !== "oauth") {
+      throw new Error("This Provider does not have an OAuth credential.");
+    }
+    if (!instance.credential.refreshable) {
+      throw new Error("Provider account sign-in must be renewed.");
+    }
+
+    const refreshed = await refreshProviderOAuth(instanceId);
+    return saveProviderInstance({
+      ...instance,
+      credential: {
+        ...instance.credential,
+        expiresAt: refreshed.expiresAt ?? undefined,
+        refreshable: refreshed.refreshable,
+      },
+      connectionState: "connected",
+      updatedAt: new Date().toISOString(),
+    });
   }
 
 

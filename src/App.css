@@ -2712,6 +2712,26 @@ a {
   padding: 10px 13px;
 }
 
+.provider-refresh-button {
+  background: #eff6f3;
+  border: 1px solid #b9d6ca;
+  border-radius: 10px;
+  color: #2c5f4e;
+  cursor: pointer;
+  font: inherit;
+  margin-right: 8px;
+  padding: 10px 13px;
+}
+
+.provider-refresh-button:hover:not(:disabled) {
+  background: #e4f1ec;
+}
+
+.provider-refresh-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .provider-disconnect-button:hover {
   background: #fff3f3;
 }
