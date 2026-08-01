@@ -9,6 +9,9 @@ import type {
 const PROVIDER_INSTANCES_KEY = "ai-os.provider-instances.v1";
 export const PROVIDERS_CHANGED_EVENT = "ai-os:providers-changed";
 
+let providerInstanceCache: ProviderInstance[] = [];
+let providerInitialization: Promise<ProviderInstance[]> | undefined;
+
 const KNOWN_MODELS: Record<string, Array<{ id: string; name: string }>> = {
   openai: [
     { id: "gpt-5.6", name: "GPT‑5.6" },
@@ -109,35 +112,125 @@ function isProviderInstance(value: unknown): value is ProviderInstance {
   );
 }
 
-export function listProviderInstances(): ProviderInstance[] {
+function readLegacyProviderInstances(): ProviderInstance[] {
   try {
     const parsed: unknown = JSON.parse(
       localStorage.getItem(PROVIDER_INSTANCES_KEY) ?? "[]",
     );
-    return Array.isArray(parsed) ? parsed.filter(isProviderInstance) : [];
+
+    return Array.isArray(parsed)
+      ? parsed.filter(isProviderInstance)
+      : [];
   } catch {
     return [];
   }
 }
 
-export function saveProviderInstance(instance: ProviderInstance): void {
-  const instances = listProviderInstances();
-  const next = [
-    ...instances.filter((candidate) => candidate.id !== instance.id),
-    instance,
-  ];
-  localStorage.setItem(PROVIDER_INSTANCES_KEY, JSON.stringify(next));
-  window.dispatchEvent(new Event(PROVIDERS_CHANGED_EVENT));
+function replaceProviderCache(
+  instances: ProviderInstance[],
+): ProviderInstance[] {
+  providerInstanceCache = [...instances];
+
+  window.dispatchEvent(
+    new Event(PROVIDERS_CHANGED_EVENT),
+  );
+
+  return listProviderInstances();
 }
 
-export function removeProviderInstance(instanceId: string): void {
-  localStorage.setItem(
-    PROVIDER_INSTANCES_KEY,
-    JSON.stringify(
-      listProviderInstances().filter((instance) => instance.id !== instanceId),
+export function listProviderInstances(): ProviderInstance[] {
+  return [...providerInstanceCache];
+}
+
+export function initializeProviderInstances():
+Promise<ProviderInstance[]> {
+  providerInitialization ??= (async () => {
+    const legacy = readLegacyProviderInstances();
+
+    try {
+      let native = (
+        await invoke<unknown[]>(
+          "list_provider_instances",
+        )
+      ).filter(isProviderInstance);
+
+      if (
+        native.length === 0 &&
+        legacy.length > 0
+      ) {
+        const migrated: ProviderInstance[] = [];
+
+        for (const instance of legacy) {
+          const saved =
+            await invoke<ProviderInstance>(
+              "save_provider_instance",
+              {
+                instance,
+              },
+            );
+
+          migrated.push(saved);
+        }
+
+        native = migrated;
+
+        localStorage.removeItem(
+          PROVIDER_INSTANCES_KEY,
+        );
+      }
+
+      return replaceProviderCache(native);
+    } catch {
+      return replaceProviderCache(legacy);
+    }
+  })();
+
+  return providerInitialization;
+}
+
+export async function saveProviderInstance(
+  instance: ProviderInstance,
+): Promise<ProviderInstance> {
+  const saved =
+    await invoke<ProviderInstance>(
+      "save_provider_instance",
+      {
+        instance,
+      },
+    );
+
+  replaceProviderCache([
+    ...providerInstanceCache.filter(
+      (candidate) =>
+        candidate.id !== saved.id,
     ),
-  );
-  window.dispatchEvent(new Event(PROVIDERS_CHANGED_EVENT));
+    saved,
+  ]);
+
+  return saved;
+}
+
+export async function removeProviderInstance(
+  instanceId: string,
+): Promise<boolean> {
+  const removed =
+    await invoke<boolean>(
+      "remove_provider_instance",
+      {
+        instanceId,
+      },
+    );
+
+  if (removed) {
+    replaceProviderCache(
+      providerInstanceCache.filter(
+        (instance) =>
+          instance.id !== instanceId,
+      ),
+    );
+  }
+
+  return removed;
 }
 
 export function discoverKnownModels(

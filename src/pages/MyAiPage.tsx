@@ -260,7 +260,7 @@ function MyAiPage({
     }
   }
 
-  function finishProviderSetup() {
+  async function finishProviderSetup() {
     if (!setup || setup.phase !== "models" || !setup.defaultModelId) return;
     const instance = createProviderInstance({
       id: providerInstanceId(setup.providerId),
@@ -271,7 +271,7 @@ function MyAiPage({
       defaultModelId: setup.defaultModelId,
       liveTested: setup.liveTested,
     });
-    saveProviderInstance(instance);
+    await saveProviderInstance(instance);
     setProviderInstances(listProviderInstances());
     onConnect(setup.provider, setup.method);
     setSetup(null);
@@ -284,7 +284,7 @@ function MyAiPage({
     const instanceId = providerInstanceId(setup.providerId);
     try {
       await deleteProviderCredential(instanceId);
-      removeProviderInstance(instanceId);
+      await removeProviderInstance(instanceId);
       setProviderInstances(listProviderInstances());
       setSetup(null);
     } catch {

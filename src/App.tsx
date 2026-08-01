@@ -38,6 +38,10 @@ import {
   renameConversation,
 } from "./services/conversations";
 
+import {
+  initializeProviderInstances,
+} from "./services/providers";
+
 import useBackup from "./hooks/useBackup";
 import useLogs from "./hooks/useLogs";
 import useMcp from "./hooks/useMcp";
@@ -145,6 +149,11 @@ function App() {
       window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, refresh);
       window.removeEventListener("storage", refresh);
     };
+  }, []);
+
+
+  useEffect(() => {
+    void initializeProviderInstances();
   }, []);
 
   useEffect(() => {

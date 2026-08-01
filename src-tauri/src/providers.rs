@@ -12,6 +12,267 @@ use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 const KEYCHAIN_SERVICE: &str = "com.ai-os.provider";
+
+const PROVIDER_INSTANCES_FILE: &str = "provider-instances.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ProviderCredentialKind {
+    OAuth,
+    ApiKey,
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ProviderConnectionState {
+    NotConfigured,
+    Connecting,
+    ReadyForTest,
+    Connected,
+    RefreshRequired,
+    Expired,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProviderCredentialRef {
+    pub kind: ProviderCredentialKind,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keychain_account: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+
+    pub refreshable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProviderModelEntry {
+    pub id: String,
+    pub provider_instance_id: String,
+    pub remote_model_id: String,
+    pub display_name: String,
+
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+
+    pub enabled: bool,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProviderInstance {
+    pub id: String,
+    pub provider_id: String,
+    pub display_name: String,
+    pub credential: ProviderCredentialRef,
+    pub connection_state: ProviderConnectionState,
+
+    #[serde(default)]
+    pub models: Vec<ProviderModelEntry>,
+
+    pub created_at: String,
+    pub updated_at: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_at: Option<String>,
+}
+
+fn provider_config_directory() -> Result<std::path::PathBuf, String> {
+    let base = dirs::config_dir()
+        .ok_or_else(|| "Unable to determine the AI-OS configuration directory".to_owned())?;
+
+    Ok(base.join("AI OS"))
+}
+
+fn provider_instances_file() -> Result<std::path::PathBuf, String> {
+    Ok(provider_config_directory()?.join(PROVIDER_INSTANCES_FILE))
+}
+
+fn validate_provider_text(value: &str, label: &str, max_length: usize) -> Result<String, String> {
+    let value = value.trim();
+
+    if value.is_empty() || value.len() > max_length {
+        return Err(format!("{label} is invalid"));
+    }
+
+    if value.chars().any(char::is_control) {
+        return Err(format!("{label} contains unsupported characters"));
+    }
+
+    Ok(value.to_owned())
+}
+
+fn validate_provider_instance(mut instance: ProviderInstance) -> Result<ProviderInstance, String> {
+    instance.id = validate_instance_id(&instance.id)?.to_owned();
+    instance.provider_id = validate_provider_text(&instance.provider_id, "Provider ID", 100)?;
+    instance.display_name =
+        validate_provider_text(&instance.display_name, "Provider display name", 200)?;
+
+    if let Some(account) = instance.credential.keychain_account.as_mut() {
+        *account = validate_instance_id(account)?.to_owned();
+    }
+
+    if instance.models.len() > 500 {
+        return Err("Provider contains too many models".to_owned());
+    }
+
+    let mut model_ids = std::collections::HashSet::new();
+    let mut default_count = 0usize;
+
+    for model in &mut instance.models {
+        model.id = validate_provider_text(&model.id, "Provider model ID", 300)?;
+        model.provider_instance_id = validate_instance_id(&model.provider_instance_id)?.to_owned();
+        model.remote_model_id = validate_model_id(&model.remote_model_id)?.to_owned();
+        model.display_name =
+            validate_provider_text(&model.display_name, "Provider model name", 300)?;
+
+        if model.provider_instance_id != instance.id {
+            return Err("Provider model belongs to another Provider instance".to_owned());
+        }
+
+        if !model_ids.insert(model.id.clone()) {
+            return Err("Provider contains duplicate model IDs".to_owned());
+        }
+
+        if model.is_default {
+            default_count += 1;
+        }
+
+        model.capabilities = model
+            .capabilities
+            .iter()
+            .map(|capability| capability.trim().to_owned())
+            .filter(|capability| !capability.is_empty())
+            .collect();
+
+        model.capabilities.sort();
+        model.capabilities.dedup();
+    }
+
+    if default_count > 1 {
+        return Err("Provider contains more than one default model".to_owned());
+    }
+
+    instance.created_at =
+        validate_provider_text(&instance.created_at, "Provider creation timestamp", 100)?;
+    instance.updated_at =
+        validate_provider_text(&instance.updated_at, "Provider update timestamp", 100)?;
+
+    if let Some(last_tested_at) = instance.last_tested_at.as_mut() {
+        *last_tested_at = validate_provider_text(last_tested_at, "Provider test timestamp", 100)?;
+    }
+
+    Ok(instance)
+}
+
+fn read_provider_instances_at(path: &std::path::Path) -> Result<Vec<ProviderInstance>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents = std::fs::read_to_string(path)
+        .map_err(|_| "Unable to read Provider configuration".to_owned())?;
+
+    if contents.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let instances: Vec<ProviderInstance> = serde_json::from_str(&contents)
+        .map_err(|_| "Provider configuration is malformed".to_owned())?;
+
+    instances
+        .into_iter()
+        .map(validate_provider_instance)
+        .collect()
+}
+
+fn write_provider_instances_at(
+    path: &std::path::Path,
+    instances: &[ProviderInstance],
+) -> Result<(), String> {
+    if let Some(directory) = path.parent() {
+        std::fs::create_dir_all(directory)
+            .map_err(|_| "Unable to create Provider configuration directory".to_owned())?;
+    }
+
+    let contents = serde_json::to_string_pretty(instances)
+        .map_err(|_| "Unable to serialize Provider configuration".to_owned())?;
+
+    let temporary_path = path.with_extension("json.tmp");
+
+    std::fs::write(&temporary_path, contents)
+        .map_err(|_| "Unable to write Provider configuration".to_owned())?;
+
+    std::fs::rename(&temporary_path, path)
+        .map_err(|_| "Unable to finalize Provider configuration".to_owned())
+}
+
+fn read_provider_instances() -> Result<Vec<ProviderInstance>, String> {
+    read_provider_instances_at(&provider_instances_file()?)
+}
+
+fn write_provider_instances(instances: &[ProviderInstance]) -> Result<(), String> {
+    write_provider_instances_at(&provider_instances_file()?, instances)
+}
+
+#[tauri::command]
+pub(crate) fn list_provider_instances() -> Result<Vec<ProviderInstance>, String> {
+    read_provider_instances()
+}
+
+#[tauri::command]
+pub(crate) fn save_provider_instance(
+    instance: ProviderInstance,
+) -> Result<ProviderInstance, String> {
+    let mut instance = validate_provider_instance(instance)?;
+    let mut instances = read_provider_instances()?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    if let Some(existing) = instances
+        .iter()
+        .find(|candidate| candidate.id == instance.id)
+    {
+        instance.created_at = existing.created_at.clone();
+    }
+
+    instance.updated_at = now;
+
+    instances.retain(|candidate| candidate.id != instance.id);
+    instances.push(instance.clone());
+    instances.sort_by(|left, right| left.id.cmp(&right.id));
+
+    write_provider_instances(&instances)?;
+
+    Ok(instance)
+}
+
+#[tauri::command]
+pub(crate) fn remove_provider_instance(instance_id: String) -> Result<bool, String> {
+    let instance_id = validate_instance_id(instance_id.trim())?;
+    let mut instances = read_provider_instances()?;
+    let original_length = instances.len();
+
+    instances.retain(|candidate| candidate.id != instance_id);
+
+    if instances.len() == original_length {
+        return Ok(false);
+    }
+
+    write_provider_instances(&instances)?;
+
+    Ok(true)
+}
+
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25300;
 static AI_CENTER_REQUESTS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
 
@@ -1099,5 +1360,96 @@ mod tests {
             stream_text("ollama", &serde_json::json!({"message": {"content": "B"}})).as_deref(),
             Some("B")
         );
+    }
+
+    fn provider_fixture() -> ProviderInstance {
+        ProviderInstance {
+            id: "openai-default".to_owned(),
+            provider_id: "openai".to_owned(),
+            display_name: "OpenAI".to_owned(),
+            credential: ProviderCredentialRef {
+                kind: ProviderCredentialKind::ApiKey,
+                keychain_account: Some("openai-default".to_owned()),
+                expires_at: None,
+                refreshable: false,
+            },
+            connection_state: ProviderConnectionState::Connected,
+            models: vec![ProviderModelEntry {
+                id: "openai-default:gpt-test".to_owned(),
+                provider_instance_id: "openai-default".to_owned(),
+                remote_model_id: "gpt-test".to_owned(),
+                display_name: "GPT Test".to_owned(),
+                capabilities: vec!["chat".to_owned(), "tool-use".to_owned()],
+                context_window: Some(128_000),
+                enabled: true,
+                is_default: true,
+            }],
+            created_at: "2026-08-01T00:00:00Z".to_owned(),
+            updated_at: "2026-08-01T00:00:00Z".to_owned(),
+            last_tested_at: Some("2026-08-01T00:00:00Z".to_owned()),
+        }
+    }
+
+    #[test]
+    fn provider_instance_serialization_matches_frontend_contract() {
+        let value = serde_json::to_value(provider_fixture()).unwrap();
+
+        assert_eq!(value["id"], "openai-default");
+        assert_eq!(value["providerId"], "openai");
+        assert_eq!(value["connectionState"], "connected");
+        assert_eq!(value["credential"]["kind"], "api-key");
+        assert_eq!(value["models"][0]["providerInstanceId"], "openai-default");
+        assert_eq!(value["models"][0]["isDefault"], true);
+    }
+
+    #[test]
+    fn provider_instance_round_trips_without_secret_material() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(PROVIDER_INSTANCES_FILE);
+        let fixture = provider_fixture();
+
+        write_provider_instances_at(&path, std::slice::from_ref(&fixture)).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+
+        assert!(!contents.to_lowercase().contains("api key value"));
+        assert!(!contents.to_lowercase().contains("access_token"));
+        assert!(!contents.to_lowercase().contains("refresh_token"));
+
+        assert_eq!(read_provider_instances_at(&path).unwrap(), vec![fixture]);
+    }
+
+    #[test]
+    fn provider_instance_rejects_secret_fields_in_migration_input() {
+        let value = serde_json::json!({
+            "id": "openai-default",
+            "providerId": "openai",
+            "displayName": "OpenAI",
+            "credential": {
+                "kind": "api-key",
+                "keychainAccount": "openai-default",
+                "refreshable": false,
+                "secret": "must-not-be-accepted"
+            },
+            "connectionState": "connected",
+            "models": [],
+            "createdAt": "2026-08-01T00:00:00Z",
+            "updatedAt": "2026-08-01T00:00:00Z"
+        });
+
+        assert!(serde_json::from_value::<ProviderInstance>(value).is_err());
+    }
+
+    #[test]
+    fn provider_validation_rejects_foreign_and_duplicate_models() {
+        let mut foreign = provider_fixture();
+        foreign.models[0].provider_instance_id = "another-provider".to_owned();
+
+        assert!(validate_provider_instance(foreign).is_err());
+
+        let mut duplicate = provider_fixture();
+        duplicate.models.push(duplicate.models[0].clone());
+
+        assert!(validate_provider_instance(duplicate).is_err());
     }
 }
