@@ -9439,8 +9439,14 @@ select:focus-visible {
 .provider-setup-dialog > footer {
   position: relative;
   z-index: 2;
+  flex-wrap: wrap;
   border-top: 1px solid #dde2df;
   background: #ffffff;
+}
+
+.provider-setup-dialog > footer .provider-setup-error {
+  flex: 1 0 100%;
+  margin: 0;
 }
 
 :root:not([data-theme="light"]) .provider-model-choice label {

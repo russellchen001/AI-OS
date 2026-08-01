@@ -507,7 +507,9 @@ function MyAiPage({
       setSetup(null);
     } catch (error) {
       setSetupError(
-        error instanceof Error
+        typeof error === "string"
+          ? error
+          : error instanceof Error
           ? error.message
           : "AI‑OS could not save this Provider.",
       );
@@ -912,6 +914,7 @@ function MyAiPage({
             </div>
 
             {setup.phase !== "manage" && <footer>
+              {setupError && <p className="provider-setup-error" role="alert">{setupError}</p>}
               <button type="button" className="provider-setup-cancel" onClick={closeSetup}>Cancel</button>
               <button
                 type="button"
