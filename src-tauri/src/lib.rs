@@ -168,6 +168,8 @@ pub fn run() {
             openclaw::import_openclaw_servers,
             openclaw::invoke_active_openclaw_gateway,
             runtime::list_runtimes,
+            runtime::skills::registry::list_skills,
+            runtime::skills::registry::get_skill,
             runtime::get_runtime_statuses,
             runtime::ipc::start_runtime_operation,
             runtime::bulk::start_runtime_bulk_operation,
