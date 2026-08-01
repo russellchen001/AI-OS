@@ -23,8 +23,13 @@ const PROVIDER_INSTANCES_FILE: &str = "provider-instances.json";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ProviderCredentialKind {
+    #[serde(rename = "oauth")]
     OAuth,
+
+    #[serde(rename = "api-key")]
     ApiKey,
+
+    #[serde(rename = "local")]
     Local,
 }
 
@@ -2625,6 +2630,22 @@ mod tests {
             serde_json::to_value(ProviderAuthenticationMethod::Local).unwrap(),
             serde_json::json!("local")
         );
+    }
+
+    #[test]
+    fn credential_kind_serialization_is_frontend_compatible() {
+        for (kind, expected) in [
+            (ProviderCredentialKind::OAuth, "oauth"),
+            (ProviderCredentialKind::ApiKey, "api-key"),
+            (ProviderCredentialKind::Local, "local"),
+        ] {
+            assert_eq!(serde_json::to_value(&kind).unwrap(), expected);
+            assert_eq!(
+                serde_json::from_value::<ProviderCredentialKind>(serde_json::json!(expected))
+                    .unwrap(),
+                kind
+            );
+        }
     }
 
     #[test]
