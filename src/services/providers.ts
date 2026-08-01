@@ -62,6 +62,81 @@ export type CompleteOAuthResult = {
   refreshable: boolean;
 };
 
+export type ProviderOAuthCompletedEvent = {
+  providerId: string;
+  providerInstanceId: string;
+  expiresAt?: string;
+  refreshable: boolean;
+};
+
+export type ProviderOAuthErrorEvent = {
+  providerId: string;
+  message: string;
+};
+
+const PROVIDER_OAUTH_CONFIGURATION_REGISTRY: Record<string, string> = {
+  openai: "OPENAI",
+  anthropic: "ANTHROPIC",
+  google: "GOOGLE",
+  grok: "GROK",
+  deepseek: "DEEPSEEK",
+  doubao: "DOUBAO",
+  kimi: "KIMI",
+};
+
+export function getProviderOAuthConfiguration(
+  providerId: string,
+  providerInstanceId: string,
+): OAuthProviderConfiguration | undefined {
+  const prefix = PROVIDER_OAUTH_CONFIGURATION_REGISTRY[providerId];
+  if (!prefix) return undefined;
+
+  const environment = import.meta.env as Record<string, unknown>;
+  const read = (suffix: string) => {
+    const value = environment[`VITE_AI_OS_${prefix}_OAUTH_${suffix}`];
+    return typeof value === "string" ? value.trim() : "";
+  };
+  const clientId = read("CLIENT_ID");
+  const authorizationUrl = read("AUTHORIZATION_URL");
+  const tokenUrl = read("TOKEN_URL");
+  const scopes = read("SCOPES")
+    .split(/[ ,]+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+
+  if (!clientId || !authorizationUrl || !tokenUrl || scopes.length === 0) {
+    return undefined;
+  }
+
+  return {
+    providerId,
+    providerInstanceId,
+    clientId,
+    authorizationUrl,
+    tokenUrl,
+    scopes,
+  };
+}
+
+export function isProviderOAuthConfigured(providerId: string): boolean {
+  return getProviderOAuthConfiguration(providerId, "configuration-check") !== undefined;
+}
+
+export async function startProviderOAuth(
+  providerId: string,
+  providerInstanceId: string,
+): Promise<BeginOAuthResult> {
+  const configuration = getProviderOAuthConfiguration(
+    providerId,
+    providerInstanceId,
+  );
+  if (!configuration) {
+    throw new Error("Account sign-in is not configured for this Provider.");
+  }
+
+  return beginProviderOAuth(configuration);
+}
+
 export async function saveProviderApiKey(
   providerInstanceId: string,
   secret: string,

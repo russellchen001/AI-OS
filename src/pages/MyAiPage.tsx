@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useEffect, useRef, useState } from "react";
 import type { OllamaModel } from "../types/index";
 import type {
   ProviderAdapterDescriptor,
@@ -15,7 +17,13 @@ import {
   removeProviderInstance,
   saveProviderApiKey,
   saveProviderInstance,
+  isProviderOAuthConfigured,
+  startProviderOAuth,
+  type ProviderOAuthCompletedEvent,
+  type ProviderOAuthErrorEvent,
 } from "../services/providers";
+
+const OAUTH_FRONTEND_TIMEOUT_MS = 5 * 60 * 1000;
 
 type MyAiPageProps = {
   localModels: OllamaModel[];
@@ -155,12 +163,26 @@ function MyAiPage({
   const [apiKey, setApiKey] = useState("");
   const [setupError, setSetupError] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
+  const cancelOAuthRef = useRef<(() => void) | null>(null);
+
+  function cancelOAuth() {
+    cancelOAuthRef.current?.();
+    cancelOAuthRef.current = null;
+  }
+
+  function closeSetup() {
+    cancelOAuth();
+    setIsConnecting(false);
+    setSetup(null);
+  }
+
+  useEffect(() => () => cancelOAuth(), []);
 
   useEffect(() => {
     if (!setup) return;
 
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSetup(null);
+      if (event.key === "Escape") closeSetup();
     };
 
     window.addEventListener("keydown", closeOnEscape);
@@ -250,8 +272,90 @@ function MyAiPage({
     if (!setup || isConnecting) return;
 
     if (setup.method === "account") {
-      onConnect(setup.provider, setup.method);
-      setSetup(null);
+      const instanceId = providerInstanceId(setup.providerId);
+      setIsConnecting(true);
+      setSetupError("");
+
+      let completedUnlisten: UnlistenFn | undefined;
+      let errorUnlisten: UnlistenFn | undefined;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      let cancelled = false;
+      let resolvePending: ((event: ProviderOAuthCompletedEvent) => void) | undefined;
+      let rejectPending: ((reason: Error) => void) | undefined;
+      const cleanup = () => {
+        completedUnlisten?.();
+        errorUnlisten?.();
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+
+      try {
+        const completion = new Promise<ProviderOAuthCompletedEvent>(
+          (resolve, reject) => {
+            resolvePending = resolve;
+            rejectPending = reject;
+          },
+        );
+
+        completedUnlisten = await listen<ProviderOAuthCompletedEvent>(
+          "provider-oauth://completed",
+          ({ payload }) => {
+            if (
+              payload.providerId !== setup.providerId ||
+              payload.providerInstanceId !== instanceId
+            ) return;
+            settled = true;
+            resolvePending?.(payload);
+          },
+        );
+        errorUnlisten = await listen<ProviderOAuthErrorEvent>(
+          "provider-oauth://error",
+          ({ payload }) => {
+            if (payload.providerId !== setup.providerId) return;
+            settled = true;
+            rejectPending?.(new Error(payload.message));
+          },
+        );
+        timeoutId = setTimeout(() => {
+          settled = true;
+          rejectPending?.(new Error("Account sign-in timed out. Please try again."));
+        }, OAUTH_FRONTEND_TIMEOUT_MS);
+
+        cancelOAuthRef.current = () => {
+          cancelled = true;
+          if (!settled) rejectPending?.(new Error("Account sign-in was cancelled."));
+          cleanup();
+        };
+
+        const oauth = await startProviderOAuth(setup.providerId, instanceId);
+        await openUrl(oauth.authorizationUrl);
+        await completion;
+
+        const adapter = await getProviderAdapter(setup.providerId);
+        const verification = await adapter.testConnection(instanceId);
+        if (cancelled) return;
+        const models = verification.discoveredModels;
+        setSetup({
+          ...setup,
+          phase: "models",
+          models,
+          defaultModelId: models[0]?.id ?? "",
+          verificationMessage: verification.message,
+          liveTested: verification.level === "live" && verification.ok,
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setSetupError(
+            error instanceof Error
+              ? error.message
+              : "AI‑OS could not complete account sign-in.",
+          );
+        }
+      } finally {
+        cleanup();
+        cancelOAuthRef.current = null;
+        setIsConnecting(false);
+      }
       return;
     }
 
@@ -296,7 +400,7 @@ function MyAiPage({
       id: providerInstanceId(setup.providerId),
       providerId: setup.providerId,
       displayName: setup.provider,
-      credentialKind: "api-key",
+      credentialKind: setup.method === "account" ? "oauth" : "api-key",
       models: setup.models,
       defaultModelId: setup.defaultModelId,
       liveTested: setup.liveTested,
@@ -350,6 +454,7 @@ function MyAiPage({
           const supportsApiKey =
             descriptor?.authenticationMethods.includes("api-key") === true;
           const supportsAccountSignIn =
+            isProviderOAuthConfigured(provider.id) &&
             descriptor?.authenticationMethods.some(
               (method) =>
                 method === "oauth-pkce" ||
@@ -520,6 +625,7 @@ function MyAiPage({
             descriptor.providerId === setup.providerId,
         );
         const accountSignInAvailable =
+          isProviderOAuthConfigured(setup.providerId) &&
           setupDescriptor?.authenticationMethods.some(
             (method) =>
               method === "oauth-pkce" ||
@@ -530,7 +636,7 @@ function MyAiPage({
 
         return (
         <div className="provider-setup-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setSetup(null);
+          if (event.target === event.currentTarget) closeSetup();
         }}>
           <section className="provider-setup-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-setup-title">
             <header>
@@ -539,7 +645,7 @@ function MyAiPage({
                 <p>Connect Provider</p>
                 <h2 id="provider-setup-title">{setup.provider}</h2>
               </div>
-              <button type="button" className="provider-setup-close" aria-label="Close Provider setup" onClick={() => setSetup(null)}>×</button>
+              <button type="button" className="provider-setup-close" aria-label="Close Provider setup" onClick={closeSetup}>×</button>
             </header>
 
             {setup.phase === "credential" && <div className="provider-setup-methods" role="tablist" aria-label="Connection method">
@@ -639,7 +745,7 @@ function MyAiPage({
                   <p>AI‑OS will open the official {setup.provider} sign-in page. Your password is never entered into AI‑OS.</p>
                   <div className="provider-security-note">
                     <span>✓</span>
-                    <p><strong>Protected connection</strong><small>Account sign-in will become available after this Provider’s OAuth configuration and callback flow are enabled.</small></p>
+                    <p><strong>Protected connection</strong><small>AI‑OS uses PKCE and a one-time local callback. The authorization code and tokens stay in the native security layer.</small></p>
                   </div>
                 </>
               ) : (
@@ -667,14 +773,14 @@ function MyAiPage({
             </div>
 
             {setup.phase !== "manage" && <footer>
-              <button type="button" className="provider-setup-cancel" onClick={() => setSetup(null)}>Cancel</button>
+              <button type="button" className="provider-setup-cancel" onClick={closeSetup}>Cancel</button>
               <button
                 type="button"
                 className="provider-setup-continue"
                 disabled={isConnecting || (setup.phase === "credential" && setup.method === "api-key" && !apiKey.trim())}
                 onClick={() => setup.phase === "models" ? finishProviderSetup() : void continueSetup()}
               >
-                {isConnecting ? "Saving…" : setup.phase === "models" ? "Save Provider" : setup.method === "account" ? "Continue in browser" : "Save and choose model"}
+                {isConnecting ? (setup.method === "account" ? "Waiting for sign-in…" : "Saving…") : setup.phase === "models" ? "Save Provider" : setup.method === "account" ? "Continue in browser" : "Save and choose model"}
                 <span>→</span>
               </button>
             </footer>}
