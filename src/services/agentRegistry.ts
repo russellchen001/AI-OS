@@ -76,3 +76,11 @@ export function saveCustomAgent(agent: AgentRecord): AgentRecord[] {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   return [OPENCLAW_AGENT, ...next];
 }
+
+export function deleteCustomAgent(agentId: string): AgentRecord[] {
+  const customAgents = loadAgentRegistry().filter(
+    (agent) => !agent.builtIn && agent.id !== agentId,
+  );
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(customAgents));
+  return [OPENCLAW_AGENT, ...customAgents];
+}

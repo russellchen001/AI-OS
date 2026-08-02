@@ -657,3 +657,5 @@ Completed:
 Notes:
 
 Use Git history and accepted milestone commits for detailed provenance. Do not rely on superseded roadmap wording where it conflicts with `AI_OS_MASTER_GUIDE.md`.
+
+- Agent Registry：Custom Agent 使用独立默认名称；所有非内置 Agent 可从 Agents 页面删除，OpenClaw 继续受内置保护。

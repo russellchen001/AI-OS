@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import {
   HERMES_AGENT_TEMPLATE,
+  deleteCustomAgent,
   loadAgentRegistry,
   saveCustomAgent,
 } from "../services/agentRegistry";
@@ -15,6 +16,11 @@ function AgentsPage({ onMessage }: AgentsPageProps) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("Hermes Agent");
   const [adapterKind, setAdapterKind] = useState<AgentAdapterKind>("hermes-api");
+
+  function deleteAgent(agent: AgentRecord) {
+    setAgents(deleteCustomAgent(agent.id));
+    onMessage(agent.name + " was deleted.");
+  }
 
   function addAgent(event: FormEvent) {
     event.preventDefault();
@@ -49,7 +55,11 @@ function AgentsPage({ onMessage }: AgentsPageProps) {
           <h1>Agents</h1>
           <p>Choose which execution agents AI‑OS may use and review their capabilities.</p>
         </div>
-        <button type="button" className="add-provider-button" onClick={() => setAdding(true)}>
+        <button type="button" className="add-provider-button" onClick={() => {
+          setName("Hermes Agent");
+          setAdapterKind("hermes-api");
+          setAdding(true);
+        }}>
           <span>+</span> Add Agent
         </button>
       </header>
@@ -111,7 +121,11 @@ function AgentsPage({ onMessage }: AgentsPageProps) {
               </label>
               <label className="agent-form-field">
                 <span>Agent type</span>
-                <select value={adapterKind} onChange={(event) => setAdapterKind(event.target.value as AgentAdapterKind)}>
+                <select value={adapterKind} onChange={(event) => {
+                  const nextKind = event.target.value as AgentAdapterKind;
+                  setAdapterKind(nextKind);
+                  setName(nextKind === "hermes-api" ? "Hermes Agent" : "Custom Agent");
+                }}>
                   <option value="hermes-api">Hermes Agent</option>
                   <option value="custom">Custom Agent</option>
                 </select>
