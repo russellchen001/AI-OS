@@ -18,7 +18,9 @@ function AgentsPage({ onMessage }: AgentsPageProps) {
   const [adapterKind, setAdapterKind] = useState<AgentAdapterKind>("hermes-api");
 
   function deleteAgent(agent: AgentRecord) {
-    setAgents(deleteCustomAgent(agent.id));
+    if (agent.builtIn) return;
+    const nextAgents = deleteCustomAgent(agent.id);
+    setAgents(nextAgents);
     onMessage(agent.name + " was deleted.");
   }
 
@@ -94,13 +96,20 @@ function AgentsPage({ onMessage }: AgentsPageProps) {
 
             <footer>
               <span>{agent.adapterKind.replaceAll("-", " ")}</span>
-              <button type="button" onClick={() => onMessage(
-                agent.builtIn
-                  ? "OpenClaw connection is managed through the existing Gateway settings."
-                  : `${agent.name} requires its adapter connection before it can run tasks.`,
-              )}>
-                Manage
-              </button>
+              <div className="agent-record-actions">
+                <button type="button" onClick={() => onMessage(
+                  agent.builtIn
+                    ? "OpenClaw connection is managed through the existing Gateway settings."
+                    : `${agent.name} requires its adapter connection before it can run tasks.`,
+                )}>
+                  Manage
+                </button>
+                {!agent.builtIn && (
+                  <button type="button" onClick={() => deleteAgent(agent)}>
+                    Delete
+                  </button>
+                )}
+              </div>
             </footer>
           </article>
         ))}

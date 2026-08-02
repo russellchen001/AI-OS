@@ -9527,3 +9527,9 @@ select:focus-visible {
     max-height: calc(100vh - 310px);
   }
 }
+
+.agent-record-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

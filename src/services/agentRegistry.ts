@@ -78,9 +78,18 @@ export function saveCustomAgent(agent: AgentRecord): AgentRecord[] {
 }
 
 export function deleteCustomAgent(agentId: string): AgentRecord[] {
-  const customAgents = loadAgentRegistry().filter(
-    (agent) => !agent.builtIn && agent.id !== agentId,
-  );
+  const normalizedId = agentId.trim();
+  if (!normalizedId || normalizedId === OPENCLAW_AGENT.id) {
+    throw new Error("Built-in agents cannot be deleted.");
+  }
+
+  const stored: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+  const customAgents = Array.isArray(stored)
+    ? stored
+        .filter(isAgentRecord)
+        .filter((agent) => agent.id !== normalizedId)
+    : [];
+
   localStorage.setItem(STORAGE_KEY, JSON.stringify(customAgents));
   return [OPENCLAW_AGENT, ...customAgents];
 }
