@@ -659,3 +659,27 @@ Notes:
 Use Git history and accepted milestone commits for detailed provenance. Do not rely on superseded roadmap wording where it conflicts with `AI_OS_MASTER_GUIDE.md`.
 
 - Agent Registry：Custom Agent 使用独立默认名称；所有非内置 Agent 可从 Agents 页面删除，OpenClaw 继续受内置保护。
+
+## P13-M5 Shared Multi-Model Invocation — Completed
+
+P13-M5 completes the final AI Center goal defined by `AI_OS_MASTER_GUIDE.md`.
+
+AI Center now exposes a Provider-independent multi-model invocation interface with ordered participant normalization, duplicate removal, explicit model routing, independent operation IDs, concurrent execution, isolated participant failures, aggregate cancellation, stable ordered results, aggregate timing and outcome counts, and reuse of P13-M4 invocation metadata.
+
+Multi-model participants never use Auto fallback. Each participant runs only its explicitly selected Provider instance and model.
+
+P13 is now complete:
+
+- M1: Canonical Provider domain and adapter registry
+- M2: Provider credential and account connection infrastructure
+- M3: Local/cloud execution, model discovery and Local First routing
+- M4: Provider-independent observability, cost and latency metadata
+- M5: Shared multi-model invocation infrastructure
+
+AI Council and AI Arena may consume this shared interface in P16 and P17 without creating their own Provider integrations.
+
+### Agent v1.0 Boundary
+
+AI-OS v1.0 has one operational execution Agent: OpenClaw.
+
+Hermes and Custom Agent records remain non-operational Registry placeholders reserved for possible AI-OS v2.0 development. Their Manage actions and execution adapters are not part of P13 or the v1.0 acceptance boundary.

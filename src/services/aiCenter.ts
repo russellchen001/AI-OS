@@ -5,6 +5,7 @@ import {
   buildInvocationMetadata,
   completeAttempt,
   recordInvocationSuccess,
+  safeAttemptError,
   shouldContinueAfterAttemptFailure,
   type AiCenterAttempt,
   type AiCenterInvocationMetadata,
@@ -200,6 +201,176 @@ export type AiCenterConversationMessage = {
   role: "user" | "assistant";
   content: string;
 };
+
+export type AiCenterMultiParticipant = {
+  participantId: string;
+  choice: AiCenterModelChoice;
+};
+
+export type AiCenterMultiParticipantResult =
+  | {
+      participantId: string;
+      operationId: string;
+      status: "success";
+      response: AiCenterResponse;
+    }
+  | {
+      participantId: string;
+      operationId: string;
+      status: "failed" | "cancelled";
+      error: string;
+    };
+
+export type AiCenterMultiInvocationResult = {
+  invocationId: string;
+  startedAt: string;
+  completedAt: string;
+  latencyMs: number;
+  participantCount: number;
+  successCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  participants: AiCenterMultiParticipantResult[];
+};
+
+export type AiCenterMultiInvocation = {
+  invocationId: string;
+  result: Promise<AiCenterMultiInvocationResult>;
+  cancel: () => Promise<void>;
+};
+
+function normalizeMultiParticipants(
+  participants: AiCenterMultiParticipant[],
+): AiCenterMultiParticipant[] {
+  const seenParticipantIds = new Set<string>();
+  const seenModels = new Set<string>();
+  const normalized: AiCenterMultiParticipant[] = [];
+
+  for (const participant of participants) {
+    const participantId = participant.participantId.trim();
+    const modelKey = [
+      participant.choice.providerId,
+      participant.choice.providerInstanceId,
+      participant.choice.modelId,
+    ].join(":");
+
+    if (
+      !participantId ||
+      seenParticipantIds.has(participantId) ||
+      seenModels.has(modelKey)
+    ) {
+      continue;
+    }
+
+    resolveChoice(participant.choice);
+    seenParticipantIds.add(participantId);
+    seenModels.add(modelKey);
+    normalized.push({
+      participantId,
+      choice: participant.choice,
+    });
+  }
+
+  return normalized;
+}
+
+export function invokeMultipleThroughAiCenter(
+  messages: AiCenterConversationMessage[],
+  participants: AiCenterMultiParticipant[],
+): AiCenterMultiInvocation {
+  const normalized = normalizeMultiParticipants(participants);
+  if (normalized.length === 0) {
+    throw new Error("NO_CONNECTED_PROVIDER");
+  }
+
+  const invocationId = `multi-${crypto.randomUUID()}`;
+  const invocationStartedAt = Date.now();
+  const activeStreams = new Map<string, AiCenterStream>();
+  let cancelled = false;
+
+  const participantResults = Promise.all(
+    normalized.map(async (participant) => {
+      const stream = streamThroughAiCenter(
+        messages,
+        participant.choice,
+        () => undefined,
+      );
+      const operationId = stream.operationId;
+      activeStreams.set(operationId, stream);
+
+      try {
+        if (cancelled) {
+          await stream.cancel();
+        }
+
+        const outcome = await stream.result;
+        if (cancelled || outcome.cancelled) {
+          return {
+            participantId: participant.participantId,
+            operationId,
+            status: "cancelled" as const,
+            error: "cancelled",
+          };
+        }
+
+        return {
+          participantId: participant.participantId,
+          operationId,
+          status: "success" as const,
+          response: outcome.response,
+        };
+      } catch (error) {
+        const errorCategory = safeAttemptError(error);
+        return {
+          participantId: participant.participantId,
+          operationId,
+          status:
+            cancelled || errorCategory === "cancelled"
+              ? ("cancelled" as const)
+              : ("failed" as const),
+          error: cancelled ? "cancelled" : errorCategory,
+        };
+      } finally {
+        activeStreams.delete(operationId);
+      }
+    }),
+  );
+
+  const result = participantResults.then((participants) => {
+    const completedAtMs = Date.now();
+    return {
+      invocationId,
+      startedAt: new Date(invocationStartedAt).toISOString(),
+      completedAt: new Date(completedAtMs).toISOString(),
+      latencyMs: Math.max(
+        0,
+        Math.round(completedAtMs - invocationStartedAt),
+      ),
+      participantCount: participants.length,
+      successCount: participants.filter(
+        (participant) => participant.status === "success",
+      ).length,
+      failedCount: participants.filter(
+        (participant) => participant.status === "failed",
+      ).length,
+      cancelledCount: participants.filter(
+        (participant) => participant.status === "cancelled",
+      ).length,
+      participants,
+    };
+  });
+
+  return {
+    invocationId,
+    result,
+    cancel: async () => {
+      cancelled = true;
+      await Promise.allSettled(
+        [...activeStreams.values()].map((stream) => stream.cancel()),
+      );
+    },
+  };
+}
 
 function promptFromMessages(messages: AiCenterConversationMessage[]): string {
   return messages
