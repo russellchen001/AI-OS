@@ -284,6 +284,22 @@ OpenClaw is one execution agent controlled through Runtime.
 
 OpenClaw must not replace Task Engine, Planner, AI Center, Memory, or the broader product architecture.
 
+## Agent Boundary and Future Agents
+
+AI-OS v1.0 has one operational execution Agent: OpenClaw. Hermes and Custom
+Agent records exist in the Registry as non-operational placeholders.
+
+The intended v2.0 arrangement is that Hermes becomes the primary Agent, as a
+growth-type agent that accumulates understanding of the user, with OpenClaw
+acting as its assistant for connecting to and operating external systems.
+Further agents such as WorkBuddy may follow.
+
+This places a constraint on all v1.0 work: the Runtime-to-Agent boundary must
+remain a general adapter contract, not an OpenClaw-shaped one.
+
+Adding a second Agent must not require changes to Task Engine, Planner, or
+Runtime. Agent-specific behaviour belongs behind the adapter.
+
 ---
 
 # 5. Core Systems
@@ -401,6 +417,29 @@ Potential uses:
 - Independent critique
 
 AI Council improves decision quality for the user. It is not horizontal model comparison and does not replace Task Engine, Planner, AI Center, or Runtime. It obtains all model access through AI Center; its product logic does not belong to Runtime.
+
+### Council to Execution
+
+A Council recommendation is intended to become executed work, not to stop at a
+report. The intended path is:
+
+```text
+AI Council → Task Engine → Planner → user confirmation → Runtime → Agent
+```
+
+Council produces the recommendation. Task Engine creates a Do task carrying it
+as context. Planner decomposes it. The user confirms before execution, because a
+Council plan may contain irreversible actions. Runtime and the selected Agent
+execute.
+
+This path is not yet specified in detail. It must be specified before P16
+implementation begins, or P16 will ship as a report-writing feature that leaves
+the user to restate the plan manually.
+
+Open points for that specification: which component converts a prose
+recommendation into a task objective; the granularity at which the user
+confirms; whether a Council plan can be saved and re-run; and failure handling
+partway through a Council-originated plan.
 
 ## 5.7 AI Arena
 
@@ -875,6 +914,7 @@ Goals:
 - Chief of Staff facilitation and expert discussion
 - Independent critique, consensus, and synthesized recommendations
 - Decision-support reports for complex decisions and planning
+- A specified and implemented path from recommendation to executed work through Task Engine, Planner, user confirmation, Runtime, and an Agent
 - Provider-independent model access through AI Center
 
 ## P17 — AI Arena
@@ -974,6 +1014,8 @@ A focused development phase with defined goals and boundaries.
 - Removed all current-status content from this guide; `HANDOFF.md` is now the sole owner of repository state, and the document-authority section says so explicitly.
 - Removed per-phase status markers from the roadmap for the same reason.
 - Recorded the decision that AI Center executes in the Rust backend, and added a matching forbidden pattern for frontend routing.
+- Added the Council-to-execution path as an explicit P16 goal and flagged it as requiring specification before implementation.
+- Added the Agent boundary section: v1.0 runs OpenClaw only, v2.0 intends Hermes as primary with OpenClaw assisting, and the Runtime-to-Agent contract must stay general.
 - Renamed section 10 to Implementation Agent Instructions and made the reading order start at `AGENTS.md`.
 - Clarified that P1–P8 predate this guide and that section 11 defines P9–P17.
 - Added the acceptance-script requirement to the development rules.

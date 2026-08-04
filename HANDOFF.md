@@ -6,6 +6,95 @@
 
 ---
 
+## What this product is
+
+AI-OS is a local-first personal AI operating system. The user says what they
+want in plain language; AI-OS works out how to do it and gets it done.
+
+Work is carried out by **Agents** — local executors that can actually touch the
+computer, the internet, and connected services. Agents are the hands. The AI
+models behind them, managed by AI Center, are the brain. Models are replaceable;
+the product does not depend on any single provider.
+
+Two capabilities are the reason this product exists, and neither is a chatbot
+feature:
+
+**AI Council（AI 智囊团）** — for any objective, a Chief of Staff works out which
+models should be involved, assembles them into an advisory team, runs the
+discussion, and produces a recommendation. Other products stop at the report.
+Here the recommendation is meant to become work: the conclusion is handed to
+Task Engine as a Do task, Planner turns it into steps, the user confirms, and an
+Agent executes it. **Advice that turns into action is the differentiator.**
+
+**AI Arena（AI 竞技场）** — multiple AIs interact under shared rules: debate,
+social-deduction games such as Werewolf, collaboration, competition, role play,
+simulation, or just talking to each other. Model comparison is one mode, not the
+point. Arena is where the user watches AI behave, not where the user gets work
+done.
+
+Everything else in the roadmap exists to make these two possible and reliable.
+
+---
+
+## Agent roadmap
+
+**v1.0 — OpenClaw only.**
+
+OpenClaw is the single operational execution Agent for v1.0. Hermes and Custom
+Agent records exist in the Registry but are non-operational placeholders. All
+non-built-in agents are deletable; OpenClaw is built-in protected.
+
+**v2.0 — Hermes leads, OpenClaw assists.**
+
+The intended v2.0 arrangement, recorded now so the architecture does not close
+it off:
+
+- **Hermes** becomes the primary Agent. It is a growth-type agent — the more it
+  is used, the better it understands the user. It owns continuity and judgement.
+- **OpenClaw** becomes Hermes's assistant, used for what it is best at:
+  connecting to and operating external systems and services.
+- **WorkBuddy** and other agents may follow.
+
+Design constraint this places on v1.0 work: the Runtime-to-Agent boundary must
+stay a general adapter contract, not an OpenClaw-shaped one. Adding a second
+Agent must not require changes to Task Engine, Planner, or Runtime.
+
+---
+
+## Open design gap — Council to execution
+
+**Status: not yet specified. Decide before P16 implementation begins.**
+
+AI Council currently ends at a recommendation. The path from recommendation to
+executed work is undefined, which means P16 as specified would produce a
+report-writing feature and the user would have to restate the plan manually to
+get it done.
+
+The intended path:
+
+```text
+AI Council
+  ↓  recommendation
+Task Engine        creates a Do task with the recommendation as context
+  ↓
+Planner            decomposes it into executable steps
+  ↓
+User confirmation  required — Council plans may include irreversible actions
+  ↓
+Runtime → Agent    executes
+```
+
+Things to settle when this is specified:
+
+- Who converts a prose recommendation into a task objective — Council, Task
+  Engine, or Planner
+- What the confirmation surface looks like, and which step granularity the user
+  approves
+- Whether a Council plan can be saved and re-run later
+- What happens when a step fails midway through a Council-originated plan
+
+---
+
 ## Repository state
 
 | | |
