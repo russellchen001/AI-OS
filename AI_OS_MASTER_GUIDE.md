@@ -1,7 +1,7 @@
 # AI-OS Master Guide
 
 **Edition:** Foundation Edition  
-**Version:** 2026.2
+**Version:** 2026.3
 **Status:** Active Development  
 **Project:** AI-OS
 
@@ -15,11 +15,15 @@ Where this guide conflicts with older roadmap or architecture documents, this gu
 
 Companion documents have narrower authority: `AI_OS_PRODUCT_VISION.md` owns brand and vision; `AI_OS_UI_SPEC.md` owns information architecture and experience; `AI_OS_DESIGN_SYSTEM.md` owns visual and component rules; and `AI_OS_FIGMA_BLUEPRINT.md` owns design-file and screen-delivery specifications. If any companion document conflicts with this guide, this guide prevails.
 
+`HANDOFF.md` owns current repository state, completed work, rejected approaches, and the immediate next step. This guide never describes current status; where this guide appears to state a status, `HANDOFF.md` prevails.
+
+`AGENTS.md` is the entry point for any implementation agent and defines the reading order and delivery format.
+
 Existing source code represents the current implementation baseline. It must be preserved and evolved incrementally toward the architecture defined here.
 
 Do not discard completed work merely because the target architecture has changed.
 
-The approved AI-OS v1.0 roadmap contains 17 phases, P1 through P17. AI Council and AI Arena are both mandatory v1.0 capabilities. Development sequencing may be refined, but removing either capability from v1.0 requires an explicit approved roadmap revision. Implementation advice must not silently change this frozen product scope.
+The approved AI-OS v1.0 roadmap runs through P17. Phases P1 through P8 predate this guide; their outcomes are part of the current implementation baseline and their historical records live in `docs/archive/`. Phases P9 through P17 are defined in section 11 of this guide. AI Council and AI Arena are both mandatory v1.0 capabilities. Development sequencing may be refined, but removing either capability from v1.0 requires an explicit approved roadmap revision. Implementation advice must not silently change this frozen product scope.
 
 ---
 
@@ -34,7 +38,7 @@ The approved AI-OS v1.0 roadmap contains 17 phases, P1 through P17. AI Council a
 7. [Skill Framework](#7-skill-framework)
 8. [Security and Permissions](#8-security-and-permissions)
 9. [Development Rules](#9-development-rules)
-10. [Codex Instructions](#10-codex-instructions)
+10. [Implementation Agent Instructions](#10-implementation-agent-instructions)
 11. [Roadmap](#11-roadmap)
 12. [Non-Goals](#12-non-goals)
 13. [Glossary](#13-glossary)
@@ -63,42 +67,17 @@ Users should not need:
 
 ## Current Development Status
 
-**Completed:**
-
-- P9 Runtime Foundation
-- Runtime lifecycle management
-- Runtime recovery
-- Runtime operation management
-- Runtime scheduling foundation
-- P10 Task Engine and Planner
-- P11 OpenClaw Integration
-
-**Current priority:**
-
-- Complete and validate the approved UI Refactor documentation and implementation without starting P12
-
-**Next milestones:**
-
-- P12 Skill Framework
-- P13 AI Center
-- P14 Memory
-- P15 Core Skills
-- P16 AI Council
-- P17 AI Arena
+Current status, completed phases, the active milestone, and the next work item
+are recorded in `HANDOFF.md`. This guide deliberately does not duplicate them,
+because two copies of a status will eventually disagree.
 
 ## Current Repository Implementation
 
-The current runtime implementation is located at:
+AI-OS is a Tauri application. The Rust backend lives in `src-tauri/`, and the
+React and TypeScript frontend lives in `src/`.
 
-`src-tauri/src/runtime/`
-
-Known runtime areas include:
-
-- Lifecycle
-- Executor
-- Operations
-- Scheduler
-- Recovery
+The runtime implementation baseline is `src-tauri/src/runtime/`, covering
+lifecycle, executor, operations, scheduler, and recovery.
 
 Future development must build on the existing implementation rather than replace it without a demonstrated architectural need.
 
@@ -395,6 +374,19 @@ Responsibilities:
 No module should directly call an AI provider when the request belongs through AI Center.
 
 AI Council and AI Arena must use AI Center for provider and model access rather than create unrelated direct integrations.
+
+### Execution Layer
+
+AI Center executes in the Rust backend. Provider invocation, Auto ordering,
+fallback selection, and credential use are backend responsibilities.
+
+The frontend submits a request and renders the result. It must not select
+providers, order candidates, decide fallback, or hold credentials in memory.
+
+This is required because background and scheduled execution cannot depend on an
+open application window, because credentials must remain in the native security
+layer, and because Runtime, Memory, AI Council, and AI Arena all need backend
+access to AI Center.
 
 ## 5.6 AI Council
 
@@ -694,7 +686,7 @@ Secrets must never be hard-coded or committed to source control.
 5. Keep module ownership clear.
 6. Avoid duplicate systems and overlapping responsibilities.
 7. Prefer readable code over clever code.
-8. Add tests for significant behavior and regressions.
+8. Add tests for significant behavior and regressions. Every user-facing feature also ships an acceptance script at `verify/verify_<feature>.sh` that verifies actual behavior rather than the existence of a function.
 9. Update this guide only when product direction, architecture, status, or development rules materially change.
 10. Development-order recommendations do not modify the approved product roadmap.
 11. Product scope or phase changes require an explicit update to this guide approved by the project owner.
@@ -730,6 +722,20 @@ Correct:
 Skill or Planner → AI Center → Provider
 ```
 
+Do not place AI Center routing, provider ordering, fallback selection, or credential handling in the frontend.
+
+Incorrect:
+
+```text
+Frontend service → provider selection → provider HTTP call
+```
+
+Correct:
+
+```text
+Frontend → AI Center (Rust backend) → Provider
+```
+
 Do not place product planning logic inside Runtime or external execution logic inside the UI.
 
 ## Definition of Done
@@ -745,14 +751,14 @@ A change is complete when:
 
 ---
 
-# 10. Codex Instructions
+# 10. Implementation Agent Instructions
 
-Codex is responsible for continuing AI-OS, not restarting or redesigning it.
+Any implementation agent — Codex, Claude, Gemini, Cursor, or another — is responsible for continuing AI-OS, not restarting or redesigning it.
 
 ## Before Coding
 
-1. Read `AI_OS_MASTER_GUIDE.md`.
-2. Confirm the active milestone.
+1. Read `AGENTS.md`, then `HANDOFF.md`, then this guide.
+2. Confirm the active milestone from `HANDOFF.md`, and check its Completed and Rejected sections before proposing anything.
 3. Inspect the relevant existing implementation.
 4. Identify the module that owns the responsibility.
 5. Propose the smallest viable change when the change is significant.
@@ -792,15 +798,13 @@ Every completed development task should report:
 
 # 11. Roadmap
 
-## P9 — Runtime Foundation
+Phase completion status is recorded in `HANDOFF.md`, not here. This section defines only the goals and boundary of each phase.
 
-**Status:** Completed
+## P9 — Runtime Foundation
 
 Purpose: provide reliable execution infrastructure.
 
 ## P10 — Task Engine
-
-**Status:** Current priority
 
 Goals:
 
@@ -964,6 +968,15 @@ A focused development phase with defined goals and boundaries.
 ---
 
 # Change Log
+
+## 2026-08-02 — Version 2026.3
+
+- Removed all current-status content from this guide; `HANDOFF.md` is now the sole owner of repository state, and the document-authority section says so explicitly.
+- Removed per-phase status markers from the roadmap for the same reason.
+- Recorded the decision that AI Center executes in the Rust backend, and added a matching forbidden pattern for frontend routing.
+- Renamed section 10 to Implementation Agent Instructions and made the reading order start at `AGENTS.md`.
+- Clarified that P1–P8 predate this guide and that section 11 defines P9–P17.
+- Added the acceptance-script requirement to the development rules.
 
 ## 2026-08-01 — Version 2026.2
 
