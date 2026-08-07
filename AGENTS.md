@@ -127,6 +127,48 @@ Never leave two conflicting statements about current state in the file.
 
 ---
 
-## 8. Most important rule
+## 8. Token discipline
+
+You are running with a limited budget. The cost is context, not verbosity.
+What you read and what your commands print is where the budget goes.
+
+**Reading files**
+
+- Locate first, then read. Use `rg -n "<pattern>" <path>` to find line numbers,
+  then `sed -n 'N,Mp' <file>` to read only that range.
+- Never `cat` a file over 200 lines.
+- Never read `node_modules/`, `dist/`, `target/`, `package-lock.json`, or any
+  generated output.
+- Read `HANDOFF.md` once at the start of a session. Do not re-read it mid-task.
+- Do not read a file "to be safe". Read it because a specific question needs it.
+
+**Running commands**
+
+Filter anything that produces long output:
+
+```bash
+npm test 2>&1 | grep -E "FAIL|error" | head -20
+npm run build 2>&1 | tail -20
+cargo test 2>&1 | grep -E "FAILED|^error" | head -20
+git diff --stat        # before git diff
+```
+
+Only view a full diff for files you are actually changing.
+
+**Working**
+
+- Change one module per task. Do not refactor code you were not asked to touch.
+- Do not re-verify work you already verified in this session.
+- If the same fix has failed twice, stop and report what you need. Do not keep
+  iterating blind.
+
+**Reporting**
+
+- Report after each file, not after a batch.
+- State what changed and the verification result. Do not summarise what you read.
+
+---
+
+## 9. Most important rule
 
 > Continue the project. Do not restart the project.
