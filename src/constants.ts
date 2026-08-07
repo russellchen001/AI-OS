@@ -56,10 +56,6 @@ export const NAV_ITEMS: Array<{
   name: PageName;
   icon: string;
 }> = [
-  { name: "Dashboard", icon: "🏠" },
-  { name: "Services", icon: "🚀" },
-  { name: "Backup", icon: "💾" },
-  { name: "Logs", icon: "📜" },
   { name: "Settings", icon: "⚙️" },
 ];
 

@@ -16,7 +16,6 @@ export const APP_INFO: AppInfo = {
 export const STORAGE_KEYS = {
   settings: "ai-os-settings",
   mcpServers: "ai-os-mcp-servers",
-  backupHistory: "ai-os-backup-history",
 } as const;
 
 export const INITIAL_SERVICES: Service[] = [
@@ -58,9 +57,6 @@ export const DEFAULT_SETTINGS: Settings = {
   ollamaUrl: "http://localhost:11434",
   openWebUiUrl: "http://localhost:3000",
   theme: "dark",
-  backupDirectory: "",
-  includeOpenClawConfig: true,
-  includeAiOsSettings: true,
   logLineLimit: 500,
 };
 

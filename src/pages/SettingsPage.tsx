@@ -64,14 +64,7 @@ function SettingsPage({
           ["My AI", "Providers, accounts and models", "My AI"],
           ["Agents", "OpenClaw, Hermes and custom agents", "Agents"],
           ["Skills", "MCP servers and tool connections", "MCP"],
-          ["Runtime", "Services, health and local execution", "Services"],
-          ["OpenClaw", "Gateway connections and permissions", "OpenClaw"],
           ["Local models", "Ollama models on this Mac", "Models"],
-          ["Backups", "Create, restore and manage backups", "Backup"],
-          ["Logs", "Diagnostics and activity records", "Logs"],
-          ["Advanced AI", "Routing and multi-model controls", "MultiLLM"],
-          ["Prompts", "Reusable prompt library", "Prompt Library"],
-          ["System overview", "Metrics and service status", "Dashboard"],
         ].map(([title, description, page]) => (
           <button
             key={title}
@@ -291,91 +284,6 @@ function SettingsPage({
           </label>
         </div>
 
-        <div
-          className="settings-card"
-          style={cardStyle}
-        >
-          <div className="settings-group-header">
-            <div>
-              <h3>
-                Backup Defaults
-              </h3>
-
-              <p>
-                Default destination
-                and included data.
-              </p>
-            </div>
-
-            <span>💾</span>
-          </div>
-
-          <label className="setting-field">
-            <span>
-              Backup Directory
-            </span>
-
-            <small>
-              Use an absolute local
-              directory path.
-            </small>
-
-            <input
-              type="text"
-              value={
-                settings.backupDirectory
-              }
-              placeholder="/Users/your-name/Backups"
-              onChange={(event) =>
-                onUpdateSetting(
-                  "backupDirectory",
-                  event.target.value,
-                )
-              }
-            />
-          </label>
-
-          <label className="settings-checkbox-row">
-            <input
-              type="checkbox"
-              checked={
-                settings
-                  .includeOpenClawConfig
-              }
-              onChange={(event) =>
-                onUpdateSetting(
-                  "includeOpenClawConfig",
-                  event.target.checked,
-                )
-              }
-            />
-
-            <span>
-              Include OpenClaw
-              configuration
-            </span>
-          </label>
-
-          <label className="settings-checkbox-row">
-            <input
-              type="checkbox"
-              checked={
-                settings
-                  .includeAiOsSettings
-              }
-              onChange={(event) =>
-                onUpdateSetting(
-                  "includeAiOsSettings",
-                  event.target.checked,
-                )
-              }
-            />
-
-            <span>
-              Include AI OS settings
-            </span>
-          </label>
-        </div>
 
         <div
           className="settings-card settings-about-card"

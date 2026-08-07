@@ -12,9 +12,6 @@ import {
   loadArtifactProjects,
 } from "../services/artifacts";
 import {
-  loadPrompts,
-} from "../services/promptLibrary";
-import {
   loadCouncilSessions,
 } from "../services/council";
 
@@ -58,91 +55,62 @@ const PAGE_COMMANDS:
     label: string;
     description: string;
   }> = [
-  {
-    page: "Dashboard",
-    icon: "🏠",
-    label: "Open Dashboard",
-    description:
-      "View services and system overview",
-  },
-  {
-    page: "Services",
-    icon: "🚀",
-    label: "Open Services",
-    description:
-      "Manage local AI services",
-  },
-  {
-    page: "OpenClaw",
-    icon: "🦞",
-    label: "Open OpenClaw",
-    description:
-      "Manage OpenClaw connections",
-  },
-  {
-    page: "Backup",
-    icon: "💾",
-    label: "Open Backup",
-    description:
-      "Create and restore backups",
-  },
-  {
-    page: "Logs",
-    icon: "📜",
-    label: "Open Logs",
-    description:
-      "Inspect local application logs",
-  },
-  {
-    page: "Models",
-    icon: "🧠",
-    label: "Open Models",
-    description:
-      "Manage Ollama models",
-  },
-  {
-    page: "MCP",
-    icon: "🔌",
-    label: "Open MCP",
-    description:
-      "Configure MCP servers",
-  },
-  {
-    page: "MultiLLM",
-    icon: "🧩",
-    label: "Open MultiLLM",
-    description:
-      "Compare models and use Smart Router",
-  },
-  {
-    page: "Prompt Library",
-    icon: "📚",
-    label: "Open Prompt Library",
-    description:
-      "Search and reuse prompts",
-  },
-  {
-    page: "Artifacts",
-    icon: "🧱",
-    label: "Open Artifacts",
-    description:
-      "Browse projects and generated files",
-  },
-  {
-    page: "AI Council",
-    icon: "🏛",
-    label: "Open AI Council",
-    description:
-      "Run multi-agent collaboration",
-  },
-  {
-    page: "Settings",
-    icon: "⚙️",
-    label: "Open Settings",
-    description:
-      "Configure AI OS preferences",
-  },
-];
+    {
+      page: "Chat",
+      icon: "✦",
+      label: "Open Workspace",
+      description: "AI conversation workspace",
+    },
+    {
+      page: "My AI",
+      icon: "◎",
+      label: "Open My AI",
+      description: "Providers, accounts and models",
+    },
+    {
+      page: "Models",
+      icon: "🧠",
+      label: "Open Models",
+      description: "Manage local models",
+    },
+    {
+      page: "MCP",
+      icon: "🔌",
+      label: "Open Skills",
+      description: "Configure MCP servers",
+    },
+    {
+      page: "Artifacts",
+      icon: "🧱",
+      label: "Open Files",
+      description: "Browse generated artifacts",
+    },
+    {
+      page: "AI Council",
+      icon: "🏛",
+      label: "Open AI Council",
+      description: "Multi-agent collaboration",
+    },
+    {
+      page: "AI Arena",
+      icon: "◐",
+      label: "Open AI Arena",
+      description: "Compare AI capabilities",
+    },
+    {
+      page: "Agents",
+      icon: "⌁",
+      label: "Open Agents",
+      description: "Manage AI agents",
+    },
+    {
+      page: "Settings",
+      icon: "⚙",
+      label: "Open Settings",
+      description: "System configuration",
+    },
+  ];
+
 
 function loadRecentIds():
   string[] {
@@ -311,63 +279,11 @@ function CommandPalette({
             );
 
             navigate(
-              "MultiLLM",
-            );
+                "My AI",
+              );
           },
         },
-        {
-          id:
-            "action:backup",
-          label:
-            "Create a Backup",
-          description:
-            "Open the Backup workspace",
-          icon: "💾",
-          kind: "action",
-          keywords:
-            "create backup export restore",
-          run: () =>
-            navigate(
-              "Backup",
-            ),
-        },
-      ];
-
-      const prompts =
-        loadPrompts().map(
-          (
-            prompt,
-          ): CommandItem => ({
-            id:
-              `prompt:${prompt.id}`,
-            label:
-              prompt.title,
-            description:
-              `Prompt · ${prompt.category} · ${prompt.description || "No description"}`,
-            icon:
-              prompt.favorite
-                ? "★"
-                : "📚",
-            kind: "prompt",
-            keywords: [
-              prompt.title,
-              prompt.description,
-              prompt.content,
-              prompt.category,
-              ...prompt.tags,
-            ].join(" "),
-            run: () => {
-              localStorage.setItem(
-                "ai-os.prompt-library.selected.v1",
-                prompt.id,
-              );
-
-              navigate(
-                "Prompt Library",
-              );
-            },
-          }),
-        );
+        ];
 
       const artifacts =
         loadArtifacts().map(
@@ -488,7 +404,6 @@ function CommandPalette({
       return [
         ...actions,
         ...pages,
-        ...prompts,
         ...projects,
         ...artifacts,
         ...council,
@@ -659,7 +574,7 @@ function CommandPalette({
             ref={inputRef}
             type="search"
             value={query}
-            placeholder="Search commands, prompts, projects, Artifacts or Council sessions…"
+            placeholder="Search commands, projects, Artifacts or Council sessions…"
             onChange={(
               event,
             ) =>

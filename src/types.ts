@@ -4,10 +4,6 @@ export type ServiceStatus =
   | "Unknown";
 
 export type PageName =
-  | "Dashboard"
-  | "Services"
-  | "Backup"
-  | "Logs"
   | "Settings";
 
 export type LogLevel =

@@ -3,9 +3,6 @@ import {
   loadArtifacts,
 } from "./artifacts";
 import {
-  loadPrompts,
-} from "./promptLibrary";
-import {
   loadCouncilSessions,
 } from "./council";
 import {
@@ -294,8 +291,6 @@ export function createAnalyticsSnapshot():
   const projects =
     loadArtifactProjects();
 
-  const prompts =
-    loadPrompts();
 
   const councilSessions =
     loadCouncilSessions();
@@ -327,9 +322,6 @@ export function createAnalyticsSnapshot():
 
     artifacts:
       artifacts.length,
-
-    prompts:
-      prompts.length,
 
     councilSessions:
       councilSessions.length,

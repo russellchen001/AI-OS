@@ -55,7 +55,6 @@ export type AnalyticsSnapshot = {
 
   projects: number;
   artifacts: number;
-  prompts: number;
   councilSessions: number;
 
   totalEvents: number;

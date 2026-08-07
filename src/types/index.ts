@@ -22,15 +22,8 @@ export type Service = {
 export type PageName =
   | "Chat"
   | "My AI"
-  | "Dashboard"
-  | "Services"
-  | "OpenClaw"
-  | "Backup"
-  | "Logs"
   | "Models"
   | "MCP"
-  | "MultiLLM"
-  | "Prompt Library"
   | "Artifacts"
   | "AI Council"
   | "AI Arena"
@@ -47,9 +40,6 @@ export type Settings = {
   ollamaUrl: string;
   openWebUiUrl: string;
   theme: ThemeMode;
-  backupDirectory: string;
-  includeOpenClawConfig: boolean;
-  includeAiOsSettings: boolean;
   logLineLimit: number;
 };
 
@@ -59,43 +49,6 @@ export type Metrics = {
   memoryTotal: number;
   diskUsed: number;
   diskTotal: number;
-};
-
-export type BackupStatus =
-  | "idle"
-  | "creating"
-  | "cancelling"
-  | "restoring"
-  | "success"
-  | "error";
-
-export type BackupRecord = {
-  id: string;
-  fileName: string;
-  path: string;
-  createdAt: string;
-  sizeBytes: number;
-};
-
-export type CreateBackupRequest = {
-  operationId: string;
-  destinationDirectory: string;
-  includeOpenClawConfig: boolean;
-  includeAiOsSettings: boolean;
-  settingsJson: string;
-};
-
-export type RestoreBackupRequest = {
-  archivePath: string;
-  restoreOpenClawConfig: boolean;
-  restoreAiOsSettings: boolean;
-};
-
-export type BackupResult = {
-  success: boolean;
-  message: string;
-  archivePath?: string;
-  restoredSettingsJson?: string;
 };
 
 export type LogLevel =
