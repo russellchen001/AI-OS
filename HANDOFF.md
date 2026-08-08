@@ -120,7 +120,7 @@ Things to settle when this is specified:
 | P13-M3 | Local/cloud execution, model discovery, Local First routing | |
 | P13-M4 | Provider-independent observability, cost and latency metadata | tag `p13-m4-complete` |
 | P13-M5 | Shared multi-model invocation | `1e01cd2`, tag `p13-m5-complete` |
-| P13-M6a | Legacy MultiLLM removal and AI Center migration | `verify/verify_p13_ai_center_migration.sh` |
+| AC-BACKEND-0 | Legacy MultiLLM removal; provider HTTP invocation moved to Rust | `verify/verify_p13_ai_center_migration.sh` |
 | Provider setup dialog | Restored setup/manage dialog styles removed during P13 migration | `verify/verify_provider_setup_dialog.sh` |
 | UI Refactor | White-first workspace across Chat, Sidebar, My AI, Agents, Arena, Council, Artifacts, Settings | |
 | Agent Registry | Non-built-in agents (including Hermes and Custom Agents) are deletable; OpenClaw stays built-in protected | `c88f7b9`, `9b54873` |
@@ -239,13 +239,19 @@ access to AI Center.
 Migration is incremental, not a rewrite. Each step ships its own acceptance
 script and must not change observable behaviour:
 
-1. **P13-M6a** — move provider HTTP invocation into Rust. The frontend still
-   decides which provider and model; it just stops making the call itself.
-2. **P13-M6b** — move Auto ordering, Local First preference, and fallback
+This is architectural correction, not a P13 milestone. P13 is defined by the
+Master Guide as M1-M5 and is complete. These steps are tracked as AC-BACKEND,
+outside the phase numbering.
+
+Provider HTTP invocation already moved to Rust as part of the legacy MultiLLM
+removal (AC-BACKEND-0). Remaining:
+
+1. **AC-BACKEND-1** — move Auto ordering, Local First preference, and fallback
    selection into Rust. The frontend sends the request and an Auto-or-manual
    flag.
-3. **P13-M6c** — reduce `src/services/aiCenter.ts` to a thin call-and-render
-   layer. Observability records are produced in Rust and passed up.
+2. **AC-BACKEND-2** — reduce `src/services/aiCenter.ts` to a thin
+   call-and-render layer. Observability records are produced in Rust and
+   passed up.
 
 Constraints carried into the migration:
 
