@@ -103,7 +103,7 @@ Things to settle when this is specified:
 | HEAD | `1e01cd2 feat(p13): complete shared multi-model invocation` |
 | Latest tag | `p13-m5-complete` |
 | Working tree | Clean except `HANDOFF.md` and untracked acceptance tooling |
-| Active phase | P13 complete — awaiting manual E2E QA |
+| Active phase | P13 complete — AI Center migration complete, awaiting final QA |
 
 ---
 
@@ -120,6 +120,7 @@ Things to settle when this is specified:
 | P13-M3 | Local/cloud execution, model discovery, Local First routing | |
 | P13-M4 | Provider-independent observability, cost and latency metadata | tag `p13-m4-complete` |
 | P13-M5 | Shared multi-model invocation | `1e01cd2`, tag `p13-m5-complete` |
+| P13-M6a | Legacy MultiLLM removal and AI Center migration | `verify/verify_p13_ai_center_migration.sh` |
 | UI Refactor | White-first workspace across Chat, Sidebar, My AI, Agents, Arena, Council, Artifacts, Settings | |
 | Agent Registry | Non-built-in agents (including Hermes and Custom Agents) are deletable; OpenClaw stays built-in protected | `c88f7b9`, `9b54873` |
 
@@ -152,12 +153,17 @@ committed.
 
 ## Next
 
-1. Commit the acceptance tooling (`verify_all.sh`, `done.sh`, `context.sh`, `verify/`)
-2. Manual end-to-end QA: Auto route, manual route, multi-model, streaming,
-   cancellation, fallback, analytics
-3. Fix anything QA finds
-4. **P13-M6a** — begin the AI Center backend migration (see Decided below)
-5. P14 Memory, after the migration lands
+1. Commit P13 migration and acceptance tooling
+2. Manual end-to-end QA:
+   - Auto route
+   - Manual provider selection
+   - Multi-model invocation
+   - Streaming
+   - Cancellation
+   - Provider fallback
+   - Analytics records
+3. Fix QA issues if found
+4. Start P14 Memory
 
 ---
 
@@ -185,6 +191,13 @@ committed.
 - Participant ordering is deterministic after normalization; duplicates removed pre-execution
 - Aggregated results preserve per-model P13-M4 metadata
 - Auto routing is Local First: local Ollama models are attempted before connected cloud defaults
+
+**Migration**
+
+- Legacy MultiLLM service has been removed
+- Provider Registry is the single source of provider identity
+- Council and My AI consume AI Center provider models
+- No new feature should introduce MultiLLM-specific storage keys or execution paths
 
 **Credentials**
 
