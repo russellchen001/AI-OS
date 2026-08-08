@@ -42,3 +42,6 @@ openclaw.log
 *-source-bundle.txt
 *.save
 *.before-*
+
+# Local agent tooling
+.agents/
