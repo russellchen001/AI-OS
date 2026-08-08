@@ -121,6 +121,7 @@ Things to settle when this is specified:
 | P13-M4 | Provider-independent observability, cost and latency metadata | tag `p13-m4-complete` |
 | P13-M5 | Shared multi-model invocation | `1e01cd2`, tag `p13-m5-complete` |
 | P13-M6a | Legacy MultiLLM removal and AI Center migration | `verify/verify_p13_ai_center_migration.sh` |
+| Provider setup dialog | Restored setup/manage dialog styles removed during P13 migration | `verify/verify_provider_setup_dialog.sh` |
 | UI Refactor | White-first workspace across Chat, Sidebar, My AI, Agents, Arena, Council, Artifacts, Settings | |
 | Agent Registry | Non-built-in agents (including Hermes and Custom Agents) are deletable; OpenClaw stays built-in protected | `c88f7b9`, `9b54873` |
 
@@ -199,6 +200,14 @@ committed.
 - Council and My AI consume AI Center provider models
 - No new feature should introduce MultiLLM-specific storage keys or execution paths
 
+**Removing legacy code**
+
+- CSS class names have no compile-time link to TypeScript, so deleting a
+  feature can silently remove styles the surviving UI still uses; the build
+  will still pass
+- When removing a module, grep `App.css` for its class names before and after
+  and confirm every affected screen renders
+
 **Credentials**
 
 - All API keys and OAuth tokens pass to the native security layer and live in macOS Keychain
@@ -261,65 +270,5 @@ Constraints carried into the migration:
 
 <!-- ./done.sh appends here automatically -->
 
-
-## Current Issue — My AI Provider buttons broken (post P13)
-
-**Status: unresolved — handoff required**
-
-After completing P13 AI Center migration, My AI page has a UI bug:
-
-- Cloud Provider cards render correctly.
-- Provider buttons display labels correctly.
-- Clicking Provider buttons does not complete the expected action.
-- `Sign in` / `API key` flows can open the setup dialog.
-- `Manage connection` path is currently suspected broken.
-
-Investigation completed:
-
-1. Verified button rendering:
-   - `src/pages/MyAiPage.tsx`
-   - `.provider-primary` click handler exists.
-
-2. Verified click events:
-   - Temporary click debugging confirmed the button handler executes.
-
-3. Verified setup flow:
-   - `openSetup()` works.
-   - Provider setup modal appears.
-
-4. Verified provider storage architecture:
-   - `src/services/providers.ts`
-   - `saveProviderInstance()` updates `providerInstanceCache`.
-   - `listProviderInstances()` reads from cache.
-   - `initializeProviderInstances()` asynchronously loads native provider instances.
-
-Current suspected area:
-
-- MyAiPage provider state synchronization after P13 migration.
-- Need to trace:
-  - `initializeProviderInstances()`
-  - `providerInstanceCache`
-  - `providerInstances` React state
-  - Provider button state calculation.
-
-Do not assume CSS issue.
-Do not remove Provider Registry architecture.
-
-Last tested branch:
-- `feature/p13-ai-center`
-
-Latest commits:
-- `85098df refactor(p13): migrate runtime to AI Center providers`
-- `44fcd02 chore: ignore local agent tooling`
-
-Build status:
-- `npm run build` passed.
-
-Remaining UI fixes:
-1. Chat page bottom toolbar:
-   - icon sizes inconsistent
-   - typo: `oopenclaw` should be `OpenClaw`
-
-2. My AI page:
-   - Provider action buttons require further debugging.
-
+## 变更日志
+- 2026-08-09 04:09  fix(myai): restore provider setup dialog styles lost in P13 migration

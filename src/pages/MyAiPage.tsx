@@ -7,6 +7,7 @@ import type { RuntimeStatus } from "../types/runtime";
 import type {
   ProviderAdapterDescriptor,
   ProviderModelEntry,
+  ProviderInstance,
 } from "../types/provider";
 import {
   getProviderAdapter,
@@ -17,6 +18,7 @@ import {
   cancelProviderOAuth,
   deleteProviderCredential,
   listProviderInstances,
+  initializeProviderInstances,
   removeProviderInstance,
   saveProviderApiKey,
   saveProviderInstance,
@@ -162,7 +164,7 @@ function MyAiPage({
   onRefreshLocalModels,
   onStartOllama,
 }: MyAiPageProps) {
-  const [providerInstances, setProviderInstances] = useState(() => listProviderInstances());
+  const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([]);
   const [providerAdapters, setProviderAdapters] = useState<
     ProviderAdapterDescriptor[]
   >([]);
@@ -198,7 +200,15 @@ function MyAiPage({
             };
   const configuredProviderIds = new Set([
     ...loadConfiguredProviderIds(),
-    ...providerInstances.map((instance) => instance.providerId),
+    ...providerInstances
+      .filter(
+        (instance) =>
+          instance.connectionState === "connected",
+      )
+      .map(
+        (instance) =>
+          instance.providerId,
+      ),
   ]);
   const [setup, setSetup] = useState<{
     providerId: string;
@@ -229,6 +239,34 @@ function MyAiPage({
   }
 
   useEffect(() => () => cancelOAuth(), []);
+
+  useEffect(() => {
+    let active = true;
+
+    void initializeProviderInstances()
+      .then(() => {
+        if (active) {
+          setProviderInstances(listProviderInstances());
+        }
+      });
+
+    const refreshProviders = () => {
+      setProviderInstances(listProviderInstances());
+    };
+
+    window.addEventListener(
+      "ai-os:providers-changed",
+      refreshProviders,
+    );
+
+    return () => {
+      active = false;
+      window.removeEventListener(
+        "ai-os:providers-changed",
+        refreshProviders,
+      );
+    };
+  }, []);
 
   useEffect(() => {
     if (!setup) return;
@@ -313,6 +351,7 @@ function MyAiPage({
 
   function openManage(instanceId: string) {
     const instance = providerInstances.find((candidate) => candidate.id === instanceId);
+
     if (!instance) return;
     setApiKey("");
     setSetupError("");
@@ -742,20 +781,19 @@ function MyAiPage({
             provider.id === "anthropic"
               ? claudeCodeStatus?.installed === true &&
                 descriptor?.authenticationMethods.includes("cli-account") === true
-              : descriptor?.authenticationMethods.includes("device-code") === true ||
-                (isProviderOAuthConfigured(provider.id) &&
-                descriptor?.authenticationMethods.some(
+              : descriptor?.authenticationMethods.some(
                   (method) =>
+                    method === "device-code" ||
                     method === "oauth-pkce" ||
                     method === "oauth-loopback" ||
-                    method === "device-code" ||
                     method === "imported-credential",
-                ) === true);
+                ) === true;
           const instance = providerInstances.find(
             (candidate) => candidate.providerId === provider.id,
           );
           const legacyConnected = configuredProviderIds.has(provider.id) && !instance;
           const apiKeyOnly = supportsApiKey && !supportsAccountSignIn;
+
           const statusLabel =
             instance?.connectionState === "connected"
               ? "Connected"
@@ -786,7 +824,7 @@ function MyAiPage({
             </div>
 
             <div className="provider-actions">
-              <button
+<button
                 type="button"
                 className="provider-primary"
                 onClick={() => {
@@ -795,22 +833,42 @@ function MyAiPage({
                     return;
                   }
 
+                  if (legacyConnected) {
+                    if (supportsAccountSignIn) {
+                      openSetup(provider.name, "account", provider.id);
+                    } else if (supportsApiKey) {
+                      openSetup(provider.name, "api-key", provider.id);
+                    } else {
+                      console.warn(
+                        `[MyAiPage] Provider ${provider.id} is configured but has no instance and no supported setup method.`,
+                      );
+                    }
+                    return;
+                  }
+
                   if (supportsAccountSignIn) {
                     openSetup(provider.name, "account", provider.id);
                     return;
                   }
-                  if (apiKeyOnly) {
+                  if (supportsApiKey) {
                     openSetup(provider.name, "api-key", provider.id);
+                    return;
                   }
+
+                  console.warn(
+                    `[MyAiPage] Provider ${provider.id} has no available action.`,
+                  );
                 }}
               >
-                {configuredProviderIds.has(provider.id)
+                {instance
                   ? "Manage connection"
-                  : supportsAccountSignIn
-                    ? provider.accountLabel
-                    : "Use API key"}
+                  : legacyConnected
+                    ? "Reconnect"
+                    : supportsAccountSignIn
+                      ? provider.accountLabel
+                      : "Use API key"}
               </button>
-              {supportsApiKey && !apiKeyOnly && (
+                            {supportsApiKey && !apiKeyOnly && (
                   <button
                     type="button"
                     className="provider-secondary"

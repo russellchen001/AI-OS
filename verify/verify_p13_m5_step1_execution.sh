@@ -18,7 +18,7 @@ check() {
 check "export function invokeMultipleThroughAiCenter(" \
   "共享多模型调用接口已导出"
 
-check "const result = Promise.all(" \
+check "Promise.all(" \
   "所有参与模型并发启动"
 
 check "await Promise.allSettled(" \

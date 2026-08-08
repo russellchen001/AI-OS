@@ -3314,12 +3314,151 @@ select:focus-visible {
 }
 
 /* Provider setup model-picker usability fix */
+.provider-setup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(2px);
+  overflow-y: auto;
+}
 .provider-setup-dialog {
   display: flex;
   flex-direction: column;
   width: min(680px, calc(100vw - 48px));
   max-height: min(820px, calc(100vh - 48px));
   overflow: hidden;
+}
+.provider-setup-dialog {
+  gap: 0;
+  border: 1px solid #dde2df;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.24);
+}
+.provider-setup-dialog > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 24px;
+  border-bottom: 1px solid #dde2df;
+}
+.provider-setup-dialog > header > div:nth-child(2) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.provider-setup-dialog > header p {
+  margin: 0;
+  color: #737c77;
+  font-size: 12px;
+  line-height: 16px;
+}
+.provider-setup-dialog > header h2 {
+  margin: 2px 0 0;
+  font-size: 18px;
+  line-height: 24px;
+}
+.provider-setup-mark {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #edf5f1;
+  color: #176b52;
+  font-size: 18px;
+  font-weight: 600;
+}
+.provider-setup-close {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #dde2df;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #202523;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.provider-setup-close:hover {
+  background: #f3f7f5;
+}
+.provider-setup-body {
+  padding: 20px 24px;
+}
+.provider-setup-body dl {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  gap: 8px 16px;
+  margin: 0 0 20px;
+}
+.provider-setup-body dt {
+  color: #737c77;
+  font-size: 13px;
+}
+.provider-setup-body dd {
+  margin: 0;
+  color: #202523;
+  font-size: 13px;
+}
+.provider-setup-body h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  line-height: 20px;
+}
+.provider-setup-body > p {
+  margin: 0 0 16px;
+  color: #4a534d;
+  font-size: 13px;
+  line-height: 18px;
+}
+.provider-setup-methods {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 16px 24px 0;
+}
+.provider-setup-methods button {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px;
+  border: 1px solid #dde2df;
+  border-radius: 10px;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+}
+.provider-setup-methods button[aria-selected="true"] {
+  border-color: #176b52;
+  background: #edf5f1;
+}
+.provider-setup-methods button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.provider-setup-methods button span {
+  color: #202523;
+  font-size: 14px;
+  font-weight: 500;
+}
+.provider-setup-methods button small {
+  color: #737c77;
+  font-size: 12px;
+}
+.provider-setup-dialog > footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
 }
 
 .provider-setup-dialog > header,
@@ -3445,4 +3584,68 @@ select:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.provider-setup-body button {
+  padding: 8px 14px;
+  border: 1px solid #dde2df;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #202523;
+  font-size: 13px;
+  cursor: pointer;
+}
+.provider-setup-body button:hover {
+  background: #f3f7f5;
+}
+.provider-setup-body > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #dde2df;
+}
+.provider-setup-body button {
+  padding: 8px 14px;
+  border: 1px solid #dde2df;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #202523;
+  font-size: 13px;
+  cursor: pointer;
+}
+.provider-setup-body button:hover {
+  background: #f3f7f5;
+}
+.provider-setup-body > button {
+  margin-right: 8px;
+  margin-top: 8px;
+}
+.provider-instance-summary {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 20px;
+  padding: 16px;
+  border: 1px solid #dde2df;
+  border-radius: 10px;
+  background: #f8faf9;
+}
+.provider-instance-summary > div {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 16px;
+  align-items: baseline;
+}
+.provider-instance-summary > div > span {
+  color: #737c77;
+  font-size: 13px;
+  line-height: 18px;
+}
+.provider-instance-summary > div > strong {
+  color: #202523;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }

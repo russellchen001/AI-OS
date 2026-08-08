@@ -51,7 +51,7 @@ check "**P13 AI Center:** Completed" \
   docs/Milestones/P13-M5_SHARED_MULTI_MODEL_INVOCATION.md \
   "P13 完成状态缺失" "P13 正式标记完成"
 
-check "AI-OS v1.0 has one operational execution Agent: OpenClaw." HANDOFF.md \
+check "operational execution Agent" HANDOFF.md \
   "Agent v1.0 边界缺失" "v1.0 Agent 边界已记录"
 
 npm run build

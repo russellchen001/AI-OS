@@ -93,6 +93,28 @@ Every feature ships with an acceptance script at `verify/verify_<feature>.sh`:
 - Anything that cannot be checked automatically (browser behaviour, visual
   result) goes in 【跑完应该看到】 for the owner to confirm manually
 
+**Never verify by matching source text.**
+
+Do not write checks that grep the codebase or documentation for a literal
+string. A variable rename, a reformat, or a reworded sentence will break the
+check while the behaviour is still correct — and a passing check proves only
+that a string exists, not that the feature works.
+
+Incorrect:
+
+```bash
+grep -q "const result = Promise.all(" src/services/aiCenter.ts
+grep -q "AI-OS v1.0 has one operational execution Agent" HANDOFF.md
+```
+
+Correct: run the code and assert on what it does — exit codes, output, HTTP
+status, file contents produced, database state. If a behaviour genuinely cannot
+be asserted from the outside, put it in 【跑完应该看到】 for manual confirmation
+instead of faking it with a text match.
+
+The one exception is verifying that a file or config entry exists at all; even
+then, check the file, not a sentence inside it.
+
 Repository tooling:
 
 - `./verify_all.sh` — run every acceptance script and report a summary
