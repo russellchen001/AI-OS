@@ -260,3 +260,66 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+
+
+## Current Issue — My AI Provider buttons broken (post P13)
+
+**Status: unresolved — handoff required**
+
+After completing P13 AI Center migration, My AI page has a UI bug:
+
+- Cloud Provider cards render correctly.
+- Provider buttons display labels correctly.
+- Clicking Provider buttons does not complete the expected action.
+- `Sign in` / `API key` flows can open the setup dialog.
+- `Manage connection` path is currently suspected broken.
+
+Investigation completed:
+
+1. Verified button rendering:
+   - `src/pages/MyAiPage.tsx`
+   - `.provider-primary` click handler exists.
+
+2. Verified click events:
+   - Temporary click debugging confirmed the button handler executes.
+
+3. Verified setup flow:
+   - `openSetup()` works.
+   - Provider setup modal appears.
+
+4. Verified provider storage architecture:
+   - `src/services/providers.ts`
+   - `saveProviderInstance()` updates `providerInstanceCache`.
+   - `listProviderInstances()` reads from cache.
+   - `initializeProviderInstances()` asynchronously loads native provider instances.
+
+Current suspected area:
+
+- MyAiPage provider state synchronization after P13 migration.
+- Need to trace:
+  - `initializeProviderInstances()`
+  - `providerInstanceCache`
+  - `providerInstances` React state
+  - Provider button state calculation.
+
+Do not assume CSS issue.
+Do not remove Provider Registry architecture.
+
+Last tested branch:
+- `feature/p13-ai-center`
+
+Latest commits:
+- `85098df refactor(p13): migrate runtime to AI Center providers`
+- `44fcd02 chore: ignore local agent tooling`
+
+Build status:
+- `npm run build` passed.
+
+Remaining UI fixes:
+1. Chat page bottom toolbar:
+   - icon sizes inconsistent
+   - typo: `oopenclaw` should be `OpenClaw`
+
+2. My AI page:
+   - Provider action buttons require further debugging.
+
