@@ -317,10 +317,11 @@ function Sidebar({
           onOpenCommandPalette
         }
       >
-        <span>
-          ⌕ Search
+<span>
+          <span aria-hidden="true">⌕</span>
+          <span>Search</span>
         </span>
-        <kbd>⌘K</kbd>
+                <kbd>⌘K</kbd>
       </button>
 
       <div className="sidebar-footer">

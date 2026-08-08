@@ -124,7 +124,50 @@ Repository tooling:
 
 ---
 
-## 6. Before any commit
+## 6. Diagnosing UI problems
+
+When the owner reports that something in the UI does not respond — a button does
+nothing, a dialog does not appear, a panel is missing — **inspect the running
+page before changing any code.**
+
+Ask for browser-console output first. Useful checks:
+
+```javascript
+// Is the element actually there, and is anything covering it?
+(() => { const b = document.querySelector('.the-class'); const r = b.getBoundingClientRect();
+  const top = document.elementFromPoint(r.left + r.width/2, r.top + r.height/2);
+  return { text: b.textContent, covered: top !== b && !b.contains(top), coveredBy: top?.className }; })()
+
+// What styles is it actually computing?
+(() => { const s = getComputedStyle(document.querySelector('.the-class'));
+  return { display: s.display, opacity: s.opacity, visibility: s.visibility,
+           zIndex: s.zIndex, position: s.position, pointerEvents: s.pointerEvents }; })()
+
+// Does the handler fire, and does the DOM change?
+(() => { const before = document.body.innerHTML.length;
+  document.querySelector('.the-class').click();
+  setTimeout(() => console.log('delta:', document.body.innerHTML.length - before), 300); })()
+```
+
+Read the result before forming a hypothesis. `position: static` on an element
+that should be an overlay, or an unchanged DOM after a click, points at CSS or
+render state — not at the click handler.
+
+**A handler that executes is not proof the logic is correct, and a handler that
+appears correct is not proof the user can reach it.** Confirming that a function
+exists or that an event fires proves neither. If two independent code paths fail
+the same way, the fault is almost certainly downstream of both.
+
+Precedent: the My AI Provider buttons appeared dead for over an hour of logic
+rewrites. The handlers were correct throughout; `.provider-setup-backdrop` had
+been deleted from `App.css` during the P13 migration, so the dialog rendered
+with `position: static` behind the page. One computed-style check would have
+found it. Deleting a module can silently remove CSS the surviving UI still
+needs, and the build will still pass.
+
+---
+
+## 7. Before any commit
 
 Run and confirm all of the following pass:
 
@@ -138,7 +181,7 @@ git diff --check
 
 ---
 
-## 7. Updating HANDOFF.md
+## 8. Updating HANDOFF.md
 
 At the end of any completed piece of work, output the exact lines to add or
 change in `HANDOFF.md`, following its existing template. Keep it under 150
@@ -149,7 +192,7 @@ Never leave two conflicting statements about current state in the file.
 
 ---
 
-## 8. Token discipline
+## 9. Token discipline
 
 You are running with a limited budget. The cost is context, not verbosity.
 What you read and what your commands print is where the budget goes.
@@ -191,6 +234,6 @@ Only view a full diff for files you are actually changing.
 
 ---
 
-## 9. Most important rule
+## 10. Most important rule
 
 > Continue the project. Do not restart the project.

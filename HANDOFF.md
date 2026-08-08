@@ -272,3 +272,4 @@ Constraints carried into the migration:
 
 ## 变更日志
 - 2026-08-09 04:09  fix(myai): restore provider setup dialog styles lost in P13 migration
+- 2026-08-09 05:23  fix(ui): restore chat, sidebar and markdown styles lost in P13 migration

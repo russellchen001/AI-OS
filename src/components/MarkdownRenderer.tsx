@@ -338,6 +338,8 @@ export default function MarkdownRenderer({
           rehypeHighlight,
         ]}
         components={{
+          p: ({ children }) => <div className="markdown-paragraph">{children}</div>,
+          pre: ({ children }) => <>{children}</>,
           code: (props) => (
             <CodeBlock
               {...props}
