@@ -267,14 +267,14 @@ function CommandPalette({
           label:
             "Open Provider Settings",
           description:
-            "Open MultiLLM provider configuration",
+            "Open AI Center provider configuration",
           icon: "🔑",
           kind: "action",
           keywords:
-            "provider api key model settings multillm",
+            "provider api key model settings ai center",
           run: () => {
             localStorage.setItem(
-              "ai-os.multillm.pending-tab.v1",
+              "ai-os.provider.pending-tab.v1",
               "providers",
             );
 

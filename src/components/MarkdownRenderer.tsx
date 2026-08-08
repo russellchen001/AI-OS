@@ -205,7 +205,7 @@ function CodeBlock({
   inline,
   className,
   children,
-  artifactSource = "MultiLLM",
+  artifactSource = "AI Center",
   artifactProvider,
   ...props
 }: CodeBlockProps) {
@@ -306,7 +306,7 @@ function CodeBlock({
 export default function MarkdownRenderer({
   content,
   fallback = "",
-  artifactSource = "MultiLLM",
+  artifactSource = "AI Center",
   artifactProvider,
 }: MarkdownRendererProps) {
   const value =

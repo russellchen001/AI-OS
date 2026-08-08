@@ -1,7 +1,7 @@
 export type AnalyticsModule =
   | "system"
   | "provider"
-  | "multillm"
+  | "ai-center"
   | "prompt"
   | "council"
   | "artifact"

@@ -5,6 +5,9 @@ import type {
 } from "../types/history";
 
 const STORAGE_KEY =
+  "ai-os.history.v2";
+
+const LEGACY_STORAGE_KEY =
   "ai-os.multillm.history.v1";
 
 type StoredConversation =
@@ -156,6 +159,9 @@ export function loadHistory():
     const raw =
       localStorage.getItem(
         STORAGE_KEY,
+      ) ??
+      localStorage.getItem(
+        LEGACY_STORAGE_KEY,
       );
 
     if (!raw) {

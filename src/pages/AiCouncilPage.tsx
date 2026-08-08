@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   useMemo,
   useRef,
@@ -22,10 +23,10 @@ import {
   recordAnalyticsEvent,
 } from "../services/analytics";
 import {
-  cancelMultiLlmStream,
-  startMultiLlmStream,
-  type MultiLlmMessage,
-} from "../services/multillm";
+  streamThroughAiCenter,
+  type AiCenterConversationMessage,
+  listAiCenterModels,
+} from "../services/aiCenter";
 import {
   deleteCouncilSession,
   loadCouncilMembers,
@@ -36,11 +37,13 @@ import {
 } from "../services/council";
 import type {
   CouncilMember,
-  CouncilProviderId,
   CouncilRole,
   CouncilSession,
   CouncilStepResult,
 } from "../types/council";
+import type {
+  ProviderId,
+} from "../types/provider";
 
 type AiCouncilPageProps = {
   cardStyle: CSSProperties;
@@ -49,39 +52,25 @@ type AiCouncilPageProps = {
   ) => void;
 };
 
-type ProviderConfig = {
-  id: CouncilProviderId;
-  label: string;
-  icon: string;
-  color: string;
-  enabled: boolean;
-  baseUrl: string;
-  model: string;
-  apiKey: string;
-  persona: string;
-  maxTokens: number;
-};
-
 type ChunkEvent = {
   operationId: string;
-  providerId: CouncilProviderId;
+  providerId: ProviderId;
   text: string;
 };
 
 type DoneEvent = {
   operationId: string;
-  providerId: CouncilProviderId;
+  providerId: ProviderId;
   cancelled: boolean;
 };
 
 type ErrorEvent = {
   operationId: string;
-  providerId: CouncilProviderId;
+  providerId: ProviderId;
   message: string;
 };
 
-const PROVIDER_STORAGE_KEY =
-  "ai-os.multillm.providers.v1";
+
 
 const ROLE_ORDER:
   CouncilRole[] = [
@@ -91,32 +80,6 @@ const ROLE_ORDER:
   "critic",
   "judge",
 ];
-
-function loadProviders():
-  ProviderConfig[] {
-  try {
-    const raw =
-      localStorage.getItem(
-        PROVIDER_STORAGE_KEY,
-      );
-
-    if (!raw) {
-      return [];
-    }
-
-    const parsed: unknown =
-      JSON.parse(raw);
-
-    return Array.isArray(parsed)
-      ? (
-          parsed as
-            ProviderConfig[]
-        )
-      : [];
-  } catch {
-    return [];
-  }
-}
 
 function createSessionTitle(
   prompt: string,
@@ -155,12 +118,6 @@ function AiCouncilPage({
 }: AiCouncilPageProps) {
   const dialog =
     useDialog();
-
-  const [
-    providers,
-  ] = useState<
-    ProviderConfig[]
-  >(loadProviders);
 
   const [
     members,
@@ -225,24 +182,6 @@ function AiCouncilPage({
       null,
     );
 
-  const configuredProviders =
-    useMemo(
-      () =>
-        providers.filter(
-          (provider) =>
-            provider.enabled &&
-            (
-              provider.id ===
-                "ollama" ||
-              Boolean(
-                provider.apiKey
-                  .trim(),
-              )
-            ),
-        ),
-      [providers],
-    );
-
   const filteredSessions =
     useMemo(() => {
       const query =
@@ -300,191 +239,15 @@ function AiCouncilPage({
       );
     };
 
-  const runProviderStream =
-    async (
-      provider:
-        ProviderConfig,
-      messages:
-        MultiLlmMessage[],
-      onChunk: (
-        text: string,
-      ) => void,
-    ): Promise<string> => {
-      const operationId =
-        crypto.randomUUID();
-
-      currentOperationRef.current =
-        operationId;
-
-      let output = "";
-      let unlistenChunk:
-        UnlistenFn | undefined;
-      let unlistenDone:
-        UnlistenFn | undefined;
-      let unlistenError:
-        UnlistenFn | undefined;
-
-      return await new Promise<
-        string
-      >(
-        (
-          resolve,
-          reject,
-        ) => {
-          let settled = false;
-
-          const cleanup =
-            () => {
-              unlistenChunk?.();
-              unlistenDone?.();
-              unlistenError?.();
-
-              if (
-                currentOperationRef
-                  .current ===
-                operationId
-              ) {
-                currentOperationRef.current =
-                  null;
-              }
-            };
-
-          const fail =
-            (
-              error: unknown,
-            ) => {
-              if (settled) {
-                return;
-              }
-
-              settled = true;
-              cleanup();
-
-              reject(
-                error instanceof Error
-                  ? error
-                  : new Error(
-                      String(error),
-                    ),
-              );
-            };
-
-          const succeed =
-            () => {
-              if (settled) {
-                return;
-              }
-
-              settled = true;
-              cleanup();
-              resolve(output);
-            };
-
-          const install =
-            async () => {
-              unlistenChunk =
-                await listen<ChunkEvent>(
-                  "multillm://chunk",
-                  (event) => {
-                    if (
-                      event.payload
-                        .operationId !==
-                      operationId
-                    ) {
-                      return;
-                    }
-
-                    output +=
-                      event.payload.text;
-
-                    onChunk(
-                      event.payload.text,
-                    );
-                  },
-                );
-
-              unlistenDone =
-                await listen<DoneEvent>(
-                  "multillm://done",
-                  (event) => {
-                    if (
-                      event.payload
-                        .operationId !==
-                      operationId
-                    ) {
-                      return;
-                    }
-
-                    if (
-                      event.payload
-                        .cancelled
-                    ) {
-                      fail(
-                        new Error(
-                          "Council execution cancelled.",
-                        ),
-                      );
-                    } else {
-                      succeed();
-                    }
-                  },
-                );
-
-              unlistenError =
-                await listen<ErrorEvent>(
-                  "multillm://error",
-                  (event) => {
-                    if (
-                      event.payload
-                        .operationId !==
-                      operationId
-                    ) {
-                      return;
-                    }
-
-                    fail(
-                      new Error(
-                        event.payload
-                          .message,
-                      ),
-                    );
-                  },
-                );
-
-              try {
-                await startMultiLlmStream({
-                  operationId,
-                  providerId:
-                    provider.id,
-                  baseUrl:
-                    provider.baseUrl,
-                  apiKey:
-                    provider.apiKey,
-                  model:
-                    provider.model,
-                  maxTokens:
-                    provider.maxTokens,
-                  messages,
-                });
-              } catch (error) {
-                fail(error);
-              }
-            };
-
-          void install();
-        },
-      );
-    };
-
   const runMemberWithFailover =
     async (
       member:
         CouncilMember,
       messages:
-        MultiLlmMessage[],
+        AiCenterConversationMessage[],
       onProviderChange: (
         providerId:
-          CouncilProviderId,
+          ProviderId,
         attempt:
           number,
         total:
@@ -496,52 +259,36 @@ function AiCouncilPage({
     ): Promise<{
       output: string;
       providerId:
-        CouncilProviderId;
+        ProviderId;
       errors: string[];
     }> => {
-      const primary =
-        configuredProviders.find(
-          (provider) =>
-            provider.id ===
-            member.providerId,
-        );
+      const availableModels =
+        listAiCenterModels();
 
-      const ollama =
-        configuredProviders.find(
-          (provider) =>
-            provider.id ===
-            "ollama" &&
-            provider.id !==
-            member.providerId,
+      if (
+        availableModels.length === 0
+      ) {
+        throw new Error(
+          `${member.name}: no AI Center models are connected.`,
         );
+      }
 
-      const remaining =
-        configuredProviders.filter(
-          (provider) =>
-            provider.id !==
-              member.providerId &&
-            provider.id !==
-              "ollama",
+      const preferred =
+        availableModels.find(
+          (model) =>
+            model.providerId ===
+            member.providerId,
         );
 
       const candidates = [
-        ...(primary
-          ? [primary]
+        ...(preferred
+          ? [preferred]
           : []),
-        ...(ollama
-          ? [ollama]
-          : []),
-        ...remaining,
+        ...availableModels.filter(
+          (model) =>
+            model !== preferred,
+        ),
       ];
-
-      if (
-        candidates.length ===
-        0
-      ) {
-        throw new Error(
-          `${member.name}: no configured providers are available.`,
-        );
-      }
 
       const errors:
         string[] = [];
@@ -560,35 +307,42 @@ function AiCouncilPage({
           );
         }
 
-        const provider =
+        const choice =
           candidates[index];
 
         onProviderChange(
-          provider.id,
+          choice.providerId as ProviderId,
           index + 1,
           candidates.length,
         );
 
         try {
-          let attemptOutput =
-            "";
-
-          const output =
-            await runProviderStream(
-              provider,
+          const stream =
+            streamThroughAiCenter(
               messages,
-              (chunk) => {
-                attemptOutput +=
-                  chunk;
-
-                onChunk(chunk);
-              },
+              choice,
+              onChunk,
             );
 
+          currentOperationRef.current =
+            stream.operationId;
+
+          const result =
+            await stream.result;
+
+          if (
+            result.cancelled
+          ) {
+            throw new Error(
+              "Council execution cancelled.",
+            );
+          }
+
           return {
-            output,
+            output:
+              result.response.text,
             providerId:
-              provider.id,
+              choice.providerId as ProviderId,
             errors,
           };
         } catch (error) {
@@ -609,18 +363,18 @@ function AiCouncilPage({
           }
 
           errors.push(
-            `${provider.label}: ${message}`,
+            `${choice.label}: ${message}`,
           );
 
           console.warn(
-            `Council ${member.name} provider ${provider.id} failed:`,
+            `Council ${member.name} AI Center model ${choice.label} failed:`,
             error,
           );
         }
       }
 
       throw new Error(
-        `${member.name}: all providers failed. ${errors.join(
+        `${member.name}: all AI Center models failed. ${errors.join(
           " | ",
         )}`,
       );
@@ -638,9 +392,9 @@ function AiCouncilPage({
         return;
       }
 
-      if (configuredProviders.length === 0) {
+      if (listAiCenterModels().length === 0) {
         onMessage(
-          "Unable to run Council: no legacy MultiLLM provider is configured. Connected models from My AI will be integrated through AI Center in P16.",
+          "Unable to run Council: no AI Center model is connected. Connect a model from My AI first.",
         );
         return;
       }
@@ -800,7 +554,7 @@ function AiCouncilPage({
                   );
 
           const messages:
-            MultiLlmMessage[] = [
+            AiCenterConversationMessage[] = [
             {
               role: "system",
               content:
@@ -1192,9 +946,15 @@ function AiCouncilPage({
 
       if (operationId) {
         try {
-          await cancelMultiLlmStream(
-            operationId,
-          );
+          if (currentOperationRef.current) {
+            await invoke(
+              "cancel_provider_response_stream",
+              {
+                operationId:
+                  currentOperationRef.current,
+              },
+            );
+          }
         } catch {
           // Ignore cancellation race.
         }
@@ -1447,24 +1207,15 @@ function AiCouncilPage({
         <p>This build uses your saved specialist roles. Dynamic Chief of Staff team assembly is planned for P16.</p>
       </div>
 
-      {configuredProviders.length === 0 && (
-        <div className="council-provider-notice" role="status">
-          <strong>Council provider setup required</strong>
-          <p>
-            AI Council currently uses the legacy MultiLLM execution path.
-            Models connected in My AI are already available to Chat and AI Arena,
-            but Council will move to the shared AI Center during P16.
-          </p>
-        </div>
-      )}
+
 
       <div className="council-members-grid">
         {members.map(
           (member) => {
             const provider =
-              providers.find(
+              listAiCenterModels().find(
                 (item) =>
-                  item.id ===
+                  item.providerId ===
                   member.providerId,
               );
 
@@ -1530,27 +1281,27 @@ function AiCouncilPage({
                       member.id,
                       "providerId",
                       event.target
-                        .value as CouncilProviderId,
+                        .value as ProviderId,
                     )
                   }
                 >
-                  {providers.length === 0 && (
+                  {listAiCenterModels().length === 0 && (
                     <option value={member.providerId}>
-                      No legacy Council provider configured
+                      No AI Center model connected
                     </option>
                   )}
-                  {providers.map(
+                  {listAiCenterModels().map(
                     (item) => (
                       <option
                         key={
-                          item.id
+                          item.providerId
                         }
                         value={
-                          item.id
+                          item.providerId
                         }
                       >
                         {item.label} ·{" "}
-                        {item.model}
+                        {item.label}
                       </option>
                     ),
                   )}
@@ -1766,7 +1517,7 @@ function AiCouncilPage({
                 disabled={
                   isRunning ||
                   !prompt.trim() ||
-                  configuredProviders.length === 0
+                  listAiCenterModels().length === 0
                 }
                 onClick={() => {
                   void runCouncil();

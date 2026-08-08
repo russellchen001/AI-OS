@@ -20,7 +20,7 @@ export type ArtifactSource =
   | "Router"
   | "Council"
   | "Chat"
-  | "MultiLLM"
+  | "AI Center"
   | "Manual"
   | "Imported";
 

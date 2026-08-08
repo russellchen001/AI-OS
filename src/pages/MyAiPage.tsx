@@ -140,25 +140,17 @@ const providerCatalog = [
 ];
 
 function loadConfiguredProviderIds(): Set<string> {
-  try {
-    const raw = localStorage.getItem("ai-os.multillm.providers.v1");
-    if (!raw) return new Set();
-
-    const providers: unknown = JSON.parse(raw);
-    if (!Array.isArray(providers)) return new Set();
-
-    return new Set(
-      providers
-        .filter((provider) => {
-          if (!provider || typeof provider !== "object") return false;
-          const value = provider as Record<string, unknown>;
-          return value.enabled === true && typeof value.id === "string";
-        })
-        .map((provider) => String((provider as Record<string, unknown>).id)),
-    );
-  } catch {
-    return new Set();
-  }
+  return new Set(
+    listProviderInstances()
+      .filter(
+        (provider) =>
+          provider.connectionState === "connected",
+      )
+      .map(
+        (provider) =>
+          provider.providerId,
+      ),
+  );
 }
 
 function MyAiPage({

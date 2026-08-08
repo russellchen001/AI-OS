@@ -1,10 +1,6 @@
-export type CouncilProviderId =
-  | "chatgpt"
-  | "grok"
-  | "gemini"
-  | "claude"
-  | "deepseek"
-  | "ollama";
+import type {
+  ProviderId,
+} from "./provider";
 
 export type CouncilRole =
   | "planner"
@@ -17,7 +13,7 @@ export type CouncilMember = {
   id: CouncilRole;
   name: string;
   icon: string;
-  providerId: CouncilProviderId;
+  providerId: ProviderId;
   enabled: boolean;
   systemPrompt: string;
 };
@@ -32,7 +28,7 @@ export type CouncilStepStatus =
 export type CouncilStepResult = {
   role: CouncilRole;
   memberName: string;
-  providerId: CouncilProviderId;
+  providerId: ProviderId;
   status: CouncilStepStatus;
   output: string;
   error?: string;

@@ -257,12 +257,12 @@ function normalizeSource(
     case "Compare":
     case "Router":
     case "Council":
-    case "MultiLLM":
+    case "AI Center":
     case "Manual":
     case "Imported":
       return value;
     default:
-      return "MultiLLM";
+      return "AI Center";
   }
 }
 
@@ -700,7 +700,7 @@ export function createArtifact(
 
     source:
       input.source ??
-      "MultiLLM",
+      "AI Center",
 
     provider:
       input.provider,

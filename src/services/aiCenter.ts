@@ -198,7 +198,7 @@ export type AiCenterStream = {
 };
 
 export type AiCenterConversationMessage = {
-  role: "user" | "assistant";
+  role: "system" | "user" | "assistant";
   content: string;
 };
 
