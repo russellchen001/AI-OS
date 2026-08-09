@@ -1,6 +1,6 @@
 # AI-OS — Current State
 
-> Updated: 2026-08-09
+> Updated: 2026-08-10
 > This file is the single source of truth for current repository state.
 > Historical detail lives in `docs/archive/HANDOFF_HISTORY.md`.
 
@@ -103,7 +103,7 @@ Things to settle when this is specified:
 | HEAD | `6292235 chore: finalize p13 m5 validation and css cleanup` |
 | Latest tag | `p13-m5-complete` |
 | Working tree | Clean |
-| Active phase | P13-M5 completed and validated; ready for final manual QA |
+| Active phase | P13-M5 completed and validated after streaming and Chat workspace fixes; ready for P14 Memory |
 
 ---
 
@@ -126,6 +126,8 @@ Things to settle when this is specified:
 | Agent Registry | Non-built-in agents (including Hermes and Custom Agents) are deletable; OpenClaw stays built-in protected | `c88f7b9`, `9b54873` |
 | Legacy UI Step1 | Removed obsolete page entries from App routing while preserving Models and MCP entries | `verify/verify_legacy_ui_step1.sh` |
 | Legacy UI Step2 | Removed obsolete PageName and Settings navigation entries while preserving new workspace structure | `verify/verify_legacy_ui_step2.sh` |
+| Ollama streaming fix | Increased local Ollama generation capacity and timeout handling for long AI Center streaming responses | `43da32f` |
+| Chat workspace layout fix | Adjusted Chat message container width and spacing so long responses stay inside the workspace boundary | `6192b6a` |
 
 ### Connected AI providers
 
