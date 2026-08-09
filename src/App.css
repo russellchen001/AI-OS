@@ -323,7 +323,8 @@
 .chat-thread {
   width: min(760px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 38px 0 20px;
+  padding: 38px 0 120px;
+  box-sizing: border-box;
 }
 
 .chat-message {
@@ -2260,13 +2261,46 @@ a {
 .starter-grid span { font-size: 14px; letter-spacing: -.01em; }
 .starter-grid small { font-size: 12px; }
 
-.chat-thread { width: min(780px, calc(100% - 64px)); padding-top: 48px; }
-.chat-message { margin-bottom: 34px; }
+.chat-thread {
+  width: min(720px, calc(100% - 160px));
+  max-width: 720px;
+  min-width: 0;
+  margin-left: auto;
+  margin-right: auto;
+  padding-top: 48px;
+  padding-bottom: 120px;
+  overflow-x: hidden;
+}
+
+.chat-message {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin-bottom: 34px;
+  overflow-wrap: anywhere;
+}
+
 .chat-message-user {
+  max-width: 76%;
+  margin-left: auto;
   padding: 14px 18px;
   background: #f1f4f2;
   border: 1px solid #e7ebe8;
+  overflow-wrap: anywhere;
 }
+
+.chat-message-assistant {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-message-assistant .markdown-renderer {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .message-author { color: #89928d; }
 .chat-message p { font-size: 15px; }
 
@@ -4175,6 +4209,40 @@ select:focus-visible {
   background: transparent;
   font-size: inherit;
 }
+.markdown-renderer {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.markdown-renderer p,
+.markdown-renderer li,
+.markdown-renderer h1,
+.markdown-renderer h2,
+.markdown-renderer h3,
+.markdown-renderer blockquote {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.markdown-renderer table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown-renderer {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .markdown-renderer code {
   padding: 1px 5px;
   border: 1px solid #e6ebe8;
@@ -4186,6 +4254,9 @@ select:focus-visible {
 }
 .markdown-renderer pre {
   max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .markdown-renderer > *:first-child {
   margin-top: 0;
@@ -4198,7 +4269,9 @@ select:focus-visible {
 }
 .markdown-code-block pre code {
   display: block;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   text-indent: 0;
 }
 .markdown-code-block p {
@@ -5561,4 +5634,16 @@ select:focus-visible {
 
 .message-panel-info .message-panel-text {
   color: #ffffff;
+}
+
+
+.chat-message-assistant,
+.chat-message-assistant .markdown-renderer {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.chat-message-assistant .markdown-renderer * {
+  max-width: 100%;
 }
