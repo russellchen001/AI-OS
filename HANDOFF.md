@@ -1,6 +1,6 @@
 # AI-OS — Current State
 
-> Updated: 2026-08-02
+> Updated: 2026-08-09
 > This file is the single source of truth for current repository state.
 > Historical detail lives in `docs/archive/HANDOFF_HISTORY.md`.
 
@@ -100,10 +100,10 @@ Things to settle when this is specified:
 | | |
 |---|---|
 | Branch | `feature/p13-ai-center` |
-| HEAD | `1e01cd2 feat(p13): complete shared multi-model invocation` |
+| HEAD | `6292235 chore: finalize p13 m5 validation and css cleanup` |
 | Latest tag | `p13-m5-complete` |
-| Working tree | Clean except `HANDOFF.md` and untracked acceptance tooling |
-| Active phase | P13 complete — AI Center migration complete, awaiting final QA |
+| Working tree | Clean |
+| Active phase | P13-M5 completed and validated; ready for final manual QA |
 
 ---
 
@@ -124,6 +124,8 @@ Things to settle when this is specified:
 | Provider setup dialog | Restored setup/manage dialog styles removed during P13 migration | `verify/verify_provider_setup_dialog.sh` |
 | UI Refactor | White-first workspace across Chat, Sidebar, My AI, Agents, Arena, Council, Artifacts, Settings | |
 | Agent Registry | Non-built-in agents (including Hermes and Custom Agents) are deletable; OpenClaw stays built-in protected | `c88f7b9`, `9b54873` |
+| Legacy UI Step1 | Removed obsolete page entries from App routing while preserving Models and MCP entries | `verify/verify_legacy_ui_step1.sh` |
+| Legacy UI Step2 | Removed obsolete PageName and Settings navigation entries while preserving new workspace structure | `verify/verify_legacy_ui_step2.sh` |
 
 ### Connected AI providers
 
@@ -146,16 +148,16 @@ config, or the repository.
 
 ## In progress
 
-Nothing is mid-implementation. The working tree contains only acceptance
-tooling (`verify_all.sh`, `done.sh`, `context.sh`, `verify/`), which is not yet
-committed.
+Nothing is mid-implementation.
+
+P13-M5 shared multi-model invocation and legacy UI cleanup are completed.
+Validation scripts have passed and commit `6292235` leaves the working tree clean.
 
 ---
 
 ## Next
 
-1. Commit P13 migration and acceptance tooling
-2. Manual end-to-end QA:
+1. Manual end-to-end QA:
    - Auto route
    - Manual provider selection
    - Multi-model invocation
