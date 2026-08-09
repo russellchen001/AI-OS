@@ -283,3 +283,56 @@ Constraints carried into the migration:
 ## 变更日志
 - 2026-08-09 04:09  fix(myai): restore provider setup dialog styles lost in P13 migration
 - 2026-08-09 05:23  fix(ui): restore chat, sidebar and markdown styles lost in P13 migration
+
+
+## External Skill Architecture
+
+### Agency Agents Skill Reference
+
+Repository:
+https://github.com/msitarzewski/agency-agents
+
+Purpose:
+- Use external Agent Skill packages to provide professional role definitions for AI Council.
+- AI-OS should not maintain a duplicate internal agent talent library.
+- Agent roles, expertise descriptions and workflow templates should come from installable Skills.
+
+Architecture direction:
+
+AI-OS owns:
+- Skill discovery
+- Skill loading
+- Role selection
+- Council orchestration
+- Memory tracking
+- Model assignment
+
+Skills own:
+- Agent role definitions
+- Professional personas
+- Expertise descriptions
+- Workflow instructions
+- Output standards
+
+Initial reference Skill:
+- Agency Agents
+
+Important boundary:
+- Agency Agents is a Skill resource, not a Runtime.
+- AI-OS v1.0 execution remains OpenClaw-only.
+- External Agent Skills provide Council roles only and do not introduce additional execution adapters.
+
+Future Skill model:
+
+AI-OS
+ |
+ Skill Runtime
+ |
+ Installed Skills
+ |
+ Agent Role Providers
+ |
+ AI Council
+ |
+ OpenClaw Execution
+
