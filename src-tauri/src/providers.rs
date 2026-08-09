@@ -2681,7 +2681,7 @@ pub(crate) async fn start_provider_response_stream(
     let spec = adapter_spec(provider_id)?;
     let token = CancellationToken::new();
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(600))
         .build()
         .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
     let secret = if matches!(spec.auth, AuthStyle::None) {
@@ -2775,8 +2775,12 @@ pub(crate) async fn start_provider_response_stream(
         "ollama" => (
             client.post("http://127.0.0.1:11434/api/chat"),
             serde_json::json!({
-                "model": model_id, "stream": true,
-                "messages": messages
+                "model": model_id,
+                "stream": true,
+                "messages": messages,
+                "options": {
+                    "num_predict": 8192
+                }
             }),
         ),
         _ => return Err("this Provider cannot stream through AI Center yet".to_owned()),
@@ -2847,7 +2851,8 @@ pub(crate) async fn start_provider_response_stream(
         let Some(item) = next else { break };
         let bytes = match item {
             Ok(bytes) => bytes,
-            Err(_) => {
+            Err(err) => {
+                eprintln!("OLLAMA STREAM ERROR: {:?}", err);
                 let _ = app.emit(
                     "ai-center://error",
                     AiCenterErrorEvent {
