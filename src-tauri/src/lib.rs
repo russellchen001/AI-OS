@@ -5,6 +5,7 @@ mod health;
 mod logs;
 mod mcp;
 mod models;
+mod memory;
 mod multillm;
 mod openclaw;
 pub mod planner;
@@ -207,6 +208,9 @@ pub fn run() {
             claude_code::get_claude_code_status,
             claude_code::generate_claude_code_response,
             claude_code::cancel_claude_code_request,
+            memory::save_memory,
+            memory::list_memory,
+            memory::delete_memory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
