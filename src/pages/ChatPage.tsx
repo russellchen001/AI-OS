@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { saveMemory } from "../services/memory";
 import {
   completeChatTaskExecution,
   executeChatWorkTask,
@@ -41,6 +42,27 @@ type ChatPageProps = {
   onOpenMyAi: () => void;
   onAddAgent: () => void;
 };
+
+
+function extractMemoryCandidate(content: string): string | undefined {
+  const text = content.trim();
+
+  const triggers = [
+    "记住",
+    "以后",
+    "我的",
+    "我喜欢",
+    "我不喜欢",
+    "不要",
+    "请始终",
+  ];
+
+  if (!triggers.some((trigger) => text.includes(trigger))) {
+    return undefined;
+  }
+
+  return text;
+}
 
 function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [draft, setDraft] = useState("");
@@ -96,6 +118,23 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       attachments,
     };
     const nextMessages = [...messages, userMessage];
+
+    const memoryCandidate = extractMemoryCandidate(content);
+
+    if (memoryCandidate) {
+      void saveMemory({
+        id: crypto.randomUUID(),
+        type: "user",
+        content: memoryCandidate,
+        metadata: {
+          source: "chat",
+          importance: 5,
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }).catch(() => undefined);
+    }
+
     const conversation = getConversation(conversationId);
     if (!conversation) return;
     const nextConversation = {
