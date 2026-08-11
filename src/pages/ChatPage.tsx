@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { listMemory, saveMemory } from "../services/memory";
+import { listMemory, saveMemory, type MemoryEntry } from "../services/memory";
 import {
   completeChatTaskExecution,
   executeChatWorkTask,
@@ -25,11 +25,11 @@ import {
   type ConversationMessage,
 } from "../services/conversations";
 import {
-  applyOutboundLanguage,
-  detectCurrentLanguage,
-  detectMemoryLanguage,
-  type ResponseLanguage,
-} from "./chatLanguagePolicy";
+  applyMemoryPolicyToOutbound,
+  describeMemoryPolicy,
+  resolveMemoryPolicy,
+  type MemoryPolicy,
+} from "../services/memoryPolicy";
 
 type ChatMessage = ConversationMessage;
 
@@ -65,51 +65,29 @@ function extractMemoryCandidate(content: string): string | undefined {
   return memory || undefined;
 }
 
-async function buildMemoryContext(): Promise<
-  | {
-      message: { role: "system"; content: string };
-      language: ResponseLanguage | undefined;
-    }
-  | undefined
-> {
-  const memories = (await listMemory())
-    .filter((entry) => entry.type === "user")
-    .map((entry) => entry.content.trim())
-    .filter(Boolean);
-
-  if (memories.length === 0) return undefined;
-  const language = detectMemoryLanguage(memories);
-  const languagePolicy = language
-    ? `Default response language is ${language}. Answer in ${language} unless the CURRENT user message explicitly asks for another language.`
-    : undefined;
-
-  return {
-    language,
-    message: {
-      role: "system",
-      content: [
-        "Long-term user memory applies as the user's default preferences unless the CURRENT user message explicitly overrides it.",
-        "A temporary instruction from an earlier user message applies only to that earlier response and must not carry forward.",
-        "Do not infer the preferred language for the current response from the language used by previous assistant messages.",
-        ...(languagePolicy ? ["", "Runtime language policy:", languagePolicy] : []),
-        "Do not mention or repeat these memories unless the user asks.",
-        "",
-        "Long-term user memory:",
-        ...memories.map((memory) => `- ${memory}`),
-      ].join("\n"),
-    },
-  };
-}
-
-function buildLanguageOverride(
-  content: string,
+function buildMemoryContext(
+  memories: MemoryEntry[],
+  policy: MemoryPolicy,
 ): { role: "system"; content: string } | undefined {
-  const language = detectCurrentLanguage(content);
-  if (!language) return undefined;
-
+  const policyLines = describeMemoryPolicy(policy);
+  if (memories.length === 0 && policyLines.length === 0) return undefined;
   return {
     role: "system",
-    content: `Current-request language override: Answer this request in ${language}. This instruction takes priority over long-term user memory and applies only to this response.`,
+    content: [
+      "Long-term user memory applies as default context unless the CURRENT user message explicitly overrides it.",
+      "Current-request overrides apply only to this response and must not carry forward.",
+      ...(policyLines.length
+        ? ["", "Resolved runtime policy:", ...policyLines]
+        : []),
+      ...(memories.length
+        ? [
+            "",
+            "Long-term user memory:",
+            ...memories.map((entry) => `- ${entry.content.trim()}`),
+          ]
+        : []),
+      "Do not mention or repeat these memories unless the user asks.",
+    ].join("\n"),
   };
 }
 
@@ -229,21 +207,18 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     saveConversation(nextConversation);
     setMessages(nextMessages);
     setAttachments([]);
-    const memoryContext = await buildMemoryContext();
-    const languageOverride = buildLanguageOverride(content);
-    const responseLanguage =
-      detectCurrentLanguage(content) ?? memoryContext?.language;
+    const userMemories = (await listMemory()).filter(
+      (entry) => entry.type === "user" && entry.content.trim(),
+    );
+    const { resolvedPolicy } = resolveMemoryPolicy(userMemories, content);
+    const memoryContext = buildMemoryContext(userMemories, resolvedPolicy);
     const currentMessage = context.messages[context.messages.length - 1];
     const priorMessages = context.messages.slice(0, -1);
     const outboundCurrentMessage = currentMessage
-      ? {
-          ...currentMessage,
-          content: applyOutboundLanguage(currentMessage.content, responseLanguage),
-        }
+      ? applyMemoryPolicyToOutbound(currentMessage, resolvedPolicy)
       : undefined;
     const conversationMessages = [
-      ...(memoryContext ? [memoryContext.message] : []),
-      ...(languageOverride ? [languageOverride] : []),
+      ...(memoryContext ? [memoryContext] : []),
       ...priorMessages,
       ...(outboundCurrentMessage ? [outboundCurrentMessage] : []),
     ];

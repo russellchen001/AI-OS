@@ -100,10 +100,10 @@ Things to settle when this is specified:
 | | |
 |---|---|
 | Branch | `feature/p13-ai-center` |
-| HEAD | `6292235 chore: finalize p13 m5 validation and css cleanup` |
+| HEAD | `02b5fe5 feat: complete p14 memory language policy` |
 | Latest tag | `p13-m5-complete` |
 | Working tree | Uncommitted P14 validation changes |
-| Active phase | P14 Memory Language Policy implemented; pending four-round behavioral QA |
+| Active phase | P14 General Memory Policy completed |
 
 ---
 
@@ -129,6 +129,13 @@ Things to settle when this is specified:
 | Ollama streaming fix | Increased local Ollama generation capacity and timeout handling for long AI Center streaming responses | `43da32f` |
 | Chat workspace layout fix | Adjusted Chat message container width and spacing so long responses stay inside the workspace boundary | `6192b6a` |
 | P14 Memory Retrieval | User memories are injected as hidden system context for ordinary Chat requests without entering conversation history | `verify/verify_p14_memory_retrieval.sh` |
+| P14 General Memory Policy | Structured language, response detail, currency, and budget defaults with request-only overrides | `verify/verify_p14_general_memory_policy.sh` |
+
+P14 General Memory Policy behavioral QA passed:
+
+- Language: long-term Chinese, current English, then restored Chinese
+- Response detail: long-term concise, current detailed, then restored concise
+- Budget and currency: long-term AUD 500, current AUD 1000, then restored AUD 500
 
 ### Connected AI providers
 
@@ -151,8 +158,8 @@ config, or the repository.
 
 ## In progress
 
-P14 Memory Language Policy is implemented. Automated validation covers language
-priority and request-only outbound constraints; four-round behavioral QA remains.
+P14 General Memory Policy is complete. Automated validation and behavioral QA
+have passed.
 
 ---
 
@@ -166,8 +173,7 @@ priority and request-only outbound constraints; four-round behavioral QA remains
    - Cancellation
    - Provider fallback
    - Analytics records
-3. Fix QA issues if found
-4. Complete P14 Memory end-to-end behavioral QA
+2. Fix AI Center end-to-end QA issues if found
 
 ---
 
@@ -199,10 +205,15 @@ priority and request-only outbound constraints; four-round behavioral QA remains
 **Memory**
 
 - Ordinary Chat requests load long-term `user` memories and inject them as outbound message zero
-- Injected memory is request-only and is never written into conversation history
+- Memory Policy is separate from Memory Storage; `src/services/memoryPolicy.ts` owns parsing, resolution, and outbound constraints while SQLite CRUD remains unchanged
+- ChatPage only retrieves Memory, calls the Memory Policy resolver, and assembles outbound context; it does not own concrete Policy rules
+- Policy priority is current request override, then long-term Memory, then system default
+- Resolved runtime policy enters only the outbound request and is also applied to a temporary clone of the current outbound user message for model compatibility
+- UI and saved conversation user content always retain the original text; request overrides are never written into conversation history or long-term Memory and do not affect the next request
+- Ordinary factual memories remain available as background context without forced structured parsing
 - Explicit “记住…” commands remain a local save-and-confirm path and do not call AI Center
-- A recognized long-term language preference becomes the default runtime response policy; the resolved language is also attached to a temporary clone of the current outbound user message and is never persisted
-- An explicit language request in the current message overrides the default for that response only
+- Initial structured policies are `language`, `response_detail`, `currency`, and `budget`
+- Conversation-scoped persistent overrides are not implemented
 - Streaming Provider input accepts `system` messages; Anthropic combines them into the Messages API top-level `system` field and excludes them from `messages`
 
 **Migration**

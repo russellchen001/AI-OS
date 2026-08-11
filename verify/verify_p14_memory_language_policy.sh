@@ -23,14 +23,17 @@ verify_language_policy() {
   node --experimental-strip-types --input-type=module <<'NODE'
 import assert from "node:assert/strict";
 import {
-  applyOutboundLanguage,
-  detectCurrentLanguage,
-  detectMemoryLanguage,
-} from "./src/pages/chatLanguagePolicy.ts";
+  applyMemoryPolicyToOutbound,
+  resolveMemoryPolicy,
+} from "./src/services/memoryPolicy.ts";
 
-const memories = ["我喜欢中文回答", "记住我喜欢中文回答"];
-const defaultLanguage = detectMemoryLanguage(memories);
-assert.equal(defaultLanguage, "Chinese");
+const memories = ["我喜欢中文回答", "记住我喜欢中文回答"].map((content, index) => ({
+  id: String(index),
+  type: "user",
+  content,
+  createdAt: `2026-08-12T00:00:0${index}Z`,
+  updatedAt: `2026-08-12T00:00:0${index}Z`,
+}));
 
 const cases = [
   ["Please answer in English. Explain what AI Council is.", "English"],
@@ -40,19 +43,19 @@ const cases = [
 ];
 
 for (const [content, expected] of cases) {
-  const language = detectCurrentLanguage(content) ?? defaultLanguage;
-  assert.equal(language, expected);
+  const { resolvedPolicy } = resolveMemoryPolicy(memories, content);
+  assert.equal(resolvedPolicy.language, expected);
   const storedMessage = { role: "user", content };
-  const outboundMessage = {
-    ...storedMessage,
-    content: applyOutboundLanguage(storedMessage.content, language),
-  };
+  const outboundMessage = applyMemoryPolicyToOutbound(storedMessage, resolvedPolicy);
   assert.equal(storedMessage.content, content);
-  assert.match(outboundMessage.content, new RegExp(`Current response language: ${expected}`));
+  assert.match(outboundMessage.content, new RegExp(`- Language: ${expected}`));
 }
 
-assert.equal(detectMemoryLanguage(["I prefer concise answers."]), undefined);
-assert.equal(applyOutboundLanguage("No language preference.", undefined), "No language preference.");
+assert.equal(resolveMemoryPolicy([], "No language preference.").resolvedPolicy.language, undefined);
+assert.equal(
+  applyMemoryPolicyToOutbound({ content: "No language preference." }, {}).content,
+  "No language preference.",
+);
 NODE
 }
 
