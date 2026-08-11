@@ -24,6 +24,12 @@ import {
   type ConversationAttachment,
   type ConversationMessage,
 } from "../services/conversations";
+import {
+  applyOutboundLanguage,
+  detectCurrentLanguage,
+  detectMemoryLanguage,
+  type ResponseLanguage,
+} from "./chatLanguagePolicy";
 
 type ChatMessage = ConversationMessage;
 
@@ -60,7 +66,11 @@ function extractMemoryCandidate(content: string): string | undefined {
 }
 
 async function buildMemoryContext(): Promise<
-  { role: "system"; content: string } | undefined
+  | {
+      message: { role: "system"; content: string };
+      language: ResponseLanguage | undefined;
+    }
+  | undefined
 > {
   const memories = (await listMemory())
     .filter((entry) => entry.type === "user")
@@ -68,13 +78,38 @@ async function buildMemoryContext(): Promise<
     .filter(Boolean);
 
   if (memories.length === 0) return undefined;
+  const language = detectMemoryLanguage(memories);
+  const languagePolicy = language
+    ? `Default response language is ${language}. Answer in ${language} unless the CURRENT user message explicitly asks for another language.`
+    : undefined;
+
+  return {
+    language,
+    message: {
+      role: "system",
+      content: [
+        "Long-term user memory applies as the user's default preferences unless the CURRENT user message explicitly overrides it.",
+        "A temporary instruction from an earlier user message applies only to that earlier response and must not carry forward.",
+        "Do not infer the preferred language for the current response from the language used by previous assistant messages.",
+        ...(languagePolicy ? ["", "Runtime language policy:", languagePolicy] : []),
+        "Do not mention or repeat these memories unless the user asks.",
+        "",
+        "Long-term user memory:",
+        ...memories.map((memory) => `- ${memory}`),
+      ].join("\n"),
+    },
+  };
+}
+
+function buildLanguageOverride(
+  content: string,
+): { role: "system"; content: string } | undefined {
+  const language = detectCurrentLanguage(content);
+  if (!language) return undefined;
 
   return {
     role: "system",
-    content: [
-      "Long-term user memory. Use it only when relevant to the current request. Do not mention or repeat it unless the user asks.",
-      ...memories.map((memory) => `- ${memory}`),
-    ].join("\n"),
+    content: `Current-request language override: Answer this request in ${language}. This instruction takes priority over long-term user memory and applies only to this response.`,
   };
 }
 
@@ -195,9 +230,23 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setMessages(nextMessages);
     setAttachments([]);
     const memoryContext = await buildMemoryContext();
-    const conversationMessages = memoryContext
-      ? [memoryContext, ...context.messages]
-      : context.messages;
+    const languageOverride = buildLanguageOverride(content);
+    const responseLanguage =
+      detectCurrentLanguage(content) ?? memoryContext?.language;
+    const currentMessage = context.messages[context.messages.length - 1];
+    const priorMessages = context.messages.slice(0, -1);
+    const outboundCurrentMessage = currentMessage
+      ? {
+          ...currentMessage,
+          content: applyOutboundLanguage(currentMessage.content, responseLanguage),
+        }
+      : undefined;
+    const conversationMessages = [
+      ...(memoryContext ? [memoryContext.message] : []),
+      ...(languageOverride ? [languageOverride] : []),
+      ...priorMessages,
+      ...(outboundCurrentMessage ? [outboundCurrentMessage] : []),
+    ];
     setDraft("");
     setIsSubmitting(true);
 

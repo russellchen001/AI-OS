@@ -2671,13 +2671,23 @@ pub(crate) async fn start_provider_response_stream(
         .sum();
     if total_chars > 200_000
         || input.messages.iter().any(|message| {
-            !matches!(message.role.as_str(), "user" | "assistant")
+            !matches!(message.role.as_str(), "system" | "user" | "assistant")
                 || message.content.trim().is_empty()
         })
     {
         return Err("conversation contains invalid messages".to_owned());
     }
     let messages = &input.messages;
+    let anthropic_system = messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let anthropic_messages = messages
+        .iter()
+        .filter(|message| message.role != "system")
+        .collect::<Vec<_>>();
     let spec = adapter_spec(provider_id)?;
     let token = CancellationToken::new();
     let client = reqwest::Client::builder()
@@ -2715,7 +2725,8 @@ pub(crate) async fn start_provider_response_stream(
             client.post("https://api.anthropic.com/v1/messages"),
             serde_json::json!({
                 "model": model_id, "max_tokens": 2048, "stream": true,
-                "messages": messages
+                "system": anthropic_system,
+                "messages": anthropic_messages
             }),
         ),
         "google" => (

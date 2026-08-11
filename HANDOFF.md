@@ -102,8 +102,8 @@ Things to settle when this is specified:
 | Branch | `feature/p13-ai-center` |
 | HEAD | `6292235 chore: finalize p13 m5 validation and css cleanup` |
 | Latest tag | `p13-m5-complete` |
-| Working tree | Clean |
-| Active phase | P14 Memory Retrieval implemented; pending end-to-end behavioral QA |
+| Working tree | Uncommitted P14 validation changes |
+| Active phase | P14 Memory Language Policy implemented; pending four-round behavioral QA |
 
 ---
 
@@ -151,8 +151,8 @@ config, or the repository.
 
 ## In progress
 
-P14 Memory Retrieval is implemented and automated validation has passed. Manual
-cross-conversation behavioral QA remains.
+P14 Memory Language Policy is implemented. Automated validation covers language
+priority and request-only outbound constraints; four-round behavioral QA remains.
 
 ---
 
@@ -198,9 +198,12 @@ cross-conversation behavioral QA remains.
 
 **Memory**
 
-- Ordinary Chat requests load long-term `user` memories and inject them as one hidden `system` message before conversation context
+- Ordinary Chat requests load long-term `user` memories and inject them as outbound message zero
 - Injected memory is request-only and is never written into conversation history
 - Explicit “记住…” commands remain a local save-and-confirm path and do not call AI Center
+- A recognized long-term language preference becomes the default runtime response policy; the resolved language is also attached to a temporary clone of the current outbound user message and is never persisted
+- An explicit language request in the current message overrides the default for that response only
+- Streaming Provider input accepts `system` messages; Anthropic combines them into the Messages API top-level `system` field and excludes them from `messages`
 
 **Migration**
 
