@@ -46,22 +46,17 @@ type ChatPageProps = {
 
 function extractMemoryCandidate(content: string): string | undefined {
   const text = content.trim();
+  const prefixes = ["请记住", "帮我记住", "记住"];
+  const prefix = prefixes.find((candidate) => text.startsWith(candidate));
 
-  const triggers = [
-    "记住",
-    "以后",
-    "我的",
-    "我喜欢",
-    "我不喜欢",
-    "不要",
-    "请始终",
-  ];
+  if (!prefix) return undefined;
 
-  if (!triggers.some((trigger) => text.includes(trigger))) {
-    return undefined;
-  }
+  const memory = text
+    .slice(prefix.length)
+    .replace(/^[：:，,。.\s]+/, "")
+    .trim();
 
-  return text;
+  return memory || undefined;
 }
 
 function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
@@ -119,24 +114,52 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     };
     const nextMessages = [...messages, userMessage];
 
-    const memoryCandidate = extractMemoryCandidate(content);
-
-    if (memoryCandidate) {
-      void saveMemory({
-        id: crypto.randomUUID(),
-        type: "user",
-        content: memoryCandidate,
-        metadata: {
-          source: "chat",
-          importance: 5,
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      }).catch(() => undefined);
-    }
-
     const conversation = getConversation(conversationId);
     if (!conversation) return;
+
+    const memoryCandidate = extractMemoryCandidate(content);
+    if (memoryCandidate) {
+      setIsSubmitting(true);
+      try {
+        const timestamp = new Date().toISOString();
+        await saveMemory({
+          id: crypto.randomUUID(),
+          type: "user",
+          content: memoryCandidate,
+          metadata: {
+            source: "chat",
+            importance: 5,
+          },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+
+        const localMessages: ChatMessage[] = [
+          ...nextMessages,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "好的，我记住了。",
+            createdAt: new Date().toISOString(),
+          },
+        ];
+        saveConversation({
+          ...conversation,
+          title:
+            conversation.messages.length === 0
+              ? content.slice(0, 48)
+              : conversation.title,
+          messages: localMessages,
+        });
+        setMessages(localMessages);
+        setAttachments([]);
+        setDraft("");
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
     const nextConversation = {
       ...conversation,
       title:
