@@ -1,6 +1,6 @@
 # AI-OS — Current State
 
-> Updated: 2026-08-10
+> Updated: 2026-08-11
 > This file is the single source of truth for current repository state.
 > Historical detail lives in `docs/archive/HANDOFF_HISTORY.md`.
 
@@ -103,7 +103,7 @@ Things to settle when this is specified:
 | HEAD | `6292235 chore: finalize p13 m5 validation and css cleanup` |
 | Latest tag | `p13-m5-complete` |
 | Working tree | Clean |
-| Active phase | P13-M5 completed and validated after streaming and Chat workspace fixes; ready for P14 Memory |
+| Active phase | P14 Memory Retrieval implemented; pending end-to-end behavioral QA |
 
 ---
 
@@ -128,6 +128,7 @@ Things to settle when this is specified:
 | Legacy UI Step2 | Removed obsolete PageName and Settings navigation entries while preserving new workspace structure | `verify/verify_legacy_ui_step2.sh` |
 | Ollama streaming fix | Increased local Ollama generation capacity and timeout handling for long AI Center streaming responses | `43da32f` |
 | Chat workspace layout fix | Adjusted Chat message container width and spacing so long responses stay inside the workspace boundary | `6192b6a` |
+| P14 Memory Retrieval | User memories are injected as hidden system context for ordinary Chat requests without entering conversation history | `verify/verify_p14_memory_retrieval.sh` |
 
 ### Connected AI providers
 
@@ -150,10 +151,8 @@ config, or the repository.
 
 ## In progress
 
-Nothing is mid-implementation.
-
-P13-M5 shared multi-model invocation and legacy UI cleanup are completed.
-Validation scripts have passed and commit `6292235` leaves the working tree clean.
+P14 Memory Retrieval is implemented and automated validation has passed. Manual
+cross-conversation behavioral QA remains.
 
 ---
 
@@ -168,7 +167,7 @@ Validation scripts have passed and commit `6292235` leaves the working tree clea
    - Provider fallback
    - Analytics records
 3. Fix QA issues if found
-4. Start P14 Memory
+4. Complete P14 Memory end-to-end behavioral QA
 
 ---
 
@@ -196,6 +195,12 @@ Validation scripts have passed and commit `6292235` leaves the working tree clea
 - Participant ordering is deterministic after normalization; duplicates removed pre-execution
 - Aggregated results preserve per-model P13-M4 metadata
 - Auto routing is Local First: local Ollama models are attempted before connected cloud defaults
+
+**Memory**
+
+- Ordinary Chat requests load long-term `user` memories and inject them as one hidden `system` message before conversation context
+- Injected memory is request-only and is never written into conversation history
+- Explicit “记住…” commands remain a local save-and-confirm path and do not call AI Center
 
 **Migration**
 
@@ -335,4 +340,3 @@ AI-OS
  AI Council
  |
  OpenClaw Execution
-

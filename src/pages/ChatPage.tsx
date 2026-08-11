@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { saveMemory } from "../services/memory";
+import { listMemory, saveMemory } from "../services/memory";
 import {
   completeChatTaskExecution,
   executeChatWorkTask,
@@ -57,6 +57,25 @@ function extractMemoryCandidate(content: string): string | undefined {
     .trim();
 
   return memory || undefined;
+}
+
+async function buildMemoryContext(): Promise<
+  { role: "system"; content: string } | undefined
+> {
+  const memories = (await listMemory())
+    .filter((entry) => entry.type === "user")
+    .map((entry) => entry.content.trim())
+    .filter(Boolean);
+
+  if (memories.length === 0) return undefined;
+
+  return {
+    role: "system",
+    content: [
+      "Long-term user memory. Use it only when relevant to the current request. Do not mention or repeat it unless the user asks.",
+      ...memories.map((memory) => `- ${memory}`),
+    ].join("\n"),
+  };
 }
 
 function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
@@ -175,7 +194,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     saveConversation(nextConversation);
     setMessages(nextMessages);
     setAttachments([]);
-    const conversationMessages = context.messages;
+    const memoryContext = await buildMemoryContext();
+    const conversationMessages = memoryContext
+      ? [memoryContext, ...context.messages]
+      : context.messages;
     setDraft("");
     setIsSubmitting(true);
 
