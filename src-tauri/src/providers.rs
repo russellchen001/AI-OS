@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{Mutex, OnceLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
 use tokio::{
@@ -662,6 +662,72 @@ pub(crate) struct GenerateProviderResponseResult {
     text: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AiCenterExecutionSource {
+    Local,
+    Cloud,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AiCenterAttemptOutcome {
+    Success,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiCenterAttempt {
+    provider_id: String,
+    provider_instance_id: String,
+    model_id: String,
+    source: AiCenterExecutionSource,
+    started_at: String,
+    completed_at: String,
+    latency_ms: u64,
+    outcome: AiCenterAttemptOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_category: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiCenterCanonicalInvocationMetadata {
+    invocation_id: String,
+    route_mode: AiCenterRouteMode,
+    provider_id: String,
+    provider_instance_id: String,
+    model_id: String,
+    source: AiCenterExecutionSource,
+    started_at: String,
+    completed_at: String,
+    latency_ms: u64,
+    input_tokens: usize,
+    output_tokens: usize,
+    token_accuracy: &'static str,
+    fallback_occurred: bool,
+    attempts: Vec<AiCenterAttempt>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExecuteAiCenterInput {
+    route_mode: AiCenterRouteMode,
+    manual_candidate: Option<AiCenterRouteCandidate>,
+    prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExecuteAiCenterResult {
+    provider_id: String,
+    model_id: String,
+    text: String,
+    metadata: AiCenterCanonicalInvocationMetadata,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AiCenterRouteCandidate {
@@ -670,7 +736,7 @@ pub(crate) struct AiCenterRouteCandidate {
     model_id: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum AiCenterRouteMode {
     Auto,
@@ -721,6 +787,106 @@ fn auto_route_candidates(
     candidates
 }
 
+fn execution_source(candidate: &AiCenterRouteCandidate) -> AiCenterExecutionSource {
+    if candidate.provider_id == "ollama" || candidate.provider_instance_id == "ollama-local" {
+        AiCenterExecutionSource::Local
+    } else {
+        AiCenterExecutionSource::Cloud
+    }
+}
+
+fn estimate_tokens(value: &str) -> usize {
+    value.encode_utf16().count().div_ceil(4)
+}
+
+fn safe_attempt_error(message: &str) -> String {
+    let message = message.to_lowercase();
+    if message.contains("cancel") {
+        "cancelled"
+    } else if ["401", "403", "reconnect", "credential", "auth"]
+        .iter()
+        .any(|value| message.contains(value))
+    {
+        "authentication"
+    } else if ["429", "rate limit", "busy"]
+        .iter()
+        .any(|value| message.contains(value))
+    {
+        "rate-limited"
+    } else if message.contains("timeout") {
+        "timeout"
+    } else if message.contains("no text") || message.contains("empty") {
+        "empty-response"
+    } else if ["connect", "reach", "network", "stream was interrupted"]
+        .iter()
+        .any(|value| message.contains(value))
+    {
+        "unavailable"
+    } else {
+        "provider-error"
+    }
+    .to_owned()
+}
+
+fn complete_attempt(
+    candidate: &AiCenterRouteCandidate,
+    started_at: String,
+    started: Instant,
+    outcome: AiCenterAttemptOutcome,
+    error: Option<&str>,
+) -> AiCenterAttempt {
+    AiCenterAttempt {
+        provider_id: candidate.provider_id.clone(),
+        provider_instance_id: candidate.provider_instance_id.clone(),
+        model_id: candidate.model_id.clone(),
+        source: execution_source(candidate),
+        started_at,
+        completed_at: chrono::Utc::now().to_rfc3339(),
+        latency_ms: started.elapsed().as_millis() as u64,
+        outcome,
+        error_category: error.map(safe_attempt_error),
+    }
+}
+
+fn canonical_metadata(
+    invocation_id: String,
+    route_mode: AiCenterRouteMode,
+    candidate: &AiCenterRouteCandidate,
+    started_at: String,
+    started: Instant,
+    input: &str,
+    output: &str,
+    attempts: Vec<AiCenterAttempt>,
+) -> AiCenterCanonicalInvocationMetadata {
+    AiCenterCanonicalInvocationMetadata {
+        invocation_id,
+        route_mode,
+        provider_id: candidate.provider_id.clone(),
+        provider_instance_id: candidate.provider_instance_id.clone(),
+        model_id: candidate.model_id.clone(),
+        source: execution_source(candidate),
+        started_at,
+        completed_at: chrono::Utc::now().to_rfc3339(),
+        latency_ms: started.elapsed().as_millis() as u64,
+        input_tokens: estimate_tokens(input),
+        output_tokens: estimate_tokens(output),
+        token_accuracy: "estimated",
+        fallback_occurred: attempts.len() > 1,
+        attempts,
+    }
+}
+
+fn route_candidates() -> Result<(Vec<ProviderInstance>, Vec<AiCenterRouteCandidate>), String> {
+    let instances = read_provider_instances()?;
+    let local_model_ids = crate::models::list_ollama_models()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|model| model.model)
+        .collect::<Vec<_>>();
+    let candidates = auto_route_candidates(&instances, &local_model_ids);
+    Ok((instances, candidates))
+}
+
 fn select_route_candidate(
     input: &ResolveAiCenterRouteInput,
     candidates: &[AiCenterRouteCandidate],
@@ -749,13 +915,7 @@ fn select_route_candidate(
 pub(crate) fn resolve_ai_center_route(
     input: ResolveAiCenterRouteInput,
 ) -> Result<Option<AiCenterRouteCandidate>, String> {
-    let instances = read_provider_instances()?;
-    let local_model_ids = crate::models::list_ollama_models()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|model| model.model)
-        .collect::<Vec<_>>();
-    let candidates = auto_route_candidates(&instances, &local_model_ids);
+    let (_, candidates) = route_candidates()?;
     select_route_candidate(&input, &candidates)
 }
 
@@ -766,6 +926,15 @@ pub(crate) struct StreamProviderResponseInput {
     provider_id: String,
     provider_instance_id: String,
     model_id: String,
+    messages: Vec<ProviderChatMessage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExecuteAiCenterStreamInput {
+    operation_id: String,
+    route_mode: AiCenterRouteMode,
+    manual_candidate: Option<AiCenterRouteCandidate>,
     messages: Vec<ProviderChatMessage>,
 }
 
@@ -788,6 +957,12 @@ struct AiCenterChunkEvent {
 struct AiCenterDoneEvent {
     operation_id: String,
     cancelled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<AiCenterCanonicalInvocationMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2721,6 +2896,110 @@ pub(crate) async fn generate_provider_response(
     })
 }
 
+async fn execute_candidate(
+    candidate: &AiCenterRouteCandidate,
+    prompt: &str,
+    instances: &[ProviderInstance],
+    operation_id: Option<String>,
+) -> Result<GenerateProviderResponseResult, String> {
+    let uses_claude_code = instances.iter().any(|instance| {
+        instance.id == candidate.provider_instance_id
+            && instance.provider_id == "anthropic"
+            && instance.credential.kind == ProviderCredentialKind::Local
+    });
+    if uses_claude_code {
+        let response = crate::claude_code::generate_claude_code_response(
+            crate::claude_code::ClaudeCodeRequest {
+                operation_id,
+                model_id: candidate.model_id.clone(),
+                prompt: prompt.to_owned(),
+            },
+        )
+        .await?;
+        return Ok(GenerateProviderResponseResult {
+            provider_id: "anthropic".to_owned(),
+            model_id: response.model_id,
+            text: response.text,
+        });
+    }
+
+    generate_provider_response(GenerateProviderResponseInput {
+        provider_id: candidate.provider_id.clone(),
+        provider_instance_id: candidate.provider_instance_id.clone(),
+        model_id: candidate.model_id.clone(),
+        prompt: prompt.to_owned(),
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn execute_ai_center(
+    input: ExecuteAiCenterInput,
+) -> Result<ExecuteAiCenterResult, String> {
+    let prompt = input.prompt.trim().to_owned();
+    if prompt.is_empty() || prompt.len() > 100_000 {
+        return Err("message is empty or too large".to_owned());
+    }
+    let invocation_id = format!("invoke-{}", uuid::Uuid::new_v4());
+    let invocation_started_at = chrono::Utc::now().to_rfc3339();
+    let invocation_started = Instant::now();
+    let (instances, candidates) = route_candidates()?;
+    let mut attempts = Vec::new();
+    let mut last_error = None;
+
+    loop {
+        let route_input = ResolveAiCenterRouteInput {
+            route_mode: input.route_mode,
+            manual_candidate: input.manual_candidate.clone(),
+            attempted_count: attempts.len(),
+            emitted_output: false,
+            cancelled: false,
+        };
+        let Some(candidate) = select_route_candidate(&route_input, &candidates)? else {
+            return Err(last_error.unwrap_or_else(|| "NO_CONNECTED_PROVIDER".to_owned()));
+        };
+        let attempt_started_at = chrono::Utc::now().to_rfc3339();
+        let attempt_started = Instant::now();
+        match execute_candidate(&candidate, &prompt, &instances, None).await {
+            Ok(response) => {
+                attempts.push(complete_attempt(
+                    &candidate,
+                    attempt_started_at,
+                    attempt_started,
+                    AiCenterAttemptOutcome::Success,
+                    None,
+                ));
+                let metadata = canonical_metadata(
+                    invocation_id,
+                    input.route_mode,
+                    &candidate,
+                    invocation_started_at,
+                    invocation_started,
+                    &prompt,
+                    &response.text,
+                    attempts,
+                );
+                return Ok(ExecuteAiCenterResult {
+                    provider_id: response.provider_id,
+                    model_id: response.model_id,
+                    text: response.text,
+                    metadata,
+                });
+            }
+            Err(error) => {
+                attempts.push(complete_attempt(
+                    &candidate,
+                    attempt_started_at,
+                    attempt_started,
+                    AiCenterAttemptOutcome::Failed,
+                    Some(&error),
+                ));
+                last_error = Some(error);
+            }
+        }
+    }
+}
+
 fn stream_text(provider_id: &str, uses_responses_api: bool, value: &Value) -> Option<String> {
     match provider_id {
         _ if uses_responses_api => value
@@ -2746,6 +3025,169 @@ fn stream_text(provider_id: &str, uses_responses_api: bool, value: &Value) -> Op
             .pointer("/choices/0/delta/content")
             .and_then(Value::as_str)
             .map(str::to_owned),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn execute_ai_center_stream(
+    app: AppHandle,
+    input: ExecuteAiCenterStreamInput,
+) -> Result<(), String> {
+    let operation_id = validate_instance_id(input.operation_id.trim())?.to_owned();
+    if input.messages.is_empty() || input.messages.len() > 100 {
+        return Err("conversation is empty or too long".to_owned());
+    }
+    let prompt = input
+        .messages
+        .iter()
+        .map(|message| format!("{}: {}", message.role, message.content))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let invocation_started_at = chrono::Utc::now().to_rfc3339();
+    let invocation_started = Instant::now();
+    let (instances, candidates) = route_candidates()?;
+    let token = CancellationToken::new();
+    ai_center_requests()
+        .lock()
+        .map_err(|_| "AI Center request state is unavailable".to_owned())?
+        .insert(operation_id.clone(), token.clone());
+    let mut attempts = Vec::new();
+    let mut last_error = None;
+
+    loop {
+        let route_input = ResolveAiCenterRouteInput {
+            route_mode: input.route_mode,
+            manual_candidate: input.manual_candidate.clone(),
+            attempted_count: attempts.len(),
+            emitted_output: false,
+            cancelled: token.is_cancelled(),
+        };
+        let Some(candidate) = select_route_candidate(&route_input, &candidates)? else {
+            ai_center_requests()
+                .lock()
+                .ok()
+                .map(|mut map| map.remove(&operation_id));
+            if token.is_cancelled() {
+                let candidate = attempts
+                    .last()
+                    .map(|attempt: &AiCenterAttempt| AiCenterRouteCandidate {
+                        provider_id: attempt.provider_id.clone(),
+                        provider_instance_id: attempt.provider_instance_id.clone(),
+                        model_id: attempt.model_id.clone(),
+                    })
+                    .or_else(|| input.manual_candidate.clone())
+                    .or_else(|| candidates.first().cloned())
+                    .ok_or_else(|| "NO_CONNECTED_PROVIDER".to_owned())?;
+                let metadata = canonical_metadata(
+                    operation_id.clone(),
+                    input.route_mode,
+                    &candidate,
+                    invocation_started_at,
+                    invocation_started,
+                    &prompt,
+                    "",
+                    attempts,
+                );
+                let _ = app.emit(
+                    "ai-center://done",
+                    AiCenterDoneEvent {
+                        operation_id,
+                        cancelled: true,
+                        provider_id: Some(candidate.provider_id),
+                        model_id: Some(candidate.model_id),
+                        metadata: Some(metadata),
+                    },
+                );
+                return Ok(());
+            }
+            let message = last_error.unwrap_or_else(|| "NO_CONNECTED_PROVIDER".to_owned());
+            let _ = app.emit(
+                "ai-center://error",
+                AiCenterErrorEvent {
+                    operation_id,
+                    message: message.clone(),
+                },
+            );
+            return Err(message);
+        };
+        let attempt_started_at = chrono::Utc::now().to_rfc3339();
+        let attempt_started = Instant::now();
+        let attempt_operation_id = format!("{}-{}", operation_id, attempts.len());
+        let execution = execute_candidate(
+            &candidate,
+            &prompt,
+            &instances,
+            Some(attempt_operation_id.clone()),
+        );
+        let result = tokio::select! {
+            _ = token.cancelled() => {
+                let _ = crate::claude_code::cancel_claude_code_request(attempt_operation_id);
+                Err("cancelled".to_owned())
+            }
+            result = execution => result
+        };
+        match result {
+            Ok(response) => {
+                attempts.push(complete_attempt(
+                    &candidate,
+                    attempt_started_at,
+                    attempt_started,
+                    AiCenterAttemptOutcome::Success,
+                    None,
+                ));
+                let metadata = canonical_metadata(
+                    operation_id.clone(),
+                    input.route_mode,
+                    &candidate,
+                    invocation_started_at,
+                    invocation_started,
+                    &prompt,
+                    &response.text,
+                    attempts,
+                );
+                let _ = app.emit(
+                    "ai-center://chunk",
+                    AiCenterChunkEvent {
+                        operation_id: operation_id.clone(),
+                        text: response.text,
+                    },
+                );
+                let _ = app.emit(
+                    "ai-center://done",
+                    AiCenterDoneEvent {
+                        operation_id: operation_id.clone(),
+                        cancelled: false,
+                        provider_id: Some(response.provider_id),
+                        model_id: Some(response.model_id),
+                        metadata: Some(metadata),
+                    },
+                );
+                ai_center_requests()
+                    .lock()
+                    .ok()
+                    .map(|mut map| map.remove(&operation_id));
+                return Ok(());
+            }
+            Err(_) if token.is_cancelled() => {
+                attempts.push(complete_attempt(
+                    &candidate,
+                    attempt_started_at,
+                    attempt_started,
+                    AiCenterAttemptOutcome::Cancelled,
+                    None,
+                ));
+            }
+            Err(error) => {
+                attempts.push(complete_attempt(
+                    &candidate,
+                    attempt_started_at,
+                    attempt_started,
+                    AiCenterAttemptOutcome::Failed,
+                    Some(&error),
+                ));
+                last_error = Some(error);
+            }
+        }
     }
 }
 
@@ -2905,7 +3347,11 @@ pub(crate) async fn start_provider_response_stream(
         _ = token.cancelled() => {
             ai_center_requests().lock().ok().map(|mut map| map.remove(&operation_id));
             let _ = app.emit("ai-center://done", AiCenterDoneEvent {
-                operation_id: operation_id.clone(), cancelled: true
+                operation_id: operation_id.clone(),
+                cancelled: true,
+                provider_id: None,
+                model_id: None,
+                metadata: None,
             });
             return Ok(());
         }
@@ -3010,6 +3456,9 @@ pub(crate) async fn start_provider_response_stream(
         AiCenterDoneEvent {
             operation_id,
             cancelled,
+            provider_id: None,
+            model_id: None,
+            metadata: None,
         },
     );
     Ok(())
@@ -3392,6 +3841,83 @@ mod tests {
             select_route_candidate(&input(1), &candidates).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn canonical_metadata_preserves_attempt_order_tokens_and_privacy() {
+        let local = AiCenterRouteCandidate {
+            provider_id: "ollama".to_owned(),
+            provider_instance_id: "ollama-local".to_owned(),
+            model_id: "qwen-test".to_owned(),
+        };
+        let cloud = AiCenterRouteCandidate {
+            provider_id: "openai".to_owned(),
+            provider_instance_id: "openai-default".to_owned(),
+            model_id: "gpt-test".to_owned(),
+        };
+        let failed = complete_attempt(
+            &local,
+            chrono::Utc::now().to_rfc3339(),
+            Instant::now(),
+            AiCenterAttemptOutcome::Failed,
+            Some("Provider returned 401"),
+        );
+        let success = complete_attempt(
+            &cloud,
+            chrono::Utc::now().to_rfc3339(),
+            Instant::now(),
+            AiCenterAttemptOutcome::Success,
+            None,
+        );
+        let metadata = canonical_metadata(
+            "test-invocation".to_owned(),
+            AiCenterRouteMode::Auto,
+            &cloud,
+            chrono::Utc::now().to_rfc3339(),
+            Instant::now(),
+            "private prompt",
+            "private output",
+            vec![failed, success],
+        );
+
+        assert_eq!(metadata.route_mode, AiCenterRouteMode::Auto);
+        assert_eq!(metadata.source, AiCenterExecutionSource::Cloud);
+        assert_eq!(metadata.input_tokens, 4);
+        assert_eq!(metadata.output_tokens, 4);
+        assert_eq!(metadata.token_accuracy, "estimated");
+        assert!(metadata.fallback_occurred);
+        assert_eq!(
+            metadata.attempts[0].error_category.as_deref(),
+            Some("authentication")
+        );
+        assert_eq!(
+            metadata.attempts[1].outcome,
+            AiCenterAttemptOutcome::Success
+        );
+        let serialized = serde_json::to_string(&metadata).unwrap().to_lowercase();
+        assert!(!serialized.contains("private prompt"));
+        assert!(!serialized.contains("private output"));
+        assert!(!serialized.contains("credential"));
+        assert!(!serialized.contains("api key"));
+        assert!(!serialized.contains("access token"));
+        assert!(!serialized.contains("refresh token"));
+    }
+
+    #[test]
+    fn canonical_error_categories_match_existing_semantics() {
+        assert_eq!(safe_attempt_error("cancelled"), "cancelled");
+        assert_eq!(
+            safe_attempt_error("Provider returned 403"),
+            "authentication"
+        );
+        assert_eq!(safe_attempt_error("rate limit 429"), "rate-limited");
+        assert_eq!(safe_attempt_error("request timeout"), "timeout");
+        assert_eq!(safe_attempt_error("returned no text"), "empty-response");
+        assert_eq!(
+            safe_attempt_error("network could not reach host"),
+            "unavailable"
+        );
+        assert_eq!(safe_attempt_error("unexpected"), "provider-error");
     }
 
     #[test]

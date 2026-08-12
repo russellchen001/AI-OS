@@ -2,11 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { listProviderInstances } from "./providers";
 import {
-  buildInvocationMetadata,
-  completeAttempt,
+  enrichInvocationPricing,
   recordInvocationSuccess,
-  safeAttemptError,
-  type AiCenterAttempt,
+  type AiCenterCanonicalInvocationMetadata,
   type AiCenterInvocationMetadata,
 } from "./aiCenterObservability";
 
@@ -74,23 +72,6 @@ type AiCenterRouteSelection = Pick<
   "providerId" | "providerInstanceId" | "modelId"
 >;
 
-function resolveAiCenterRoute(input: {
-  selectedModel?: AiCenterModelChoice;
-  attemptedCount: number;
-  emittedOutput: boolean;
-  cancelled: boolean;
-}): Promise<AiCenterRouteSelection | null> {
-  return invoke("resolve_ai_center_route", {
-    input: {
-      routeMode: input.selectedModel ? "manual" : "auto",
-      manualCandidate: input.selectedModel,
-      attemptedCount: input.attemptedCount,
-      emittedOutput: input.emittedOutput,
-      cancelled: input.cancelled,
-    },
-  });
-}
-
 function resolveChoice(choice: AiCenterRouteSelection) {
   if (
     choice.providerId === "ollama" &&
@@ -122,72 +103,32 @@ function resolveChoice(choice: AiCenterRouteSelection) {
   return { instance, model };
 }
 
-async function answerWithChoice(
-  prompt: string,
-  choice: AiCenterRouteSelection,
-  operationId?: string,
-): Promise<AiCenterProviderResponse> {
-  const { instance, model } = resolveChoice(choice);
-  if (instance.providerId === "anthropic" && instance.credential.kind === "local") {
-    const response = await invoke<{ modelId: string; text: string }>(
-      "generate_claude_code_response",
-      { input: { operationId, modelId: model.remoteModelId, prompt } },
-    );
-    return { providerId: instance.providerId, ...response };
-  }
-
-  return invoke<AiCenterProviderResponse>("generate_provider_response", {
-    input: {
-      providerId: instance.providerId,
-      providerInstanceId: instance.id,
-      modelId: model.remoteModelId,
-      prompt,
-    },
-  });
-}
-
 export async function answerThroughAiCenter(
   prompt: string,
   selectedModel?: AiCenterModelChoice,
 ): Promise<AiCenterResponse> {
-  const invocationId = `invoke-${crypto.randomUUID()}`;
-  const invocationStartedAt = Date.now();
-  const attempts: AiCenterAttempt[] = [];
-  let lastError: unknown;
-  while (true) {
-    const candidate = await resolveAiCenterRoute({
-      selectedModel,
-      attemptedCount: attempts.length,
-      emittedOutput: false,
-      cancelled: false,
-    });
-    if (!candidate) {
-      throw lastError ?? new Error("NO_CONNECTED_PROVIDER");
-    }
-    const attemptStartedAt = Date.now();
-    try {
-      const response = await answerWithChoice(prompt, candidate);
-      attempts.push(completeAttempt(candidate, attemptStartedAt, "success"));
-      const metadata = buildInvocationMetadata({
-        invocationId,
-        routeMode: selectedModel ? "manual" : "auto",
-        choice: candidate,
-        startedAtMs: invocationStartedAt,
-        promptText: prompt,
-        outputText: response.text,
-        attempts,
-      });
-      recordInvocationSuccess(metadata);
-      return { ...response, metadata };
-    } catch (error) {
-      attempts.push(completeAttempt(candidate, attemptStartedAt, "failed", error));
-      lastError = error;
-    }
-  }
+  const response = await invoke<
+    AiCenterProviderResponse & { metadata: AiCenterCanonicalInvocationMetadata }
+  >("execute_ai_center", {
+    input: {
+      routeMode: selectedModel ? "manual" : "auto",
+      manualCandidate: selectedModel,
+      prompt,
+    },
+  });
+  const metadata = enrichInvocationPricing(response.metadata);
+  recordInvocationSuccess(metadata);
+  return { ...response, metadata };
 }
 
 type StreamEvent = { operationId: string; text: string };
-type DoneEvent = { operationId: string; cancelled: boolean };
+type DoneEvent = {
+  operationId: string;
+  cancelled: boolean;
+  providerId?: string;
+  modelId?: string;
+  metadata?: AiCenterCanonicalInvocationMetadata;
+};
 type ErrorEvent = { operationId: string; message: string };
 
 export type AiCenterStream = {
@@ -319,7 +260,11 @@ export function invokeMultipleThroughAiCenter(
           response: outcome.response,
         };
       } catch (error) {
-        const errorCategory = safeAttemptError(error);
+        const errorCategory = /cancel/i.test(
+          error instanceof Error ? error.message : String(error),
+        )
+          ? "cancelled"
+          : "provider-error";
         return {
           participantId: participant.participantId,
           operationId,
@@ -383,183 +328,82 @@ export function streamThroughAiCenter(
   onChunk: (text: string) => void,
 ): AiCenterStream {
   const operationId = `chat-${crypto.randomUUID()}`;
-  let cancelled = false;
-  let activeCancel: () => Promise<void> = async () => {};
+  let output = "";
+  let settled = false;
+  let unlistenChunk: UnlistenFn | undefined;
+  let unlistenDone: UnlistenFn | undefined;
+  let unlistenError: UnlistenFn | undefined;
 
-  const streamChoice = async (
-    choice: AiCenterRouteSelection,
-    attemptId: string,
-    emit: (text: string) => void,
-  ): Promise<{ response: AiCenterProviderResponse; cancelled: boolean }> => {
-    const { instance } = resolveChoice(choice);
-    if (instance.providerId === "anthropic" && instance.credential.kind === "local") {
-      activeCancel = () =>
-        invoke("cancel_claude_code_request", { operationId: attemptId });
-      const response = await answerWithChoice(
-        promptFromMessages(messages),
-        choice,
-        attemptId,
-      );
-      if (!cancelled) emit(response.text);
-      return { response, cancelled };
-    }
-
-    activeCancel = () =>
-      invoke("cancel_provider_response_stream", { operationId: attemptId });
-    return new Promise((resolve, reject) => {
-      let output = "";
-      let settled = false;
-      let unlistenChunk: UnlistenFn | undefined;
-      let unlistenDone: UnlistenFn | undefined;
-      let unlistenError: UnlistenFn | undefined;
-      const cleanup = () => {
-        unlistenChunk?.();
-        unlistenDone?.();
-        unlistenError?.();
-      };
-      const fail = (error: Error) => {
+  const result = new Promise<{
+    response: AiCenterResponse;
+    cancelled: boolean;
+  }>((resolve, reject) => {
+    const cleanup = () => {
+      unlistenChunk?.();
+      unlistenDone?.();
+      unlistenError?.();
+    };
+    void (async () => {
+      unlistenChunk = await listen<StreamEvent>("ai-center://chunk", (event) => {
+        if (event.payload.operationId !== operationId || settled) return;
+        output += event.payload.text;
+        onChunk(event.payload.text);
+      });
+      unlistenDone = await listen<DoneEvent>("ai-center://done", (event) => {
+        if (event.payload.operationId !== operationId || settled) return;
+        settled = true;
+        cleanup();
+        if (!event.payload.metadata) {
+          reject(new Error("AI Center returned no invocation metadata."));
+          return;
+        }
+        const metadata = enrichInvocationPricing(event.payload.metadata);
+        if (!event.payload.cancelled) recordInvocationSuccess(metadata);
+        resolve({
+          response: {
+            providerId: event.payload.providerId ?? metadata.providerId,
+            modelId: event.payload.modelId ?? metadata.modelId,
+            text: output,
+            metadata,
+          },
+          cancelled: event.payload.cancelled,
+        });
+      });
+      unlistenError = await listen<ErrorEvent>("ai-center://error", (event) => {
+        if (event.payload.operationId !== operationId || settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error(event.payload.message));
+      });
+      try {
+        await invoke("execute_ai_center_stream", {
+          input: {
+            operationId,
+            routeMode: selectedModel ? "manual" : "auto",
+            manualCandidate: selectedModel,
+            messages,
+          },
+        });
+      } catch (error) {
         if (settled) return;
         settled = true;
         cleanup();
-        reject(error);
-      };
-      void (async () => {
-        unlistenChunk = await listen<StreamEvent>("ai-center://chunk", (event) => {
-          if (event.payload.operationId !== attemptId) return;
-          output += event.payload.text;
-          emit(event.payload.text);
-        });
-        unlistenDone = await listen<DoneEvent>("ai-center://done", (event) => {
-          if (event.payload.operationId !== attemptId || settled) return;
-          settled = true;
-          cleanup();
-          resolve({
-            response: {
-              providerId: choice.providerId,
-              modelId: choice.modelId,
-              text: output,
-            },
-            cancelled: event.payload.cancelled,
-          });
-        });
-        unlistenError = await listen<ErrorEvent>("ai-center://error", (event) => {
-          if (event.payload.operationId !== attemptId) return;
-          fail(new Error(event.payload.message));
-        });
-        try {
-          await invoke("start_provider_response_stream", {
-            input: {
-              operationId: attemptId,
-              providerId: choice.providerId,
-              providerInstanceId: choice.providerInstanceId,
-              modelId: choice.modelId,
-              messages,
-            },
-          });
-        } catch (error) {
-          fail(
-            new Error(
-              typeof error === "string"
-                ? error
-                : "AI Center could not start the response stream.",
-            ),
-          );
-        }
-      })();
-    });
-  };
-
-  const result = (async () => {
-    const invocationStartedAt = Date.now();
-    const promptText = promptFromMessages(messages);
-    const attempts: AiCenterAttempt[] = [];
-    let lastError: unknown;
-    let emittedOutput = false;
-    while (true) {
-      const choice = await resolveAiCenterRoute({
-        selectedModel,
-        attemptedCount: attempts.length,
-        emittedOutput,
-        cancelled,
-      });
-      if (!choice) {
-        throw lastError ?? new Error("NO_CONNECTED_PROVIDER");
-      }
-      let emitted = false;
-      const attemptStartedAt = Date.now();
-      try {
-        const attempt = await streamChoice(
-          choice,
-          `${operationId}-${attempts.length}`,
-          (text) => {
-            emitted = true;
-            emittedOutput = true;
-            onChunk(text);
-          },
-        );
-        const wasCancelled = cancelled || attempt.cancelled;
-        attempts.push(
-          completeAttempt(
-            choice,
-            attemptStartedAt,
-            wasCancelled ? "cancelled" : "success",
+        reject(
+          new Error(
+            typeof error === "string"
+              ? error
+              : "AI Center could not start the response stream.",
           ),
         );
-        const metadata = buildInvocationMetadata({
-          invocationId: operationId,
-          routeMode: selectedModel ? "manual" : "auto",
-          choice,
-          startedAtMs: invocationStartedAt,
-          promptText,
-          outputText: attempt.response.text,
-          attempts,
-        });
-        if (!wasCancelled) recordInvocationSuccess(metadata);
-        return {
-          response: { ...attempt.response, metadata },
-          cancelled: wasCancelled,
-        };
-      } catch (error) {
-        attempts.push(
-          completeAttempt(
-            choice,
-            attemptStartedAt,
-            cancelled ? "cancelled" : "failed",
-            cancelled ? undefined : error,
-          ),
-        );
-        lastError = error;
-        if (cancelled) {
-          const metadata = buildInvocationMetadata({
-            invocationId: operationId,
-            routeMode: selectedModel ? "manual" : "auto",
-            choice,
-            startedAtMs: invocationStartedAt,
-            promptText,
-            outputText: "",
-            attempts,
-          });
-          return {
-            response: {
-              providerId: choice.providerId,
-              modelId: choice.modelId,
-              text: "",
-              metadata,
-            },
-            cancelled: true,
-          };
-        }
-        emittedOutput ||= emitted;
       }
-    }
-  })();
+    })();
+  });
 
   return {
     operationId,
     result,
     cancel: async () => {
-      cancelled = true;
-      await activeCancel();
+      await invoke("cancel_provider_response_stream", { operationId });
     },
   };
 }

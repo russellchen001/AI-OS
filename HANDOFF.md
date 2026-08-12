@@ -100,10 +100,10 @@ Things to settle when this is specified:
 | | |
 |---|---|
 | Branch | `feature/p13-ai-center` |
-| HEAD | AC-BACKEND-1 completion commit (current HEAD) |
+| HEAD | AC-BACKEND-2 completion commit (current HEAD) |
 | Latest tag | `p13-m5-complete` |
-| Working tree | Clean after AC-BACKEND-1 completion commit |
-| Active phase | AC-BACKEND-1 completed; next AC-BACKEND-2 |
+| Working tree | Clean after AC-BACKEND-2 completion commit |
+| Active phase | AC-BACKEND architecture migration complete |
 
 ---
 
@@ -122,6 +122,7 @@ Things to settle when this is specified:
 | P13-M5 | Shared multi-model invocation | `1e01cd2`, tag `p13-m5-complete` |
 | AC-BACKEND-0 | Legacy MultiLLM removal; provider HTTP invocation moved to Rust | `verify/verify_p13_ai_center_migration.sh` |
 | AC-BACKEND-1 | Auto ordering, Local First preference, and fallback selection moved to Rust | `verify/verify_ac_backend_1_routing.sh` |
+| AC-BACKEND-2 | Canonical AI Center invocation metadata moved to Rust | `verify/verify_ac_backend_2_observability.sh` |
 | Provider setup dialog | Restored setup/manage dialog styles removed during P13 migration | `verify/verify_provider_setup_dialog.sh` |
 | UI Refactor | White-first workspace across Chat, Sidebar, My AI, Agents, Arena, Council, Artifacts, Settings | |
 | Agent Registry | Non-built-in agents (including Hermes and Custom Agents) are deletable; OpenClaw stays built-in protected | `c88f7b9`, `9b54873` |
@@ -170,15 +171,15 @@ config, or the repository.
 
 ## In progress
 
-AC-BACKEND-1 is complete. Rust owns Auto ordering, Local First preference, and
-fallback selection while the existing frontend observability path remains in
-place until AC-BACKEND-2.
+AC-BACKEND-0/1/2 are complete. Provider execution, routing, fallback, and
+canonical invocation metadata are owned by Rust.
 
 ---
 
 ## Next
 
-1. AC-BACKEND-2
+Architecture migration is complete. The next product phase must follow the
+Master Guide; no new phase is selected here.
 
 ---
 
@@ -282,9 +283,14 @@ removal (AC-BACKEND-0).
    preference, and fallback selection. The frontend sends an Auto-or-manual
    request and renders the selected result. Observability remains in the
    frontend until AC-BACKEND-2.
-2. **AC-BACKEND-2 — Next.** Reduce `src/services/aiCenter.ts` to a thin
-   call-and-render layer. Observability records are produced in Rust and
-   passed up.
+2. **AC-BACKEND-2 — Completed.** Rust supplies canonical route mode, source,
+   ordered attempts, outcomes, safe error categories, latency, token estimates,
+   and fallback state. The frontend is a call-and-render layer that enriches
+   pricing from the existing `modelPricing` configuration and persists
+   Analytics to localStorage. Invocation records exclude prompt, output,
+   credential, API key, OAuth token, access token, and refresh token contents.
+   Multi-model concurrency, explicit choices, deterministic ordering, and
+   per-participant operation IDs remain unchanged.
 
 Constraints carried into the migration:
 

@@ -36,12 +36,18 @@ export type AiCenterInvocationMetadata = {
   attempts: AiCenterAttempt[];
 };
 
+export type AiCenterCanonicalInvocationMetadata = Omit<
+  AiCenterInvocationMetadata,
+  "estimatedCostUsd" | "pricingMatched"
+>;
+
 export type ObservableModelChoice = {
   providerId: string;
   providerInstanceId: string;
   modelId: string;
 };
 
+/** Compatibility helpers for the completed P13-M4 deterministic test only. */
 export function executionSource(
   choice: ObservableModelChoice,
 ): AiCenterExecutionSource {
@@ -103,16 +109,7 @@ export function buildInvocationMetadata(input: {
   outputText: string;
   attempts: AiCenterAttempt[];
 }): AiCenterInvocationMetadata {
-  const completedAtMs = Date.now();
-  const inputTokens = estimateTokens(input.promptText);
-  const outputTokens = estimateTokens(input.outputText);
-  const pricing = calculateCost({
-    provider: input.choice.providerId,
-    model: input.choice.modelId,
-    inputTokens,
-    outputTokens,
-  });
-  return {
+  return enrichInvocationPricing({
     invocationId: input.invocationId,
     routeMode: input.routeMode,
     providerId: input.choice.providerId,
@@ -120,15 +117,29 @@ export function buildInvocationMetadata(input: {
     modelId: input.choice.modelId,
     source: executionSource(input.choice),
     startedAt: new Date(input.startedAtMs).toISOString(),
-    completedAt: new Date(completedAtMs).toISOString(),
-    latencyMs: Math.max(0, Math.round(completedAtMs - input.startedAtMs)),
-    inputTokens,
-    outputTokens,
+    completedAt: new Date().toISOString(),
+    latencyMs: Math.max(0, Date.now() - input.startedAtMs),
+    inputTokens: estimateTokens(input.promptText),
+    outputTokens: estimateTokens(input.outputText),
     tokenAccuracy: "estimated",
-    ...(pricing.matched ? { estimatedCostUsd: pricing.cost } : {}),
-    pricingMatched: pricing.matched,
     fallbackOccurred: input.attempts.length > 1,
     attempts: input.attempts,
+  });
+}
+
+export function enrichInvocationPricing(
+  metadata: AiCenterCanonicalInvocationMetadata,
+): AiCenterInvocationMetadata {
+  const pricing = calculateCost({
+    provider: metadata.providerId,
+    model: metadata.modelId,
+    inputTokens: metadata.inputTokens,
+    outputTokens: metadata.outputTokens,
+  });
+  return {
+    ...metadata,
+    ...(pricing.matched ? { estimatedCostUsd: pricing.cost } : {}),
+    pricingMatched: pricing.matched,
   };
 }
 

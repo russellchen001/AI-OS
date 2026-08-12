@@ -33,16 +33,16 @@ pub(crate) struct ClaudeCodeStatus {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClaudeCodeRequest {
-    operation_id: Option<String>,
-    model_id: String,
-    prompt: String,
+    pub(crate) operation_id: Option<String>,
+    pub(crate) model_id: String,
+    pub(crate) prompt: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClaudeCodeResponse {
-    model_id: String,
-    text: String,
+    pub(crate) model_id: String,
+    pub(crate) text: String,
 }
 
 fn candidate_paths() -> Vec<PathBuf> {

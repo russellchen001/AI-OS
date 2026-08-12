@@ -204,6 +204,8 @@ pub fn run() {
             providers::cancel_provider_oauth,
             providers::refresh_provider_oauth,
             providers::generate_provider_response,
+            providers::execute_ai_center,
+            providers::execute_ai_center_stream,
             providers::resolve_ai_center_route,
             providers::start_provider_response_stream,
             providers::cancel_provider_response_stream,
