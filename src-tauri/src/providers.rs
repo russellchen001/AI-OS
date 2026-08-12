@@ -662,6 +662,103 @@ pub(crate) struct GenerateProviderResponseResult {
     text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiCenterRouteCandidate {
+    provider_id: String,
+    provider_instance_id: String,
+    model_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AiCenterRouteMode {
+    Auto,
+    Manual,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResolveAiCenterRouteInput {
+    route_mode: AiCenterRouteMode,
+    manual_candidate: Option<AiCenterRouteCandidate>,
+    attempted_count: usize,
+    emitted_output: bool,
+    cancelled: bool,
+}
+
+fn auto_route_candidates(
+    instances: &[ProviderInstance],
+    local_model_ids: &[String],
+) -> Vec<AiCenterRouteCandidate> {
+    let mut candidates = local_model_ids
+        .iter()
+        .map(|model_id| AiCenterRouteCandidate {
+            provider_id: "ollama".to_owned(),
+            provider_instance_id: "ollama-local".to_owned(),
+            model_id: model_id.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    for instance in instances
+        .iter()
+        .filter(|instance| instance.connection_state == ProviderConnectionState::Connected)
+    {
+        let mut enabled = instance
+            .models
+            .iter()
+            .filter(|model| model.enabled)
+            .collect::<Vec<_>>();
+        enabled.sort_by_key(|model| !model.is_default);
+
+        candidates.extend(enabled.into_iter().map(|model| AiCenterRouteCandidate {
+            provider_id: instance.provider_id.clone(),
+            provider_instance_id: instance.id.clone(),
+            model_id: model.remote_model_id.clone(),
+        }));
+    }
+
+    candidates
+}
+
+fn select_route_candidate(
+    input: &ResolveAiCenterRouteInput,
+    candidates: &[AiCenterRouteCandidate],
+) -> Result<Option<AiCenterRouteCandidate>, String> {
+    if input.cancelled || input.emitted_output {
+        return Ok(None);
+    }
+
+    match input.route_mode {
+        AiCenterRouteMode::Auto => Ok(candidates.get(input.attempted_count).cloned()),
+        AiCenterRouteMode::Manual if input.attempted_count > 0 => Ok(None),
+        AiCenterRouteMode::Manual => {
+            let candidate = input
+                .manual_candidate
+                .as_ref()
+                .ok_or_else(|| "NO_DEFAULT_MODEL".to_owned())?;
+            if !candidates.contains(candidate) {
+                return Err("NO_CONNECTED_PROVIDER".to_owned());
+            }
+            Ok(Some(candidate.clone()))
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) fn resolve_ai_center_route(
+    input: ResolveAiCenterRouteInput,
+) -> Result<Option<AiCenterRouteCandidate>, String> {
+    let instances = read_provider_instances()?;
+    let local_model_ids = crate::models::list_ollama_models()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|model| model.model)
+        .collect::<Vec<_>>();
+    let candidates = auto_route_candidates(&instances, &local_model_ids);
+    select_route_candidate(&input, &candidates)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StreamProviderResponseInput {
@@ -3196,6 +3293,105 @@ mod tests {
             updated_at: "2026-08-01T00:00:00Z".to_owned(),
             last_tested_at: Some("2026-08-01T00:00:00Z".to_owned()),
         }
+    }
+
+    #[test]
+    fn auto_route_candidates_preserve_local_first_and_default_model_order() {
+        let mut instance = provider_fixture();
+        let mut secondary = instance.models[0].clone();
+        secondary.id = "openai-default:gpt-secondary".to_owned();
+        secondary.remote_model_id = "gpt-secondary".to_owned();
+        secondary.display_name = "GPT Secondary".to_owned();
+        secondary.is_default = false;
+        instance.models.insert(0, secondary);
+
+        let candidates = auto_route_candidates(&[instance], &["qwen3:8b".to_owned()]);
+        let order = candidates
+            .iter()
+            .map(|candidate| candidate.model_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(order, vec!["qwen3:8b", "gpt-test", "gpt-secondary"]);
+    }
+
+    #[test]
+    fn route_selection_allows_only_auto_pre_output_fallback() {
+        let candidates = auto_route_candidates(&[provider_fixture()], &["qwen3:8b".to_owned()]);
+        let input =
+            |route_mode, attempted_count, emitted_output, cancelled| ResolveAiCenterRouteInput {
+                route_mode,
+                manual_candidate: Some(candidates[0].clone()),
+                attempted_count,
+                emitted_output,
+                cancelled,
+            };
+
+        assert_eq!(
+            select_route_candidate(
+                &input(AiCenterRouteMode::Auto, 1, false, false),
+                &candidates
+            )
+            .unwrap(),
+            Some(candidates[1].clone())
+        );
+        assert_eq!(
+            select_route_candidate(
+                &input(AiCenterRouteMode::Manual, 1, false, false),
+                &candidates
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            select_route_candidate(&input(AiCenterRouteMode::Auto, 1, true, false), &candidates)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            select_route_candidate(&input(AiCenterRouteMode::Auto, 1, false, true), &candidates)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn auto_route_falls_back_to_cloud_when_no_local_models_are_available() {
+        let candidates = auto_route_candidates(&[provider_fixture()], &[]);
+        let input = ResolveAiCenterRouteInput {
+            route_mode: AiCenterRouteMode::Auto,
+            manual_candidate: None,
+            attempted_count: 0,
+            emitted_output: false,
+            cancelled: false,
+        };
+
+        let selected = select_route_candidate(&input, &candidates)
+            .unwrap()
+            .expect("connected cloud candidate");
+        assert_eq!(selected.provider_id, "openai");
+        assert_eq!(selected.model_id, "gpt-test");
+    }
+
+    #[test]
+    fn manual_route_executes_only_the_requested_candidate() {
+        let candidates = auto_route_candidates(&[provider_fixture()], &["qwen2.5:7b".to_owned()]);
+        let requested = candidates[1].clone();
+        let input = |attempted_count| ResolveAiCenterRouteInput {
+            route_mode: AiCenterRouteMode::Manual,
+            manual_candidate: Some(requested.clone()),
+            attempted_count,
+            emitted_output: false,
+            cancelled: false,
+        };
+
+        assert_eq!(
+            select_route_candidate(&input(0), &candidates).unwrap(),
+            Some(requested.clone())
+        );
+        assert_eq!(
+            select_route_candidate(&input(1), &candidates).unwrap(),
+            None
+        );
     }
 
     #[test]

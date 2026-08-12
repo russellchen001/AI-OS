@@ -100,10 +100,10 @@ Things to settle when this is specified:
 | | |
 |---|---|
 | Branch | `feature/p13-ai-center` |
-| HEAD | `02b5fe5 feat: complete p14 memory language policy` |
+| HEAD | AC-BACKEND-1 completion commit (current HEAD) |
 | Latest tag | `p13-m5-complete` |
-| Working tree | Uncommitted P14 validation changes |
-| Active phase | AI Center End-to-End QA completed; next AC-BACKEND-1 |
+| Working tree | Clean after AC-BACKEND-1 completion commit |
+| Active phase | AC-BACKEND-1 completed; next AC-BACKEND-2 |
 
 ---
 
@@ -121,6 +121,7 @@ Things to settle when this is specified:
 | P13-M4 | Provider-independent observability, cost and latency metadata | tag `p13-m4-complete` |
 | P13-M5 | Shared multi-model invocation | `1e01cd2`, tag `p13-m5-complete` |
 | AC-BACKEND-0 | Legacy MultiLLM removal; provider HTTP invocation moved to Rust | `verify/verify_p13_ai_center_migration.sh` |
+| AC-BACKEND-1 | Auto ordering, Local First preference, and fallback selection moved to Rust | `verify/verify_ac_backend_1_routing.sh` |
 | Provider setup dialog | Restored setup/manage dialog styles removed during P13 migration | `verify/verify_provider_setup_dialog.sh` |
 | UI Refactor | White-first workspace across Chat, Sidebar, My AI, Agents, Arena, Council, Artifacts, Settings | |
 | Agent Registry | Non-built-in agents (including Hermes and Custom Agents) are deletable; OpenClaw stays built-in protected | `c88f7b9`, `9b54873` |
@@ -169,16 +170,15 @@ config, or the repository.
 
 ## In progress
 
-AI Center End-to-End QA is complete. All seven manual scenarios and the
-automated migration, multi-model, build, Cargo, and diff checks have passed.
-AC-BACKEND-1 and AC-BACKEND-2 remain unimplemented.
+AC-BACKEND-1 is complete. Rust owns Auto ordering, Local First preference, and
+fallback selection while the existing frontend observability path remains in
+place until AC-BACKEND-2.
 
 ---
 
 ## Next
 
-1. AC-BACKEND-1
-2. AC-BACKEND-2
+1. AC-BACKEND-2
 
 ---
 
@@ -276,12 +276,13 @@ Master Guide as M1-M5 and is complete. These steps are tracked as AC-BACKEND,
 outside the phase numbering.
 
 Provider HTTP invocation already moved to Rust as part of the legacy MultiLLM
-removal (AC-BACKEND-0). Remaining:
+removal (AC-BACKEND-0).
 
-1. **AC-BACKEND-1** — move Auto ordering, Local First preference, and fallback
-   selection into Rust. The frontend sends the request and an Auto-or-manual
-   flag.
-2. **AC-BACKEND-2** — reduce `src/services/aiCenter.ts` to a thin
+1. **AC-BACKEND-1 — Completed.** Rust owns Auto ordering, Local First
+   preference, and fallback selection. The frontend sends an Auto-or-manual
+   request and renders the selected result. Observability remains in the
+   frontend until AC-BACKEND-2.
+2. **AC-BACKEND-2 — Next.** Reduce `src/services/aiCenter.ts` to a thin
    call-and-render layer. Observability records are produced in Rust and
    passed up.
 

@@ -6,7 +6,6 @@ import {
   completeAttempt,
   recordInvocationSuccess,
   safeAttemptError,
-  shouldContinueAfterAttemptFailure,
   type AiCenterAttempt,
   type AiCenterInvocationMetadata,
 } from "./aiCenterObservability";
@@ -70,36 +69,40 @@ export function listAiCenterModels(): AiCenterModelChoice[] {
   return [...connectedModels, ...localOllamaModels];
 }
 
-function listAutoCandidates(): AiCenterModelChoice[] {
-  const connectedCandidates = listProviderInstances()
-    .filter((instance) => instance.connectionState === "connected")
-    .flatMap((instance) => {
-      const enabled = instance.models.filter((model) => model.enabled);
-      const defaultModel = enabled.find((model) => model.isDefault);
-      const ordered = defaultModel
-        ? [defaultModel, ...enabled.filter((model) => model !== defaultModel)]
-        : enabled;
-      return ordered.map((model) => choiceForModel(instance, model));
-    });
-  return [...localOllamaModels, ...connectedCandidates];
+type AiCenterRouteSelection = Pick<
+  AiCenterModelChoice,
+  "providerId" | "providerInstanceId" | "modelId"
+>;
+
+function resolveAiCenterRoute(input: {
+  selectedModel?: AiCenterModelChoice;
+  attemptedCount: number;
+  emittedOutput: boolean;
+  cancelled: boolean;
+}): Promise<AiCenterRouteSelection | null> {
+  return invoke("resolve_ai_center_route", {
+    input: {
+      routeMode: input.selectedModel ? "manual" : "auto",
+      manualCandidate: input.selectedModel,
+      attemptedCount: input.attemptedCount,
+      emittedOutput: input.emittedOutput,
+      cancelled: input.cancelled,
+    },
+  });
 }
 
-function resolveChoice(choice: AiCenterModelChoice) {
+function resolveChoice(choice: AiCenterRouteSelection) {
   if (
     choice.providerId === "ollama" &&
     choice.providerInstanceId === "ollama-local"
   ) {
-    const local = localOllamaModels.find(
-      (candidate) => candidate.modelId === choice.modelId,
-    );
-    if (!local) throw new Error("NO_DEFAULT_MODEL");
     return {
       instance: {
         id: "ollama-local",
         providerId: "ollama",
         credential: { kind: "local" as const },
       },
-      model: { remoteModelId: local.modelId },
+      model: { remoteModelId: choice.modelId },
     };
   }
 
@@ -121,7 +124,7 @@ function resolveChoice(choice: AiCenterModelChoice) {
 
 async function answerWithChoice(
   prompt: string,
-  choice: AiCenterModelChoice,
+  choice: AiCenterRouteSelection,
   operationId?: string,
 ): Promise<AiCenterProviderResponse> {
   const { instance, model } = resolveChoice(choice);
@@ -147,14 +150,20 @@ export async function answerThroughAiCenter(
   prompt: string,
   selectedModel?: AiCenterModelChoice,
 ): Promise<AiCenterResponse> {
-  const candidates = selectedModel ? [selectedModel] : listAutoCandidates();
-  if (candidates.length === 0) throw new Error("NO_CONNECTED_PROVIDER");
-
   const invocationId = `invoke-${crypto.randomUUID()}`;
   const invocationStartedAt = Date.now();
   const attempts: AiCenterAttempt[] = [];
   let lastError: unknown;
-  for (const candidate of candidates) {
+  while (true) {
+    const candidate = await resolveAiCenterRoute({
+      selectedModel,
+      attemptedCount: attempts.length,
+      emittedOutput: false,
+      cancelled: false,
+    });
+    if (!candidate) {
+      throw lastError ?? new Error("NO_CONNECTED_PROVIDER");
+    }
     const attemptStartedAt = Date.now();
     try {
       const response = await answerWithChoice(prompt, candidate);
@@ -173,18 +182,8 @@ export async function answerThroughAiCenter(
     } catch (error) {
       attempts.push(completeAttempt(candidate, attemptStartedAt, "failed", error));
       lastError = error;
-      if (
-        !shouldContinueAfterAttemptFailure({
-          routeMode: selectedModel ? "manual" : "auto",
-          emittedOutput: false,
-          cancelled: false,
-        })
-      ) {
-        throw error;
-      }
     }
   }
-  throw lastError ?? new Error("NO_CONNECTED_PROVIDER");
 }
 
 type StreamEvent = { operationId: string; text: string };
@@ -383,15 +382,12 @@ export function streamThroughAiCenter(
   selectedModel: AiCenterModelChoice | undefined,
   onChunk: (text: string) => void,
 ): AiCenterStream {
-  const candidates = selectedModel ? [selectedModel] : listAutoCandidates();
-  if (candidates.length === 0) throw new Error("NO_CONNECTED_PROVIDER");
-
   const operationId = `chat-${crypto.randomUUID()}`;
   let cancelled = false;
   let activeCancel: () => Promise<void> = async () => {};
 
   const streamChoice = async (
-    choice: AiCenterModelChoice,
+    choice: AiCenterRouteSelection,
     attemptId: string,
     emit: (text: string) => void,
   ): Promise<{ response: AiCenterProviderResponse; cancelled: boolean }> => {
@@ -478,15 +474,26 @@ export function streamThroughAiCenter(
     const promptText = promptFromMessages(messages);
     const attempts: AiCenterAttempt[] = [];
     let lastError: unknown;
-    for (const [index, choice] of candidates.entries()) {
+    let emittedOutput = false;
+    while (true) {
+      const choice = await resolveAiCenterRoute({
+        selectedModel,
+        attemptedCount: attempts.length,
+        emittedOutput,
+        cancelled,
+      });
+      if (!choice) {
+        throw lastError ?? new Error("NO_CONNECTED_PROVIDER");
+      }
       let emitted = false;
       const attemptStartedAt = Date.now();
       try {
         const attempt = await streamChoice(
           choice,
-          `${operationId}-${index}`,
+          `${operationId}-${attempts.length}`,
           (text) => {
             emitted = true;
+            emittedOutput = true;
             onChunk(text);
           },
         );
@@ -542,18 +549,9 @@ export function streamThroughAiCenter(
             cancelled: true,
           };
         }
-        if (
-          !shouldContinueAfterAttemptFailure({
-            routeMode: selectedModel ? "manual" : "auto",
-            emittedOutput: emitted,
-            cancelled,
-          })
-        ) {
-          throw error;
-        }
+        emittedOutput ||= emitted;
       }
     }
-    throw lastError ?? new Error("NO_CONNECTED_PROVIDER");
   })();
 
   return {
