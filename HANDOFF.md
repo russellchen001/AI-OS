@@ -70,7 +70,7 @@ executed work is undefined, which means P16 as specified would produce a
 report-writing feature and the user would have to restate the plan manually to
 get it done.
 
-The intended path:
+The required v1.0 path:
 
 ```text
 AI Council
@@ -81,7 +81,7 @@ Planner            decomposes it into executable steps
   ↓
 User confirmation  required — Council plans may include irreversible actions
   ↓
-Runtime → Agent    executes
+Runtime → OpenClaw executes
 ```
 
 Things to settle when this is specified:
@@ -100,10 +100,10 @@ Things to settle when this is specified:
 | | |
 |---|---|
 | Branch | `feature/p13-ai-center` |
-| HEAD | AC-BACKEND-2 completion commit (current HEAD) |
+| HEAD | `9c1c19803b1966cf5a711bf495f954c12a6c92c4` — latest stable baseline; AC-BACKEND-2 complete |
 | Latest tag | `p13-m5-complete` |
-| Working tree | Clean after AC-BACKEND-2 completion commit |
-| Active phase | AC-BACKEND architecture migration complete |
+| Baseline state | Working tree was clean at the stable baseline before this handoff update |
+| Active phase | P15 Core Skills — not started |
 
 ---
 
@@ -171,15 +171,30 @@ config, or the repository.
 
 ## In progress
 
-AC-BACKEND-0/1/2 are complete. Provider execution, routing, fallback, and
-canonical invocation metadata are owned by Rust.
+No implementation is currently in progress. AC-BACKEND-0/1/2 and P14 Memory
+are complete. Provider execution, routing, fallback, and canonical invocation
+metadata are owned by Rust.
 
 ---
 
 ## Next
 
-Architecture migration is complete. The next product phase must follow the
-Master Guide; no new phase is selected here.
+The next formal phase is P15 Core Skills. Before implementation, inventory the
+existing repository against the eight capability areas defined by the Master
+Guide and classify each as implemented, partially implemented, or not
+implemented:
+
+1. Email and calendar
+2. Browser and search
+3. File management
+4. Downloads
+5. NAS management
+6. Document, spreadsheet, and presentation workflows
+7. Local model management
+8. Smart home and device control
+
+Use that inventory to define the P15 implementation order. Do not add phases or
+milestones unless they are explicitly added to the Master Guide.
 
 ---
 
@@ -331,6 +346,10 @@ Purpose:
 - Use external Agent Skill packages to provide professional role definitions for AI Council.
 - AI-OS should not maintain a duplicate internal agent talent library.
 - Agent roles, expertise descriptions and workflow templates should come from installable Skills.
+- Preserve Agency Agents as a candidate source and design reference for the P16
+  AI Council expert Profile/Role Library and dynamic expert-team assembly.
+- Do not integrate Agency Agents during P15 unless the Master Guide roadmap is
+  explicitly revised.
 
 Architecture direction:
 
@@ -354,6 +373,9 @@ Initial reference Skill:
 
 Important boundary:
 - Agency Agents is a Skill resource, not a Runtime.
+- Before P16 implementation begins, specify the full Council-to-execution
+  contract: Council recommendation → Task Engine → Planner → user confirmation
+  → Runtime → OpenClaw.
 - AI-OS v1.0 execution remains OpenClaw-only.
 - External Agent Skills provide Council roles only and do not introduce additional execution adapters.
 
