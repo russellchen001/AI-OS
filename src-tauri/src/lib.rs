@@ -4,9 +4,9 @@ mod conversations;
 mod health;
 mod logs;
 mod mcp;
-mod models;
 mod memory;
 mod memory_service;
+mod models;
 mod multillm;
 mod openclaw;
 pub mod planner;
@@ -133,7 +133,6 @@ pub fn run() {
             conversations::save_native_conversation,
             conversations::delete_native_conversation,
             conversations::import_native_conversations,
-
             health::health_check,
             backup::create_backup,
             backup::cancel_backup,

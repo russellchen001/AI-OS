@@ -103,7 +103,7 @@ Things to settle when this is specified:
 | HEAD | `02b5fe5 feat: complete p14 memory language policy` |
 | Latest tag | `p13-m5-complete` |
 | Working tree | Uncommitted P14 validation changes |
-| Active phase | P14 General Memory Policy completed |
+| Active phase | AI Center End-to-End QA completed; next AC-BACKEND-1 |
 
 ---
 
@@ -130,12 +130,23 @@ Things to settle when this is specified:
 | Chat workspace layout fix | Adjusted Chat message container width and spacing so long responses stay inside the workspace boundary | `6192b6a` |
 | P14 Memory Retrieval | User memories are injected as hidden system context for ordinary Chat requests without entering conversation history | `verify/verify_p14_memory_retrieval.sh` |
 | P14 General Memory Policy | Structured language, response detail, currency, and budget defaults with request-only overrides | `verify/verify_p14_general_memory_policy.sh` |
+| AI Center End-to-End QA | Auto/Local First, manual selection, multi-model, streaming, cancellation, fallback, and analytics verified | `verify/verify_ai_center_e2e_qa.sh` |
 
 P14 General Memory Policy behavioral QA passed:
 
 - Language: long-term Chinese, current English, then restored Chinese
 - Response detail: long-term concise, current detailed, then restored concise
 - Budget and currency: long-term AUD 500, current AUD 1000, then restored AUD 500
+
+AI Center End-to-End QA passed:
+
+- Auto routing selected local Ollama `qwen2.5:7b` when available, preserving Local First
+- Manual OpenAI `gpt-5.6-sol` selection executed without silent fallback
+- P13-M5 shared multi-model invocation evidence remains valid
+- Real Ollama streaming completed successfully
+- Cancelling a long OpenAI response stopped output immediately with no later continuation or fallback, and restored input readiness
+- Auto fallback selected cloud Anthropic `sonnet` only while Ollama was unavailable, then returned to local routing after recovery
+- Analytics records included invocation ID, auto route mode, cloud source, Anthropic provider/model, four attempts, and fallback state
 
 ### Connected AI providers
 
@@ -158,22 +169,16 @@ config, or the repository.
 
 ## In progress
 
-P14 General Memory Policy is complete. Automated validation and behavioral QA
-have passed.
+AI Center End-to-End QA is complete. All seven manual scenarios and the
+automated migration, multi-model, build, Cargo, and diff checks have passed.
+AC-BACKEND-1 and AC-BACKEND-2 remain unimplemented.
 
 ---
 
 ## Next
 
-1. Manual end-to-end QA:
-   - Auto route
-   - Manual provider selection
-   - Multi-model invocation
-   - Streaming
-   - Cancellation
-   - Provider fallback
-   - Analytics records
-2. Fix AI Center end-to-end QA issues if found
+1. AC-BACKEND-1
+2. AC-BACKEND-2
 
 ---
 
@@ -201,6 +206,9 @@ have passed.
 - Participant ordering is deterministic after normalization; duplicates removed pre-execution
 - Aggregated results preserve per-model P13-M4 metadata
 - Auto routing is Local First: local Ollama models are attempted before connected cloud defaults
+- Explicit manual model selection never silently falls back
+- Fallback occurs only before output has started
+- Cancellation stops the current stream without later output continuation
 
 **Memory**
 
@@ -241,6 +249,7 @@ have passed.
 
 - AI Center owns the canonical invocation record; Workspace renders it but must
   not reconstruct routing decisions
+- Records include route mode, execution source, latency, ordered attempts, and fallback state
 - Records exclude prompts, outputs, raw Provider responses, credentials, and tokens
 
 ---

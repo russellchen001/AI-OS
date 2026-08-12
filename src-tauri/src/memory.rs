@@ -5,8 +5,8 @@ use std::path::PathBuf;
 const DATABASE_FILE: &str = "memory.sqlite3";
 
 fn database_path() -> Result<PathBuf, String> {
-    let dir = dirs::data_local_dir()
-        .ok_or_else(|| "AI-OS could not locate memory storage".to_owned())?;
+    let dir =
+        dirs::data_local_dir().ok_or_else(|| "AI-OS could not locate memory storage".to_owned())?;
 
     std::fs::create_dir_all(&dir)
         .map_err(|_| "AI-OS could not create memory storage".to_owned())?;
@@ -58,9 +58,7 @@ pub(crate) fn save_memory(entry: Value) -> Result<(), String> {
         .and_then(Value::as_str)
         .ok_or_else(|| "memory content missing".to_owned())?;
 
-    let metadata = entry
-        .get("metadata")
-        .map(|value| value.to_string());
+    let metadata = entry.get("metadata").map(|value| value.to_string());
 
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -75,14 +73,7 @@ pub(crate) fn save_memory(entry: Value) -> Result<(), String> {
                 metadata = excluded.metadata,
                 updated_at = excluded.updated_at
             ",
-            params![
-                id,
-                memory_type,
-                content,
-                metadata,
-                now,
-                now
-            ],
+            params![id, memory_type, content, metadata, now, now],
         )
         .map_err(|_| "AI-OS could not save memory".to_owned())?;
 
@@ -130,10 +121,7 @@ pub(crate) fn delete_memory(id: String) -> Result<(), String> {
     let connection = open_database()?;
 
     connection
-        .execute(
-            "DELETE FROM memory_entries WHERE id = ?1",
-            params![id],
-        )
+        .execute("DELETE FROM memory_entries WHERE id = ?1", params![id])
         .map_err(|_| "AI-OS could not delete memory".to_owned())?;
 
     Ok(())

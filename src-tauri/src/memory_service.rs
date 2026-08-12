@@ -45,12 +45,6 @@ pub(crate) fn remember(
     memory::save_memory(entry)
 }
 
-pub(crate) fn remember_user_preference(
-    content: String,
-) -> Result<(), String> {
-    remember(
-        MemoryType::User,
-        content,
-        5,
-    )
+pub(crate) fn remember_user_preference(content: String) -> Result<(), String> {
+    remember(MemoryType::User, content, 5)
 }
