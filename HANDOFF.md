@@ -392,3 +392,72 @@ AI-OS
  AI Council
  |
  OpenClaw Execution
+
+## External Orchestration Architecture Reference
+
+### Paperclip Reference
+
+Repository:
+https://github.com/paperclipai/paperclip
+
+Local reference checkout:
+- `../paperclip`
+- Reference commit when recorded: `f0e6c0f54`
+
+Purpose:
+- Preserve Paperclip as an external architecture and implementation reference
+  for AI-OS task orchestration and execution governance.
+- Study its goal hierarchy, task lifecycle, delegation, approvals, budget
+  controls, heartbeat scheduling, audit trail, persistent execution state, and
+  runtime adapter boundaries before P16 implementation begins.
+- Use Paperclip to inform the unresolved Council-to-execution contract rather
+  than introducing a second AI-OS orchestration system.
+- Do not integrate or run Paperclip as part of P15 Core Skills.
+- Do not make Paperclip an AI-OS Runtime or execution Agent.
+
+Architecture boundary:
+
+AI-OS owns:
+- AI Council
+- Task Engine
+- Planner
+- User confirmation and approvals
+- Runtime policy
+- Memory
+- AI Center
+- OpenClaw execution integration
+
+Paperclip is reference material for:
+- Goal-to-task decomposition patterns
+- Task ownership and delegation
+- Approval and governance flows
+- Budget and execution limits
+- Heartbeat / resumable work patterns
+- Persistent task state
+- Audit and observability patterns
+- Runtime adapter separation
+
+Important boundary:
+- Paperclip is an orchestration reference, not a dependency decision.
+- AI-OS must not duplicate Paperclip wholesale or introduce its runtime model
+  without an explicit architecture decision.
+- AI-OS v1.0 execution remains OpenClaw-only.
+- Paperclip support for other agent runtimes does not expand the AI-OS v1.0
+  Agent scope.
+- Before P16 coding begins, compare the Paperclip reference against the required
+  AI-OS contract:
+  Council recommendation → Task Engine → Planner → user confirmation
+  → Runtime → OpenClaw.
+- Adopt only mechanisms that fit the AI-OS architecture and Master Guide.
+
+### Local external reference repositories
+
+These repositories are intentionally kept outside the `dashboard` repository
+and must not be committed into the AI-OS application source tree:
+
+- `../agency-agents` — Agency Agents role/Profile reference, commit `ebe9c99`
+- `../paperclip` — orchestration architecture reference, commit `f0e6c0f54`
+
+They are source references only. P15 must not depend on either repository at
+runtime.
+- 2026-08-13 22:49  docs: record external agent architecture references
