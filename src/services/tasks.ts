@@ -23,6 +23,11 @@ export type ExecuteWorkTaskResponse = {
   output?: unknown;
 };
 
+export type ExecuteWorkTaskOptions = {
+  capability?: string;
+  input?: Record<string, unknown>;
+};
+
 export async function submitChatTask(
   prompt: string,
   taskType: ChatTaskType = "ASK",
@@ -61,8 +66,9 @@ export async function failChatTaskExecution(
 export async function executeChatWorkTask(
   taskId: string,
   agentId = "openclaw",
+  options: ExecuteWorkTaskOptions = {},
 ): Promise<ExecuteWorkTaskResponse> {
   return invoke<ExecuteWorkTaskResponse>("execute_chat_work_task", {
-    input: { taskId, agentId },
+    input: { taskId, agentId, ...options },
   });
 }

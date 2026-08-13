@@ -446,6 +446,20 @@
   background: #edf1ef;
 }
 
+.tool-pill-active {
+  background: #e4f1eb;
+  color: #176b52;
+}
+
+.tool-pill svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
 .task-mode-pill {
   min-width: 46px;
   justify-content: center;
@@ -4697,6 +4711,62 @@ select:focus-visible {
   background: transparent;
   border: 0;
   cursor: pointer;
+}
+
+.composer-scan-target {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 8px 0;
+  padding: 8px 10px;
+  border: 1px solid #cce0d6;
+  border-radius: 10px;
+  background: #edf6f1;
+  color: #274c40;
+}
+
+.composer-scan-target > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.composer-scan-target svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: #176b52;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.composer-scan-target strong,
+.composer-scan-target small {
+  display: block;
+}
+
+.composer-scan-target strong {
+  font-size: 12px;
+}
+
+.composer-scan-target small {
+  overflow: hidden;
+  margin-top: 1px;
+  color: #648176;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-scan-target button {
+  border: 0;
+  background: transparent;
+  color: #648176;
+  cursor: pointer;
+  font-size: 18px;
 }
 
 .council-heading-actions,

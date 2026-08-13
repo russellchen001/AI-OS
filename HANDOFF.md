@@ -462,3 +462,4 @@ They are source references only. P15 must not depend on either repository at
 runtime.
 - 2026-08-13 22:49  docs: record external agent architecture references
 - 2026-08-14 01:29  feat: add p15 core skill execution contract
+- 2026-08-14 01:53  feat: add explicit folder scan work action

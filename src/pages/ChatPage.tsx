@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listMemory, saveMemory, type MemoryEntry } from "../services/memory";
 import {
   completeChatTaskExecution,
@@ -102,12 +103,26 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeStream, setActiveStream] = useState<AiCenterStream>();
   const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
+  const [scanFolderPath, setScanFolderPath] = useState<string>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setMessages(getConversation(conversationId)?.messages ?? []);
     setAttachments([]);
+    setScanFolderPath(undefined);
   }, [conversationId]);
+
+  async function chooseFolderToScan() {
+    const selected = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "Choose a folder to scan",
+    });
+    if (typeof selected !== "string") return;
+    setScanFolderPath(selected);
+    setTaskType("DO");
+    setDraft((current) => current || "Scan this folder");
+  }
 
   useEffect(() => {
     const refreshModels = () => {
@@ -229,7 +244,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     let activeAssistantMessageId: string | undefined;
     let activeAssistantText = "";
     try {
-      const task = await submitChatTask(content, taskType);
+      const task = await submitChatTask(content, scanFolderPath ? "DO" : taskType);
       activeTaskId = task.taskId;
       if (task.status === "READY") {
         await startChatTaskExecution(task.taskId);
@@ -318,7 +333,16 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         });
         return;
       }
-      const execution = await executeChatWorkTask(task.taskId, "openclaw");
+      const execution = await executeChatWorkTask(
+        task.taskId,
+        "openclaw",
+        scanFolderPath
+          ? {
+              capability: "filesystem.scan",
+              input: { path: scanFolderPath },
+            }
+          : undefined,
+      );
       const workMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -329,6 +353,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       };
       const completedMessages = [...nextMessages, workMessage];
       setMessages(completedMessages);
+      setScanFolderPath(undefined);
       saveConversation({
         ...nextConversation,
         messages: completedMessages,
@@ -544,14 +569,25 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               <button
                 type="button"
                 className="task-mode-pill"
-                onClick={() => setTaskType((current) => current === "ASK" ? "DO" : "ASK")}
+                onClick={() =>
+                  setTaskType((current) => {
+                    const next = current === "ASK" ? "DO" : "ASK";
+                    if (next === "ASK") setScanFolderPath(undefined);
+                    return next;
+                  })
+                }
                 aria-label={`Task mode: ${taskType === "ASK" ? "Chat" : "Work"}`}
               >
                 {taskType === "ASK" ? "Chat" : "Work"}
               </button>
-              <button type="button" className="tool-pill">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4m0 10v4M3 12h4m10 0h4M5.6 5.6l2.8 2.8m7.2 7.2 2.8 2.8m0-12.8-2.8 2.8m-7.2 7.2-2.8 2.8" /></svg>
-                Tools
+              <button
+                type="button"
+                className={scanFolderPath ? "tool-pill tool-pill-active" : "tool-pill"}
+                aria-label="Choose a folder to scan"
+                onClick={() => void chooseFolderToScan()}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5H3zM3 7.5V5h7l2 2" /></svg>
+                Scan folder
               </button>
               <div className="agent-picker">
                 <button
@@ -617,6 +653,21 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 </button>
               </span>
             ))}
+          </div>
+        )}
+        {scanFolderPath && (
+          <div className="composer-scan-target" role="status">
+            <span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5H3zM3 7.5V5h7l2 2" /></svg>
+              <span><strong>Folder scan</strong><small>{scanFolderPath}</small></span>
+            </span>
+            <button
+              type="button"
+              aria-label="Cancel folder scan"
+              onClick={() => setScanFolderPath(undefined)}
+            >
+              ×
+            </button>
           </div>
         )}
         <p>AI‑OS can make mistakes. Review important actions before approving them.</p>
