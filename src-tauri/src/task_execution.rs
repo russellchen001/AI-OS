@@ -13,7 +13,7 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{error::Error, fmt, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 use tauri::State;
 
 /// Process-local P11 composition. Task and Plan state is intentionally lost when
@@ -84,6 +84,8 @@ pub(crate) struct FailChatTaskInput {
 pub(crate) struct ExecuteWorkTaskInput {
     task_id: String,
     agent_id: String,
+    capability: Option<String>,
+    input: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +96,46 @@ pub(crate) struct ExecuteWorkTaskResponse {
     agent_id: String,
     status: TaskStatus,
     output: Option<serde_json::Value>,
+}
+
+fn build_work_task_step(
+    task: &Task,
+    agent_id: &str,
+    capability: Option<&str>,
+    input: Option<&HashMap<String, serde_json::Value>>,
+) -> Result<PlanStep, String> {
+    if let Some(capability) = capability.map(str::trim).filter(|value| !value.is_empty()) {
+        let mut step = PlanStep::new("Execute Core Skill", capability)
+            .map_err(|error| error.to_string())?
+            .with_description(
+                "Execute the requested capability through the selected Agent Runtime.",
+            );
+        if let Some(input) = input {
+            step.input.extend(input.clone());
+        }
+        return Ok(step);
+    }
+
+    let mut step = PlanStep::new("Execute with OpenClaw", "sessions.create")
+        .map_err(|error| error.to_string())?
+        .with_description("Send the requested outcome through the selected Agent Runtime.");
+    step.input.insert(
+        "message".to_owned(),
+        serde_json::Value::String(task.intent.clone()),
+    );
+    step.input.insert(
+        "agentId".to_owned(),
+        serde_json::Value::String(agent_id.to_owned()),
+    );
+    step.input.insert(
+        "label".to_owned(),
+        serde_json::Value::String("AI-OS Work".to_owned()),
+    );
+    step.input.insert(
+        "idempotencyKey".to_owned(),
+        serde_json::Value::String(format!("ai-os-{}", task.id)),
+    );
+    Ok(step)
 }
 
 fn resolve_chat_task_id(
@@ -254,23 +296,12 @@ pub(crate) fn execute_chat_work_task(
     let mut plan = planner
         .create_plan(&task_id, task.intent.clone())
         .map_err(|error| error.to_string())?;
-    let mut step = PlanStep::new("Execute with OpenClaw", "sessions.create")
-        .map_err(|error| error.to_string())?
-        .with_description("Send the requested outcome through the selected Agent Runtime.");
-    step.input
-        .insert("message".to_owned(), serde_json::Value::String(task.intent));
-    step.input.insert(
-        "agentId".to_owned(),
-        serde_json::Value::String(agent_id.to_owned()),
-    );
-    step.input.insert(
-        "label".to_owned(),
-        serde_json::Value::String("AI-OS Work".to_owned()),
-    );
-    step.input.insert(
-        "idempotencyKey".to_owned(),
-        serde_json::Value::String(format!("ai-os-{}", task_id)),
-    );
+    let step = build_work_task_step(
+        &task,
+        agent_id,
+        input.capability.as_deref(),
+        input.input.as_ref(),
+    )?;
     plan.add_step(step).map_err(|error| error.to_string())?;
     state
         .plans
@@ -526,6 +557,82 @@ mod tests {
                 output: Some(json!({"done": true})),
             })
         }
+    }
+
+    #[derive(Default)]
+    struct CapturingRuntime(Mutex<Vec<PlanRuntimeExecutionRequest>>);
+
+    impl PlanRuntimeExecutor for CapturingRuntime {
+        fn execute_step(
+            &self,
+            request: PlanRuntimeExecutionRequest,
+        ) -> Result<PlanRuntimeExecutionResult, PlanRuntimeExecutionError> {
+            self.0.lock().unwrap().push(request);
+            Ok(PlanRuntimeExecutionResult {
+                operation_id: "captured-attempt".to_owned(),
+                output: Some(json!({"done": true})),
+            })
+        }
+    }
+
+    #[test]
+    fn explicit_core_skill_capability_and_input_reach_plan_runtime_request() {
+        let tasks = Arc::new(InMemoryTaskRepository::new());
+        let plans = Arc::new(InMemoryPlanRepository::new());
+        let runtime = Arc::new(CapturingRuntime::default());
+        let mut task = Task::new(TaskType::Do, "scan the requested folder").unwrap();
+        task.transition_to(TaskStatus::Understanding).unwrap();
+        task.transition_to(TaskStatus::Planning).unwrap();
+        let explicit_input =
+            HashMap::from([("path".to_owned(), json!("/Users/example/Documents"))]);
+        let step = build_work_task_step(
+            &task,
+            "openclaw",
+            Some(" filesystem.scan "),
+            Some(&explicit_input),
+        )
+        .unwrap();
+        let mut plan = Plan::new(task.id.clone(), 1, task.intent.clone()).unwrap();
+        plan.add_step(step).unwrap();
+        plan.transition_to(PlanStatus::Validated).unwrap();
+        plan.transition_to(PlanStatus::Ready).unwrap();
+        task.activate_plan(plan.id.clone());
+        task.transition_to(TaskStatus::Ready).unwrap();
+        tasks.create(task.clone()).unwrap();
+        plans.create(plan).unwrap();
+        let service = TaskExecutionService {
+            tasks,
+            plans,
+            runtime: runtime.clone(),
+        };
+
+        service.execute_task(&task.id).unwrap();
+
+        let requests = runtime.0.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].capability, "filesystem.scan");
+        assert_eq!(
+            requests[0].input.get("path"),
+            Some(&json!("/Users/example/Documents"))
+        );
+        assert_ne!(requests[0].capability, "sessions.create");
+        assert!(!requests[0].input.contains_key("agentId"));
+    }
+
+    #[test]
+    fn missing_core_skill_capability_preserves_sessions_create_fallback() {
+        let task = Task::new(TaskType::Do, "finish the requested work").unwrap();
+
+        let step = build_work_task_step(&task, "openclaw", Some("  "), None).unwrap();
+
+        assert_eq!(step.capability, "sessions.create");
+        assert_eq!(step.input.get("message"), Some(&json!(task.intent)));
+        assert_eq!(step.input.get("agentId"), Some(&json!("openclaw")));
+        assert_eq!(step.input.get("label"), Some(&json!("AI-OS Work")));
+        assert_eq!(
+            step.input.get("idempotencyKey"),
+            Some(&json!(format!("ai-os-{}", task.id)))
+        );
     }
 
     #[test]
