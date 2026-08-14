@@ -50,7 +50,9 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
         request: &OpenClawExecutionRequest,
     ) -> Result<OpenClawPermissionDecision, OpenClawPermissionCheckError> {
         Ok(
-            if self.allowed_capabilities.contains(request.action.as_str()) {
+            if self.allowed_capabilities.contains(request.action.as_str())
+                || (request.action.as_str() == "filesystem.scan" && request.user_confirmed)
+            {
                 OpenClawPermissionDecision::Allowed
             } else {
                 OpenClawPermissionDecision::Denied
@@ -407,6 +409,39 @@ mod tests {
         );
         assert_eq!(
             configured.authorize(&request(json!({}))).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+    }
+
+    #[test]
+    fn one_time_user_confirmation_allows_only_filesystem_scan() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let confirmed_scan = request(json!({"path": "/safe/example"})).with_user_confirmation(true);
+        let confirmed_other = OpenClawExecutionRequest::new(
+            "execution-123",
+            "filesystem.write",
+            json!({"path": "/safe/example"}),
+        )
+        .unwrap()
+        .with_user_confirmation(true);
+
+        assert_eq!(
+            gate.authorize(&confirmed_scan).unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
+        assert_eq!(
+            gate.authorize(&confirmed_other).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+    }
+
+    #[test]
+    fn unconfirmed_filesystem_scan_remains_denied_without_trusted_automation() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+
+        assert_eq!(
+            gate.authorize(&request(json!({"path": "/safe/example"})))
+                .unwrap(),
             OpenClawPermissionDecision::Denied
         );
     }

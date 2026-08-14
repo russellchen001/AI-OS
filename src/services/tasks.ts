@@ -26,7 +26,48 @@ export type ExecuteWorkTaskResponse = {
 export type ExecuteWorkTaskOptions = {
   capability?: string;
   input?: Record<string, unknown>;
+  userConfirmed?: boolean;
 };
+
+export function describeWorkTaskError(error: unknown): string {
+  const detail =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "";
+  const normalized = detail.toLowerCase();
+
+  if (normalized.includes("pairing")) {
+    return "OpenClaw pairing is required. Pair OpenClaw and try the folder scan again.";
+  }
+  if (normalized.includes("permission") || normalized.includes("not permitted")) {
+    return "OpenClaw permission was denied for this folder scan.";
+  }
+  if (normalized.includes("authentication") || normalized.includes("unauthorized")) {
+    return "OpenClaw authentication is required. Reconnect OpenClaw and try again.";
+  }
+  if (
+    normalized.includes("connection") ||
+    normalized.includes("unavailable") ||
+    normalized.includes("unreachable") ||
+    normalized.includes("no active") ||
+    normalized.includes("runtime not found")
+  ) {
+    return "OpenClaw is unavailable. Start or connect OpenClaw and try the folder scan again.";
+  }
+  return "OpenClaw Runtime could not complete this folder scan. Check OpenClaw and try again.";
+}
+
+export function describeChatTaskError(
+  error: unknown,
+  isWorkRequest: boolean,
+): string {
+  if (isWorkRequest) return describeWorkTaskError(error);
+  return error instanceof Error && error.message === "NO_CONNECTED_PROVIDER"
+    ? "Connect and test an AI in My AI before starting a conversation."
+    : "AI‑OS could not complete this request. Check the selected AI connection and try again.";
+}
 
 export async function submitChatTask(
   prompt: string,

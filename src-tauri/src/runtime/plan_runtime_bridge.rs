@@ -23,6 +23,7 @@ pub struct PlanRuntimeExecutionRequest {
     pub step_id: PlanStepId,
     pub capability: String,
     pub input: StepInput,
+    pub user_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +177,7 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
             step_id: request.step_id.as_str().to_owned(),
             capability,
             input,
+            user_confirmed: request.user_confirmed,
         };
         execute_runtime_task(
             self.runtime.manager(),
@@ -278,6 +280,7 @@ mod tests {
             step_id: PlanStepId::from_static(step),
             capability: "filesystem.scan".to_owned(),
             input: [("path".to_owned(), json!("/safe"))].into_iter().collect(),
+            user_confirmed: false,
         }
     }
 
@@ -453,5 +456,32 @@ mod tests {
             PlanRuntimeExecutionError::PermissionDenied
         );
         assert!(downstream.requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn confirmed_filesystem_scan_crosses_permission_gate_with_original_input() {
+        let downstream = Arc::new(RecordingAdapter {
+            requests: Mutex::new(Vec::new()),
+            outcome: Ok(OpenClawExecutionResult {
+                output: json!({"files": ["a.txt"]}),
+                summary: None,
+            }),
+        });
+        let gate = Arc::new(ConfiguredCapabilityPermissionGate::new(Vec::new()));
+        let adapter: Arc<dyn OpenClawExecutionAdapter> = Arc::new(
+            PermissionEnforcingOpenClawExecutionAdapter::new(gate, downstream.clone()),
+        );
+        let bridge = bridge(adapter);
+        let mut confirmed = request("plan-a", "step-a");
+        confirmed.user_confirmed = true;
+
+        let result = bridge.execute_step(confirmed).unwrap();
+
+        assert_eq!(result.output, Some(json!({"files": ["a.txt"]})));
+        let received = downstream.requests.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].action.as_str(), "filesystem.scan");
+        assert_eq!(received[0].input, json!({"path": "/safe"}));
+        assert!(received[0].user_confirmed);
     }
 }

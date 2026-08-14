@@ -100,10 +100,10 @@ Things to settle when this is specified:
 | | |
 |---|---|
 | Branch | `feature/p13-ai-center` |
-| HEAD | `9c1c19803b1966cf5a711bf495f954c12a6c92c4` — latest stable baseline; AC-BACKEND-2 complete |
+| HEAD | `f166ac4` — latest committed baseline before the current filesystem scan slice |
 | Latest tag | `p13-m5-complete` |
 | Baseline state | Working tree was clean at the stable baseline before this handoff update |
-| Active phase | P15 Core Skills — not started |
+| Active phase | P15 Core Skills — File management in progress |
 
 ---
 
@@ -133,6 +133,7 @@ Things to settle when this is specified:
 | P14 Memory Retrieval | User memories are injected as hidden system context for ordinary Chat requests without entering conversation history | `verify/verify_p14_memory_retrieval.sh` |
 | P14 General Memory Policy | Structured language, response detail, currency, and budget defaults with request-only overrides | `verify/verify_p14_general_memory_policy.sh` |
 | AI Center End-to-End QA | Auto/Local First, manual selection, multi-model, streaming, cancellation, fallback, and analytics verified | `verify/verify_ai_center_e2e_qa.sh` |
+| P15 Filesystem scan contracts | Explicit `filesystem.scan` PlanStep execution, one-time user confirmation, permission enforcement, and Work-specific safe error reporting | `verify/verify_p15_file_execution_contract.sh`, `verify/verify_p15_file_scan_confirmation.sh`; UI confirmation/error E2E passed 2026-08-14 |
 
 P14 General Memory Policy behavioral QA passed:
 
@@ -171,18 +172,23 @@ config, or the repository.
 
 ## In progress
 
-No implementation is currently in progress. AC-BACKEND-0/1/2 and P14 Memory
-are complete. Provider execution, routing, fallback, and canonical invocation
-metadata are owned by Rust.
+P15 File management is in progress. The `filesystem.scan` execution,
+confirmation, permission, and error-reporting contracts are complete and have
+automatic and UI E2E evidence. A real OpenClaw folder scan has not yet completed
+successfully: the confirmed request currently returns a Runtime failure. Do not
+describe File management or real filesystem scanning as complete until the
+OpenClaw Gateway action and input contract are verified end to end.
 
 ---
 
 ## Next
 
-The next formal phase is P15 Core Skills. Before implementation, inventory the
-existing repository against the eight capability areas defined by the Master
-Guide and classify each as implemented, partially implemented, or not
-implemented:
+Continue P15 File management by resolving the real OpenClaw execution contract
+for `filesystem.scan`, then implement and verify `filesystem.read`,
+`filesystem.write`, and `filesystem.move`. Write and move require explicit
+confirmation and must fail closed for destructive or overwrite behavior.
+
+The P15 capability inventory remains:
 
 1. Email and calendar
 2. Browser and search
@@ -193,8 +199,8 @@ implemented:
 7. Local model management
 8. Smart home and device control
 
-Use that inventory to define the P15 implementation order. Do not add phases or
-milestones unless they are explicitly added to the Master Guide.
+Do not add phases or milestones unless they are explicitly added to the Master
+Guide.
 
 ---
 
@@ -239,6 +245,13 @@ milestones unless they are explicitly added to the Master Guide.
 - Initial structured policies are `language`, `response_detail`, `currency`, and `budget`
 - Conversation-scoped persistent overrides are not implemented
 - Streaming Provider input accepts `system` messages; Anthropic combines them into the Messages API top-level `system` field and excludes them from `messages`
+
+**P15 Core Skills**
+
+- Explicit Core Skill actions enter through Task Engine and Planner, resolve through the existing Skill registry, and execute through Runtime and OpenClaw
+- One-time user confirmation is PlanStep-scoped and currently permits only the exact non-destructive `filesystem.scan` action; it does not modify trusted automation
+- Work/Core Skill errors use safe OpenClaw/Runtime reporting, while ASK errors retain AI Center/provider semantics
+- Execution/confirmation/error contracts do not prove that the real OpenClaw filesystem action or schema is supported; real execution requires separate E2E evidence
 
 **Migration**
 

@@ -7,6 +7,7 @@ import {
   failChatTaskExecution,
   startChatTaskExecution,
   submitChatTask,
+  describeChatTaskError,
   type ChatTaskType,
 } from "../services/tasks";
 import {
@@ -16,6 +17,7 @@ import {
   type AiCenterModelChoice,
 } from "../services/aiCenter";
 import MarkdownRenderer from "../components/MarkdownRenderer";
+import { useDialog } from "../components/DialogProvider";
 import { PROVIDERS_CHANGED_EVENT } from "../services/providers";
 import {
   attachmentsFromFiles,
@@ -93,6 +95,7 @@ function buildMemoryContext(
 }
 
 function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
+  const dialog = useDialog();
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
@@ -151,6 +154,18 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     event.preventDefault();
     const content = draft.trim();
     if (!content || isSubmitting) return;
+    const isWorkRequest = Boolean(scanFolderPath) || taskType === "DO";
+
+    if (scanFolderPath) {
+      const confirmed = await dialog.confirm({
+        title: "Scan this folder?",
+        message: `OpenClaw will read the folder contents at:\n\n${scanFolderPath}`,
+        confirmLabel: "Scan folder",
+        cancelLabel: "Cancel",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+    }
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -244,7 +259,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     let activeAssistantMessageId: string | undefined;
     let activeAssistantText = "";
     try {
-      const task = await submitChatTask(content, scanFolderPath ? "DO" : taskType);
+      const task = await submitChatTask(content, isWorkRequest ? "DO" : "ASK");
       activeTaskId = task.taskId;
       if (task.status === "READY") {
         await startChatTaskExecution(task.taskId);
@@ -340,6 +355,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
           ? {
               capability: "filesystem.scan",
               input: { path: scanFolderPath },
+              userConfirmed: true,
             }
           : undefined,
       );
@@ -359,14 +375,16 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         messages: completedMessages,
       });
     } catch (error) {
+      const workFailureMessage = isWorkRequest
+        ? describeChatTaskError(error, true)
+        : undefined;
       if (activeTaskId) {
-        await failChatTaskExecution(activeTaskId).catch(() => undefined);
+        await failChatTaskExecution(
+          activeTaskId,
+          workFailureMessage ?? "AI Center request failed",
+        ).catch(() => undefined);
       }
-      const needsProvider =
-        error instanceof Error && error.message === "NO_CONNECTED_PROVIDER";
-      const failureMessage = needsProvider
-        ? "Connect and test an AI in My AI before starting a conversation."
-        : "AI‑OS could not complete this request. Check the selected AI connection and try again.";
+      const failureMessage = describeChatTaskError(error, isWorkRequest);
       setMessages((current) =>
         activeAssistantMessageId
           ? current.map((message) =>

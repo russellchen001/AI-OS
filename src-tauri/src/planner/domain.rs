@@ -158,6 +158,8 @@ pub struct PlanStep {
     pub capability: String,
     pub dependencies: Vec<PlanStepId>,
     pub input: StepInput,
+    #[serde(default)]
+    pub user_confirmed: bool,
     pub output: Option<StepOutput>,
     pub status: PlanStepStatus,
     pub created_at: TimestampMs,
@@ -189,6 +191,7 @@ impl PlanStep {
             capability,
             dependencies: Vec::new(),
             input: StepInput::new(),
+            user_confirmed: false,
             output: None,
             status: PlanStepStatus::Pending,
             created_at: timestamp,
@@ -203,6 +206,11 @@ impl PlanStep {
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = description.into();
+        self
+    }
+
+    pub fn with_user_confirmation(mut self, user_confirmed: bool) -> Self {
+        self.user_confirmed = user_confirmed;
         self
     }
 

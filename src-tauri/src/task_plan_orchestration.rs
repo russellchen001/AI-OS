@@ -133,6 +133,7 @@ where
                 step_id: step.id.clone(),
                 capability: step.capability,
                 input: step.input,
+                user_confirmed: step.user_confirmed,
             });
 
             match runtime_result {

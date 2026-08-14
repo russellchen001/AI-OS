@@ -60,6 +60,7 @@ pub(crate) struct OpenClawExecutionRequest {
     pub execution_id: OpenClawExecutionId,
     pub action: OpenClawActionId,
     pub input: Value,
+    pub user_confirmed: bool,
 }
 
 impl OpenClawExecutionRequest {
@@ -75,7 +76,13 @@ impl OpenClawExecutionRequest {
             execution_id,
             action,
             input,
+            user_confirmed: false,
         })
+    }
+
+    pub(crate) fn with_user_confirmation(mut self, user_confirmed: bool) -> Self {
+        self.user_confirmed = user_confirmed;
+        self
     }
 }
 

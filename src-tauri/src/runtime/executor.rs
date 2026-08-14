@@ -118,6 +118,7 @@ pub(crate) struct RuntimeTaskExecutionRequest {
     pub step_id: String,
     pub capability: String,
     pub input: Value,
+    pub user_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +126,7 @@ pub(crate) struct ValidatedRuntimeTaskExecutionRequest {
     operation_id: String,
     capability: String,
     input: Value,
+    user_confirmed: bool,
 }
 
 impl RuntimeTaskExecutionRequest {
@@ -150,6 +152,7 @@ impl RuntimeTaskExecutionRequest {
             operation_id,
             capability,
             input: self.input,
+            user_confirmed: self.user_confirmed,
         })
     }
 }
@@ -243,7 +246,8 @@ pub(crate) fn execute_runtime_task(
         request.capability,
         request.input,
     )
-    .map_err(normalize_openclaw_error)?;
+    .map_err(normalize_openclaw_error)?
+    .with_user_confirmation(request.user_confirmed);
     let prepared: Box<dyn PreparedOperation> = Box::new(OpenClawPreparedOperation {
         request: openclaw_request,
         adapter,
@@ -702,6 +706,7 @@ mod tests {
             step_id: "step-a".to_owned(),
             capability: capability.to_owned(),
             input: json!({"path": "/safe"}),
+            user_confirmed: false,
         }
     }
 

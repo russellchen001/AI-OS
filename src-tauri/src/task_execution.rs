@@ -86,6 +86,8 @@ pub(crate) struct ExecuteWorkTaskInput {
     agent_id: String,
     capability: Option<String>,
     input: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    user_confirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,13 +105,15 @@ fn build_work_task_step(
     agent_id: &str,
     capability: Option<&str>,
     input: Option<&HashMap<String, serde_json::Value>>,
+    user_confirmed: bool,
 ) -> Result<PlanStep, String> {
     if let Some(capability) = capability.map(str::trim).filter(|value| !value.is_empty()) {
         let mut step = PlanStep::new("Execute Core Skill", capability)
             .map_err(|error| error.to_string())?
             .with_description(
                 "Execute the requested capability through the selected Agent Runtime.",
-            );
+            )
+            .with_user_confirmation(user_confirmed);
         if let Some(input) = input {
             step.input.extend(input.clone());
         }
@@ -301,6 +305,7 @@ pub(crate) fn execute_chat_work_task(
         agent_id,
         input.capability.as_deref(),
         input.input.as_ref(),
+        input.user_confirmed,
     )?;
     plan.add_step(step).map_err(|error| error.to_string())?;
     state
@@ -590,6 +595,7 @@ mod tests {
             "openclaw",
             Some(" filesystem.scan "),
             Some(&explicit_input),
+            true,
         )
         .unwrap();
         let mut plan = Plan::new(task.id.clone(), 1, task.intent.clone()).unwrap();
@@ -616,6 +622,7 @@ mod tests {
             Some(&json!("/Users/example/Documents"))
         );
         assert_ne!(requests[0].capability, "sessions.create");
+        assert!(requests[0].user_confirmed);
         assert!(!requests[0].input.contains_key("agentId"));
     }
 
@@ -623,9 +630,10 @@ mod tests {
     fn missing_core_skill_capability_preserves_sessions_create_fallback() {
         let task = Task::new(TaskType::Do, "finish the requested work").unwrap();
 
-        let step = build_work_task_step(&task, "openclaw", Some("  "), None).unwrap();
+        let step = build_work_task_step(&task, "openclaw", Some("  "), None, true).unwrap();
 
         assert_eq!(step.capability, "sessions.create");
+        assert!(!step.user_confirmed);
         assert_eq!(step.input.get("message"), Some(&json!(task.intent)));
         assert_eq!(step.input.get("agentId"), Some(&json!("openclaw")));
         assert_eq!(step.input.get("label"), Some(&json!("AI-OS Work")));
