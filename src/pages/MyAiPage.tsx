@@ -1,3 +1,9 @@
+import {
+  deleteOllamaModel,
+  pullOllamaModel,
+  showOllamaModel,
+} from "../services/models";
+
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -329,6 +335,36 @@ function MyAiPage({
       active = false;
     };
   }, []);
+
+
+  async function inspectLocalModel(model: string) {
+    const details = await showOllamaModel(model);
+    setSetupError(
+      `${model}\n\n${details}`,
+    );
+  }
+
+  async function removeLocalModel(model: string) {
+    const confirmed = window.confirm(
+      `Delete local Ollama model ${model}?`,
+    );
+    if (!confirmed) return;
+
+    await deleteOllamaModel(model);
+    onRefreshLocalModels();
+  }
+
+  async function downloadLocalModel() {
+    const model = window.prompt(
+      "Enter Ollama model name to download:",
+      "qwen3:8b",
+    );
+
+    if (!model?.trim()) return;
+
+    await pullOllamaModel(model.trim());
+    onRefreshLocalModels();
+  }
 
   function openSetup(provider: string, method: "account" | "api-key", providerId?: string) {
     setApiKey("");
@@ -912,6 +948,20 @@ function MyAiPage({
               : localModels).slice(0, 4).map((model, index) => (
               <div key={model.name}>
                 <span>{model.name}</span>
+                <div className="local-model-actions">
+                  <button
+                    type="button"
+                    onClick={() => void inspectLocalModel(model.name)}
+                  >
+                    Show
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void removeLocalModel(model.name)}
+                  >
+                    Delete
+                  </button>
+                </div>
                 {index === 0 && <small>Suggested</small>}
               </div>
             ))}
@@ -936,6 +986,13 @@ function MyAiPage({
               Manage local models <span>→</span>
             </button>
           )}
+          <button
+            type="button"
+            className="local-provider-refresh"
+            onClick={() => void downloadLocalModel()}
+          >
+            Pull model
+          </button>
           <button
             type="button"
             className="local-provider-refresh"
