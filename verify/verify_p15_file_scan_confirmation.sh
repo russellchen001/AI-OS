@@ -80,6 +80,11 @@ run_test \
   "unconfirmed-scan"
 
 run_test \
+  "filesystem scan uses the OpenClaw agent execution contract" \
+  "filesystem_scan_runs_agent_wait_and_returns_persisted_result" \
+  "openclaw-agent-scan"
+
+run_test \
   "existing Plan Runtime bridge behavior remains valid" \
   "runtime::plan_runtime_bridge" \
   "runtime-bridge"

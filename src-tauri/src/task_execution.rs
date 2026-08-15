@@ -282,6 +282,13 @@ pub(crate) fn execute_chat_work_task(
     state: tauri::State<'_, TaskExecutionState>,
     input: ExecuteWorkTaskInput,
 ) -> Result<ExecuteWorkTaskResponse, String> {
+    execute_chat_work_task_inner(&state, input)
+}
+
+fn execute_chat_work_task_inner(
+    state: &TaskExecutionState,
+    input: ExecuteWorkTaskInput,
+) -> Result<ExecuteWorkTaskResponse, String> {
     let agent_id = input.agent_id.trim();
     if agent_id != "openclaw" {
         return Err("The selected Agent does not have a Runtime Adapter yet".to_owned());
@@ -317,6 +324,10 @@ pub(crate) fn execute_chat_work_task(
         .map_err(|error| error.to_string())?;
     planner
         .activate_plan(&task_id, &plan.id)
+        .map_err(|error| error.to_string())?;
+    state
+        .lifecycle
+        .transition(&task_id, TaskStatus::Ready)
         .map_err(|error| error.to_string())?;
     let execution = state
         .service()
@@ -585,36 +596,45 @@ mod tests {
         let tasks = Arc::new(InMemoryTaskRepository::new());
         let plans = Arc::new(InMemoryPlanRepository::new());
         let runtime = Arc::new(CapturingRuntime::default());
-        let mut task = Task::new(TaskType::Do, "scan the requested folder").unwrap();
-        task.transition_to(TaskStatus::Understanding).unwrap();
-        task.transition_to(TaskStatus::Planning).unwrap();
-        let explicit_input =
-            HashMap::from([("path".to_owned(), json!("/Users/example/Documents"))]);
-        let step = build_work_task_step(
-            &task,
-            "openclaw",
-            Some(" filesystem.scan "),
-            Some(&explicit_input),
-            true,
+        let lifecycle = TaskLifecycleManager::new(
+            Arc::clone(&tasks),
+            Arc::new(InMemoryTaskEventBus::new()),
+        );
+        let state = TaskExecutionState {
+            tasks: Arc::clone(&tasks),
+            plans: Arc::clone(&plans),
+            lifecycle,
+            service: TaskExecutionService {
+                tasks,
+                plans,
+                runtime: runtime.clone(),
+            },
+        };
+        let submitted = submit_chat_task_inner(
+            &state,
+            SubmitChatTaskRequest {
+                prompt: "scan the requested folder".to_owned(),
+                task_type: TaskType::Do,
+            },
         )
         .unwrap();
-        let mut plan = Plan::new(task.id.clone(), 1, task.intent.clone()).unwrap();
-        plan.add_step(step).unwrap();
-        plan.transition_to(PlanStatus::Validated).unwrap();
-        plan.transition_to(PlanStatus::Ready).unwrap();
-        task.activate_plan(plan.id.clone());
-        task.transition_to(TaskStatus::Ready).unwrap();
-        tasks.create(task.clone()).unwrap();
-        plans.create(plan).unwrap();
-        let service = TaskExecutionService {
-            tasks,
-            plans,
-            runtime: runtime.clone(),
-        };
-
-        service.execute_task(&task.id).unwrap();
+        let response = execute_chat_work_task_inner(
+            &state,
+            ExecuteWorkTaskInput {
+                task_id: submitted.task_id,
+                agent_id: "openclaw".to_owned(),
+                capability: Some(" filesystem.scan ".to_owned()),
+                input: Some(HashMap::from([(
+                    "path".to_owned(),
+                    json!("/Users/example/Documents"),
+                )])),
+                user_confirmed: true,
+            },
+        )
+        .unwrap();
 
         let requests = runtime.0.lock().unwrap();
+        assert_eq!(response.status, TaskStatus::Verifying);
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].capability, "filesystem.scan");
         assert_eq!(

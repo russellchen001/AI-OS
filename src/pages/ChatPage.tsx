@@ -46,6 +46,29 @@ function invocationCost(message: ChatMessage): string {
   return `$${metadata.estimatedCostUsd.toFixed(4)} estimated`;
 }
 
+function formatMessageTime(createdAt: string | undefined): string {
+  if (!createdAt) return "";
+  const timestamp = new Date(createdAt);
+  if (Number.isNaN(timestamp.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(timestamp);
+}
+
+function formatFilesystemScanResult(output: unknown): string {
+  if (!output || typeof output !== "object") {
+    throw new Error("OpenClaw returned an invalid folder scan result.");
+  }
+  const entries = (output as { entries?: unknown }).entries;
+  if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== "string")) {
+    throw new Error("OpenClaw returned an invalid folder scan result.");
+  }
+  return entries.length
+    ? `Folder scan completed.\n\n${entries.map((entry) => `- ${entry}`).join("\n")}`
+    : "Folder scan completed. The folder is empty.";
+}
+
 type ChatPageProps = {
   conversationId: string;
   onOpenMyAi: () => void;
@@ -362,9 +385,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const workMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: execution.output
-          ? `OpenClaw completed the plan.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
-          : `OpenClaw completed plan ${execution.planId}.`,
+        content: scanFolderPath
+          ? formatFilesystemScanResult(execution.output)
+          : execution.output
+            ? `OpenClaw completed the plan.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
+            : `OpenClaw completed plan ${execution.planId}.`,
         createdAt: new Date().toISOString(),
       };
       const completedMessages = [...nextMessages, workMessage];
@@ -446,6 +471,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         {messages.length ? messages.map((message) => (
           <article key={message.id} className={`chat-message chat-message-${message.role}`}>
             <span className="message-author">{message.role === "user" ? "You" : "AI‑OS"}</span>
+            {formatMessageTime(message.createdAt) && (
+              <time className="message-author" dateTime={message.createdAt}>
+                {` · ${formatMessageTime(message.createdAt)}`}
+              </time>
+            )}
             {message.role === "assistant" ? (
               <>
                 <MarkdownRenderer

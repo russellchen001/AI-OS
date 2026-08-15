@@ -7,6 +7,10 @@ use crate::openclaw::{
 };
 use serde_json::Value;
 
+const FILESYSTEM_SCAN_ACTION: &str = "filesystem.scan";
+const FILESYSTEM_AGENT_ID: &str = "ai-os-files";
+const AGENT_WAIT_ATTEMPTS: usize = 35;
+
 pub(crate) struct OpenClawGatewayExecutionAdapter;
 
 impl OpenClawExecutionAdapter for OpenClawGatewayExecutionAdapter {
@@ -44,6 +48,10 @@ fn execute_with_invoker(
     request: &OpenClawExecutionRequest,
     _report: &mut dyn FnMut(OpenClawExecutionProgress),
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    if request.action.as_str() == FILESYSTEM_SCAN_ACTION {
+        return execute_filesystem_scan(invoker, request);
+    }
+
     invoker
         .invoke(request.action.as_str(), Some(request.input.clone()))
         .map(|payload| OpenClawExecutionResult {
@@ -51,6 +59,144 @@ fn execute_with_invoker(
             summary: None,
         })
         .map_err(map_gateway_failure)
+}
+
+fn execute_filesystem_scan(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let path = request
+        .input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "filesystem.scan requires path",
+                false,
+            )
+        })?;
+    let session_key = format!(
+        "agent:{FILESYSTEM_AGENT_ID}:ai-os-core-skill-{}",
+        request.execution_id
+    );
+    let message = format!(
+        "This is an AI-OS internal capability request. The label filesystem.scan is NOT an OpenClaw tool name: do not call any tool named filesystem.scan. Call the existing exec tool exactly once. Use command exactly as written: /usr/bin/find . -mindepth 1 -maxdepth 1 -print. Set workdir to {}, background to false, and yieldMs to 10000. Do not add pipes, xargs, printf, shell wrappers, or other flags. Do not create, modify, move, or delete anything. Return compact JSON with ok, path, and entries containing name and type, and do not claim success without the tool output.",
+        serde_json::to_string(path).unwrap_or_else(|_| "\"\"".to_owned())
+    );
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": FILESYSTEM_AGENT_ID,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": 120,
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|run_id| !run_id.trim().is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    for _ in 0..AGENT_WAIT_ATTEMPTS {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("ok") => {
+                let output = invoker
+                    .invoke(
+                        "chat.history",
+                        Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
+                    )
+                    .map_err(map_gateway_failure)?;
+                let output = filesystem_scan_output(&output, path).ok_or_else(|| {
+                    OpenClawExecutionError::new(
+                        OpenClawExecutionErrorKind::ProtocolFailure,
+                        "OpenClaw folder scan completed without a successful exec tool result.",
+                        false,
+                    )
+                })?;
+                return Ok(OpenClawExecutionResult {
+                    output,
+                    summary: Some("OpenClaw completed the folder scan.".to_owned()),
+                });
+            }
+            Some("error") => {
+                let message = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw agent execution failed.");
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    message,
+                    false,
+                ));
+            }
+            Some("timeout") => continue,
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid agent terminal status.",
+                    false,
+                ));
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw agent execution timed out.",
+        true,
+    ))
+}
+
+fn filesystem_scan_output(history: &Value, path: &str) -> Option<Value> {
+    let messages = history.get("messages")?.as_array()?;
+    let tool_result = messages.iter().rev().find(|message| {
+        message.get("role").and_then(Value::as_str) == Some("toolResult")
+            && message.get("toolName").and_then(Value::as_str) == Some("exec")
+            && message.get("isError").and_then(Value::as_bool) != Some(true)
+    })?;
+    let text = tool_result
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.iter().any(|line| !line.starts_with("./")) {
+        return None;
+    }
+    let entries = lines
+        .into_iter()
+        .filter_map(|line| line.strip_prefix("./"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    Some(serde_json::json!({"path": path, "entries": entries}))
 }
 
 fn map_gateway_failure(failure: ActiveGatewayMethodFailure) -> OpenClawExecutionError {
@@ -79,7 +225,7 @@ mod tests {
     use super::*;
     use crate::runtime::openclaw_execution::OpenClawExecutionRequest;
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::{collections::VecDeque, sync::Mutex};
 
     struct RecordingInvoker {
         calls: Mutex<Vec<(String, Option<Value>)>>,
@@ -97,14 +243,104 @@ mod tests {
         }
     }
 
-    fn request(input: Value) -> OpenClawExecutionRequest {
-        OpenClawExecutionRequest::new("runtime-execution-123", "filesystem.scan", input).unwrap()
+    struct ScriptedInvoker {
+        calls: Mutex<Vec<(String, Option<Value>)>>,
+        outcomes: Mutex<VecDeque<Result<Value, ActiveGatewayMethodFailure>>>,
+    }
+
+    impl GatewayMethodInvoker for ScriptedInvoker {
+        fn invoke(
+            &self,
+            method: &str,
+            params: Option<Value>,
+        ) -> Result<Value, ActiveGatewayMethodFailure> {
+            self.calls.lock().unwrap().push((method.to_owned(), params));
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("missing scripted Gateway outcome")
+        }
+    }
+
+    fn request(action: &str, input: Value) -> OpenClawExecutionRequest {
+        OpenClawExecutionRequest::new("runtime-execution-123", action, input).unwrap()
+    }
+
+    #[test]
+    fn filesystem_scan_runs_agent_wait_and_returns_persisted_result() {
+        let history = json!({"messages": [
+            {
+                "role": "toolResult",
+                "toolName": "exec",
+                "isError": false,
+                "content": [{
+                    "type": "text",
+                    "text": "./.DS_Store\n./report.docx"
+                }]
+            },
+            {"role": "assistant", "content": "scan result"}
+        ]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"status": "accepted", "runId": "run-123"})),
+                Ok(json!({"runId": "run-123", "status": "timeout"})),
+                Ok(json!({"runId": "run-123", "status": "ok"})),
+                Ok(history.clone()),
+            ])),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request("filesystem.scan", json!({"path": "/safe/example"})),
+            &mut |_| {},
+        )
+        .unwrap();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({"path": "/safe/example", "entries": [".DS_Store", "report.docx"]})
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait", "agent.wait", "chat.history",]
+        );
+        assert_eq!(calls[0].1.as_ref().unwrap()["agentId"], "ai-os-files");
+        assert_eq!(calls[0].1.as_ref().unwrap()["thinking"], "off");
+        assert!(calls[0].1.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("/safe/example"));
+        assert!(calls[0].1.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("NOT an OpenClaw tool name"));
+        assert!(calls[0].1.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("/usr/bin/find . -mindepth 1 -maxdepth 1 -print"));
+        assert_eq!(calls[1].1.as_ref().unwrap()["runId"], "run-123");
+        assert!(calls.iter().all(|call| call.0 != "filesystem.scan"));
+    }
+
+    #[test]
+    fn filesystem_scan_rejects_command_error_reported_as_successful_tool_result() {
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"type": "text", "text": "find: -printf: unknown primary or operator"}]
+        }]});
+
+        assert_eq!(filesystem_scan_output(&history, "/safe/example"), None);
     }
 
     #[test]
     fn maps_action_and_input_without_transmitting_execution_id() {
         let input = json!({"path": "/safe/example"});
-        let request = request(input.clone());
+        let request = request("sessions.create", input.clone());
         let invoker = RecordingInvoker {
             calls: Mutex::new(Vec::new()),
             outcome: Ok(json!({"files": 3})),
@@ -114,7 +350,7 @@ mod tests {
 
         assert_eq!(
             *invoker.calls.lock().unwrap(),
-            vec![("filesystem.scan".to_owned(), Some(input.clone()))]
+            vec![("sessions.create".to_owned(), Some(input.clone()))]
         );
         assert_eq!(request.input, input);
         assert!(
@@ -130,7 +366,12 @@ mod tests {
             outcome: Ok(payload.clone()),
         };
 
-        let result = execute_with_invoker(&invoker, &request(json!({})), &mut |_| {}).unwrap();
+        let result = execute_with_invoker(
+            &invoker,
+            &request("sessions.create", json!({})),
+            &mut |_| {},
+        )
+        .unwrap();
 
         assert_eq!(result.output, payload);
         assert_eq!(result.summary, None);
@@ -150,7 +391,7 @@ mod tests {
             }
         }
 
-        let request = request(json!({}));
+        let request = request("sessions.create", json!({}));
         let mut progress = Vec::new();
         let result = execute_with_invoker(&NoNetworkInvoker, &request, &mut |update| {
             progress.push(update)
@@ -173,7 +414,12 @@ mod tests {
             }),
         };
 
-        let error = execute_with_invoker(&invoker, &request(json!({})), &mut |_| {}).unwrap_err();
+        let error = execute_with_invoker(
+            &invoker,
+            &request("sessions.create", json!({})),
+            &mut |_| {},
+        )
+        .unwrap_err();
 
         assert_eq!(error.kind, expected_kind);
         assert_eq!(error.retryable, expected_retryable);
@@ -247,7 +493,7 @@ mod tests {
 
         let error = execute_with_invoker(
             &invoker,
-            &request(json!({"credential": credential})),
+            &request("sessions.create", json!({"credential": credential})),
             &mut |_| {},
         )
         .unwrap_err();

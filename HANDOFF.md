@@ -100,7 +100,7 @@ Things to settle when this is specified:
 | | |
 |---|---|
 | Branch | `feature/p13-ai-center` |
-| HEAD | `f166ac4` — latest committed baseline before the current filesystem scan slice |
+| HEAD | Verified P15 `filesystem.scan` real OpenClaw E2E slice ready for commit |
 | Latest tag | `p13-m5-complete` |
 | Baseline state | Working tree was clean at the stable baseline before this handoff update |
 | Active phase | P15 Core Skills — File management in progress |
@@ -133,7 +133,7 @@ Things to settle when this is specified:
 | P14 Memory Retrieval | User memories are injected as hidden system context for ordinary Chat requests without entering conversation history | `verify/verify_p14_memory_retrieval.sh` |
 | P14 General Memory Policy | Structured language, response detail, currency, and budget defaults with request-only overrides | `verify/verify_p14_general_memory_policy.sh` |
 | AI Center End-to-End QA | Auto/Local First, manual selection, multi-model, streaming, cancellation, fallback, and analytics verified | `verify/verify_ai_center_e2e_qa.sh` |
-| P15 Filesystem scan contracts | Explicit `filesystem.scan` PlanStep execution, one-time user confirmation, permission enforcement, and Work-specific safe error reporting | `verify/verify_p15_file_execution_contract.sh`, `verify/verify_p15_file_scan_confirmation.sh`; UI confirmation/error E2E passed 2026-08-14 |
+| P15 Filesystem scan | Explicit PlanStep execution, one-time confirmation, permission enforcement, real OpenClaw `exec` scan, readable result rendering, Work-specific errors, and stable local message times | `verify/verify_p15_file_execution_contract.sh`, `verify/verify_p15_file_scan_confirmation.sh`; real UI E2E passed 2026-08-15 with `.DS_Store`, `Lable_副本.docx`, and `__副本.jpeg` |
 
 P14 General Memory Policy behavioral QA passed:
 
@@ -172,21 +172,31 @@ config, or the repository.
 
 ## In progress
 
-P15 File management is in progress. The `filesystem.scan` execution,
-confirmation, permission, and error-reporting contracts are complete and have
-automatic and UI E2E evidence. A real OpenClaw folder scan has not yet completed
-successfully: the confirmed request currently returns a Runtime failure. Do not
-describe File management or real filesystem scanning as complete until the
-OpenClaw Gateway action and input contract are verified end to end.
+P15 File management is in progress. `filesystem.scan` is complete with automatic
+and real UI E2E evidence. The confirmed UI path now reaches the dedicated
+`ai-os-files` worker, executes the read-only OpenClaw `exec` tool, normalizes the
+successful tool result, and renders the real directory entries without exposing
+raw `chat.history` JSON.
+
+The final AI-OS-side blocker was a missing Task state transition after Plan
+activation: the Plan was Ready while the Task remained Planning, so Task–Plan
+policy rejected execution before Runtime and OpenClaw. `execute_chat_work_task`
+now performs the existing legal `Planning -> Ready` transition before executing
+the active Plan. The OpenClaw adapter uses the exact macOS-compatible command
+`/usr/bin/find . -mindepth 1 -maxdepth 1 -print` with the selected folder as
+`workdir`, accepts only a successful `exec` tool result, and fails closed on
+command-error output. Conversation messages reuse their persisted `createdAt`
+values to show stable local times; old messages without valid timestamps remain
+compatible and show no fabricated time.
 
 ---
 
 ## Next
 
-Continue P15 File management by resolving the real OpenClaw execution contract
-for `filesystem.scan`, then implement and verify `filesystem.read`,
-`filesystem.write`, and `filesystem.move`. Write and move require explicit
-confirmation and must fail closed for destructive or overwrite behavior.
+Continue P15 File management with `filesystem.read`, then implement and verify
+`filesystem.write` and `filesystem.move`. Read must follow the existing
+sensitivity policy. Write and move require explicit confirmation and must fail
+closed for destructive or overwrite behavior.
 
 The P15 capability inventory remains:
 
@@ -251,7 +261,10 @@ Guide.
 - Explicit Core Skill actions enter through Task Engine and Planner, resolve through the existing Skill registry, and execute through Runtime and OpenClaw
 - One-time user confirmation is PlanStep-scoped and currently permits only the exact non-destructive `filesystem.scan` action; it does not modify trusted automation
 - Work/Core Skill errors use safe OpenClaw/Runtime reporting, while ASK errors retain AI Center/provider semantics
-- Execution/confirmation/error contracts do not prove that the real OpenClaw filesystem action or schema is supported; real execution requires separate E2E evidence
+- `filesystem.scan` is an AI-OS capability identifier, not an OpenClaw Gateway RPC or tool id; the adapter translates it to the official `agent` / `agent.wait` path and reads the resulting session history
+- Real `filesystem.scan` E2E passed through Task, Planner, Runtime, permission, OpenClaw agent, read-only `exec`, normalized output, and Chat UI on 2026-08-15
+- File execution uses the dedicated `ai-os-files` OpenClaw worker with no inherited skills or workspace bootstrap context and an isolated Ollama provider; `main` remains the default personal agent
+- OpenClaw permission and confirmation remain authoritative; the dedicated worker does not enable trusted automation or bypass tool policy
 
 **Migration**
 
