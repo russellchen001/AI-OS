@@ -9,7 +9,7 @@ trap 'rm -rf "$RESULT_DIR"' EXIT
 
 fail() {
   echo "✗ $1"
-  echo "FAIL P15 file write: $1"
+  echo "FAIL P15 file move: $1"
   exit 1
 }
 
@@ -25,52 +25,52 @@ run_test() {
 
   echo "✗ $label"
   grep -E "error|FAILED|failures:" "$output_file" | head -20
-  echo "FAIL P15 file write: $label"
+  echo "FAIL P15 file move: $label"
   exit 1
 }
 
 run_test \
-  "confirmed filesystem write is allowed while unconfirmed move remains denied" \
-  "one_time_user_confirmation_allows_write_while_unconfirmed_move_is_denied" \
-  "write-permission"
+  "filesystem move requires explicit one-time confirmation" \
+  "one_time_user_confirmation_allows_filesystem_move" \
+  "move-permission"
 
 run_test \
-  "filesystem write reaches the OpenClaw agent and returns bytes written" \
-  "filesystem_write_runs_agent_and_returns_created_file_result" \
-  "write-agent"
+  "filesystem move reaches the OpenClaw agent and returns the moved paths" \
+  "filesystem_move_runs_agent_and_returns_moved_result" \
+  "move-agent"
 
 run_test \
-  "existing and failed targets return explicit fail-closed results" \
-  "filesystem_write_reports_existing_and_failed_targets" \
-  "write-status"
+  "missing source, existing destination, and execution failure remain fail closed" \
+  "filesystem_move_reports_fail_closed_statuses" \
+  "move-status"
 
 run_test \
-  "overwrite, oversized content, and relative paths are rejected before Gateway execution" \
-  "filesystem_write_rejects_overwrite_oversize_and_relative_paths" \
-  "write-limits"
+  "overwrite, relative paths, and identical paths are rejected before Gateway execution" \
+  "filesystem_move_rejects_overwrite_relative_and_same_paths" \
+  "move-validation"
 
 if (
   cd "$ROOT_DIR" &&
   node --experimental-strip-types --input-type=module -e '
     import { describeChatTaskError } from "./src/services/tasks.ts";
-    const expected = "OpenClaw Runtime could not complete this file write. Check OpenClaw and try again.";
-    const actual = describeChatTaskError("safe runtime failure", true, "file write");
+    const expected = "OpenClaw Runtime could not complete this file move. Check OpenClaw and try again.";
+    const actual = describeChatTaskError("safe runtime failure", true, "file move");
     if (actual !== expected) throw new Error(`expected ${expected}, received ${actual}`);
-    const ask = describeChatTaskError(new Error("provider failed"), false, "file write");
+    const ask = describeChatTaskError(new Error("provider failed"), false, "file move");
     if (!ask.includes("selected AI connection")) throw new Error("ASK error semantics changed");
   ' >"$RESULT_DIR/error-mapping.log" 2>&1
 ); then
-  echo "✓ file write errors use Work/OpenClaw semantics"
+  echo "✓ file move errors use Work/OpenClaw semantics"
 else
   head -20 "$RESULT_DIR/error-mapping.log"
-  fail "file write error mapping"
+  fail "file move error mapping"
 fi
 
 if (cd "$ROOT_DIR" && npm run build >"$RESULT_DIR/frontend-build.log" 2>&1); then
-  echo "✓ save-path picker and bounded write result UI build successfully"
+  echo "✓ source/destination picker and move result UI build successfully"
 else
   grep -E "error TS|ERROR|Build failed|failed to build" "$RESULT_DIR/frontend-build.log" | head -20
   fail "frontend build"
 fi
 
-echo "PASS P15 file write"
+echo "PASS P15 file move"

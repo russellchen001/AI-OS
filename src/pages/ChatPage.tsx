@@ -128,6 +128,33 @@ function formatFilesystemWriteResult(output: unknown): string {
   return `File created.\n\nPath: ${result.path}\nBytes written: ${result.bytesWritten.toLocaleString()}`;
 }
 
+function formatFilesystemMoveResult(output: unknown): string {
+  if (!output || typeof output !== "object") {
+    throw new Error("OpenClaw returned an invalid file move result.");
+  }
+  const result = output as {
+    destination?: unknown;
+    source?: unknown;
+    status?: unknown;
+  };
+  if (typeof result.source !== "string" || typeof result.destination !== "string") {
+    throw new Error("OpenClaw returned an invalid file move result.");
+  }
+  if (result.status === "source_missing") {
+    return `The file was not moved because the source no longer exists.\n\n${result.source}`;
+  }
+  if (result.status === "destination_exists") {
+    return `The file was not moved because a file already exists at the destination.\n\n${result.destination}`;
+  }
+  if (result.status === "failed") {
+    return "OpenClaw could not move the file. No destination file was overwritten.";
+  }
+  if (result.status !== "moved") {
+    throw new Error("OpenClaw returned an invalid file move result.");
+  }
+  return `File moved.\n\nFrom: ${result.source}\nTo: ${result.destination}`;
+}
+
 type ChatPageProps = {
   conversationId: string;
   onOpenMyAi: () => void;
@@ -191,6 +218,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [scanFolderPath, setScanFolderPath] = useState<string>();
   const [readFilePath, setReadFilePath] = useState<string>();
   const [writeFilePath, setWriteFilePath] = useState<string>();
+  const [moveFilePaths, setMoveFilePaths] = useState<{
+    source: string;
+    destination: string;
+  }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -199,6 +230,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setScanFolderPath(undefined);
     setReadFilePath(undefined);
     setWriteFilePath(undefined);
+    setMoveFilePaths(undefined);
   }, [conversationId]);
 
   async function chooseFolderToScan() {
@@ -211,6 +243,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setScanFolderPath(selected);
     setReadFilePath(undefined);
     setWriteFilePath(undefined);
+    setMoveFilePaths(undefined);
     setTaskType("DO");
     setDraft((current) => current || "Scan this folder");
   }
@@ -225,6 +258,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setReadFilePath(selected);
     setScanFolderPath(undefined);
     setWriteFilePath(undefined);
+    setMoveFilePaths(undefined);
     setTaskType("DO");
     setDraft((current) => current || "Read this file");
   }
@@ -238,7 +272,28 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setWriteFilePath(selected);
     setScanFolderPath(undefined);
     setReadFilePath(undefined);
+    setMoveFilePaths(undefined);
     setTaskType("DO");
+  }
+
+  async function chooseFileToMove() {
+    const source = await openDialog({
+      directory: false,
+      multiple: false,
+      title: "Choose a file to move",
+    });
+    if (typeof source !== "string") return;
+    const destination = await saveDialog({
+      title: "Choose the new file location",
+      defaultPath: `${source}.moved`,
+    });
+    if (typeof destination !== "string") return;
+    setMoveFilePaths({ source, destination });
+    setScanFolderPath(undefined);
+    setReadFilePath(undefined);
+    setWriteFilePath(undefined);
+    setTaskType("DO");
+    setDraft((current) => current || "Move this file");
   }
 
   useEffect(() => {
@@ -268,7 +323,9 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     event.preventDefault();
     const content = draft.trim();
     if (!content || isSubmitting) return;
-    const isWorkRequest = Boolean(scanFolderPath || readFilePath || writeFilePath) || taskType === "DO";
+    const isWorkRequest = Boolean(
+      scanFolderPath || readFilePath || writeFilePath || moveFilePaths,
+    ) || taskType === "DO";
 
     if (scanFolderPath) {
       const confirmed = await dialog.confirm({
@@ -296,6 +353,16 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         title: "Create this text file?",
         message: `OpenClaw will create a new file at:\n\n${writeFilePath}\n\nContent size: ${byteLength.toLocaleString()} bytes\nExisting files will not be overwritten.`,
         confirmLabel: "Create file",
+        cancelLabel: "Cancel",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+    }
+    if (moveFilePaths) {
+      const confirmed = await dialog.confirm({
+        title: "Move this file?",
+        message: `OpenClaw will move:\n\n${moveFilePaths.source}\n\nTo:\n\n${moveFilePaths.destination}\n\nAn existing destination will not be overwritten.`,
+        confirmLabel: "Move file",
         cancelLabel: "Cancel",
         tone: "warning",
       });
@@ -486,7 +553,17 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const execution = await executeChatWorkTask(
         task.taskId,
         "openclaw",
-        writeFilePath
+        moveFilePaths
+          ? {
+              capability: "filesystem.move",
+              input: {
+                source: moveFilePaths.source,
+                destination: moveFilePaths.destination,
+                overwrite: false,
+              },
+              userConfirmed: true,
+            }
+          : writeFilePath
           ? {
               capability: "filesystem.write",
               input: { path: writeFilePath, content: draft, overwrite: false },
@@ -509,7 +586,9 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const workMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: writeFilePath
+        content: moveFilePaths
+          ? formatFilesystemMoveResult(execution.output)
+          : writeFilePath
           ? formatFilesystemWriteResult(execution.output)
           : readFilePath
           ? formatFilesystemReadResult(execution.output)
@@ -525,6 +604,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       setScanFolderPath(undefined);
       setReadFilePath(undefined);
       setWriteFilePath(undefined);
+      setMoveFilePaths(undefined);
       saveConversation({
         ...nextConversation,
         messages: completedMessages,
@@ -534,7 +614,13 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         ? describeChatTaskError(
             error,
             true,
-            writeFilePath ? "file write" : readFilePath ? "file read" : "folder scan",
+            moveFilePaths
+              ? "file move"
+              : writeFilePath
+                ? "file write"
+                : readFilePath
+                  ? "file read"
+                  : "folder scan",
           )
         : undefined;
       if (activeTaskId) {
@@ -546,7 +632,13 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const failureMessage = describeChatTaskError(
         error,
         isWorkRequest,
-        writeFilePath ? "file write" : readFilePath ? "file read" : "folder scan",
+        moveFilePaths
+          ? "file move"
+          : writeFilePath
+            ? "file write"
+            : readFilePath
+              ? "file read"
+              : "folder scan",
       );
       setMessages((current) =>
         activeAssistantMessageId
@@ -762,6 +854,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                       setScanFolderPath(undefined);
                       setReadFilePath(undefined);
                       setWriteFilePath(undefined);
+                      setMoveFilePaths(undefined);
                     }
                     return next;
                   })
@@ -796,6 +889,15 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6zM9 13h6M12 10v6" /></svg>
                 Write file
+              </button>
+              <button
+                type="button"
+                className={moveFilePaths ? "tool-pill tool-pill-active" : "tool-pill"}
+                aria-label="Choose a file and destination to move"
+                onClick={() => void chooseFileToMove()}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12M13 8l4 4-4 4M6 5h12v14H6" /></svg>
+                Move file
               </button>
               <div className="agent-picker">
                 <button
@@ -903,6 +1005,24 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               type="button"
               aria-label="Cancel file write"
               onClick={() => setWriteFilePath(undefined)}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {moveFilePaths && (
+          <div className="composer-scan-target" role="status">
+            <span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12M13 8l4 4-4 4M6 5h12v14H6" /></svg>
+              <span>
+                <strong>File move</strong>
+                <small>{moveFilePaths.source} → {moveFilePaths.destination}</small>
+              </span>
+            </span>
+            <button
+              type="button"
+              aria-label="Cancel file move"
+              onClick={() => setMoveFilePaths(undefined)}
             >
               ×
             </button>

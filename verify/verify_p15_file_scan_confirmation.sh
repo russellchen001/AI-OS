@@ -70,8 +70,8 @@ run_test \
   "confirmed-scan"
 
 run_test \
-  "one-time confirmation is scoped to filesystem.scan" \
-  "one_time_user_confirmation_allows_only_filesystem_scan" \
+  "confirmed scan is allowed while unconfirmed move remains denied" \
+  "one_time_user_confirmation_allows_scan_while_unconfirmed_move_is_denied" \
   "confirmation-scope"
 
 run_test \

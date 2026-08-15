@@ -100,10 +100,10 @@ Things to settle when this is specified:
 | | |
 |---|---|
 | Branch | `feature/p13-ai-center` |
-| HEAD | Verified P15 `filesystem.write` real OpenClaw E2E slice ready for commit |
+| HEAD | P15 `filesystem.move` complete — real OpenClaw and UI E2E verified 2026-08-15 |
 | Latest tag | `p13-m5-complete` |
 | Baseline state | Working tree was clean at the stable baseline before this handoff update |
-| Active phase | P15 Core Skills — File management in progress |
+| Active phase | P15 Core Skills — File management complete; next capability area pending inventory |
 
 ---
 
@@ -136,6 +136,7 @@ Things to settle when this is specified:
 | P15 Filesystem scan | Explicit PlanStep execution, one-time confirmation, permission enforcement, real OpenClaw `exec` scan, readable result rendering, Work-specific errors, and stable local message times | `verify/verify_p15_file_execution_contract.sh`, `verify/verify_p15_file_scan_confirmation.sh`; real UI E2E passed 2026-08-15 with `.DS_Store`, `Lable_副本.docx`, and `__副本.jpeg` |
 | P15 Filesystem read | Explicit file picker and confirmation, real OpenClaw text read, MIME and size detection, 1 MB read limit, 64 KiB output limit, binary/unsupported handling, and readable Chat rendering | `verify/verify_p15_file_read.sh`; real UI E2E passed 2026-08-15 with repository `README.md` content |
 | P15 Filesystem write | Explicit save-path selection and confirmation, real OpenClaw text creation, 4 KiB input limit, private 0600 permissions, and create-only/no-overwrite failure handling | `verify/verify_p15_file_write.sh`; isolated real OpenClaw create/no-overwrite smoke and real UI E2E passed 2026-08-15 with a 27-byte text file |
+| P15 Filesystem move | Explicit source/destination selection and one-time confirmation, real OpenClaw move execution, no-overwrite behavior, absolute/different-path validation, fail-closed source/destination checks, and readable Chat rendering | `verify/verify_p15_file_move.sh`; isolated real OpenClaw smoke and real UI E2E passed 2026-08-15 moving `/private/tmp/ai-os-p15-ui-write-20260815.txt` to `/private/tmp/ai-os-p15-ui-move-20260815.txt` |
 
 P14 General Memory Policy behavioral QA passed:
 
@@ -174,45 +175,33 @@ config, or the repository.
 
 ## In progress
 
-P15 File management is in progress. `filesystem.scan`, `filesystem.read`, and
-`filesystem.write` are complete with automatic and real UI E2E evidence. The
-confirmed UI paths reach the dedicated `ai-os-files` worker, execute the OpenClaw
-`exec` tool, normalize successful tool results, and render readable results
-without exposing raw `chat.history` JSON. Write is limited to 4 KiB UTF-8 text,
-creates private 0600 files, and fails closed instead of overwriting an existing
-target.
+P15 Core Skills remains active. File management is complete with real execution
+and UI E2E evidence for `filesystem.scan`, `filesystem.read`,
+`filesystem.write`, and `filesystem.move`.
 
-The final AI-OS-side blocker was a missing Task state transition after Plan
-activation: the Plan was Ready while the Task remained Planning, so Task–Plan
-policy rejected execution before Runtime and OpenClaw. `execute_chat_work_task`
-now performs the existing legal `Planning -> Ready` transition before executing
-the active Plan. The OpenClaw adapter uses the exact macOS-compatible command
-`/usr/bin/find . -mindepth 1 -maxdepth 1 -print` with the selected folder as
-`workdir`, accepts only a successful `exec` tool result, and fails closed on
-command-error output. Conversation messages reuse their persisted `createdAt`
-values to show stable local times; old messages without valid timestamps remain
-compatible and show no fabricated time.
+All four capabilities enter through Task Engine and Planner, resolve through the
+Skill registry, execute through Runtime and the dedicated `ai-os-files`
+OpenClaw worker, enforce one-time confirmation where required, normalize real
+tool results, and render readable Chat output without exposing raw Gateway
+history.
 
 ---
 
 ## Next
 
-Continue P15 File management with `filesystem.move`. Move requires explicit
-confirmation and must fail closed for destructive or overwrite behavior.
-
-The P15 capability inventory remains:
+Inventory the remaining P15 capability areas against the current repository and
+choose the next implementation area based on existing maturity and dependencies:
 
 1. Email and calendar
 2. Browser and search
-3. File management
-4. Downloads
-5. NAS management
-6. Document, spreadsheet, and presentation workflows
-7. Local model management
-8. Smart home and device control
+3. Downloads
+4. NAS management
+5. Document, spreadsheet, and presentation workflows
+6. Local model management
+7. Smart home and device control
 
-Do not add phases or milestones unless they are explicitly added to the Master
-Guide.
+Do not add phases or milestones unless explicitly added to the Master Guide.
+Do not begin P16.
 
 ---
 
@@ -261,13 +250,15 @@ Guide.
 **P15 Core Skills**
 
 - Explicit Core Skill actions enter through Task Engine and Planner, resolve through the existing Skill registry, and execute through Runtime and OpenClaw
-- One-time user confirmation is PlanStep-scoped and permits only the exact implemented `filesystem.scan`, `filesystem.read`, and `filesystem.write` actions; it does not modify trusted automation, and `filesystem.move` remains denied until implemented
+- One-time user confirmation is PlanStep-scoped and permits only the exact implemented `filesystem.scan`, `filesystem.read`, `filesystem.write`, and `filesystem.move` actions; it does not modify trusted automation
 - Work/Core Skill errors use safe OpenClaw/Runtime reporting, while ASK errors retain AI Center/provider semantics
 - `filesystem.scan` is an AI-OS capability identifier, not an OpenClaw Gateway RPC or tool id; the adapter translates it to the official `agent` / `agent.wait` path and reads the resulting session history
 - Real `filesystem.scan` E2E passed through Task, Planner, Runtime, permission, OpenClaw agent, read-only `exec`, normalized output, and Chat UI on 2026-08-15
 - `filesystem.read` always requires one-time confirmation, uses the same dedicated worker, detects MIME and size before reading, never sends unsupported binary content to Chat, and bounds text reads to 1 MB with at most 64 KiB returned
 - `filesystem.write` always requires one-time confirmation, passes selected path and current text through the existing Plan/Runtime chain, limits UTF-8 content to 4 KiB, creates with 0600 permissions, and uses shell noclobber plus an existence check so overwrite attempts fail closed
 - Real `filesystem.write` E2E passed through Task, Planner, Runtime, permission, OpenClaw agent, `exec`, normalized output, and Chat UI on 2026-08-15; the UI-created file contained the exact 27-byte requested text
+- `filesystem.move` always requires one-time confirmation, requires absolute and different source/destination paths, forbids overwrite, verifies the source disappears and destination appears after `mv`, and reports source-missing, destination-existing, or execution failure without claiming success
+- Real `filesystem.move` E2E passed through Task, Planner, Runtime, permission, OpenClaw agent, `exec`, normalized output, and Chat UI on 2026-08-15
 - File execution uses the dedicated `ai-os-files` OpenClaw worker with no inherited skills or workspace bootstrap context and an isolated Ollama provider; `main` remains the default personal agent
 - OpenClaw permission and confirmation remain authoritative; the dedicated worker does not enable trusted automation or bypass tool policy
 

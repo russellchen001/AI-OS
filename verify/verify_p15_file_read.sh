@@ -30,8 +30,8 @@ run_test() {
 }
 
 run_test \
-  "confirmed filesystem read is allowed while move remains denied" \
-  "one_time_user_confirmation_allows_filesystem_read_but_not_move" \
+  "confirmed filesystem read is allowed while unconfirmed move remains denied" \
+  "one_time_user_confirmation_allows_read_while_unconfirmed_move_is_denied" \
   "read-permission"
 
 run_test \

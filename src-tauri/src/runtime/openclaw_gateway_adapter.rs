@@ -11,6 +11,7 @@ use std::path::Path;
 const FILESYSTEM_SCAN_ACTION: &str = "filesystem.scan";
 const FILESYSTEM_READ_ACTION: &str = "filesystem.read";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
+const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const FILESYSTEM_AGENT_ID: &str = "ai-os-files";
 const AGENT_WAIT_ATTEMPTS: usize = 35;
 const MAX_FILE_READ_BYTES: u64 = 1_000_000;
@@ -62,6 +63,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
+    }
+    if request.action.as_str() == FILESYSTEM_MOVE_ACTION {
+        return execute_filesystem_move(invoker, request);
     }
 
     invoker
@@ -577,6 +581,211 @@ fn filesystem_write_output(history: &Value, path: &str) -> Option<Value> {
     None
 }
 
+fn execute_filesystem_move(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let source = request
+        .input
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "filesystem.move requires source",
+                false,
+            )
+        })?;
+    let destination = request
+        .input
+        .get("destination")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "filesystem.move requires destination",
+                false,
+            )
+        })?;
+    if request
+        .input
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "filesystem.move overwrite is not permitted",
+            false,
+        ));
+    }
+    let source_path = Path::new(source);
+    let destination_path = Path::new(destination);
+    if !source_path.is_absolute() || !destination_path.is_absolute() {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "filesystem.move requires absolute source and destination paths",
+            false,
+        ));
+    }
+    if source_path == destination_path {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "filesystem.move requires different source and destination paths",
+            false,
+        ));
+    }
+    let workdir = destination_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .and_then(Path::to_str)
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "filesystem.move requires an absolute destination file path",
+                false,
+            )
+        })?;
+    let command = format!(
+        "source={}; destination={}; if [ ! -e \"$source\" ]; then /usr/bin/printf 'AIOS_SOURCE_MISSING\\n'; elif [ -e \"$destination\" ]; then /usr/bin/printf 'AIOS_DESTINATION_EXISTS\\n'; elif /bin/mv -n -- \"$source\" \"$destination\"; then if [ ! -e \"$source\" ] && [ -e \"$destination\" ]; then /usr/bin/printf 'AIOS_MOVED\\n'; else /usr/bin/printf 'AIOS_FAILED\\n'; fi; else /usr/bin/printf 'AIOS_FAILED\\n'; fi",
+        shell_quote(source),
+        shell_quote(destination),
+    );
+    let session_key = format!(
+        "agent:{FILESYSTEM_AGENT_ID}:ai-os-core-skill-{}",
+        request.execution_id
+    );
+    let message = format!(
+        "This is an AI-OS internal capability request. The label filesystem.move is NOT an OpenClaw tool name. Call the existing exec tool exactly once with command {} and workdir {}. Keep background false and yieldMs 10000. Use the command exactly as supplied without adding or changing flags, pipes, or wrappers. Move only; never overwrite an existing destination. Do not claim success without the tool output.",
+        serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".to_owned()),
+        serde_json::to_string(workdir).unwrap_or_else(|_| "\"\"".to_owned())
+    );
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": FILESYSTEM_AGENT_ID,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": 120,
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|run_id| !run_id.trim().is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    for _ in 0..AGENT_WAIT_ATTEMPTS {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("ok") => {
+                let history = invoker
+                    .invoke(
+                        "chat.history",
+                        Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
+                    )
+                    .map_err(map_gateway_failure)?;
+                let output = filesystem_move_output(&history, source, destination).ok_or_else(|| {
+                    OpenClawExecutionError::new(
+                        OpenClawExecutionErrorKind::ProtocolFailure,
+                        "OpenClaw file move completed without a valid exec tool result.",
+                        false,
+                    )
+                })?;
+                return Ok(OpenClawExecutionResult {
+                    output,
+                    summary: Some("OpenClaw completed the file move.".to_owned()),
+                });
+            }
+            Some("error") => {
+                let message = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw agent execution failed.");
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    message,
+                    false,
+                ));
+            }
+            Some("timeout") => continue,
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid agent terminal status.",
+                    false,
+                ));
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw agent execution timed out.",
+        true,
+    ))
+}
+
+fn filesystem_move_output(history: &Value, source: &str, destination: &str) -> Option<Value> {
+    let messages = history.get("messages")?.as_array()?;
+    let text = messages
+        .iter()
+        .rev()
+        .find(|message| {
+            message.get("role").and_then(Value::as_str) == Some("toolResult")
+                && message.get("toolName").and_then(Value::as_str) == Some("exec")
+                && message.get("isError").and_then(Value::as_bool) != Some(true)
+        })?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let status = if text.lines().any(|line| line.trim() == "AIOS_MOVED") {
+        "moved"
+    } else if text
+        .lines()
+        .any(|line| line.trim() == "AIOS_SOURCE_MISSING")
+    {
+        "source_missing"
+    } else if text
+        .lines()
+        .any(|line| line.trim() == "AIOS_DESTINATION_EXISTS")
+    {
+        "destination_exists"
+    } else if text.lines().any(|line| line.trim() == "AIOS_FAILED") {
+        "failed"
+    } else {
+        return None;
+    };
+    Some(serde_json::json!({
+        "source": source,
+        "destination": destination,
+        "status": status,
+    }))
+}
+
 fn map_gateway_failure(failure: ActiveGatewayMethodFailure) -> OpenClawExecutionError {
     let (kind, retryable) = match failure.kind {
         ActiveGatewayFailureKind::Unauthorized => {
@@ -920,6 +1129,108 @@ mod tests {
                 "{expected_message}"
             );
             assert_eq!(error.message, expected_message);
+        }
+        assert!(invoker.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn filesystem_move_runs_agent_and_returns_moved_result() {
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"type": "text", "text": "AIOS_MOVED\n"}]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"status": "accepted", "runId": "move-run"})),
+                Ok(json!({"runId": "move-run", "status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request(
+                "filesystem.move",
+                json!({
+                    "source": "/safe/source file.txt",
+                    "destination": "/safe/archive/destination file.txt",
+                    "overwrite": false,
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({
+                "source": "/safe/source file.txt",
+                "destination": "/safe/archive/destination file.txt",
+                "status": "moved",
+            })
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait", "chat.history"]
+        );
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("filesystem.move is NOT an OpenClaw tool name"));
+        assert!(message.contains("/bin/mv -n"));
+        assert!(message.contains("never overwrite"));
+        assert!(calls.iter().all(|call| call.0 != "filesystem.move"));
+    }
+
+    #[test]
+    fn filesystem_move_reports_fail_closed_statuses() {
+        for (marker, status) in [
+            ("AIOS_SOURCE_MISSING", "source_missing"),
+            ("AIOS_DESTINATION_EXISTS", "destination_exists"),
+            ("AIOS_FAILED", "failed"),
+        ] {
+            let history = json!({"messages": [{
+                "role": "toolResult",
+                "toolName": "exec",
+                "isError": false,
+                "content": [{"text": marker}]
+            }]});
+            assert_eq!(
+                filesystem_move_output(&history, "/safe/source.txt", "/safe/destination.txt")
+                    .unwrap(),
+                json!({
+                    "source": "/safe/source.txt",
+                    "destination": "/safe/destination.txt",
+                    "status": status,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn filesystem_move_rejects_overwrite_relative_and_same_paths() {
+        let invoker = RecordingInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcome: Err(ActiveGatewayMethodFailure {
+                kind: ActiveGatewayFailureKind::Protocol,
+                message: "unexpected Gateway call".to_owned(),
+            }),
+        };
+        for input in [
+            json!({"source": "/safe/a.txt", "destination": "/safe/b.txt", "overwrite": true}),
+            json!({"source": "relative/a.txt", "destination": "/safe/b.txt"}),
+            json!({"source": "/safe/a.txt", "destination": "relative/b.txt"}),
+            json!({"source": "/safe/a.txt", "destination": "/safe/a.txt"}),
+        ] {
+            let error = execute_with_invoker(
+                &invoker,
+                &request("filesystem.move", input),
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
         }
         assert!(invoker.calls.lock().unwrap().is_empty());
     }
