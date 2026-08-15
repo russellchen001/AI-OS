@@ -1,6 +1,6 @@
 use super::{
     executor::{
-        execute_local_model_runtime_task, execute_runtime_task, OperationEventEmitter,
+        execute_local_model_runtime_task, execute_mcp_runtime_task, execute_runtime_task, OperationEventEmitter,
         RuntimeExecutionState, RuntimeTaskExecutionRequest, RuntimeTaskExecutionResult,
     },
     models::{NormalizedRuntimeError, RuntimeErrorCode},
@@ -193,6 +193,13 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
                 runtime_request,
             ),
 
+            "mcp" => execute_mcp_runtime_task(
+                self.runtime.manager(),
+                self.runtime.scheduler(),
+                Arc::clone(&self.emitter),
+                runtime_request,
+            ),
+
             _ => {
                 return Err(PlanRuntimeExecutionError::UnsupportedExecutor {
                     capability,
@@ -321,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_skill_executor_is_rejected_before_openclaw() {
+    fn browser_skill_is_not_routed_to_openclaw() {
         let adapter = Arc::new(RecordingAdapter {
             requests: Mutex::new(Vec::new()),
             outcome: Ok(OpenClawExecutionResult {
@@ -329,17 +336,23 @@ mod tests {
                 summary: None,
             }),
         });
+
         let executor = bridge(adapter.clone());
+
         let mut browser = request("plan", "step");
         browser.capability = "browser.search".to_owned();
 
-        assert_eq!(
-            executor.execute_step(browser),
-            Err(PlanRuntimeExecutionError::UnsupportedExecutor {
-                capability: "browser.search".to_owned(),
-                executor: "mcp".to_owned(),
-            })
+        let result = executor.execute_step(browser);
+
+        assert!(
+            matches!(
+                result,
+                Err(PlanRuntimeExecutionError::Runtime { .. })
+                    | Err(PlanRuntimeExecutionError::Admission { .. })
+            ),
+            "browser skill should reach MCP runtime path"
         );
+
         assert!(adapter.requests.lock().unwrap().is_empty());
     }
 

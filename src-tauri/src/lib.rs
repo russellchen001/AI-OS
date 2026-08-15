@@ -4,6 +4,7 @@ mod conversations;
 mod health;
 mod logs;
 mod mcp;
+mod mcp_runtime;
 mod memory;
 mod memory_service;
 mod models;
@@ -154,6 +155,8 @@ pub fn run() {
             mcp::update_mcp_server,
             mcp::toggle_mcp_server,
             mcp::delete_mcp_server,
+            mcp_runtime::list_mcp_tools,
+            mcp_runtime::call_mcp_tool,
             openclaw::list_openclaw_servers,
             openclaw::save_openclaw_server,
             openclaw::update_openclaw_server,
