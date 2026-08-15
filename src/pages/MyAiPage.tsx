@@ -8,6 +8,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
+import { useDialog } from "../components/DialogProvider";
 import type { OllamaModel } from "../types/index";
 import type { RuntimeStatus } from "../types/runtime";
 import type {
@@ -170,6 +171,7 @@ function MyAiPage({
   onRefreshLocalModels,
   onStartOllama,
 }: MyAiPageProps) {
+  const dialog = useDialog();
   const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([]);
   const [providerAdapters, setProviderAdapters] = useState<
     ProviderAdapterDescriptor[]
@@ -345,9 +347,14 @@ function MyAiPage({
   }
 
   async function removeLocalModel(model: string) {
-    const confirmed = window.confirm(
-      `Delete local Ollama model ${model}?`,
-    );
+    const confirmed = await dialog.confirm({
+      title: "Delete local model?",
+      message: `AI-OS will permanently remove this Ollama model:\n\n${model}`,
+      confirmLabel: "Delete model",
+      cancelLabel: "Cancel",
+      tone: "warning",
+    });
+
     if (!confirmed) return;
 
     await deleteOllamaModel(model);
@@ -355,10 +362,12 @@ function MyAiPage({
   }
 
   async function downloadLocalModel() {
-    const model = window.prompt(
-      "Enter Ollama model name to download:",
-      "qwen3:8b",
-    );
+    const model = await dialog.prompt({
+      title: "Download Ollama model",
+      message: "Enter the Ollama model name to download.",
+      confirmLabel: "Download",
+      cancelLabel: "Cancel",
+    });
 
     if (!model?.trim()) return;
 
