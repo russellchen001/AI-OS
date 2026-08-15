@@ -70,6 +70,21 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "mcp",
             "browser",
         ),
+        skill(
+            "local-models",
+            "Local Models",
+            "system",
+            "List, inspect, download and remove local Ollama models.",
+            &[
+                "models.list",
+                "models.show",
+                "models.pull",
+                "models.delete",
+            ],
+            &["models.read", "models.manage"],
+            "local",
+            "ollama",
+        ),
     ]
 }
 
@@ -127,6 +142,10 @@ mod tests {
             "ai.openclaw.gateway",
             "browser.search",
             "browser.control",
+            "models.list",
+            "models.show",
+            "models.pull",
+            "models.delete",
         ] {
             assert!(
                 find_by_capability(capability).is_some(),
@@ -154,10 +173,13 @@ mod tests {
     fn list_command_returns_canonical_registry() {
         let skills = list_skills();
 
-        assert_eq!(skills.len(), 3);
+        assert_eq!(skills.len(), 4);
         assert_eq!(skills[0].id, "filesystem");
         assert_eq!(skills[1].id, "openclaw-session");
         assert_eq!(skills[2].id, "browser");
+        assert_eq!(skills[3].id, "local-models");
+        assert_eq!(skills[3].executor.kind, "local");
+        assert_eq!(skills[3].executor.handler, "ollama");
     }
 
     #[test]

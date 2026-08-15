@@ -155,6 +155,60 @@ function formatFilesystemMoveResult(output: unknown): string {
   return `File moved.\n\nFrom: ${result.source}\nTo: ${result.destination}`;
 }
 
+function formatLocalModelResult(
+  capability: "models.list" | "models.show" | "models.pull" | "models.delete",
+  output: unknown,
+): string {
+  if (capability === "models.list") {
+    if (!Array.isArray(output)) {
+      throw new Error("Local Runtime returned an invalid model list.");
+    }
+
+    const names = output
+      .map((item) =>
+        item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string"
+          ? (item as { name: string }).name
+          : undefined,
+      )
+      .filter((name): name is string => Boolean(name));
+
+    return names.length
+      ? `Local models:\n\n${names.map((name) => `- ${name}`).join("\n")}`
+      : "No local Ollama models are installed.";
+  }
+
+  if (!output || typeof output !== "object") {
+    throw new Error("Local Runtime returned an invalid model result.");
+  }
+
+  const result = output as {
+    details?: unknown;
+    message?: unknown;
+    model?: unknown;
+    progress?: { status?: unknown };
+  };
+
+  if (capability === "models.show" && typeof result.details === "string") {
+    return `Model details:\n\n\`\`\`text\n${result.details}\n\`\`\``;
+  }
+
+  if (capability === "models.pull" && typeof result.model === "string") {
+    const status =
+      typeof result.progress?.status === "string" ? result.progress.status : "completed";
+    return `Model downloaded.\n\nModel: ${result.model}\nStatus: ${status}`;
+  }
+
+  if (
+    capability === "models.delete" &&
+    typeof result.model === "string" &&
+    typeof result.message === "string"
+  ) {
+    return `Model deleted.\n\n${result.model}`;
+  }
+
+  throw new Error("Local Runtime returned an invalid model result.");
+}
+
 type ChatPageProps = {
   conversationId: string;
   onOpenMyAi: () => void;
@@ -203,6 +257,37 @@ function buildMemoryContext(
   };
 }
 
+
+function chooseLocalModelCapability(
+  capability: "models.list" | "models.show" | "models.pull" | "models.delete",
+  setLocalModelWork: React.Dispatch<React.SetStateAction<{
+    capability: "models.list" | "models.show" | "models.pull" | "models.delete";
+    model?: string;
+  } | undefined>>,
+  setTaskType: React.Dispatch<React.SetStateAction<ChatTaskType>>,
+  setDraft: React.Dispatch<React.SetStateAction<string>>,
+) {
+  let model: string | undefined;
+
+  if (capability !== "models.list") {
+    model = window.prompt("Ollama model name")?.trim();
+    if (!model) return;
+  }
+
+  setLocalModelWork({
+    capability,
+    model,
+  });
+
+  setTaskType("DO");
+
+  setDraft(
+    capability === "models.list"
+      ? "List local Ollama models"
+      : `${capability} ${model}`,
+  );
+}
+
 function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const dialog = useDialog();
   const [draft, setDraft] = useState("");
@@ -222,6 +307,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     source: string;
     destination: string;
   }>();
+  const [localModelWork, setLocalModelWork] = useState<{
+    capability: "models.list" | "models.show" | "models.pull" | "models.delete";
+    model?: string;
+  }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -231,6 +320,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setReadFilePath(undefined);
     setWriteFilePath(undefined);
     setMoveFilePaths(undefined);
+    setLocalModelWork(undefined);
   }, [conversationId]);
 
   async function chooseFolderToScan() {
@@ -324,7 +414,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     const content = draft.trim();
     if (!content || isSubmitting) return;
     const isWorkRequest = Boolean(
-      scanFolderPath || readFilePath || writeFilePath || moveFilePaths,
+      scanFolderPath ||
+        readFilePath ||
+        writeFilePath ||
+        moveFilePaths ||
+        localModelWork,
     ) || taskType === "DO";
 
     if (scanFolderPath) {
@@ -363,6 +457,23 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         title: "Move this file?",
         message: `OpenClaw will move:\n\n${moveFilePaths.source}\n\nTo:\n\n${moveFilePaths.destination}\n\nAn existing destination will not be overwritten.`,
         confirmLabel: "Move file",
+        cancelLabel: "Cancel",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+    }
+
+    if (
+      localModelWork?.capability === "models.pull" ||
+      localModelWork?.capability === "models.delete"
+    ) {
+      const deleting = localModelWork.capability === "models.delete";
+      const confirmed = await dialog.confirm({
+        title: deleting ? "Delete this local model?" : "Download this local model?",
+        message: deleting
+          ? `AI-OS will permanently delete this Ollama model from this Mac:\n\n${localModelWork.model}`
+          : `AI-OS will download this Ollama model to this Mac:\n\n${localModelWork.model}`,
+        confirmLabel: deleting ? "Delete model" : "Download model",
         cancelLabel: "Cancel",
         tone: "warning",
       });
@@ -553,50 +664,62 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const execution = await executeChatWorkTask(
         task.taskId,
         "openclaw",
-        moveFilePaths
+        localModelWork
           ? {
-              capability: "filesystem.move",
-              input: {
-                source: moveFilePaths.source,
-                destination: moveFilePaths.destination,
-                overwrite: false,
-              },
-              userConfirmed: true,
+              capability: localModelWork.capability,
+              input: localModelWork.model
+                ? { model: localModelWork.model }
+                : {},
+              userConfirmed:
+                localModelWork.capability === "models.pull" ||
+                localModelWork.capability === "models.delete",
             }
-          : writeFilePath
-          ? {
-              capability: "filesystem.write",
-              input: { path: writeFilePath, content: draft, overwrite: false },
-              userConfirmed: true,
-            }
-          : readFilePath
-          ? {
-              capability: "filesystem.read",
-              input: { path: readFilePath },
-              userConfirmed: true,
-            }
-          : scanFolderPath
-          ? {
-              capability: "filesystem.scan",
-              input: { path: scanFolderPath },
-              userConfirmed: true,
-            }
-          : undefined,
+          : moveFilePaths
+            ? {
+                capability: "filesystem.move",
+                input: {
+                  source: moveFilePaths.source,
+                  destination: moveFilePaths.destination,
+                  overwrite: false,
+                },
+                userConfirmed: true,
+              }
+            : writeFilePath
+              ? {
+                  capability: "filesystem.write",
+                  input: { path: writeFilePath, content: draft, overwrite: false },
+                  userConfirmed: true,
+                }
+              : readFilePath
+                ? {
+                    capability: "filesystem.read",
+                    input: { path: readFilePath },
+                    userConfirmed: true,
+                  }
+                : scanFolderPath
+                  ? {
+                      capability: "filesystem.scan",
+                      input: { path: scanFolderPath },
+                      userConfirmed: true,
+                    }
+                  : undefined,
       );
       const workMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: moveFilePaths
-          ? formatFilesystemMoveResult(execution.output)
-          : writeFilePath
-          ? formatFilesystemWriteResult(execution.output)
-          : readFilePath
-          ? formatFilesystemReadResult(execution.output)
-          : scanFolderPath
-            ? formatFilesystemScanResult(execution.output)
-          : execution.output
-            ? `OpenClaw completed the plan.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
-            : `OpenClaw completed plan ${execution.planId}.`,
+        content: localModelWork
+          ? formatLocalModelResult(localModelWork.capability, execution.output)
+          : moveFilePaths
+            ? formatFilesystemMoveResult(execution.output)
+            : writeFilePath
+              ? formatFilesystemWriteResult(execution.output)
+              : readFilePath
+                ? formatFilesystemReadResult(execution.output)
+                : scanFolderPath
+                  ? formatFilesystemScanResult(execution.output)
+                  : execution.output
+                    ? `OpenClaw completed the plan.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
+                    : `OpenClaw completed plan ${execution.planId}.`,
         createdAt: new Date().toISOString(),
       };
       const completedMessages = [...nextMessages, workMessage];
@@ -605,6 +728,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       setReadFilePath(undefined);
       setWriteFilePath(undefined);
       setMoveFilePaths(undefined);
+      setLocalModelWork(undefined);
       saveConversation({
         ...nextConversation,
         messages: completedMessages,
@@ -614,9 +738,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         ? describeChatTaskError(
             error,
             true,
-            moveFilePaths
-              ? "file move"
-              : writeFilePath
+            localModelWork
+              ? "local model operation"
+              : moveFilePaths
+                ? "file move"
+                : writeFilePath
                 ? "file write"
                 : readFilePath
                   ? "file read"
@@ -632,9 +758,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const failureMessage = describeChatTaskError(
         error,
         isWorkRequest,
-        moveFilePaths
-          ? "file move"
-          : writeFilePath
+        localModelWork
+          ? "local model operation"
+          : moveFilePaths
+            ? "file move"
+            : writeFilePath
             ? "file write"
             : readFilePath
               ? "file read"
@@ -899,6 +1027,63 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12M13 8l4 4-4 4M6 5h12v14H6" /></svg>
                 Move file
               </button>
+
+              <button
+                type="button"
+                className={localModelWork ? "tool-pill tool-pill-active" : "tool-pill"}
+                onClick={() =>
+                  chooseLocalModelCapability(
+                    "models.list",
+                    setLocalModelWork,
+                    setTaskType,
+                    setDraft,
+                  )
+                }
+              >
+                List models
+              </button>
+              <button
+                type="button"
+                className="tool-pill"
+                onClick={() =>
+                  chooseLocalModelCapability(
+                    "models.show",
+                    setLocalModelWork,
+                    setTaskType,
+                    setDraft,
+                  )
+                }
+              >
+                Inspect model
+              </button>
+              <button
+                type="button"
+                className="tool-pill"
+                onClick={() =>
+                  chooseLocalModelCapability(
+                    "models.pull",
+                    setLocalModelWork,
+                    setTaskType,
+                    setDraft,
+                  )
+                }
+              >
+                Download model
+              </button>
+              <button
+                type="button"
+                className="tool-pill"
+                onClick={() =>
+                  chooseLocalModelCapability(
+                    "models.delete",
+                    setLocalModelWork,
+                    setTaskType,
+                    setDraft,
+                  )
+                }
+              >
+                Delete model
+              </button>
               <div className="agent-picker">
                 <button
                   type="button"
@@ -945,6 +1130,26 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
             )}
           </div>
         </form>
+
+        {localModelWork && (
+          <div className="composer-scan-target" role="status">
+            <span>
+              <strong>Local model operation</strong>
+              <small>
+                {localModelWork.capability}
+                {localModelWork.model ? ` · ${localModelWork.model}` : ""}
+              </small>
+            </span>
+            <button
+              type="button"
+              onClick={() => setLocalModelWork(undefined)}
+              aria-label="Cancel local model operation"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         {attachments.length > 0 && (
           <div className="composer-attachments">
             {attachments.map((attachment) => (

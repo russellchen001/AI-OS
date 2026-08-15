@@ -1,7 +1,7 @@
 use super::{
     executor::{
-        execute_runtime_task, OperationEventEmitter, RuntimeExecutionState,
-        RuntimeTaskExecutionRequest, RuntimeTaskExecutionResult,
+        execute_local_model_runtime_task, execute_runtime_task, OperationEventEmitter,
+        RuntimeExecutionState, RuntimeTaskExecutionRequest, RuntimeTaskExecutionResult,
     },
     models::{NormalizedRuntimeError, RuntimeErrorCode},
     openclaw_execution::OpenClawExecutionAdapter,
@@ -161,31 +161,45 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
             }
         })?;
 
-        if skill.executor.kind != "openclaw" {
-            return Err(PlanRuntimeExecutionError::UnsupportedExecutor {
-                capability,
-                executor: skill.executor.kind,
-            });
-        }
+        let executor_kind = skill.executor.kind.clone();
+        let handler = skill.executor.handler.clone();
 
         let attempt_id = Uuid::new_v4().to_string();
         let operation_id = operation_identity(&request.plan_id, &request.step_id, &attempt_id);
         let input = Value::Object(request.input.into_iter().collect::<Map<_, _>>());
+
         let runtime_request = RuntimeTaskExecutionRequest {
             operation_id,
             plan_id: request.plan_id.as_str().to_owned(),
             step_id: request.step_id.as_str().to_owned(),
-            capability,
+            capability: capability.clone(),
             input,
             user_confirmed: request.user_confirmed,
         };
-        execute_runtime_task(
-            self.runtime.manager(),
-            self.runtime.scheduler(),
-            Arc::clone(&self.emitter),
-            runtime_request,
-            Arc::clone(&self.adapter),
-        )
+
+        match executor_kind.as_str() {
+            "openclaw" => execute_runtime_task(
+                self.runtime.manager(),
+                self.runtime.scheduler(),
+                Arc::clone(&self.emitter),
+                runtime_request,
+                Arc::clone(&self.adapter),
+            ),
+
+            "local" if handler == "ollama" => execute_local_model_runtime_task(
+                self.runtime.manager(),
+                self.runtime.scheduler(),
+                Arc::clone(&self.emitter),
+                runtime_request,
+            ),
+
+            _ => {
+                return Err(PlanRuntimeExecutionError::UnsupportedExecutor {
+                    capability,
+                    executor: executor_kind,
+                });
+            }
+        }
         .map(runtime_result)
         .map_err(runtime_error)
     }

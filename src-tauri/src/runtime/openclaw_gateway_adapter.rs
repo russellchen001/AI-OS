@@ -184,13 +184,22 @@ fn execute_filesystem_scan(
     ))
 }
 
-fn filesystem_scan_output(history: &Value, path: &str) -> Option<Value> {
+
+fn latest_successful_exec_result(history: &Value) -> Option<&Value> {
     let messages = history.get("messages")?.as_array()?;
-    let tool_result = messages.iter().rev().find(|message| {
-        message.get("role").and_then(Value::as_str) == Some("toolResult")
+
+    messages.iter().rev().find_map(|entry| {
+        let message = entry.get("message").unwrap_or(entry);
+
+        (message.get("role").and_then(Value::as_str) == Some("toolResult")
             && message.get("toolName").and_then(Value::as_str) == Some("exec")
-            && message.get("isError").and_then(Value::as_bool) != Some(true)
-    })?;
+            && message.get("isError").and_then(Value::as_bool) != Some(true))
+        .then_some(message)
+    })
+}
+
+fn filesystem_scan_output(history: &Value, path: &str) -> Option<Value> {
+    let tool_result = latest_successful_exec_result(history)?;
     let text = tool_result
         .get("content")?
         .as_array()?
@@ -343,12 +352,7 @@ fn shell_quote(value: &str) -> String {
 }
 
 fn filesystem_read_output(history: &Value, path: &str) -> Option<Value> {
-    let messages = history.get("messages")?.as_array()?;
-    let tool_result = messages.iter().rev().find(|message| {
-        message.get("role").and_then(Value::as_str) == Some("toolResult")
-            && message.get("toolName").and_then(Value::as_str) == Some("exec")
-            && message.get("isError").and_then(Value::as_bool) != Some(true)
-    })?;
+    let tool_result = latest_successful_exec_result(history)?;
     let text = tool_result
         .get("content")?
         .as_array()?
@@ -550,15 +554,7 @@ fn execute_filesystem_write(
 }
 
 fn filesystem_write_output(history: &Value, path: &str) -> Option<Value> {
-    let messages = history.get("messages")?.as_array()?;
-    let text = messages
-        .iter()
-        .rev()
-        .find(|message| {
-            message.get("role").and_then(Value::as_str) == Some("toolResult")
-                && message.get("toolName").and_then(Value::as_str) == Some("exec")
-                && message.get("isError").and_then(Value::as_bool) != Some(true)
-        })?
+    let text = latest_successful_exec_result(history)?
         .get("content")?
         .as_array()?
         .iter()
@@ -747,15 +743,7 @@ fn execute_filesystem_move(
 }
 
 fn filesystem_move_output(history: &Value, source: &str, destination: &str) -> Option<Value> {
-    let messages = history.get("messages")?.as_array()?;
-    let text = messages
-        .iter()
-        .rev()
-        .find(|message| {
-            message.get("role").and_then(Value::as_str) == Some("toolResult")
-                && message.get("toolName").and_then(Value::as_str) == Some("exec")
-                && message.get("isError").and_then(Value::as_bool) != Some(true)
-        })?
+    let text = latest_successful_exec_result(history)?
         .get("content")?
         .as_array()?
         .iter()
@@ -910,6 +898,38 @@ mod tests {
             .contains("/usr/bin/find . -mindepth 1 -maxdepth 1 -print"));
         assert_eq!(calls[1].1.as_ref().unwrap()["runId"], "run-123");
         assert!(calls.iter().all(|call| call.0 != "filesystem.scan"));
+    }
+
+
+    #[test]
+    fn filesystem_output_accepts_nested_openclaw_transcript_messages() {
+        let history = json!({
+            "messages": [{
+                "type": "message",
+                "message": {
+                    "role": "toolResult",
+                    "toolCallId": "tool-call-123",
+                    "toolName": "exec",
+                    "content": [{
+                        "type": "text",
+                        "text": "./.DS_Store\n./report.docx"
+                    }],
+                    "details": {
+                        "status": "completed",
+                        "exitCode": 0
+                    },
+                    "isError": false
+                }
+            }]
+        });
+
+        assert_eq!(
+            filesystem_scan_output(&history, "/safe/example"),
+            Some(json!({
+                "path": "/safe/example",
+                "entries": [".DS_Store", "report.docx"]
+            }))
+        );
     }
 
     #[test]

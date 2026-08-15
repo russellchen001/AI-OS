@@ -325,3 +325,66 @@ pub fn show_ollama_model(model: String) -> Result<String, String> {
         Err(_) => run_ollama(&["show", model]),
     }
 }
+
+pub(crate) fn execute_local_model_capability(
+    capability: &str,
+    input: &Value,
+    user_confirmed: bool,
+) -> Result<Value, String> {
+    match capability {
+        "models.list" => serde_json::to_value(list_ollama_models()?)
+            .map_err(|error| format!("Unable to serialize Ollama model list: {error}")),
+
+        "models.show" => {
+            let model = required_model_input(input)?;
+            let details = show_ollama_model(model)?;
+            Ok(serde_json::json!({
+                "details": details,
+            }))
+        }
+
+        "models.pull" => {
+            if !user_confirmed {
+                return Err("User confirmation is required to download a model.".to_owned());
+            }
+
+            let model = required_model_input(input)?;
+            let progress = pull_ollama_model(model.clone())?;
+
+            Ok(serde_json::json!({
+                "model": model,
+                "progress": progress,
+            }))
+        }
+
+        "models.delete" => {
+            if !user_confirmed {
+                return Err("User confirmation is required to delete a model.".to_owned());
+            }
+
+            let model = required_model_input(input)?;
+            let message = delete_ollama_model(model.clone())?;
+
+            Ok(serde_json::json!({
+                "model": model,
+                "message": message,
+            }))
+        }
+
+        _ => Err(format!(
+            "Unsupported local model capability: {}",
+            capability.trim()
+        )),
+    }
+}
+
+fn required_model_input(input: &Value) -> Result<String, String> {
+    input
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "Model name is required.".to_owned())
+}
+

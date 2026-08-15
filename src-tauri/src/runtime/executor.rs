@@ -157,6 +157,42 @@ impl RuntimeTaskExecutionRequest {
     }
 }
 
+struct LocalModelPreparedOperation {
+    capability: String,
+    input: Value,
+    user_confirmed: bool,
+}
+
+impl PreparedOperation for LocalModelPreparedOperation {
+    fn execute(
+        self: Box<Self>,
+        report: &mut dyn FnMut(RuntimeOperationProgress),
+    ) -> Result<Option<Value>, NormalizedRuntimeError> {
+        report(RuntimeOperationProgress {
+            phase: "executing".to_owned(),
+            completed_units: None,
+            total_units: None,
+            message: "Executing local model operation.".to_owned(),
+        });
+
+        crate::models::execute_local_model_capability(
+            &self.capability,
+            &self.input,
+            self.user_confirmed,
+        )
+        .map(Some)
+        .map_err(|message| NormalizedRuntimeError {
+            code: if message.to_lowercase().contains("confirmation") {
+                RuntimeErrorCode::PermissionDenied
+            } else {
+                RuntimeErrorCode::OperationFailed
+            },
+            message,
+            retryable: false,
+        })
+    }
+}
+
 struct OpenClawPreparedOperation {
     request: OpenClawExecutionRequest,
     adapter: Arc<dyn OpenClawExecutionAdapter>,
@@ -283,6 +319,83 @@ pub(crate) fn execute_runtime_task(
     let output = result_receiver
         .recv()
         .map_err(|_| operation_task_failed())??;
+    Ok(RuntimeTaskExecutionResult {
+        operation_id: request.operation_id,
+        output,
+    })
+}
+
+pub(crate) fn execute_local_model_runtime_task(
+    manager: Arc<RuntimeOperationManager>,
+    scheduler: RuntimeScheduler,
+    emitter: Arc<dyn OperationEventEmitter>,
+    request: RuntimeTaskExecutionRequest,
+) -> Result<RuntimeTaskExecutionResult, NormalizedRuntimeError> {
+    let request = request.validate()?;
+
+    let admission = manager.admit_identified_operation(
+        &request.operation_id,
+        "ollama",
+        super::models::RuntimeOperationAction::Execute,
+        false,
+    )?;
+
+    let operation = match admission {
+        RuntimeOperationAdmission::Accepted { operation } => operation,
+        RuntimeOperationAdmission::Conflict { .. } => {
+            return Err(NormalizedRuntimeError {
+                code: RuntimeErrorCode::OperationConflict,
+                message: "A Runtime task operation with this identifier already exists.".to_owned(),
+                retryable: false,
+            });
+        }
+        RuntimeOperationAdmission::Rejected { error } => return Err(error),
+    };
+
+    emit_best_effort(emitter.as_ref(), operation);
+
+    let prepared: Box<dyn PreparedOperation> = Box::new(LocalModelPreparedOperation {
+        capability: request.capability,
+        input: request.input,
+        user_confirmed: request.user_confirmed,
+    });
+
+    let operation_id = request.operation_id.clone();
+    let task_manager = Arc::clone(&manager);
+    let task_emitter = Arc::clone(&emitter);
+    let (result_sender, result_receiver) = mpsc::sync_channel(1);
+
+    let task = Box::new(move || {
+        let result = run_supervised_prepared_operation(
+            task_manager,
+            operation_id,
+            task_emitter,
+            prepared,
+            None,
+        );
+        let _ = result_sender.send(result);
+    });
+
+    let scheduled = catch_unwind(AssertUnwindSafe(|| scheduler.enqueue(task)))
+        .ok()
+        .and_then(Result::ok)
+        .is_some();
+
+    if !scheduled {
+        let error = operation_task_failed();
+        let _ = fail_operation(
+            manager.as_ref(),
+            &request.operation_id,
+            error.clone(),
+            emitter.as_ref(),
+        );
+        return Err(error);
+    }
+
+    let output = result_receiver
+        .recv()
+        .map_err(|_| operation_task_failed())??;
+
     Ok(RuntimeTaskExecutionResult {
         operation_id: request.operation_id,
         output,
