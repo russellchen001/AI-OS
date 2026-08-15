@@ -29,7 +29,10 @@ export type ExecuteWorkTaskOptions = {
   userConfirmed?: boolean;
 };
 
-export function describeWorkTaskError(error: unknown): string {
+export function describeWorkTaskError(
+  error: unknown,
+  operation = "folder scan",
+): string {
   const detail =
     typeof error === "string"
       ? error
@@ -39,13 +42,13 @@ export function describeWorkTaskError(error: unknown): string {
   const normalized = detail.toLowerCase();
 
   if (normalized.includes("pairing")) {
-    return "OpenClaw pairing is required. Pair OpenClaw and try the folder scan again.";
+    return `OpenClaw pairing is required. Pair OpenClaw and try the ${operation} again.`;
   }
   if (normalized.includes("permission") || normalized.includes("not permitted")) {
-    return "OpenClaw permission was denied for this folder scan.";
+    return `OpenClaw permission was denied for this ${operation}.`;
   }
   if (normalized.includes("authentication") || normalized.includes("unauthorized")) {
-    return "OpenClaw authentication is required. Reconnect OpenClaw and try again.";
+    return `OpenClaw authentication is required. Reconnect OpenClaw and try the ${operation} again.`;
   }
   if (
     normalized.includes("connection") ||
@@ -54,16 +57,17 @@ export function describeWorkTaskError(error: unknown): string {
     normalized.includes("no active") ||
     normalized.includes("runtime not found")
   ) {
-    return "OpenClaw is unavailable. Start or connect OpenClaw and try the folder scan again.";
+    return `OpenClaw is unavailable. Start or connect OpenClaw and try the ${operation} again.`;
   }
-  return "OpenClaw Runtime could not complete this folder scan. Check OpenClaw and try again.";
+  return `OpenClaw Runtime could not complete this ${operation}. Check OpenClaw and try again.`;
 }
 
 export function describeChatTaskError(
   error: unknown,
   isWorkRequest: boolean,
+  workOperation?: string,
 ): string {
-  if (isWorkRequest) return describeWorkTaskError(error);
+  if (isWorkRequest) return describeWorkTaskError(error, workOperation);
   return error instanceof Error && error.message === "NO_CONNECTED_PROVIDER"
     ? "Connect and test an AI in My AI before starting a conversation."
     : "AI‑OS could not complete this request. Check the selected AI connection and try again.";

@@ -69,6 +69,41 @@ function formatFilesystemScanResult(output: unknown): string {
     : "Folder scan completed. The folder is empty.";
 }
 
+function formatFilesystemReadResult(output: unknown): string {
+  if (!output || typeof output !== "object") {
+    throw new Error("OpenClaw returned an invalid file read result.");
+  }
+  const result = output as {
+    content?: unknown;
+    limitBytes?: unknown;
+    mimeType?: unknown;
+    size?: unknown;
+    status?: unknown;
+    truncated?: unknown;
+  };
+  if (typeof result.mimeType !== "string" || typeof result.size !== "number") {
+    throw new Error("OpenClaw returned an invalid file read result.");
+  }
+  if (result.status === "unsupported") {
+    return `This file cannot be displayed as text.\n\nType: ${result.mimeType}\nSize: ${result.size.toLocaleString()} bytes`;
+  }
+  if (result.status === "too_large" && typeof result.limitBytes === "number") {
+    return `This file is too large to read safely.\n\nSize: ${result.size.toLocaleString()} bytes\nLimit: ${result.limitBytes.toLocaleString()} bytes`;
+  }
+  if (result.status !== "text" || typeof result.content !== "string") {
+    throw new Error("OpenClaw returned an invalid file read result.");
+  }
+  const longestFence = Math.max(
+    2,
+    ...Array.from(result.content.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = "`".repeat(longestFence + 1);
+  const truncated = result.truncated === true
+    ? "\n\nContent was truncated to the safe output limit."
+    : "";
+  return `File read completed.\n\n${fence}\n${result.content}\n${fence}${truncated}`;
+}
+
 type ChatPageProps = {
   conversationId: string;
   onOpenMyAi: () => void;
@@ -130,12 +165,14 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [activeStream, setActiveStream] = useState<AiCenterStream>();
   const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
   const [scanFolderPath, setScanFolderPath] = useState<string>();
+  const [readFilePath, setReadFilePath] = useState<string>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setMessages(getConversation(conversationId)?.messages ?? []);
     setAttachments([]);
     setScanFolderPath(undefined);
+    setReadFilePath(undefined);
   }, [conversationId]);
 
   async function chooseFolderToScan() {
@@ -146,8 +183,22 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     });
     if (typeof selected !== "string") return;
     setScanFolderPath(selected);
+    setReadFilePath(undefined);
     setTaskType("DO");
     setDraft((current) => current || "Scan this folder");
+  }
+
+  async function chooseFileToRead() {
+    const selected = await openDialog({
+      directory: false,
+      multiple: false,
+      title: "Choose a text file to read",
+    });
+    if (typeof selected !== "string") return;
+    setReadFilePath(selected);
+    setScanFolderPath(undefined);
+    setTaskType("DO");
+    setDraft((current) => current || "Read this file");
   }
 
   useEffect(() => {
@@ -177,13 +228,23 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     event.preventDefault();
     const content = draft.trim();
     if (!content || isSubmitting) return;
-    const isWorkRequest = Boolean(scanFolderPath) || taskType === "DO";
+    const isWorkRequest = Boolean(scanFolderPath || readFilePath) || taskType === "DO";
 
     if (scanFolderPath) {
       const confirmed = await dialog.confirm({
         title: "Scan this folder?",
         message: `OpenClaw will read the folder contents at:\n\n${scanFolderPath}`,
         confirmLabel: "Scan folder",
+        cancelLabel: "Cancel",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+    }
+    if (readFilePath) {
+      const confirmed = await dialog.confirm({
+        title: "Read this file?",
+        message: `OpenClaw will read file contents at:\n\n${readFilePath}`,
+        confirmLabel: "Read file",
         cancelLabel: "Cancel",
         tone: "warning",
       });
@@ -374,7 +435,13 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const execution = await executeChatWorkTask(
         task.taskId,
         "openclaw",
-        scanFolderPath
+        readFilePath
+          ? {
+              capability: "filesystem.read",
+              input: { path: readFilePath },
+              userConfirmed: true,
+            }
+          : scanFolderPath
           ? {
               capability: "filesystem.scan",
               input: { path: scanFolderPath },
@@ -385,8 +452,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const workMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: scanFolderPath
-          ? formatFilesystemScanResult(execution.output)
+        content: readFilePath
+          ? formatFilesystemReadResult(execution.output)
+          : scanFolderPath
+            ? formatFilesystemScanResult(execution.output)
           : execution.output
             ? `OpenClaw completed the plan.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
             : `OpenClaw completed plan ${execution.planId}.`,
@@ -395,13 +464,18 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const completedMessages = [...nextMessages, workMessage];
       setMessages(completedMessages);
       setScanFolderPath(undefined);
+      setReadFilePath(undefined);
       saveConversation({
         ...nextConversation,
         messages: completedMessages,
       });
     } catch (error) {
       const workFailureMessage = isWorkRequest
-        ? describeChatTaskError(error, true)
+        ? describeChatTaskError(
+            error,
+            true,
+            readFilePath ? "file read" : "folder scan",
+          )
         : undefined;
       if (activeTaskId) {
         await failChatTaskExecution(
@@ -409,7 +483,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
           workFailureMessage ?? "AI Center request failed",
         ).catch(() => undefined);
       }
-      const failureMessage = describeChatTaskError(error, isWorkRequest);
+      const failureMessage = describeChatTaskError(
+        error,
+        isWorkRequest,
+        readFilePath ? "file read" : "folder scan",
+      );
       setMessages((current) =>
         activeAssistantMessageId
           ? current.map((message) =>
@@ -620,7 +698,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 onClick={() =>
                   setTaskType((current) => {
                     const next = current === "ASK" ? "DO" : "ASK";
-                    if (next === "ASK") setScanFolderPath(undefined);
+                    if (next === "ASK") {
+                      setScanFolderPath(undefined);
+                      setReadFilePath(undefined);
+                    }
                     return next;
                   })
                 }
@@ -636,6 +717,15 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5H3zM3 7.5V5h7l2 2" /></svg>
                 Scan folder
+              </button>
+              <button
+                type="button"
+                className={readFilePath ? "tool-pill tool-pill-active" : "tool-pill"}
+                aria-label="Choose a file to read"
+                onClick={() => void chooseFileToRead()}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6" /></svg>
+                Read file
               </button>
               <div className="agent-picker">
                 <button
@@ -713,6 +803,21 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               type="button"
               aria-label="Cancel folder scan"
               onClick={() => setScanFolderPath(undefined)}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {readFilePath && (
+          <div className="composer-scan-target" role="status">
+            <span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6" /></svg>
+              <span><strong>File read</strong><small>{readFilePath}</small></span>
+            </span>
+            <button
+              type="button"
+              aria-label="Cancel file read"
+              onClick={() => setReadFilePath(undefined)}
             >
               ×
             </button>

@@ -134,6 +134,7 @@ Things to settle when this is specified:
 | P14 General Memory Policy | Structured language, response detail, currency, and budget defaults with request-only overrides | `verify/verify_p14_general_memory_policy.sh` |
 | AI Center End-to-End QA | Auto/Local First, manual selection, multi-model, streaming, cancellation, fallback, and analytics verified | `verify/verify_ai_center_e2e_qa.sh` |
 | P15 Filesystem scan | Explicit PlanStep execution, one-time confirmation, permission enforcement, real OpenClaw `exec` scan, readable result rendering, Work-specific errors, and stable local message times | `verify/verify_p15_file_execution_contract.sh`, `verify/verify_p15_file_scan_confirmation.sh`; real UI E2E passed 2026-08-15 with `.DS_Store`, `Lable_副本.docx`, and `__副本.jpeg` |
+| P15 Filesystem read | Explicit file picker and confirmation, real OpenClaw text read, MIME and size detection, 1 MB read limit, 64 KiB output limit, binary/unsupported handling, and readable Chat rendering | `verify/verify_p15_file_read.sh`; real UI E2E passed 2026-08-15 with repository `README.md` content |
 
 P14 General Memory Policy behavioral QA passed:
 
@@ -172,8 +173,8 @@ config, or the repository.
 
 ## In progress
 
-P15 File management is in progress. `filesystem.scan` is complete with automatic
-and real UI E2E evidence. The confirmed UI path now reaches the dedicated
+P15 File management is in progress. `filesystem.scan` and `filesystem.read` are
+complete with automatic and real UI E2E evidence. The confirmed UI paths reach the dedicated
 `ai-os-files` worker, executes the read-only OpenClaw `exec` tool, normalizes the
 successful tool result, and renders the real directory entries without exposing
 raw `chat.history` JSON.
@@ -193,9 +194,8 @@ compatible and show no fabricated time.
 
 ## Next
 
-Continue P15 File management with `filesystem.read`, then implement and verify
-`filesystem.write` and `filesystem.move`. Read must follow the existing
-sensitivity policy. Write and move require explicit confirmation and must fail
+Continue P15 File management with `filesystem.write`, then implement and verify
+`filesystem.move`. Write and move require explicit confirmation and must fail
 closed for destructive or overwrite behavior.
 
 The P15 capability inventory remains:
@@ -263,6 +263,7 @@ Guide.
 - Work/Core Skill errors use safe OpenClaw/Runtime reporting, while ASK errors retain AI Center/provider semantics
 - `filesystem.scan` is an AI-OS capability identifier, not an OpenClaw Gateway RPC or tool id; the adapter translates it to the official `agent` / `agent.wait` path and reads the resulting session history
 - Real `filesystem.scan` E2E passed through Task, Planner, Runtime, permission, OpenClaw agent, read-only `exec`, normalized output, and Chat UI on 2026-08-15
+- `filesystem.read` always requires one-time confirmation, uses the same dedicated worker, detects MIME and size before reading, never sends unsupported binary content to Chat, and bounds text reads to 1 MB with at most 64 KiB returned
 - File execution uses the dedicated `ai-os-files` OpenClaw worker with no inherited skills or workspace bootstrap context and an isolated Ollama provider; `main` remains the default personal agent
 - OpenClaw permission and confirmation remain authoritative; the dedicated worker does not enable trusted automation or bypass tool policy
 

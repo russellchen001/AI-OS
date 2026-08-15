@@ -51,7 +51,10 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
     ) -> Result<OpenClawPermissionDecision, OpenClawPermissionCheckError> {
         Ok(
             if self.allowed_capabilities.contains(request.action.as_str())
-                || (request.action.as_str() == "filesystem.scan" && request.user_confirmed)
+                || (matches!(
+                    request.action.as_str(),
+                    "filesystem.scan" | "filesystem.read"
+                ) && request.user_confirmed)
             {
                 OpenClawPermissionDecision::Allowed
             } else {
@@ -417,7 +420,7 @@ mod tests {
     fn one_time_user_confirmation_allows_only_filesystem_scan() {
         let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
         let confirmed_scan = request(json!({"path": "/safe/example"})).with_user_confirmation(true);
-        let confirmed_other = OpenClawExecutionRequest::new(
+        let confirmed_write = OpenClawExecutionRequest::new(
             "execution-123",
             "filesystem.write",
             json!({"path": "/safe/example"}),
@@ -430,7 +433,35 @@ mod tests {
             OpenClawPermissionDecision::Allowed
         );
         assert_eq!(
-            gate.authorize(&confirmed_other).unwrap(),
+            gate.authorize(&confirmed_write).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+    }
+
+    #[test]
+    fn one_time_user_confirmation_allows_filesystem_read_but_not_write() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let confirmed_read = OpenClawExecutionRequest::new(
+            "execution-123",
+            "filesystem.read",
+            json!({"path": "/safe/example.txt"}),
+        )
+        .unwrap()
+        .with_user_confirmation(true);
+        let confirmed_write = OpenClawExecutionRequest::new(
+            "execution-123",
+            "filesystem.write",
+            json!({"path": "/safe/example.txt"}),
+        )
+        .unwrap()
+        .with_user_confirmation(true);
+
+        assert_eq!(
+            gate.authorize(&confirmed_read).unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
+        assert_eq!(
+            gate.authorize(&confirmed_write).unwrap(),
             OpenClawPermissionDecision::Denied
         );
     }
