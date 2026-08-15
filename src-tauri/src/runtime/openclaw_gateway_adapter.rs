@@ -10,10 +10,12 @@ use std::path::Path;
 
 const FILESYSTEM_SCAN_ACTION: &str = "filesystem.scan";
 const FILESYSTEM_READ_ACTION: &str = "filesystem.read";
+const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_AGENT_ID: &str = "ai-os-files";
 const AGENT_WAIT_ATTEMPTS: usize = 35;
 const MAX_FILE_READ_BYTES: u64 = 1_000_000;
 const MAX_FILE_OUTPUT_BYTES: u64 = 65_536;
+const MAX_FILE_WRITE_BYTES: usize = 4_096;
 
 pub(crate) struct OpenClawGatewayExecutionAdapter;
 
@@ -57,6 +59,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == FILESYSTEM_READ_ACTION {
         return execute_filesystem_read(invoker, request);
+    }
+    if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
+        return execute_filesystem_write(invoker, request);
     }
 
     invoker
@@ -378,6 +383,200 @@ fn filesystem_read_output(history: &Value, path: &str) -> Option<Value> {
     }))
 }
 
+fn execute_filesystem_write(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let path = request
+        .input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "filesystem.write requires path",
+                false,
+            )
+        })?;
+    let content = request
+        .input
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "filesystem.write requires text content",
+                false,
+            )
+        })?;
+    if content.len() > MAX_FILE_WRITE_BYTES {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "filesystem.write content exceeds the 4096 byte limit",
+            false,
+        ));
+    }
+    if request
+        .input
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "filesystem.write overwrite is not permitted",
+            false,
+        ));
+    }
+    let target_path = Path::new(path);
+    if !target_path.is_absolute() {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "filesystem.write requires an absolute file path",
+            false,
+        ));
+    }
+    let workdir = target_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .and_then(Path::to_str)
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "filesystem.write requires an absolute file path",
+                false,
+            )
+        })?;
+    let command = format!(
+        "target={}; content={}; if [ -e \"$target\" ]; then /usr/bin/printf 'AIOS_EXISTS\\n'; else set -C; umask 077; if /usr/bin/printf '%s' \"$content\" > \"$target\"; then size=$(/usr/bin/stat -f %z -- \"$target\") || exit 1; /usr/bin/printf 'AIOS_WRITTEN=%s\\n' \"$size\"; else /usr/bin/printf 'AIOS_FAILED\\n'; fi; fi",
+        shell_quote(path),
+        shell_quote(content),
+    );
+    let session_key = format!(
+        "agent:{FILESYSTEM_AGENT_ID}:ai-os-core-skill-{}",
+        request.execution_id
+    );
+    let message = format!(
+        "This is an AI-OS internal capability request. The label filesystem.write is NOT an OpenClaw tool name. Call the existing exec tool exactly once with command {} and workdir {}. Keep background false and yieldMs 10000. Use the command exactly as supplied without adding or changing flags, pipes, or wrappers. Create only; never overwrite an existing file. Do not claim success without the tool output.",
+        serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".to_owned()),
+        serde_json::to_string(workdir).unwrap_or_else(|_| "\"\"".to_owned())
+    );
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": FILESYSTEM_AGENT_ID,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": 120,
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|run_id| !run_id.trim().is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    for _ in 0..AGENT_WAIT_ATTEMPTS {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("ok") => {
+                let history = invoker
+                    .invoke(
+                        "chat.history",
+                        Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
+                    )
+                    .map_err(map_gateway_failure)?;
+                let output = filesystem_write_output(&history, path).ok_or_else(|| {
+                    OpenClawExecutionError::new(
+                        OpenClawExecutionErrorKind::ProtocolFailure,
+                        "OpenClaw file write completed without a valid exec tool result.",
+                        false,
+                    )
+                })?;
+                return Ok(OpenClawExecutionResult {
+                    output,
+                    summary: Some("OpenClaw completed the file write.".to_owned()),
+                });
+            }
+            Some("error") => {
+                let message = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw agent execution failed.");
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    message,
+                    false,
+                ));
+            }
+            Some("timeout") => continue,
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid agent terminal status.",
+                    false,
+                ));
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw agent execution timed out.",
+        true,
+    ))
+}
+
+fn filesystem_write_output(history: &Value, path: &str) -> Option<Value> {
+    let messages = history.get("messages")?.as_array()?;
+    let text = messages
+        .iter()
+        .rev()
+        .find(|message| {
+            message.get("role").and_then(Value::as_str) == Some("toolResult")
+                && message.get("toolName").and_then(Value::as_str) == Some("exec")
+                && message.get("isError").and_then(Value::as_bool) != Some(true)
+        })?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Some((_, size)) = text.rsplit_once("AIOS_WRITTEN=") {
+        return Some(serde_json::json!({
+            "path": path,
+            "status": "written",
+            "bytesWritten": size.trim().parse::<u64>().ok()?,
+        }));
+    }
+    if text.lines().any(|line| line.trim() == "AIOS_EXISTS") {
+        return Some(serde_json::json!({"path": path, "status": "exists"}));
+    }
+    if text.lines().any(|line| line.trim() == "AIOS_FAILED") {
+        return Some(serde_json::json!({"path": path, "status": "failed"}));
+    }
+    None
+}
+
 fn map_gateway_failure(failure: ActiveGatewayMethodFailure) -> OpenClawExecutionError {
     let (kind, retryable) = match failure.kind {
         ActiveGatewayFailureKind::Unauthorized => {
@@ -608,6 +807,121 @@ mod tests {
     #[test]
     fn filesystem_read_shell_quotes_single_quotes_in_paths() {
         assert_eq!(shell_quote("/safe/O'Reilly.txt"), "'/safe/O'\\''Reilly.txt'");
+    }
+
+    #[test]
+    fn filesystem_write_runs_agent_and_returns_created_file_result() {
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"type": "text", "text": "AIOS_WRITTEN=11\n"}]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"status": "accepted", "runId": "write-run"})),
+                Ok(json!({"runId": "write-run", "status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request(
+                "filesystem.write",
+                json!({
+                    "path": "/safe/example/new file.txt",
+                    "content": "hello world",
+                    "overwrite": false,
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({
+                "path": "/safe/example/new file.txt",
+                "status": "written",
+                "bytesWritten": 11,
+            })
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait", "chat.history"]
+        );
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("filesystem.write is NOT an OpenClaw tool name"));
+        assert!(message.contains("set -C"));
+        assert!(message.contains("never overwrite"));
+        assert!(calls.iter().all(|call| call.0 != "filesystem.write"));
+    }
+
+    #[test]
+    fn filesystem_write_reports_existing_and_failed_targets() {
+        let existing = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text": "AIOS_EXISTS\n"}]
+        }]});
+        let failed = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text": "AIOS_FAILED\n"}]
+        }]});
+
+        assert_eq!(
+            filesystem_write_output(&existing, "/safe/existing.txt").unwrap(),
+            json!({"path": "/safe/existing.txt", "status": "exists"})
+        );
+        assert_eq!(
+            filesystem_write_output(&failed, "/safe/failed.txt").unwrap(),
+            json!({"path": "/safe/failed.txt", "status": "failed"})
+        );
+    }
+
+    #[test]
+    fn filesystem_write_rejects_overwrite_oversize_and_relative_paths() {
+        let invoker = RecordingInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcome: Err(ActiveGatewayMethodFailure {
+                kind: ActiveGatewayFailureKind::Protocol,
+                message: "unexpected Gateway call".to_owned(),
+            }),
+        };
+        for (input, expected_message) in [
+            (
+                json!({"path": "/safe/file.txt", "content": "replacement", "overwrite": true}),
+                "filesystem.write overwrite is not permitted",
+            ),
+            (
+                json!({"path": "/safe/file.txt", "content": "x".repeat(4097)}),
+                "filesystem.write content exceeds the 4096 byte limit",
+            ),
+            (
+                json!({"path": "relative/file.txt", "content": "content"}),
+                "filesystem.write requires an absolute file path",
+            ),
+        ] {
+            let error = execute_with_invoker(
+                &invoker,
+                &request("filesystem.write", input),
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.kind,
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "{expected_message}"
+            );
+            assert_eq!(error.message, expected_message);
+        }
+        assert!(invoker.calls.lock().unwrap().is_empty());
     }
 
     #[test]

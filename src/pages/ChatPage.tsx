@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listMemory, saveMemory, type MemoryEntry } from "../services/memory";
 import {
   completeChatTaskExecution,
@@ -104,6 +104,30 @@ function formatFilesystemReadResult(output: unknown): string {
   return `File read completed.\n\n${fence}\n${result.content}\n${fence}${truncated}`;
 }
 
+function formatFilesystemWriteResult(output: unknown): string {
+  if (!output || typeof output !== "object") {
+    throw new Error("OpenClaw returned an invalid file write result.");
+  }
+  const result = output as {
+    bytesWritten?: unknown;
+    path?: unknown;
+    status?: unknown;
+  };
+  if (typeof result.path !== "string") {
+    throw new Error("OpenClaw returned an invalid file write result.");
+  }
+  if (result.status === "exists") {
+    return `The file was not written because a file already exists at the selected path.\n\n${result.path}`;
+  }
+  if (result.status === "failed") {
+    return `OpenClaw could not create the file. No existing file was overwritten.\n\n${result.path}`;
+  }
+  if (result.status !== "written" || typeof result.bytesWritten !== "number") {
+    throw new Error("OpenClaw returned an invalid file write result.");
+  }
+  return `File created.\n\nPath: ${result.path}\nBytes written: ${result.bytesWritten.toLocaleString()}`;
+}
+
 type ChatPageProps = {
   conversationId: string;
   onOpenMyAi: () => void;
@@ -166,6 +190,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
   const [scanFolderPath, setScanFolderPath] = useState<string>();
   const [readFilePath, setReadFilePath] = useState<string>();
+  const [writeFilePath, setWriteFilePath] = useState<string>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -173,6 +198,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setAttachments([]);
     setScanFolderPath(undefined);
     setReadFilePath(undefined);
+    setWriteFilePath(undefined);
   }, [conversationId]);
 
   async function chooseFolderToScan() {
@@ -184,6 +210,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     if (typeof selected !== "string") return;
     setScanFolderPath(selected);
     setReadFilePath(undefined);
+    setWriteFilePath(undefined);
     setTaskType("DO");
     setDraft((current) => current || "Scan this folder");
   }
@@ -197,8 +224,21 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     if (typeof selected !== "string") return;
     setReadFilePath(selected);
     setScanFolderPath(undefined);
+    setWriteFilePath(undefined);
     setTaskType("DO");
     setDraft((current) => current || "Read this file");
+  }
+
+  async function chooseFileToWrite() {
+    const selected = await saveDialog({
+      title: "Choose where to create the text file",
+      defaultPath: "untitled.txt",
+    });
+    if (typeof selected !== "string") return;
+    setWriteFilePath(selected);
+    setScanFolderPath(undefined);
+    setReadFilePath(undefined);
+    setTaskType("DO");
   }
 
   useEffect(() => {
@@ -228,7 +268,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     event.preventDefault();
     const content = draft.trim();
     if (!content || isSubmitting) return;
-    const isWorkRequest = Boolean(scanFolderPath || readFilePath) || taskType === "DO";
+    const isWorkRequest = Boolean(scanFolderPath || readFilePath || writeFilePath) || taskType === "DO";
 
     if (scanFolderPath) {
       const confirmed = await dialog.confirm({
@@ -245,6 +285,17 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         title: "Read this file?",
         message: `OpenClaw will read file contents at:\n\n${readFilePath}`,
         confirmLabel: "Read file",
+        cancelLabel: "Cancel",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+    }
+    if (writeFilePath) {
+      const byteLength = new TextEncoder().encode(draft).byteLength;
+      const confirmed = await dialog.confirm({
+        title: "Create this text file?",
+        message: `OpenClaw will create a new file at:\n\n${writeFilePath}\n\nContent size: ${byteLength.toLocaleString()} bytes\nExisting files will not be overwritten.`,
+        confirmLabel: "Create file",
         cancelLabel: "Cancel",
         tone: "warning",
       });
@@ -435,7 +486,13 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const execution = await executeChatWorkTask(
         task.taskId,
         "openclaw",
-        readFilePath
+        writeFilePath
+          ? {
+              capability: "filesystem.write",
+              input: { path: writeFilePath, content: draft, overwrite: false },
+              userConfirmed: true,
+            }
+          : readFilePath
           ? {
               capability: "filesystem.read",
               input: { path: readFilePath },
@@ -452,7 +509,9 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const workMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: readFilePath
+        content: writeFilePath
+          ? formatFilesystemWriteResult(execution.output)
+          : readFilePath
           ? formatFilesystemReadResult(execution.output)
           : scanFolderPath
             ? formatFilesystemScanResult(execution.output)
@@ -465,6 +524,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       setMessages(completedMessages);
       setScanFolderPath(undefined);
       setReadFilePath(undefined);
+      setWriteFilePath(undefined);
       saveConversation({
         ...nextConversation,
         messages: completedMessages,
@@ -474,7 +534,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         ? describeChatTaskError(
             error,
             true,
-            readFilePath ? "file read" : "folder scan",
+            writeFilePath ? "file write" : readFilePath ? "file read" : "folder scan",
           )
         : undefined;
       if (activeTaskId) {
@@ -486,7 +546,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const failureMessage = describeChatTaskError(
         error,
         isWorkRequest,
-        readFilePath ? "file read" : "folder scan",
+        writeFilePath ? "file write" : readFilePath ? "file read" : "folder scan",
       );
       setMessages((current) =>
         activeAssistantMessageId
@@ -701,6 +761,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                     if (next === "ASK") {
                       setScanFolderPath(undefined);
                       setReadFilePath(undefined);
+                      setWriteFilePath(undefined);
                     }
                     return next;
                   })
@@ -726,6 +787,15 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6" /></svg>
                 Read file
+              </button>
+              <button
+                type="button"
+                className={writeFilePath ? "tool-pill tool-pill-active" : "tool-pill"}
+                aria-label="Choose where to create a text file"
+                onClick={() => void chooseFileToWrite()}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6zM9 13h6M12 10v6" /></svg>
+                Write file
               </button>
               <div className="agent-picker">
                 <button
@@ -818,6 +888,21 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               type="button"
               aria-label="Cancel file read"
               onClick={() => setReadFilePath(undefined)}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {writeFilePath && (
+          <div className="composer-scan-target" role="status">
+            <span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6zM9 13h6M12 10v6" /></svg>
+              <span><strong>File write</strong><small>{writeFilePath}</small></span>
+            </span>
+            <button
+              type="button"
+              aria-label="Cancel file write"
+              onClick={() => setWriteFilePath(undefined)}
             >
               ×
             </button>
