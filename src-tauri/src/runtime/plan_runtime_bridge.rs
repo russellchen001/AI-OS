@@ -13,6 +13,7 @@ use super::{
     trusted_automation::{load_trusted_automation_settings, TrustedAutomationConfigError},
 };
 use crate::planner::{PlanId, PlanStepId, StepInput, StepOutput};
+use crate::browser::runtime::execute_browser_capability;
 use serde_json::{Map, Value};
 use std::{error::Error, fmt, sync::Arc};
 use uuid::Uuid;

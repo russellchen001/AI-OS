@@ -1,4 +1,5 @@
 mod backup;
+mod browser;
 mod claude_code;
 mod conversations;
 mod health;

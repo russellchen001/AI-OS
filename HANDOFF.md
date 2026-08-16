@@ -486,3 +486,37 @@ runtime.
 - 2026-08-13 22:49  docs: record external agent architecture references
 - 2026-08-14 01:29  feat: add p15 core skill execution contract
 - 2026-08-14 01:53  feat: add explicit folder scan work action
+
+
+## P15 Browser/Search
+
+Status:
+- Completed.
+
+Implemented:
+- Browser Skill contract (`browser.search`, `browser.control`).
+- MCP runtime execution path.
+- Browser Provider abstraction layer.
+- Browser Provider Registry.
+- Browser Runtime Dispatcher.
+- MCP Browser Provider bridge.
+
+Architecture decision:
+- Browser capability does not directly depend on a specific browser tool.
+- MCP Browser is the first provider implementation.
+- Future browser integrations (Chrome DevTools MCP, BrowserSkill, etc.) must be added as providers without changing Browser Skill contracts.
+
+Execution path:
+
+Planner
+→ Skill Resolver
+→ Browser Skill
+→ Browser Runtime Dispatcher
+→ Browser Provider Registry
+→ MCP Browser Provider
+→ MCP Runtime
+→ tools/call
+
+Verification:
+- verify_p15_browser_complete.sh
+
