@@ -563,3 +563,34 @@ Planned capabilities:
 - Cognitive Models must expose evidence and confidence.
 - Local Generative Media follows Local First routing.
 - Agent Connectivity must not become a Runtime dependency.
+
+## External Connectivity Architecture Reference
+
+### Linco Bridge Reference
+
+Repository:
+https://github.com/lincotalk/linco-bridge
+
+Reference commit:
+27688263dc33d07a5a06b7613329705552373dc1
+
+Purpose:
+- Agent Connectivity architecture reference
+- Remote client access pattern
+- Agent session continuity
+- Event streaming design
+- OpenClaw and Hermes connector architecture reference
+
+Boundary:
+- Linco Bridge is reference architecture only during P15
+- AI-OS Runtime must not depend on Linco Bridge
+- Candidate input for P16 Agent Connectivity Layer
+
+Future P16 consideration:
+
+AI-OS Agent Connectivity Layer may provide:
+- multi-device Agent access
+- remote sessions
+- channel adapters
+- event synchronization
+- secure external client communication
