@@ -2,6 +2,7 @@ mod backup;
 mod browser;
 mod claude_code;
 mod conversations;
+mod filesystem;
 mod health;
 mod logs;
 mod mcp;
