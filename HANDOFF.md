@@ -103,7 +103,7 @@ Things to settle when this is specified:
 | HEAD | P15 Local Model complete — Ollama runtime and My AI UI verified 2026-08-16 |
 | Latest tag | `p13-m5-complete` |
 | Baseline state | Working tree was clean at the stable baseline before this handoff update |
-| Active phase | P15 Core Skills — File management and Local Model complete; next capability area pending inventory |
+| Active phase | P15 Core Skills — 10 capability areas defined; File Management and Local Model Management complete; Download Skill in progress. |
 
 ---
 
@@ -138,6 +138,7 @@ Things to settle when this is specified:
 | P15 Filesystem write | Explicit save-path selection and confirmation, real OpenClaw text creation, 4 KiB input limit, private 0600 permissions, and create-only/no-overwrite failure handling | `verify/verify_p15_file_write.sh`; isolated real OpenClaw create/no-overwrite smoke and real UI E2E passed 2026-08-15 with a 27-byte text file |
 | P15 Filesystem move | Explicit source/destination selection and one-time confirmation, real OpenClaw move execution, no-overwrite behavior, absolute/different-path validation, fail-closed source/destination checks, and readable Chat rendering | `verify/verify_p15_file_move.sh`; isolated real OpenClaw smoke and real UI E2E passed 2026-08-15 moving `/private/tmp/ai-os-p15-ui-write-20260815.txt` to `/private/tmp/ai-os-p15-ui-move-20260815.txt` |
 | P15 Local Model Core Skill | Ollama local model management through Runtime, including model list, inspect, pull, delete capabilities, Chat execution flow, My AI management UI, and unified Dialog interaction | `verify_p15_local_model_core_skill.sh`, `verify_p15_local_model_step1.sh`, `verify_p15_local_model_step2.sh`, `verify_p15_local_model_step3.sh`, `verify_p15_local_model_step4.sh`; completed 2026-08-16 |
+| P15 Download Skill foundation | Provider-independent download architecture, aria2 RPC provider, lifecycle operations, real task execution, and task persistence | verify/verify_p15_download_* |
 
 P14 General Memory Policy behavioral QA passed:
 
@@ -190,19 +191,37 @@ history.
 
 ## Next
 
-Inventory the remaining P15 capability areas against the current repository and
-choose the next implementation area based on existing maturity and dependencies:
+P15 Core Skills implementation order:
 
-1. Email and calendar
-2. Browser and search
-3. Downloads
-4. NAS management
-5. Document, spreadsheet, and presentation workflows
-6. Local model management
-7. Smart home and device control
+Completed:
+1. File Management Skill
+2. Local Model Management Skill
 
-Do not add phases or milestones unless explicitly added to the Master Guide.
-Do not begin P16.
+In progress:
+3. Download Skill
+
+Download Skill architecture:
+- Provider-independent Download Skill contract
+- aria2 provider foundation completed
+- Task persistence completed
+- Lifecycle operations completed
+- Real task execution verified
+- Future providers:
+  - qBittorrent Provider
+  - Thunder Provider
+  - Cloud Download Provider
+  - NAS-integrated download workflows
+
+Next capability order:
+4. Browser and Search Skill
+5. NAS Management Skill
+6. Document, Spreadsheet and Presentation Workflow Skill
+7. Email and Calendar Skill
+8. Smart Home and Device Control Skill
+9. Local Generative Media Skill
+10. Cognitive Distillation Foundation
+
+Do not begin P16 until P15 capability foundations are implemented or explicitly deferred.
 
 ---
 
@@ -247,6 +266,17 @@ Do not begin P16.
 - Initial structured policies are `language`, `response_detail`, `currency`, and `budget`
 - Conversation-scoped persistent overrides are not implemented
 - Streaming Provider input accepts `system` messages; Anthropic combines them into the Messages API top-level `system` field and excludes them from `messages`
+
+
+**Download Skill**
+
+- Download capability enters through Task Engine and Planner.
+- Runtime resolves Download Skill through the Skill registry.
+- Providers are execution adapters behind a provider-independent contract.
+- aria2 is the first provider implementation, not the final Download capability.
+- Future providers extend the same contract without modifying Planner or Runtime.
+- Download execution state is persisted independently from provider implementation.
+- Provider selection should consider protocol capability, source type, and user preference.
 
 **P15 Core Skills**
 
