@@ -1039,3 +1039,83 @@ When making decisions, prefer:
 - Clear architecture
 - User value
 - Incremental progress
+
+---
+
+# Future Architecture Extensions
+
+## Cognitive Intelligence Layer
+
+AI-OS may build evidence-based cognitive models representing how a person,
+role, or decision framework evaluates situations.
+
+Cognitive Distillation extracts:
+
+- decision principles
+- value priorities
+- risk preferences
+- reasoning patterns
+- trade-off preferences
+- communication patterns
+
+Cognitive Models are not personality clones. They represent evidence-based
+decision patterns with confidence and supporting evidence.
+
+Future use cases:
+
+- strategic simulation
+- AI Council reasoning
+- decision support
+- scenario analysis
+
+
+## Local Generative Media Layer
+
+AI-OS supports local-first image and video generation workflows.
+
+Priority:
+
+1. User local providers
+   - Draw Things
+   - ComfyUI
+   - other local generation engines
+
+2. Configured cloud providers
+
+AI-OS manages:
+
+- prompt generation
+- model selection
+- LoRA selection
+- generation workflow
+- iterative refinement
+
+AI-OS should not silently upload local generation tasks to cloud services
+when suitable local capability exists.
+
+
+## Strategic Intelligence Layer
+
+Future Strategic Intelligence combines:
+
+- Cognitive Distillation
+- Cognitive Simulation
+- AI Council
+- scenario analysis
+- second-order reasoning
+
+The goal is not reading minds. The goal is evidence-based simulation of
+possible decision patterns under different scenarios.
+
+
+## Agent Connectivity Layer
+
+External Agent connectivity architectures such as Linco Bridge may provide:
+
+- remote client access
+- Agent session continuity
+- multi-device interaction
+- event streaming
+- external channel connectivity
+
+Agent Connectivity remains separate from Runtime execution architecture.

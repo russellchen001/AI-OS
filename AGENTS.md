@@ -237,3 +237,14 @@ Only view a full diff for files you are actually changing.
 ## 10. Most important rule
 
 > Continue the project. Do not restart the project.
+
+---
+
+## Future AI Capability Architecture Rules
+
+When adding future AI capabilities:
+
+- Cognitive Distillation belongs to the Cognitive Intelligence layer, not ordinary Skill prompts.
+- Cognitive Models must be evidence-based and should not be implemented as simple personality role-play.
+- Local Generative Media must follow Local First architecture and avoid binding AI-OS to one vendor.
+- Agent Connectivity layers such as Linco Bridge should remain separate from Runtime execution architecture.

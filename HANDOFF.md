@@ -520,3 +520,46 @@ Planner
 Verification:
 - verify_p15_browser_complete.sh
 
+
+---
+
+## Future roadmap additions
+
+### P15 additions
+
+**Local Generative Media Skill**
+
+- Local-first image/video generation capability
+- Draw Things and ComfyUI style local provider support
+- Model and LoRA orchestration
+- Prompt generation and iterative refinement
+- Cloud generation only when local capability is unavailable
+
+**Cognitive Distillation Foundation**
+
+- Evidence-based cognitive model extraction
+- Decision pattern modeling
+- Reasoning framework representation
+- Foundation for future Strategic Intelligence
+
+
+### P16 direction
+
+**Strategic Intelligence and Agent Expansion**
+
+Planned capabilities:
+
+- Cognitive Simulation Engine
+- Strategic Council enhancement
+- Second-order prediction
+- Scenario simulation
+- Linco Bridge style Agent Connectivity Layer
+- Multi-device Agent access
+
+
+## Additional technical decisions
+
+- Cognitive Distillation is not personality cloning.
+- Cognitive Models must expose evidence and confidence.
+- Local Generative Media follows Local First routing.
+- Agent Connectivity must not become a Runtime dependency.
