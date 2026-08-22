@@ -2,6 +2,7 @@ mod backup;
 mod browser;
 mod claude_code;
 mod conversations;
+mod download;
 mod filesystem;
 mod health;
 mod logs;
@@ -178,6 +179,10 @@ pub fn run() {
             runtime::list_runtimes,
             runtime::skills::registry::list_skills,
             runtime::skills::registry::get_skill,
+            download::auth::get_thunder_auth_settings,
+            download::auth::set_thunder_auth_mode,
+            download::auth::set_thunder_managed_credential,
+            download::auth::delete_thunder_managed_credential,
             runtime::get_runtime_statuses,
             runtime::ipc::start_runtime_operation,
             runtime::bulk::start_runtime_bulk_operation,

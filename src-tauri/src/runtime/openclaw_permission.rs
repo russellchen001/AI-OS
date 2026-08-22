@@ -57,6 +57,7 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
                         | "filesystem.read"
                         | "filesystem.write"
                         | "filesystem.move"
+                        | "download.start"
                 ) && request.user_confirmed)
             {
                 OpenClawPermissionDecision::Allowed
@@ -507,6 +508,27 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&confirmed_move).unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn download_start_requires_and_accepts_one_time_user_confirmation() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let request = OpenClawExecutionRequest::new(
+            "execution-123",
+            "download.start",
+            json!({"source": "https://example.com/file.zip", "destination": "/safe"}),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gate.authorize(&request).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+        assert_eq!(
+            gate.authorize(&request.with_user_confirmation(true))
+                .unwrap(),
             OpenClawPermissionDecision::Allowed
         );
     }

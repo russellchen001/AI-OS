@@ -12,8 +12,5 @@ pub struct FileResponse {
 pub trait FileProvider: Send + Sync {
     fn id(&self) -> &'static str;
 
-    fn execute(
-        &self,
-        request: FileRequest,
-    ) -> Result<FileResponse, String>;
+    fn execute(&self, request: FileRequest) -> Result<FileResponse, String>;
 }

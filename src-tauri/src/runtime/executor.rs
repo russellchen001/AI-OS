@@ -157,7 +157,6 @@ impl RuntimeTaskExecutionRequest {
     }
 }
 
-
 struct McpPreparedOperation {
     command: String,
     args: Vec<String>,
@@ -170,7 +169,6 @@ impl PreparedOperation for McpPreparedOperation {
         self: Box<Self>,
         report: &mut dyn FnMut(RuntimeOperationProgress),
     ) -> Result<Option<Value>, NormalizedRuntimeError> {
-
         report(RuntimeOperationProgress {
             phase: "executing".to_owned(),
             completed_units: None,
@@ -178,23 +176,13 @@ impl PreparedOperation for McpPreparedOperation {
             message: "Executing MCP tool.".to_owned(),
         });
 
-        crate::mcp_runtime::call_mcp_tool(
-            self.command,
-            self.args,
-            self.tool_name,
-            self.arguments,
-        )
-        .map(|result| {
-            Some(
-                serde_json::to_value(result)
-                    .unwrap_or(Value::Null)
-            )
-        })
-        .map_err(|message| NormalizedRuntimeError {
-            code: RuntimeErrorCode::OperationFailed,
-            message,
-            retryable: false,
-        })
+        crate::mcp_runtime::call_mcp_tool(self.command, self.args, self.tool_name, self.arguments)
+            .map(|result| Some(serde_json::to_value(result).unwrap_or(Value::Null)))
+            .map_err(|message| NormalizedRuntimeError {
+                code: RuntimeErrorCode::OperationFailed,
+                message,
+                retryable: false,
+            })
     }
 }
 
@@ -366,14 +354,12 @@ pub(crate) fn execute_runtime_task(
     })
 }
 
-
 pub(crate) fn execute_mcp_runtime_task(
     manager: Arc<RuntimeOperationManager>,
     scheduler: RuntimeScheduler,
     emitter: Arc<dyn OperationEventEmitter>,
     request: RuntimeTaskExecutionRequest,
 ) -> Result<RuntimeTaskExecutionResult, NormalizedRuntimeError> {
-
     let validated = request.validate()?;
 
     let input = validated.input;
@@ -402,11 +388,7 @@ pub(crate) fn execute_mcp_runtime_task(
         .unwrap_or_default()
         .to_owned();
 
-    let arguments = input
-        .get("arguments")
-        .cloned()
-        .unwrap_or(Value::Null);
-
+    let arguments = input.get("arguments").cloned().unwrap_or(Value::Null);
 
     let operation = McpPreparedOperation {
         command,

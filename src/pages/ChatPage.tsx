@@ -8,6 +8,8 @@ import {
   startChatTaskExecution,
   submitChatTask,
   describeChatTaskError,
+  describeDownloadResult,
+  parseDownloadRequestText,
   type ChatTaskType,
 } from "../services/tasks";
 import {
@@ -311,6 +313,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     capability: "models.list" | "models.show" | "models.pull" | "models.delete";
     model?: string;
   }>();
+  const [downloadWork, setDownloadWork] = useState<{
+    source: string;
+    destination: string;
+    extractionCode?: string;
+  }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -321,6 +328,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setWriteFilePath(undefined);
     setMoveFilePaths(undefined);
     setLocalModelWork(undefined);
+    setDownloadWork(undefined);
   }, [conversationId]);
 
   async function chooseFolderToScan() {
@@ -386,6 +394,33 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setDraft((current) => current || "Move this file");
   }
 
+  async function chooseDownload() {
+    const source = await dialog.prompt({
+      title: "Download",
+      message: "Enter the resource you want, or paste a complete share message including its extraction code. AI-OS can search for the download source.",
+      confirmLabel: "Continue",
+      cancelLabel: "Cancel",
+      required: true,
+    });
+    if (!source?.trim()) return;
+    const parsed = parseDownloadRequestText(source);
+
+    const destination = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "Choose download folder",
+    });
+    if (typeof destination !== "string") return;
+
+    setDownloadWork({
+      source: parsed.source,
+      destination,
+      extractionCode: parsed.extractionCode,
+    });
+    setTaskType("DO");
+    setDraft((current) => current || "Download this file");
+  }
+
   useEffect(() => {
     const refreshModels = () => {
       const models = listAiCenterModels();
@@ -418,7 +453,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         readFilePath ||
         writeFilePath ||
         moveFilePaths ||
-        localModelWork,
+        localModelWork ||
+        downloadWork,
     ) || taskType === "DO";
 
     if (scanFolderPath) {
@@ -457,6 +493,17 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         title: "Move this file?",
         message: `OpenClaw will move:\n\n${moveFilePaths.source}\n\nTo:\n\n${moveFilePaths.destination}\n\nAn existing destination will not be overwritten.`,
         confirmLabel: "Move file",
+        cancelLabel: "Cancel",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+    }
+
+    if (downloadWork) {
+      const confirmed = await dialog.confirm({
+        title: "Start this download?",
+        message: `AI-OS will download:\n\n${downloadWork.source}\n\nTo:\n\n${downloadWork.destination}`,
+        confirmLabel: "Download",
         cancelLabel: "Cancel",
         tone: "warning",
       });
@@ -664,8 +711,20 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const execution = await executeChatWorkTask(
         task.taskId,
         "openclaw",
-        localModelWork
+        downloadWork
           ? {
+              capability: "download.start",
+              input: {
+                source: downloadWork.source,
+                destination: downloadWork.destination,
+                ...(downloadWork.extractionCode
+                  ? { extractionCode: downloadWork.extractionCode }
+                  : {}),
+              },
+              userConfirmed: true,
+            }
+          : localModelWork
+            ? {
               capability: localModelWork.capability,
               input: localModelWork.model
                 ? { model: localModelWork.model }
@@ -707,8 +766,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const workMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: localModelWork
-          ? formatLocalModelResult(localModelWork.capability, execution.output)
+        content: downloadWork
+          ? describeDownloadResult(execution.output)
+          : localModelWork
+            ? formatLocalModelResult(localModelWork.capability, execution.output)
           : moveFilePaths
             ? formatFilesystemMoveResult(execution.output)
             : writeFilePath
@@ -729,6 +790,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       setWriteFilePath(undefined);
       setMoveFilePaths(undefined);
       setLocalModelWork(undefined);
+      setDownloadWork(undefined);
       saveConversation({
         ...nextConversation,
         messages: completedMessages,
@@ -738,8 +800,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         ? describeChatTaskError(
             error,
             true,
-            localModelWork
-              ? "local model operation"
+            downloadWork
+              ? "download"
+              : localModelWork
+                ? "local model operation"
               : moveFilePaths
                 ? "file move"
                 : writeFilePath
@@ -758,8 +822,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const failureMessage = describeChatTaskError(
         error,
         isWorkRequest,
-        localModelWork
-          ? "local model operation"
+        downloadWork
+          ? "download"
+          : localModelWork
+            ? "local model operation"
           : moveFilePaths
             ? "file move"
             : writeFilePath
@@ -1026,6 +1092,15 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12M13 8l4 4-4 4M6 5h12v14H6" /></svg>
                 Move file
+              </button>
+
+              <button
+                type="button"
+                className={downloadWork ? "tool-pill tool-pill-active" : "tool-pill"}
+                aria-label="Start a download"
+                onClick={() => void chooseDownload()}
+              >
+                Download
               </button>
 
               <button

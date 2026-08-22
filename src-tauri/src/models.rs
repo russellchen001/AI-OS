@@ -387,4 +387,3 @@ fn required_model_input(input: &Value) -> Result<String, String> {
         .map(str::to_owned)
         .ok_or_else(|| "Model name is required.".to_owned())
 }
-

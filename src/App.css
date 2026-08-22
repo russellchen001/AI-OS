@@ -400,12 +400,25 @@
 }
 
 .composer-rail {
-  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px;
   padding: 3px;
 }
 
 .composer-tools {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
   gap: 5px;
+}
+
+.composer-tools > * {
+  flex: 0 0 auto;
+}
+
+.composer-rail > .send-button {
+  flex: 0 0 36px;
 }
 
 .composer-icon-button,

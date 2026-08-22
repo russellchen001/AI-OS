@@ -85,6 +85,27 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "local",
             "ollama",
         ),
+        skill(
+            "downloads",
+            "Downloads",
+            "network",
+            "Manage downloads through approved download providers including HTTP, FTP, torrents and cloud storage.",
+            &[
+                "download.start",
+                "download.pause",
+                "download.resume",
+                "download.cancel",
+                "download.status",
+                "download.list",
+            ],
+            &[
+                "download.network",
+                "download.credentials",
+                "download.manage",
+            ],
+            "openclaw",
+            "downloads",
+        ),
     ]
 }
 
@@ -146,6 +167,12 @@ mod tests {
             "models.show",
             "models.pull",
             "models.delete",
+            "download.start",
+            "download.pause",
+            "download.resume",
+            "download.cancel",
+            "download.status",
+            "download.list",
         ] {
             assert!(
                 find_by_capability(capability).is_some(),
@@ -173,13 +200,16 @@ mod tests {
     fn list_command_returns_canonical_registry() {
         let skills = list_skills();
 
-        assert_eq!(skills.len(), 4);
+        assert_eq!(skills.len(), 5);
         assert_eq!(skills[0].id, "filesystem");
         assert_eq!(skills[1].id, "openclaw-session");
         assert_eq!(skills[2].id, "browser");
         assert_eq!(skills[3].id, "local-models");
         assert_eq!(skills[3].executor.kind, "local");
         assert_eq!(skills[3].executor.handler, "ollama");
+        assert_eq!(skills[4].id, "downloads");
+        assert_eq!(skills[4].executor.kind, "openclaw");
+        assert_eq!(skills[4].executor.handler, "downloads");
     }
 
     #[test]

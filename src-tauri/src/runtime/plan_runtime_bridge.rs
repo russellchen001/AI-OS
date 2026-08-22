@@ -1,7 +1,8 @@
 use super::{
     executor::{
-        execute_local_model_runtime_task, execute_mcp_runtime_task, execute_runtime_task, OperationEventEmitter,
-        RuntimeExecutionState, RuntimeTaskExecutionRequest, RuntimeTaskExecutionResult,
+        execute_local_model_runtime_task, execute_mcp_runtime_task, execute_runtime_task,
+        OperationEventEmitter, RuntimeExecutionState, RuntimeTaskExecutionRequest,
+        RuntimeTaskExecutionResult,
     },
     models::{NormalizedRuntimeError, RuntimeErrorCode},
     openclaw_execution::OpenClawExecutionAdapter,
@@ -12,8 +13,8 @@ use super::{
     skills,
     trusted_automation::{load_trusted_automation_settings, TrustedAutomationConfigError},
 };
-use crate::planner::{PlanId, PlanStepId, StepInput, StepOutput};
 use crate::browser::runtime::execute_browser_capability;
+use crate::planner::{PlanId, PlanStepId, StepInput, StepOutput};
 use serde_json::{Map, Value};
 use std::{error::Error, fmt, sync::Arc};
 use uuid::Uuid;
@@ -416,6 +417,38 @@ mod tests {
         assert_eq!(received[0].action.as_str(), "filesystem.scan");
         assert_eq!(received[0].input, json!({"path": "/safe"}));
         assert_eq!(result.output, Some(json!({"files": 2})));
+    }
+
+    #[test]
+    fn download_plan_step_uses_the_openclaw_execution_contract() {
+        let adapter = Arc::new(RecordingAdapter {
+            requests: Mutex::new(Vec::new()),
+            outcome: Ok(OpenClawExecutionResult {
+                output: json!({"kind": "download", "status": "completed"}),
+                summary: None,
+            }),
+        });
+        let bridge = bridge(adapter.clone());
+        let mut download = request("plan-download", "step-download");
+        download.capability = "download.start".to_owned();
+        download.input = [
+            ("source".to_owned(), json!("https://example.com/file.zip")),
+            ("destination".to_owned(), json!("/safe/downloads")),
+        ]
+        .into_iter()
+        .collect();
+        download.user_confirmed = true;
+
+        let result = bridge.execute_step(download).unwrap();
+        let received = adapter.requests.lock().unwrap();
+
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].action.as_str(), "download.start");
+        assert!(received[0].user_confirmed);
+        assert_eq!(
+            result.output,
+            Some(json!({"kind": "download", "status": "completed"}))
+        );
     }
 
     #[test]

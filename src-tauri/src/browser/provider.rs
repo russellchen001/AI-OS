@@ -15,8 +15,5 @@ pub struct BrowserResponse {
 pub trait BrowserProvider: Send + Sync {
     fn id(&self) -> &str;
 
-    fn execute(
-        &self,
-        request: BrowserRequest,
-    ) -> Result<BrowserResponse, String>;
+    fn execute(&self, request: BrowserRequest) -> Result<BrowserResponse, String>;
 }

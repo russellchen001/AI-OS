@@ -596,10 +596,8 @@ mod tests {
         let tasks = Arc::new(InMemoryTaskRepository::new());
         let plans = Arc::new(InMemoryPlanRepository::new());
         let runtime = Arc::new(CapturingRuntime::default());
-        let lifecycle = TaskLifecycleManager::new(
-            Arc::clone(&tasks),
-            Arc::new(InMemoryTaskEventBus::new()),
-        );
+        let lifecycle =
+            TaskLifecycleManager::new(Arc::clone(&tasks), Arc::new(InMemoryTaskEventBus::new()));
         let state = TaskExecutionState {
             tasks: Arc::clone(&tasks),
             plans: Arc::clone(&plans),
@@ -689,5 +687,43 @@ mod tests {
 
         assert_eq!(result.plan.status, PlanStatus::Completed);
         assert_eq!(result.task.status, TaskStatus::Verifying);
+    }
+
+    #[test]
+    #[ignore = "requires an active OpenClaw gateway and P15 download fixture"]
+    fn real_download_runs_through_task_plan_runtime_and_openclaw() {
+        let source = std::env::var("AI_OS_DOWNLOAD_E2E_SOURCE").expect("source missing");
+        let destination =
+            std::env::var("AI_OS_DOWNLOAD_E2E_DESTINATION").expect("destination missing");
+        let state = build_task_execution_state(
+            RuntimeExecutionState::default(),
+            Arc::new(RecordingEmitter::default()),
+        );
+        let submitted = submit_chat_task_inner(
+            &state,
+            SubmitChatTaskRequest {
+                prompt: format!("Download {source}"),
+                task_type: TaskType::Do,
+            },
+        )
+        .unwrap();
+
+        let response = execute_chat_work_task_inner(
+            &state,
+            ExecuteWorkTaskInput {
+                task_id: submitted.task_id,
+                agent_id: "openclaw".to_owned(),
+                capability: Some("download.start".to_owned()),
+                input: Some(HashMap::from([
+                    ("source".to_owned(), json!(source)),
+                    ("destination".to_owned(), json!(destination)),
+                ])),
+                user_confirmed: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.status, TaskStatus::Verifying);
+        assert_eq!(response.output.as_ref().unwrap()["kind"], "download");
     }
 }

@@ -2,18 +2,25 @@ use super::openclaw_execution::{
     OpenClawExecutionAdapter, OpenClawExecutionError, OpenClawExecutionErrorKind,
     OpenClawExecutionProgress, OpenClawExecutionRequest, OpenClawExecutionResult,
 };
+use crate::download::strategy::{resolve_openclaw_download, DownloadExecutionRoute};
 use crate::openclaw::{
     invoke_active_gateway_method, ActiveGatewayFailureKind, ActiveGatewayMethodFailure,
 };
 use serde_json::Value;
-use std::path::Path;
+use std::{collections::HashSet, fs, path::Path, time::Duration};
 
 const FILESYSTEM_SCAN_ACTION: &str = "filesystem.scan";
 const FILESYSTEM_READ_ACTION: &str = "filesystem.read";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
+const DOWNLOAD_START_ACTION: &str = "download.start";
 const FILESYSTEM_AGENT_ID: &str = "ai-os-files";
+/// Execution agent for download work. Pinned to an 8B model with a 64K context
+/// window because a 4B model reads a SKILL.md without then running its commands.
+/// See AC-EXEC-MODEL in HANDOFF.md.
+const DOWNLOAD_AGENT_ID: &str = "ai-os-exec-standard";
 const AGENT_WAIT_ATTEMPTS: usize = 35;
+const LONG_DOWNLOAD_WAIT_ATTEMPTS: usize = 1_605;
 const MAX_FILE_READ_BYTES: u64 = 1_000_000;
 const MAX_FILE_OUTPUT_BYTES: u64 = 65_536;
 const MAX_FILE_WRITE_BYTES: usize = 4_096;
@@ -67,6 +74,9 @@ fn execute_with_invoker(
     if request.action.as_str() == FILESYSTEM_MOVE_ACTION {
         return execute_filesystem_move(invoker, request);
     }
+    if request.action.as_str() == DOWNLOAD_START_ACTION {
+        return execute_download_start(invoker, request);
+    }
 
     invoker
         .invoke(request.action.as_str(), Some(request.input.clone()))
@@ -75,6 +85,321 @@ fn execute_with_invoker(
             summary: None,
         })
         .map_err(map_gateway_failure)
+}
+
+/// Chooses the execution agent for a download route.
+///
+/// Today this is a fixed mapping. AI Center will own this choice: replace the
+/// body with a call into the route candidate list, and retry down that list when
+/// Runtime file verification rejects the result. Keep the signature stable so
+/// that change stays local.
+fn download_execution_agent(_route: &DownloadExecutionRoute) -> &'static str {
+    DOWNLOAD_AGENT_ID
+}
+
+fn execute_download_start(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let source = required_download_input(request, "source")?;
+    let destination = required_download_input(request, "destination")?;
+    let requested_extraction_code = optional_download_input(request, "extractionCode");
+    let destination_path = Path::new(destination);
+    if !destination_path.is_absolute() || !destination_path.is_dir() {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "Download destination must be an existing absolute directory.",
+            false,
+        ));
+    }
+
+    let (route, resolved_source) = resolve_openclaw_download(source);
+    let tool_source = resolved_source.as_str();
+    let before = download_directory_files(destination_path)?;
+    let long_running_download = matches!(&route, DownloadExecutionRoute::Web);
+    let (agent_id, tool, message) = match &route {
+        DownloadExecutionRoute::Direct => (
+            download_execution_agent(&route),
+            "direct-http",
+            format!(
+                "Call the existing exec tool exactly once with command {}. Set workdir to {}, background to false, and yieldMs to 10000. Use the command exactly as supplied and do not claim success unless it succeeds.",
+                shell_quote_command(&[
+                    "/usr/bin/curl", "--fail", "--location", "--remote-header-name",
+                    "--remote-name", "--output-dir", destination, tool_source,
+                ]),
+                serde_json::to_string(destination).unwrap(),
+            ),
+        ),
+        DownloadExecutionRoute::Web => (
+            download_execution_agent(&route),
+            "web",
+            format!(
+                concat!(
+                    "Complete this user-confirmed Web or cloud-share download automatically. ",
+                    "Source: {}. Optional extraction code supplied by the user: {}. ",
+                    "Step 1: call exec with /usr/bin/curl to fetch the page. ",
+                    "If the HTML contains an ordinary download anchor, resolve its href against the source URL ",
+                    "and immediately call exec again with ",
+                    "/usr/bin/curl --fail --location --remote-name --output-dir {} followed by the resolved file URL. ",
+                    "This is the normal path and handles most downloads. ",
+                    "Step 2: only if the page needs login, JavaScript, buttons, waits, hidden forms, confirmation ",
+                    "pages, or a cloud-drive account, list the OpenClaw Skills installed in your context. ",
+                    "A Skill is an instruction document, not a tool. Never call a Skill name as if it were a tool. ",
+                    "If an installed download or cloud-drive Skill declares support for this source, read its ",
+                    "SKILL.md with your existing file read capability, then immediately continue in the same run ",
+                    "and carry out its instructions using exec. Reading SKILL.md is not completion. ",
+                    "Do not stop to report that you read it and do not ask the user anything. ",
+                    "Step 3: when passing the source to any command, use the URL exactly as supplied above. ",
+                    "Never rewrite it as Markdown link syntax, never wrap it in brackets or parentheses, ",
+                    "and always shell-quote it. ",
+                    "Step 4: if no installed Skill supports the source, ",
+                    "Call exec with /usr/bin/curl to read the page; if the HTML contains an ordinary download anchor, ",
+                    "resolve its href against the source URL and call exec again with ",
+                    "/usr/bin/curl --fail --location --remote-name --output-dir {} followed by the resolved file URL. ",
+                    "If the source requires login, JavaScript, buttons, waits, hidden forms, or confirmation pages, ",
+                    "use the existing browser tools so the persistent browser profile and any authenticated or VIP session are preserved. ",
+                    "Select an authorized VIP or fast option when available, otherwise the free option. ",
+                    "Handle extraction codes and redirects without asking the user to click. ",
+                    "Never request, print, or store a password in chat. ",
+                    "If login is required and no authenticated browser session exists, return an authentication-required error. ",
+                    "Save the complete file into {}. Always pass that destination as a full absolute path; never use a tilde. ",
+                    "For every exec call set workdir to {}, background to false, and yieldMs to 10000. ",
+                    "Success requires a complete file present in that directory. ",
+                    "Do not claim success after reading a Skill, opening a page, resolving a URL, submitting a task, ",
+                    "or announcing a next action, and do not save outside that directory.",
+                ),
+                serde_json::to_string(tool_source).unwrap(),
+                serde_json::to_string(requested_extraction_code.unwrap_or("none")).unwrap(),
+                serde_json::to_string(destination).unwrap(),
+                serde_json::to_string(destination).unwrap(),
+                serde_json::to_string(destination).unwrap(),
+                serde_json::to_string(destination).unwrap(),
+            ),
+        ),
+        DownloadExecutionRoute::Search => (
+            download_execution_agent(&route),
+            "web-search",
+            format!(
+                "Find and download the requested resource {} automatically. Follow the user's request without performing content, copyright, filename, or NSFW classification. Use the existing web search and browser tools to locate a working download source, then use browser or exec tools to download the actual resource into {}. Do not stop after finding a page or URL, do not ask the user to click a download button, and do not claim success unless a file is created in that destination.",
+                serde_json::to_string(tool_source).unwrap(),
+                serde_json::to_string(destination).unwrap(),
+            ),
+        ),
+        DownloadExecutionRoute::Aria2 => (
+            download_execution_agent(&route),
+            "aria2",
+            format!(
+                "Call the existing exec tool exactly once with command {}. Set workdir to {}, background to false, and yieldMs to 10000. Do not claim success unless the command succeeds.",
+                shell_quote_command(&[
+                    "/usr/bin/env", "aria2c", "--dir", destination, tool_source,
+                ]),
+                serde_json::to_string(destination).unwrap(),
+            ),
+        ),
+        DownloadExecutionRoute::P2p => (
+            download_execution_agent(&route),
+            "thunder-preferred",
+            format!(
+                "Complete this user-confirmed P2P download automatically for source {}. First use an installed non-interactive Thunder Skill, CLI, or local API if available. Never open the Thunder GUI and never ask the user to click a confirmation dialog. If no non-interactive Thunder integration is available, use another installed P2P/cloud offline-download Skill. For magnet or torrent sources only, aria2c is the final fallback. ED2K must fail with the real unsupported-tool reason when no non-interactive provider is installed. Save the complete downloaded file into {} and do not claim success for merely submitting a task, opening an app, or obtaining a URL.",
+                serde_json::to_string(tool_source).unwrap(),
+                serde_json::to_string(destination).unwrap(),
+            ),
+        ),
+        DownloadExecutionRoute::Unsupported => {
+            return Err(OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "Download source is unsupported.",
+                false,
+            ));
+        }
+    };
+
+    let session_key = format!("agent:{agent_id}:ai-os-download-{}", request.execution_id);
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": agent_id,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": if long_running_download { 14_400 } else { 180 },
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    let wait_attempts = if long_running_download {
+        LONG_DOWNLOAD_WAIT_ATTEMPTS
+    } else {
+        AGENT_WAIT_ATTEMPTS
+    };
+    for _ in 0..wait_attempts {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("timeout") => continue,
+            Some("error") => {
+                let terminal_error = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw download execution failed.");
+                let files = if terminal_error == "completed" {
+                    wait_for_download_files(destination_path, &before, 40)?
+                } else {
+                    download_directory_files(destination_path)?
+                        .difference(&before)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                if !files.is_empty() {
+                    return Ok(OpenClawExecutionResult {
+                        output: serde_json::json!({
+                            "kind": "download",
+                            "source": source,
+                            "destination": destination,
+                            "tool": tool,
+                            "status": "completed",
+                            "files": files,
+                        }),
+                        summary: Some(format!(
+                            "OpenClaw used the {tool} download route and AI-OS verified the file."
+                        )),
+                    });
+                }
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    terminal_error,
+                    false,
+                ));
+            }
+            Some("ok") => {
+                let files = download_directory_files(destination_path)?
+                    .difference(&before)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if files.is_empty() {
+                    return Err(OpenClawExecutionError::new(
+                        OpenClawExecutionErrorKind::ProtocolFailure,
+                        "OpenClaw completed without creating a file in the selected destination.",
+                        false,
+                    ));
+                }
+                return Ok(OpenClawExecutionResult {
+                    output: serde_json::json!({
+                        "kind": "download",
+                        "source": source,
+                        "destination": destination,
+                        "tool": tool,
+                        "status": "completed",
+                        "files": files,
+                    }),
+                    summary: Some(format!("OpenClaw used the {tool} download route.")),
+                });
+            }
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid download status.",
+                    false,
+                ))
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw download execution timed out.",
+        true,
+    ))
+}
+
+fn optional_download_input<'a>(
+    request: &'a OpenClawExecutionRequest,
+    key: &str,
+) -> Option<&'a str> {
+    request
+        .input
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn required_download_input<'a>(
+    request: &'a OpenClawExecutionRequest,
+    key: &str,
+) -> Result<&'a str, OpenClawExecutionError> {
+    request
+        .input
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                format!("download.start requires {key}"),
+                false,
+            )
+        })
+}
+
+fn download_directory_files(path: &Path) -> Result<HashSet<String>, OpenClawExecutionError> {
+    Ok(fs::read_dir(path)
+        .map_err(|_| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::PermissionDenied,
+                "Download destination could not be read.",
+                false,
+            )
+        })?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<HashSet<_>>())
+}
+
+fn wait_for_download_files(
+    path: &Path,
+    before: &HashSet<String>,
+    attempts: usize,
+) -> Result<Vec<String>, OpenClawExecutionError> {
+    for _ in 0..attempts {
+        let files = download_directory_files(path)?
+            .difference(before)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !files.is_empty() {
+            return Ok(files);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Ok(Vec::new())
+}
+
+fn shell_quote_command(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .map(|part| shell_quote(part))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn execute_filesystem_scan(
@@ -183,7 +508,6 @@ fn execute_filesystem_scan(
         true,
     ))
 }
-
 
 fn latest_successful_exec_result(history: &Value) -> Option<&Value> {
     let messages = history.get("messages")?.as_array()?;
@@ -701,13 +1025,14 @@ fn execute_filesystem_move(
                         Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
                     )
                     .map_err(map_gateway_failure)?;
-                let output = filesystem_move_output(&history, source, destination).ok_or_else(|| {
-                    OpenClawExecutionError::new(
-                        OpenClawExecutionErrorKind::ProtocolFailure,
-                        "OpenClaw file move completed without a valid exec tool result.",
-                        false,
-                    )
-                })?;
+                let output =
+                    filesystem_move_output(&history, source, destination).ok_or_else(|| {
+                        OpenClawExecutionError::new(
+                            OpenClawExecutionErrorKind::ProtocolFailure,
+                            "OpenClaw file move completed without a valid exec tool result.",
+                            false,
+                        )
+                    })?;
                 return Ok(OpenClawExecutionResult {
                     output,
                     summary: Some("OpenClaw completed the file move.".to_owned()),
@@ -900,7 +1225,6 @@ mod tests {
         assert!(calls.iter().all(|call| call.0 != "filesystem.scan"));
     }
 
-
     #[test]
     fn filesystem_output_accepts_nested_openclaw_transcript_messages() {
         let history = json!({
@@ -1035,7 +1359,10 @@ mod tests {
 
     #[test]
     fn filesystem_read_shell_quotes_single_quotes_in_paths() {
-        assert_eq!(shell_quote("/safe/O'Reilly.txt"), "'/safe/O'\\''Reilly.txt'");
+        assert_eq!(
+            shell_quote("/safe/O'Reilly.txt"),
+            "'/safe/O'\\''Reilly.txt'"
+        );
     }
 
     #[test]
@@ -1137,12 +1464,9 @@ mod tests {
                 "filesystem.write requires an absolute file path",
             ),
         ] {
-            let error = execute_with_invoker(
-                &invoker,
-                &request("filesystem.write", input),
-                &mut |_| {},
-            )
-            .unwrap_err();
+            let error =
+                execute_with_invoker(&invoker, &request("filesystem.write", input), &mut |_| {})
+                    .unwrap_err();
             assert_eq!(
                 error.kind,
                 OpenClawExecutionErrorKind::InvalidRequest,
@@ -1244,12 +1568,9 @@ mod tests {
             json!({"source": "/safe/a.txt", "destination": "relative/b.txt"}),
             json!({"source": "/safe/a.txt", "destination": "/safe/a.txt"}),
         ] {
-            let error = execute_with_invoker(
-                &invoker,
-                &request("filesystem.move", input),
-                &mut |_| {},
-            )
-            .unwrap_err();
+            let error =
+                execute_with_invoker(&invoker, &request("filesystem.move", input), &mut |_| {})
+                    .unwrap_err();
             assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
         }
         assert!(invoker.calls.lock().unwrap().is_empty());
@@ -1418,5 +1739,276 @@ mod tests {
 
         assert!(!error.to_string().contains(credential));
         assert!(!format!("{error:?}").contains(credential));
+    }
+
+    #[test]
+    fn thunder_wrapper_is_decoded_and_requires_a_downloaded_file() {
+        let destination = tempfile::tempdir().unwrap();
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"type": "text", "text": ""}]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "download-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request(
+                "download.start",
+                json!({
+                    "source": "thunder://QUFodHRwczovL2V4YW1wbGUuY29tL2ZpbGUuemlwWlo=",
+                    "destination": destination.path(),
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert!(error.message.contains("without creating a file"));
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait"]
+        );
+        assert!(calls[0].1.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("https://example.com/file.zip"));
+        assert!(!calls[0].1.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("Thunder.app"));
+    }
+
+    #[test]
+    fn cloud_share_delegates_provider_choice_to_installed_skills() {
+        let destination = tempfile::tempdir().unwrap();
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"type": "text", "text": ""}]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "cloud-share-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request(
+                "download.start",
+                json!({
+                    "source": "https://cloud.example/share/safe-test",
+                    "destination": destination.path(),
+                    "extractionCode": "a1b2",
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert!(error.message.contains("without creating a file"));
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("a1b2"));
+        // Provider neutrality is the property under test: AI-OS must not name or
+        // imply a specific cloud provider. Assert on that, not on prompt wording —
+        // a reworded prompt is not a regression.
+        for provider in [
+            "baidu",
+            "pan.baidu",
+            "aliyun",
+            "aliyundrive",
+            "quark",
+            "115",
+            "pikpak",
+            "onedrive",
+            "dropbox",
+            "gdrive",
+            "google drive",
+        ] {
+            assert!(
+                !message.to_lowercase().contains(provider),
+                "prompt must stay provider-neutral but named {provider}"
+            );
+        }
+        assert!(
+            message.contains("Skill"),
+            "prompt must mention Skills at all"
+        );
+        assert_eq!(
+            calls[0].1.as_ref().unwrap()["agentId"],
+            "ai-os-exec-standard"
+        );
+    }
+
+    #[test]
+    fn interactive_web_download_reuses_authenticated_session_without_user_clicks() {
+        let destination = tempfile::tempdir().unwrap();
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "web-download-run"})),
+                Ok(json!({"status": "ok"})),
+            ])),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request(
+                "download.start",
+                json!({
+                    "source": "https://files.example/share/test-file",
+                    "destination": destination.path(),
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let calls = invoker.calls.lock().unwrap();
+        let params = calls[0].1.as_ref().unwrap();
+        let message = params["message"].as_str().unwrap();
+
+        assert!(error.message.contains("without creating a file"));
+        assert_eq!(params["agentId"], "ai-os-exec-standard");
+        assert_eq!(params["timeout"], 14_400);
+        assert!(message.contains("persistent browser profile"));
+        assert!(message.contains("authenticated or VIP session"));
+        assert!(message.contains("JavaScript, buttons, waits"));
+        assert!(message.contains("hidden forms"));
+        assert!(message.contains("without asking the user to click"));
+        assert!(message.contains("authentication-required error"));
+        assert!(message.contains("complete file"));
+    }
+
+    #[test]
+    fn resource_query_is_content_neutral_and_requires_a_file() {
+        let destination = tempfile::tempdir().unwrap();
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "search-run"})),
+                Ok(json!({"status": "ok"})),
+            ])),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request(
+                "download.start",
+                json!({
+                    "source": "Ubuntu 24.04 desktop ISO",
+                    "destination": destination.path(),
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert!(error.message.contains("without creating a file"));
+        assert_eq!(
+            calls[0].1.as_ref().unwrap()["agentId"],
+            "ai-os-exec-standard"
+        );
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message
+            .contains("without performing content, copyright, filename, or NSFW classification"));
+        assert!(message.contains("Ubuntu 24.04 desktop ISO"));
+    }
+
+    #[test]
+    fn download_rejects_invalid_destination_before_openclaw_execution() {
+        let invoker = RecordingInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcome: Ok(json!({})),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request(
+                "download.start",
+                json!({
+                    "source": "https://example.com/file.zip",
+                    "destination": "relative/path",
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap_err();
+
+        assert!(error.message.contains("existing absolute directory"));
+        assert!(invoker.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn download_rejects_unsupported_source_before_openclaw_execution() {
+        let destination = tempfile::tempdir().unwrap();
+        let invoker = RecordingInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcome: Ok(json!({})),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request(
+                "download.start",
+                json!({
+                    "source": "thunder://invalid-wrapper",
+                    "destination": destination.path(),
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(error.message, "Download source is unsupported.");
+        assert!(invoker.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn p2p_download_prefers_noninteractive_thunder_and_never_accepts_gui_submission() {
+        let destination = tempfile::tempdir().unwrap();
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "p2p-run"})),
+                Ok(json!({"status": "ok"})),
+            ])),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request(
+                "download.start",
+                json!({
+                    "source": "ed2k://example",
+                    "destination": destination.path(),
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let calls = invoker.calls.lock().unwrap();
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+
+        assert!(error.message.contains("without creating a file"));
+        assert!(message.contains("non-interactive Thunder Skill, CLI, or local API"));
+        assert!(message.contains("Never open the Thunder GUI"));
+        assert!(message.contains("ED2K must fail with the real unsupported-tool reason"));
+        assert!(message.contains("do not claim success for merely submitting a task"));
     }
 }

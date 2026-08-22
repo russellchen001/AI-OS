@@ -29,6 +29,59 @@ export type ExecuteWorkTaskOptions = {
   userConfirmed?: boolean;
 };
 
+export type ParsedDownloadRequest = {
+  source: string;
+  extractionCode?: string;
+};
+
+export function parseDownloadRequestText(value: string): ParsedDownloadRequest {
+  const text = value.trim();
+  const link = text
+    .match(/(?:https?|ftp|thunder|ed2k|magnet):[^\s]+/iu)?.[0]
+    ?.replace(/[，。；;、）)\]】>]+$/u, "");
+  if (!text) throw new Error("No download resource was provided.");
+
+  const explicitCode = text.match(
+    /(?:提取码|访问码|密码|extraction\s*code|code|pwd)\s*[:：=]?\s*([a-z0-9]{4,12})/iu,
+  )?.[1];
+  let queryCode: string | undefined;
+  try {
+    queryCode = link ? new URL(link).searchParams.get("pwd") ?? undefined : undefined;
+  } catch {
+    queryCode = undefined;
+  }
+  return { source: link ?? text, extractionCode: explicitCode ?? queryCode };
+}
+
+export function describeDownloadResult(output: unknown): string {
+  if (!output || typeof output !== "object") {
+    throw new Error("OpenClaw returned an invalid download result.");
+  }
+  const result = output as {
+    destination?: unknown;
+    files?: unknown;
+    kind?: unknown;
+    source?: unknown;
+    status?: unknown;
+    tool?: unknown;
+  };
+  if (
+    result.kind !== "download" ||
+    typeof result.source !== "string" ||
+    typeof result.destination !== "string" ||
+    typeof result.tool !== "string" ||
+    result.status !== "completed" ||
+    !Array.isArray(result.files) ||
+    !result.files.every((file) => typeof file === "string")
+  ) {
+    throw new Error("OpenClaw returned an invalid download result.");
+  }
+  const files = (result.files as string[])
+    .map((file) => `${result.destination}/${file}`)
+    .join("\n");
+  return `Download completed with ${result.tool}.\n\n${files}`;
+}
+
 export function describeWorkTaskError(
   error: unknown,
   operation = "folder scan",
@@ -39,6 +92,46 @@ export function describeWorkTaskError(
       : error instanceof Error
         ? error.message
         : "";
+
+  if (operation === "download") {
+    const downloadError = detail.toLowerCase();
+    if (downloadError.includes("destination")) {
+      return "The selected download destination is unavailable or does not permit writing.";
+    }
+    if (downloadError.includes("cloud-drive")) {
+      return "No compatible cloud-drive download tool is registered for this source.";
+    }
+    if (downloadError.includes("unsupported")) {
+      return "This download source is not supported.";
+    }
+    if (downloadError.includes("thunder")) {
+      return "Thunder could not accept this download. Check that Thunder is installed and available.";
+    }
+    if (downloadError.includes("aria2")) {
+      return "The aria2 download tool could not complete this download.";
+    }
+    if (downloadError.includes("browser") || downloadError.includes("web")) {
+      return "The Browser/Web download workflow could not complete this download.";
+    }
+    if (downloadError.includes("authentication") || downloadError.includes("unauthorized")) {
+      return "Authentication is required by the selected download service.";
+    }
+    if (downloadError.includes("permission") || downloadError.includes("not permitted")) {
+      return "Permission was denied for this download.";
+    }
+    if (
+      downloadError.includes("connection") ||
+      downloadError.includes("unavailable") ||
+      downloadError.includes("unreachable") ||
+      downloadError.includes("no active")
+    ) {
+      return "OpenClaw is unavailable. Start or connect OpenClaw and try the download again.";
+    }
+    return detail
+      ? `OpenClaw could not complete this download: ${detail}`
+      : "OpenClaw could not complete this download.";
+  }
+
   const normalized = detail.toLowerCase();
 
   if (normalized.includes("pairing")) {

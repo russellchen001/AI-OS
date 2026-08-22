@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "baidu-drive": {
+      "source": "baidu-netdisk/bdpan-storage",
+      "sourceType": "github",
+      "skillPath": "skills/baidu-drive/SKILL.md",
+      "computedHash": "da25af50a4d5a5729fb8a69347c6171293d0a07df422267c466e3620c80211f1"
+    }
+  }
+}

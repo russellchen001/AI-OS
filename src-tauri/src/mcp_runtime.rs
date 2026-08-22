@@ -21,29 +21,16 @@ pub struct McpResponse {
     pub error: Option<String>,
 }
 
-fn spawn_stdio_server(
-    command: &str,
-    args: &[String],
-) -> Result<std::process::Child, String> {
+fn spawn_stdio_server(command: &str, args: &[String]) -> Result<std::process::Child, String> {
     Command::new(command)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|error| {
-            format!(
-                "Unable to start MCP server {}: {}",
-                command,
-                error
-            )
-        })
+        .map_err(|error| format!("Unable to start MCP server {}: {}", command, error))
 }
 
-fn send_json_rpc(
-    command: &str,
-    args: &[String],
-    request: Value,
-) -> Result<Value, String> {
+fn send_json_rpc(command: &str, args: &[String], request: Value) -> Result<Value, String> {
     let mut child = spawn_stdio_server(command, args)?;
 
     let mut stdin = child
@@ -56,11 +43,9 @@ fn send_json_rpc(
         .take()
         .ok_or_else(|| "MCP stdout unavailable.".to_string())?;
 
-    let payload = serde_json::to_string(&request)
-        .map_err(|error| error.to_string())?;
+    let payload = serde_json::to_string(&request).map_err(|error| error.to_string())?;
 
-    writeln!(stdin, "{}", payload)
-        .map_err(|error| error.to_string())?;
+    writeln!(stdin, "{}", payload).map_err(|error| error.to_string())?;
 
     drop(stdin);
 
@@ -72,20 +57,11 @@ fn send_json_rpc(
         .read_line(&mut line)
         .map_err(|error| error.to_string())?;
 
-    serde_json::from_str(&line)
-        .map_err(|error| {
-            format!(
-                "Invalid MCP response: {}",
-                error
-            )
-        })
+    serde_json::from_str(&line).map_err(|error| format!("Invalid MCP response: {}", error))
 }
 
 #[tauri::command]
-pub fn list_mcp_tools(
-    command: String,
-    args: Vec<String>,
-) -> Result<Vec<McpTool>, String> {
+pub fn list_mcp_tools(command: String, args: Vec<String>) -> Result<Vec<McpTool>, String> {
     let response = send_json_rpc(
         &command,
         &args,
@@ -97,10 +73,7 @@ pub fn list_mcp_tools(
         }),
     )?;
 
-    serde_json::from_value(
-        response["result"]["tools"].clone()
-    )
-    .map_err(|error| error.to_string())
+    serde_json::from_value(response["result"]["tools"].clone()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -110,7 +83,6 @@ pub fn call_mcp_tool(
     tool_name: String,
     arguments: Value,
 ) -> Result<McpResponse, String> {
-
     match send_json_rpc(
         &command,
         &args,
@@ -125,15 +97,15 @@ pub fn call_mcp_tool(
         }),
     ) {
         Ok(result) => Ok(McpResponse {
-            success:true,
-            result:Some(result),
-            error:None,
+            success: true,
+            result: Some(result),
+            error: None,
         }),
 
-        Err(error)=>Ok(McpResponse{
-            success:false,
-            result:None,
-            error:Some(error),
+        Err(error) => Ok(McpResponse {
+            success: false,
+            result: None,
+            error: Some(error),
         }),
     }
 }
