@@ -279,7 +279,7 @@ mod tests {
         assert!(progress.is_empty());
         assert_eq!(error.kind, expected_kind);
         assert!(!error.retryable);
-        assert_eq!(error.message, expected_message);
+        assert!(error.message.ends_with(expected_message));
         assert_eq!(*order.lock().unwrap(), vec!["permission"]);
     }
 

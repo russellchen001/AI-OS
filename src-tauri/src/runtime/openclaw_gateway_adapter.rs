@@ -1472,7 +1472,7 @@ mod tests {
                 OpenClawExecutionErrorKind::InvalidRequest,
                 "{expected_message}"
             );
-            assert_eq!(error.message, expected_message);
+            assert!(error.message.ends_with(expected_message));
         }
         assert!(invoker.calls.lock().unwrap().is_empty());
     }
@@ -1662,7 +1662,7 @@ mod tests {
 
         assert_eq!(error.kind, expected_kind);
         assert_eq!(error.retryable, expected_retryable);
-        assert_eq!(error.message, "Safe Gateway failure.");
+        assert!(error.message.ends_with("Safe Gateway failure."));
     }
 
     #[test]
@@ -1975,7 +1975,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error.message, "Download source is unsupported.");
+        assert!(error.message.ends_with("Download source is unsupported."));
         assert!(invoker.calls.lock().unwrap().is_empty());
     }
 

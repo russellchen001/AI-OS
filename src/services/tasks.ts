@@ -1,5 +1,42 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/**
+ * Rust prefixes every OpenClaw execution error with its machine-readable kind,
+ * e.g. "[ConnectionUnavailable] ...". Classify on that, never on wording:
+ * matching prose made "destination is unavailable" render as
+ * "OpenClaw is unavailable" and cost days of misdirected debugging.
+ */
+function extractErrorKind(detail: string): string | null {
+  const match = detail.match(/^\[([A-Za-z]+)\]/);
+  return match ? match[1] : null;
+}
+
+function describeByKind(kind: string, operation: string): string | null {
+  switch (kind) {
+    case "InvalidRequest":
+      return `The ${operation} request was rejected: check the source and destination.`;
+    case "PermissionRequired":
+      return `This ${operation} needs your confirmation before it can run.`;
+    case "PermissionDenied":
+      return `OpenClaw permission was denied for this ${operation}.`;
+    case "AuthenticationRequired":
+      return `Authentication is required. Reconnect and try the ${operation} again.`;
+    case "PairingRequired":
+      return `OpenClaw pairing is required. Pair OpenClaw and try the ${operation} again.`;
+    case "ConnectionUnavailable":
+      return `OpenClaw is unavailable. Start or connect OpenClaw and try the ${operation} again.`;
+    case "ProtocolFailure":
+      return `OpenClaw finished without producing the expected result for this ${operation}.`;
+    case "ExecutionRejected":
+      return `OpenClaw refused to run this ${operation}.`;
+    case "ExecutionFailed":
+      return `OpenClaw could not complete this ${operation}.`;
+    default:
+      return null;
+  }
+}
+
+
 export type ChatTaskType = "ASK" | "DO";
 export type ChatTaskStatus =
   | "READY"
@@ -92,6 +129,12 @@ export function describeWorkTaskError(
       : error instanceof Error
         ? error.message
         : "";
+
+  const detectedKind = extractErrorKind(detail);
+  if (detectedKind) {
+    const described = describeByKind(detectedKind, operation);
+    if (described) return described;
+  }
 
   if (operation === "download") {
     const downloadError = detail.toLowerCase();

@@ -120,15 +120,33 @@ pub(crate) struct OpenClawExecutionError {
     pub retryable: bool,
 }
 
+fn kind_tag(kind: OpenClawExecutionErrorKind) -> &'static str {
+    match kind {
+        OpenClawExecutionErrorKind::InvalidRequest => "InvalidRequest",
+        OpenClawExecutionErrorKind::PermissionRequired => "PermissionRequired",
+        OpenClawExecutionErrorKind::PermissionDenied => "PermissionDenied",
+        OpenClawExecutionErrorKind::AuthenticationRequired => "AuthenticationRequired",
+        OpenClawExecutionErrorKind::PairingRequired => "PairingRequired",
+        OpenClawExecutionErrorKind::ConnectionUnavailable => "ConnectionUnavailable",
+        OpenClawExecutionErrorKind::ProtocolFailure => "ProtocolFailure",
+        OpenClawExecutionErrorKind::ExecutionRejected => "ExecutionRejected",
+        OpenClawExecutionErrorKind::ExecutionFailed => "ExecutionFailed",
+    }
+}
+
 impl OpenClawExecutionError {
     pub(crate) fn new(
         kind: OpenClawExecutionErrorKind,
         message: impl Into<String>,
         retryable: bool,
     ) -> Self {
+        // Prefix the machine-readable kind so callers can classify without
+        // guessing from wording. Substring matching on prose caused a
+        // destination error to surface as "OpenClaw is unavailable" for two days.
+        let raw = message.into();
         Self {
+            message: format!("[{}] {raw}", kind_tag(kind)),
             kind,
-            message: message.into(),
             retryable,
         }
     }

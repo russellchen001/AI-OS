@@ -917,3 +917,4 @@ Installed provider Skills describe provider-specific execution.
 
 Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do not hard-code provider selection by domain.
 - 2026-08-23 09:35  feat(p15): complete download skill with dedicated 8B execution agent
+- 2026-08-23 09:59  fix(errors): classify runtime failures by kind instead of matching prose
