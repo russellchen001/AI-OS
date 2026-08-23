@@ -345,6 +345,35 @@ findable.
 
 ---
 
+## P15-1 Email and calendar — completed
+
+Status: completed 2026-08-23
+
+Implemented:
+- macOS permission detection foundation
+- Native Mail.app read/search foundation
+- Native Calendar EventKit foundation
+- Calendar event creation foundation
+- Mail draft creation foundation
+- Mail send confirmation foundation
+
+Architecture validation:
+- Native First decision validated.
+- AppleScript Mail capability evaluation completed.
+- Mail.app access works through native macOS integration.
+- No current capability gap requires Gmail API or Microsoft Graph.
+- Cloud API remains optional future enhancement only.
+
+Evaluation result:
+- Mail.app available: yes
+- AppleScript access: yes
+- Account count: 1
+- Mailbox scan: completed successfully
+- No Cloud API integration required at this stage.
+
+Next:
+Continue remaining P15 Core Skills according to capability ordering.
+
 ## P15-1 Email and calendar — architecture decided, not started
 
 **Decided 2026-08-23. These choices are made; do not reopen them at implementation time.**
