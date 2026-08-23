@@ -165,17 +165,42 @@ Suggested order, each step independently verifiable:
    the attempts. Do not retry `InvalidRequest` or `PermissionDenied` — a
    different agent will not fix a bad request.
 
-**Decisions the project owner must make before implementing step 1:**
+**Selection policy — decided 2026-08-23. Do not revisit without a new reason.**
 
-- What orders the candidate list — Local First as in conversation routing, or
-  capability first for execution?
-- How does context window enter the decision? A capable model with a window too
-  small for the SKILL.md will fail; today that is only avoided by pinning
-  `num_ctx` per agent.
-- How many retries before reporting failure? Each attempt costs minutes on a
-  local model.
-- Do cloud execution agents belong in the list at all? They are faster and more
-  capable, but Local First is a product principle.
+In one sentence: satisfy execution capability and context requirements first,
+then prefer local; try at most two agents, with cloud as the fallback after local.
+
+1. **Ordering: capability first, Local First second.**
+   Exclude agents whose model capability, skill allowlist, tools, or context
+   window cannot serve the task, then prefer local among those that qualify.
+   Never rank a model ahead of a capable one just because it is local — the 4B
+   agent reading a SKILL.md and not executing it cost a week, and that is
+   exactly what naive Local First produces.
+
+2. **Context window: a hard admission gate, not a soft score.**
+   AI Center returns only agents whose configured context is large enough for
+   the capability. Compare against the agent's actual `num_ctx` /
+   `contextWindow`, never the model's theoretical maximum — `qwen3:8b` defaults
+   to 32K and is only usable here because `ai-os-exec-standard` pins 65536.
+
+   Each capability declares the window it needs rather than sharing one global
+   constant. Download currently declares 64K, measured from the `baidu-drive`
+   SKILL.md plus execution history; a shorter skill may need far less and a
+   future one may need more. Declare per capability so the rule stays fixed
+   while the numbers stay adjustable.
+
+3. **Retries: at most two executions — the preferred agent plus one fallback.**
+   When Runtime file verification returns `ProtocolFailure`, try the next
+   qualifying agent once. A second failure is reported as a real failure.
+   Never retry `InvalidRequest` or `PermissionDenied`: a different agent cannot
+   fix a malformed request or a denied permission. Local model runs cost
+   minutes, so unbounded retries would strand the user.
+
+4. **Cloud execution agents: in the list, but only as the local fallback.**
+   Default order is qualifying local agents, then qualifying cloud agents. This
+   keeps Local First while stopping a task from failing outright when the local
+   model cannot manage it. An explicit user choice of a cloud execution agent is
+   honoured directly; Auto mode still starts local.
 
 ### Constraints to preserve
 
