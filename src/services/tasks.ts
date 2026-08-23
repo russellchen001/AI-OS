@@ -69,6 +69,7 @@ export type ExecuteWorkTaskOptions = {
 export type ParsedDownloadRequest = {
   source: string;
   extractionCode?: string;
+  selectionHint: string;
 };
 
 export function parseDownloadRequestText(value: string): ParsedDownloadRequest {
@@ -87,7 +88,11 @@ export function parseDownloadRequestText(value: string): ParsedDownloadRequest {
   } catch {
     queryCode = undefined;
   }
-  return { source: link ?? text, extractionCode: explicitCode ?? queryCode };
+  return {
+    source: link ?? text,
+    extractionCode: explicitCode ?? queryCode,
+    selectionHint: text,
+  };
 }
 
 export function describeDownloadResult(output: unknown): string {

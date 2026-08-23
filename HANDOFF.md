@@ -248,6 +248,45 @@ be trusted as proof that a download actually completed.
   than a deterministic CI assertion.
 
 ---
+### oMLX migration — 2026-08-23
+
+Ollama was replaced by oMLX. Both execution agents now run
+`omlx/Qwen3.5-9B-4bit`. Three separate failures surfaced and each had a
+different cause; the symptom in every case looked like "the model ignores the
+Skill and just runs curl".
+
+1. **Out of memory.** 9B at `num_ctx` 65536 exceeded the Metal watermark
+   (11.5 GB against an 11.2 GB abort threshold) and the request was aborted
+   before the agent ran. Lowered to 32768 for both agents.
+
+2. **Skill hunting.** The prompt said to inspect `$HOME/.agents/skills`, which
+   the model read as an instruction to search the filesystem. It spent six execs
+   on `find`, `ls`, and `which`, looked in the wrong directory, then invented a
+   `bdpan --url` flag that does not exist. Fixed by giving the exact path
+   (`$HOME/.agents/skills/<name>/SKILL.md`), forbidding search commands, and
+   forbidding invented flags.
+
+3. **Stopping at preparation.** `baidu-drive` requires a generated
+   `--session-id`. The model computed it, echoed it, and ended its turn. Fixed
+   by stating that preparing a value is not a step and must not end the turn.
+
+**Context requirement correction.** AC-EXEC-MODEL previously declared 64K for
+Download, measured on `qwen3:8b`. Under `omlx/Qwen3.5-9B-4bit` 32K is
+sufficient and 64K is actively harmful because it exhausts GPU memory. This is
+why the requirement is declared per capability and validated against the
+agent's real configuration rather than fixed as a global constant — a model
+swap changes the number.
+
+Verified end to end through the app on 2026-08-23 at 20:25: a Baidu share was
+transferred and both files landed in the selected directory.
+
+**Observation, not a defect:** the app run downloaded both files in the share
+because the request named no specific item. The prompt already forbids
+downloading a whole share when the user identifies one file; behaviour with an
+explicit filename has not been re-tested since the model change.
+
+---
+
 ## Repository state
 
 | | |
@@ -942,8 +981,8 @@ provider changes. Expect maintenance; do not treat a working tool as permanent.
 
 - P15 Download Skill must NOT currently be treated as fully completed.
 - The 2026-08-21 Direct HTTP and ordinary HTML-link OpenClaw E2E results remain valid historical verification.
-- Current unresolved work is the Web/cloud-share execution path, especially provider-neutral Skill-first execution.
-- Do not begin the next Download milestone or mark Downloads complete until this path is fixed and real E2E verification passes.
+- Provider-neutral Skill-first Web/cloud-share routing is now implemented and covered by focused Rust and deterministic verification.
+- A real authenticated cloud-share download remains the final manual E2E gate before Downloads can be marked fully complete.
 
 ### Current implementation
 
@@ -958,11 +997,15 @@ The Download capability already has substantial implementation in the current wo
 - aria2 routing exists.
 - P2P / Thunder-preferred routing exists.
 - Runtime verifies that a real file appears in the selected destination before reporting success.
+- Download verification scans nested directories and returns relative file paths because cloud-drive tools may create a bundle directory under the selected destination.
+- Download verification rejects zero-byte artifacts and HTML login/extraction pages; third-party Skills are discovered from `$HOME/.agents/skills` before generic curl fallback.
+- The download dialog preserves the user's complete item description as `selectionHint`; for multi-item shares OpenClaw must list items and download only the filename, type, or approximate size requested instead of downloading the whole share.
+- After a matching download Skill is read, its documented share-link command must be the next tool call; browser Skills and curl are forbidden, and supported isolated target-folder options use a unique execution-scoped name.
 - Real OpenClaw E2E test entry exists in `src-tauri/src/task_execution.rs`:
   `real_download_runs_through_task_plan_runtime_and_openclaw`.
 - The real E2E test is intentionally ignored unless the OpenClaw gateway and P15 download fixture are available.
 
-### Current blocking issue
+### Skill-first Web/cloud-share decision
 
 The current Web route in:
 
@@ -972,13 +1015,7 @@ function:
 
 `execute_download_start()`
 
-still uses the old curl-first prompt.
-
-Current behavior begins by telling OpenClaw to inspect the Web page with `/usr/bin/curl`, and only later considers an installed download/cloud-drive Skill.
-
-That is not the intended final architecture for cloud-share downloads.
-
-Required behavior is Skill-first:
+now uses this provider-neutral Skill-first contract:
 
 1. Inspect the installed OpenClaw Skills already available in OpenClaw context.
 2. If a download/cloud-drive Skill declares support for the source, use that Skill first.
@@ -990,53 +1027,21 @@ Required behavior is Skill-first:
 8. Continue until AI-OS verifies that a real downloaded file exists in the selected destination.
 9. Only when no installed Skill supports the source may OpenClaw fall back to generic curl/browser handling.
 10. AI-OS Runtime must remain provider-neutral and must not select a cloud provider by hard-coded domain.
+11. Do not repeat the same failed command or browser wait more than once; return the real Skill error instead of entering an unrelated fallback loop.
 
-### Intended Web prompt direction
+### Implemented Web prompt behavior
 
-The attempted replacement prompt explicitly required:
+The current prompt explicitly requires:
 
 - Skill-first selection.
 - `SKILL.md` read followed by actual execution.
 - No attempt to call the Skill name as though it were an OpenClaw tool.
 - Exact preservation and shell quoting of the source URL.
 - Generic curl/browser only as fallback.
+- A direct share-link command documented by a matching Skill bypasses curl and browser automation.
+- The same failed command or browser wait is not repeated indefinitely.
 - No success after merely reading a Skill, opening a page, resolving a URL, or announcing a next action.
 - Success only after a complete file exists in the destination.
-
-The attempted replacement was accidentally pasted directly into zsh and therefore produced:
-
-`zsh: parse error near ')'`
-
-That shell error did NOT modify the Rust source.
-
-The latest inspection confirmed that `DownloadExecutionRoute::Web` still contains the original curl-first prompt.
-
-### Files currently modified — preserve this work
-
-At handoff time `git status --short` showed existing uncommitted work in:
-
-- `HANDOFF.md`
-- `src-tauri/src/lib.rs`
-- `src-tauri/src/runtime/executor.rs`
-- `src-tauri/src/runtime/openclaw_gateway_adapter.rs`
-- `src-tauri/src/runtime/openclaw_permission.rs`
-- `src-tauri/src/runtime/plan_runtime_bridge.rs`
-- `src-tauri/src/runtime/skills/registry.rs`
-- `src-tauri/src/task_execution.rs`
-- `src/App.css`
-- `src/pages/ChatPage.tsx`
-- `src/services/tasks.ts`
-
-Untracked work included:
-
-- `skills-lock.json`
-- `src-tauri/src/download/`
-- `update_master_guide_p15_p16.sh`
-- `verify/verify_composer_tool_wrap.sh`
-- `verify/verify_p15_baidu_official.sh`
-- `verify/verify_p15_download_complete.sh`
-
-Do NOT run `git reset --hard`, `git clean`, restore these files from HEAD, or otherwise discard this working tree.
 
 ### Next developer action
 
@@ -1048,16 +1053,13 @@ Continue from:
 
 → `DownloadExecutionRoute::Web`
 
-First replace the old curl-first Web/cloud-share prompt with the intended provider-neutral Skill-first contract.
+Focused Rust tests, `verify/verify_p15_download_complete.sh`, and
+`verify/verify_p15_download_exec_agent.sh` pass. Next:
 
-Then:
-
-1. run focused Rust tests for the Download/OpenClaw adapter;
-2. run `verify/verify_p15_download_complete.sh`;
-3. run the real OpenClaw download E2E with an appropriate cloud-share fixture;
-4. verify that OpenClaw actually reads the matching Skill instructions and continues into real execution;
-5. verify that the source URL is passed unchanged to the provider CLI/tool;
-6. verify that AI-OS reports success only after the destination contains the downloaded file.
+1. run the real OpenClaw download E2E with an authenticated cloud-share fixture;
+2. verify that OpenClaw reads the matching Skill instructions and executes its documented command;
+3. verify that the source URL is passed unchanged to the provider CLI/tool;
+4. verify that AI-OS reports success only after the destination contains the downloaded file.
 
 Do not mark P15 Downloads complete solely because the existing Direct HTTP or ordinary HTML-link tests pass.
 
@@ -1086,3 +1088,4 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-23 12:10  complete AC execution model
 - 2026-08-23 15:54  完成 oMLX 自动启动与 My AI 本地服务卡片
 - 2026-08-23 17:16  完成 oMLX 全面替代 Ollama及本地模型管理对齐
+- 2026-08-23 20:33  fix(p15): adapt download execution to oMLX Qwen3.5-9B

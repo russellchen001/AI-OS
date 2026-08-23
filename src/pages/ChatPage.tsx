@@ -317,6 +317,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     source: string;
     destination: string;
     extractionCode?: string;
+    selectionHint: string;
   }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -397,7 +398,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   async function chooseDownload() {
     const source = await dialog.prompt({
       title: "Download",
-      message: "Enter the resource you want, or paste a complete share message including its extraction code. AI-OS can search for the download source.",
+      message: "Enter the resource you want. For a share containing multiple files, include the target filename or size. You may paste the complete share message and extraction code.",
       confirmLabel: "Continue",
       cancelLabel: "Cancel",
       required: true,
@@ -416,6 +417,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       source: parsed.source,
       destination,
       extractionCode: parsed.extractionCode,
+      selectionHint: parsed.selectionHint,
     });
     setTaskType("DO");
     setDraft((current) => current || "Download this file");
@@ -717,6 +719,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               input: {
                 source: downloadWork.source,
                 destination: downloadWork.destination,
+                selectionHint: downloadWork.selectionHint,
                 ...(downloadWork.extractionCode
                   ? { extractionCode: downloadWork.extractionCode }
                   : {}),

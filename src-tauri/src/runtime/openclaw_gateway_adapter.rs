@@ -8,7 +8,7 @@ use crate::openclaw::{
 };
 use crate::providers::execution_agent_candidates;
 use serde_json::Value;
-use std::{collections::HashSet, fs, path::Path, time::Duration};
+use std::{collections::HashSet, fs, io::Read, path::Path, time::Duration};
 
 const FILESYSTEM_SCAN_ACTION: &str = "filesystem.scan";
 const FILESYSTEM_READ_ACTION: &str = "filesystem.read";
@@ -16,9 +16,8 @@ const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const DOWNLOAD_START_ACTION: &str = "download.start";
 const FILESYSTEM_AGENT_ID: &str = "ai-os-files";
-/// Execution agent for download work. Pinned to an 8B model with a 64K context
-/// window because a 4B model reads a SKILL.md without then running its commands.
-/// See AC-EXEC-MODEL in HANDOFF.md.
+/// Execution agent for download work. AI Center binds this agent to the
+/// platform-appropriate local tool-calling model. See AC-EXEC-MODEL in HANDOFF.md.
 const DOWNLOAD_AGENT_ID: &str = "ai-os-exec-standard";
 const MAX_DOWNLOAD_AGENT_ATTEMPTS: usize = 2;
 const AGENT_WAIT_ATTEMPTS: usize = 35;
@@ -107,6 +106,7 @@ fn execute_download_start(
     let source = required_download_input(request, "source")?;
     let destination = required_download_input(request, "destination")?;
     let requested_extraction_code = optional_download_input(request, "extractionCode");
+    let selection_hint = optional_download_input(request, "selectionHint").unwrap_or(source);
     let destination_path = Path::new(destination);
     if !destination_path.is_absolute() || !destination_path.is_dir() {
         return Err(OpenClawExecutionError::new(
@@ -138,26 +138,38 @@ fn execute_download_start(
             format!(
                 concat!(
                     "Complete this user-confirmed Web or cloud-share download automatically. ",
-                    "Source: {}. Optional extraction code supplied by the user: {}. ",
-                    "Step 1: call exec with /usr/bin/curl to fetch the page. ",
+                    "Source: {}. User's complete item request: {}. Optional extraction code supplied by the user: {}. ",
+                    "Step 1: before using curl or browser automation, check the Skills already listed in your context. ",
+                    "Do not search the filesystem for them. Do not run find, ls, or which to locate a Skill. ",
+                    "A Skill named <name> in your context has its document at exactly $HOME/.agents/skills/<name>/SKILL.md; ",
+                    "read that path directly with your file read capability. ",
+                    "If reading that exact path fails, treat the Skill as unavailable and move to Step 2. ",
+                    "Never guess a command's flags. Use only commands and flags written in the SKILL.md you read. ",
+                    "Preparing values such as a session id is not a step and never ends your turn. ",
+                    "Compute any required value inline inside the same command that does the work, ",
+                    "or run the real command immediately after computing it in the same turn. ",
+                    "Never stop after echoing, exporting, or announcing a value. ",
+                    "A Skill is an instruction document, not a tool. Never call a Skill name as if it were a tool. ",
+                    "If an installed download or cloud-drive Skill declares support for this source, read its SKILL.md, ",
+                    "then your very next tool call MUST execute its documented direct share-link download command with the exact source and destination. ",
+                    "When that Skill provides a direct share-link download command, use it and do not use curl or browser tools. ",
+                    "Do not read a browser Skill after finding a matching download Skill. ",
+                    "If the download Skill supports an isolated transfer or target-folder option, use the unique folder name {} so older transferred files cannot be included. ",
+                    "If the share contains multiple items, inspect them with the Skill's documented read-only listing command and download only the item matching the user's complete item request. ",
+                    "Never download the entire share when the user identified one item by filename, type, or approximate size. ",
+                    "If the request does not identify one item unambiguously, return the available names and sizes instead of downloading unrelated items. ",
+                    "Pass exec a normal shell command string; never quote the command name and subcommand together. ",
+                    "Reading SKILL.md is not completion. Do not stop to report that you read it and do not ask the user anything. ",
+                    "Do not repeat the same failed command or browser wait more than once. If the documented Skill command fails, ",
+                    "return its real error instead of trying unrelated curl flags or browser commands. ",
+                    "Step 2: only when no installed Skill supports this source, call exec with /usr/bin/curl to fetch the page. ",
                     "If the HTML contains an ordinary download anchor, resolve its href against the source URL ",
                     "and immediately call exec again with ",
                     "/usr/bin/curl --fail --location --remote-name --output-dir {} followed by the resolved file URL. ",
                     "This is the normal path and handles most downloads. ",
-                    "Step 2: only if the page needs login, JavaScript, buttons, waits, hidden forms, confirmation ",
-                    "pages, or a cloud-drive account, list the OpenClaw Skills installed in your context. ",
-                    "A Skill is an instruction document, not a tool. Never call a Skill name as if it were a tool. ",
-                    "If an installed download or cloud-drive Skill declares support for this source, read its ",
-                    "SKILL.md with your existing file read capability, then immediately continue in the same run ",
-                    "and carry out its instructions using exec. Reading SKILL.md is not completion. ",
-                    "Do not stop to report that you read it and do not ask the user anything. ",
                     "Step 3: when passing the source to any command, use the URL exactly as supplied above. ",
                     "Never rewrite it as Markdown link syntax, never wrap it in brackets or parentheses, ",
                     "and always shell-quote it. ",
-                    "Step 4: if no installed Skill supports the source, ",
-                    "Call exec with /usr/bin/curl to read the page; if the HTML contains an ordinary download anchor, ",
-                    "resolve its href against the source URL and call exec again with ",
-                    "/usr/bin/curl --fail --location --remote-name --output-dir {} followed by the resolved file URL. ",
                     "If the source requires login, JavaScript, buttons, waits, hidden forms, or confirmation pages, ",
                     "use the existing browser tools so the persistent browser profile and any authenticated or VIP session are preserved. ",
                     "Select an authorized VIP or fast option when available, otherwise the free option. ",
@@ -171,8 +183,9 @@ fn execute_download_start(
                     "or announcing a next action, and do not save outside that directory.",
                 ),
                 serde_json::to_string(tool_source).unwrap(),
+                serde_json::to_string(selection_hint).unwrap(),
                 serde_json::to_string(requested_extraction_code.unwrap_or("none")).unwrap(),
-                serde_json::to_string(destination).unwrap(),
+                serde_json::to_string(&format!("ai-os-{}", request.execution_id)).unwrap(),
                 serde_json::to_string(destination).unwrap(),
                 serde_json::to_string(destination).unwrap(),
                 serde_json::to_string(destination).unwrap(),
@@ -259,6 +272,11 @@ fn execute_download_with_agent(
     long_running_download: bool,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
     let session_key = format!("agent:{agent_id}:ai-os-download-{}", request.execution_id);
+    let message = if long_running_download {
+        bind_visible_download_skill(invoker, agent_id, message)?
+    } else {
+        message
+    };
     let accepted = invoker
         .invoke(
             "agent",
@@ -374,6 +392,27 @@ fn execute_download_with_agent(
     ))
 }
 
+fn bind_visible_download_skill(
+    invoker: &dyn GatewayMethodInvoker,
+    agent_id: &str,
+    message: String,
+) -> Result<String, OpenClawExecutionError> {
+    let inventory = invoker
+        .invoke(
+            "commands.list",
+            Some(serde_json::json!({"agentId": agent_id, "scope": "text", "includeArgs": false})),
+        )
+        .map_err(map_gateway_failure)?;
+    let command = inventory["commands"]
+        .as_array()
+        .and_then(|commands| commands.iter().find(|command| command["source"] == "skill"))
+        .and_then(|command| command["textAliases"].as_array()?.first()?.as_str());
+    Ok(match command {
+        Some(command) => format!("{command} {message}"),
+        None => message,
+    })
+}
+
 fn optional_download_input<'a>(
     request: &'a OpenClawExecutionRequest,
     key: &str,
@@ -406,18 +445,48 @@ fn required_download_input<'a>(
 }
 
 fn download_directory_files(path: &Path) -> Result<HashSet<String>, OpenClawExecutionError> {
-    Ok(fs::read_dir(path)
-        .map_err(|_| {
-            OpenClawExecutionError::new(
-                OpenClawExecutionErrorKind::PermissionDenied,
-                "Download destination could not be read.",
-                false,
-            )
-        })?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_file())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect::<HashSet<_>>())
+    fn is_complete_download(path: &Path) -> bool {
+        if path.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
+            return false;
+        }
+        let Ok(mut file) = fs::File::open(path) else {
+            return false;
+        };
+        let mut prefix = [0_u8; 512];
+        let count = file.read(&mut prefix).unwrap_or(0);
+        let text = String::from_utf8_lossy(&prefix[..count]).to_ascii_lowercase();
+        let trimmed = text.trim_start();
+        !trimmed.starts_with("<!doctype html") && !trimmed.starts_with("<html")
+    }
+
+    fn collect_files(
+        root: &Path,
+        current: &Path,
+        files: &mut HashSet<String>,
+    ) -> std::io::Result<()> {
+        for entry in fs::read_dir(current)? {
+            let entry = entry?;
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                collect_files(root, &entry_path, files)?;
+            } else if entry_path.is_file() && is_complete_download(&entry_path) {
+                if let Ok(relative) = entry_path.strip_prefix(root) {
+                    files.insert(relative.to_string_lossy().into_owned());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = HashSet::new();
+    collect_files(path, path, &mut files).map_err(|_| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::PermissionDenied,
+            "Download destination could not be read.",
+            false,
+        )
+    })?;
+    Ok(files)
 }
 
 fn wait_for_download_files(
@@ -1828,6 +1897,25 @@ mod tests {
     }
 
     #[test]
+    fn download_verification_finds_files_created_in_nested_directories() {
+        let destination = tempfile::tempdir().unwrap();
+        let nested = destination.path().join("downloaded-bundle");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("file.bin"), b"complete").unwrap();
+        fs::write(destination.path().join("empty.txt"), b"").unwrap();
+        fs::write(
+            destination.path().join("login-page"),
+            b"<!DOCTYPE html><html><title>Login</title></html>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            download_directory_files(destination.path()).unwrap(),
+            HashSet::from(["downloaded-bundle/file.bin".to_owned()])
+        );
+    }
+
+    #[test]
     fn thunder_wrapper_is_decoded_and_requires_a_downloaded_file() {
         let destination = tempfile::tempdir().unwrap();
         let history = json!({"messages": [{
@@ -1886,6 +1974,10 @@ mod tests {
         let invoker = ScriptedInvoker {
             calls: Mutex::new(Vec::new()),
             outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"commands": [{
+                    "source": "skill",
+                    "textAliases": ["/baidu_drive"]
+                }]})),
                 Ok(json!({"runId": "cloud-share-run"})),
                 Ok(json!({"status": "ok"})),
                 Ok(history),
@@ -1900,6 +1992,7 @@ mod tests {
                     "source": "https://cloud.example/share/safe-test",
                     "destination": destination.path(),
                     "extractionCode": "a1b2",
+                    "selectionHint": "download the approximately 10 MB DMG",
                 }),
             ),
             &mut |_| {},
@@ -1908,8 +2001,16 @@ mod tests {
         let calls = invoker.calls.lock().unwrap();
 
         assert!(error.message.contains("without creating a file"));
-        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert_eq!(calls[0].0, "commands.list");
+        let message = calls[1].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.starts_with("/baidu_drive "));
+        let task_message = message.split_once(' ').unwrap().1;
         assert!(message.contains("a1b2"));
+        assert!(message.contains("approximately 10 MB DMG"));
+        assert!(message.contains("Never download the entire share"));
+        assert!(message.contains("very next tool call MUST execute"));
+        assert!(message.contains("ai-os-runtime-execution-123"));
+        assert!(message.contains("Do not read a browser Skill"));
         // Provider neutrality is the property under test: AI-OS must not name or
         // imply a specific cloud provider. Assert on that, not on prompt wording —
         // a reworded prompt is not a regression.
@@ -1927,7 +2028,7 @@ mod tests {
             "google drive",
         ] {
             assert!(
-                !message.to_lowercase().contains(provider),
+                !task_message.to_lowercase().contains(provider),
                 "prompt must stay provider-neutral but named {provider}"
             );
         }
@@ -1935,8 +2036,18 @@ mod tests {
             message.contains("Skill"),
             "prompt must mention Skills at all"
         );
+        assert!(
+            message.find("inspect the OpenClaw Skills")
+                < message.find("call exec with /usr/bin/curl"),
+            "cloud-share execution must try an installed Skill before curl"
+        );
+        assert!(message.contains("direct share-link download command"));
+        assert!(message.contains("do not use curl or browser tools"));
+        assert!(message.contains("$HOME/.agents/skills"));
+        assert!(message.contains("never quote the command name and subcommand together"));
+        assert!(message.contains("Do not repeat the same failed command"));
         assert_eq!(
-            calls[0].1.as_ref().unwrap()["agentId"],
+            calls[1].1.as_ref().unwrap()["agentId"],
             "ai-os-exec-standard"
         );
     }
@@ -1947,6 +2058,7 @@ mod tests {
         let invoker = ScriptedInvoker {
             calls: Mutex::new(Vec::new()),
             outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"commands": []})),
                 Ok(json!({"runId": "web-download-run"})),
                 Ok(json!({"status": "ok"})),
             ])),
@@ -1965,7 +2077,7 @@ mod tests {
         )
         .unwrap_err();
         let calls = invoker.calls.lock().unwrap();
-        let params = calls[0].1.as_ref().unwrap();
+        let params = calls[1].1.as_ref().unwrap();
         let message = params["message"].as_str().unwrap();
 
         assert!(error.message.contains("without creating a file"));
