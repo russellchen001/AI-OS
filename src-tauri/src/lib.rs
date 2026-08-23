@@ -154,6 +154,8 @@ pub fn run() {
             email_calendar::search_native_mail,
             email_calendar::list_native_calendar,
             email_calendar::create_native_calendar_event,
+            email_calendar::prepare_native_mail_send_confirmation,
+            email_calendar::send_native_mail_after_confirmation,
             email_calendar::create_mail_draft,
 models::list_ollama_models,
             models::pull_ollama_model,
