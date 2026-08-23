@@ -21,32 +21,45 @@ run_route_test manual_route_executes_only_the_requested_candidate
 run_route_test route_selection_allows_only_auto_pre_output_fallback
 
 node --input-type=module <<'NODE'
-const base = "http://127.0.0.1:11434";
-const tagsResponse = await fetch(`${base}/api/tags`, {
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { arch } from "node:process";
+
+const useOmlx = arch === "arm64";
+const base = useOmlx ? "http://127.0.0.1:8000/v1" : "http://127.0.0.1:11434/api";
+const headers = { "content-type": "application/json" };
+if (useOmlx) {
+  headers.authorization = `Bearer ${(await readFile(`${homedir()}/.openclaw/ai-os-secrets/omlx-api-key`, "utf8")).trim()}`;
+}
+const modelsResponse = await fetch(`${base}/${useOmlx ? "models" : "tags"}`, {
+  headers,
   signal: AbortSignal.timeout(5000),
 });
-if (!tagsResponse.ok) throw new Error("Ollama tags request failed");
-const tags = await tagsResponse.json();
-const model = tags.models?.[0]?.model;
-if (!model) throw new Error("Ollama has no installed model");
+if (!modelsResponse.ok) throw new Error("Local model list request failed");
+const models = await modelsResponse.json();
+const model = useOmlx
+  ? models.data?.find(({ id }) => id === "Qwen3.5-9B-4bit")?.id
+  : models.models?.[0]?.model;
+if (!model) throw new Error("Required local model is unavailable");
 
-const response = await fetch(`${base}/api/chat`, {
+const response = await fetch(`${base}/chat${useOmlx ? "/completions" : ""}`, {
   method: "POST",
-  headers: { "content-type": "application/json" },
+  headers,
   body: JSON.stringify({
     model,
     stream: false,
     messages: [{ role: "user", content: "Reply with exactly: LOCAL_OK" }],
-    options: { num_predict: 16 },
+    ...(useOmlx ? { max_tokens: 16 } : { options: { num_predict: 16 } }),
   }),
   signal: AbortSignal.timeout(120000),
 });
-if (!response.ok) throw new Error("Ollama chat request failed");
+if (!response.ok) throw new Error("Local chat request failed");
 const body = await response.json();
-if (!body.message?.content?.trim()) {
-  throw new Error("Ollama returned no output");
+const content = useOmlx ? body.choices?.[0]?.message?.content : body.message?.content;
+if (!content?.trim()) {
+  throw new Error("Local model returned no output");
 }
-console.log(`✅ Live Ollama response through ${model}`);
+console.log(`✅ Live ${useOmlx ? "oMLX" : "Ollama"} response through ${model}`);
 NODE
 
 echo "PASS: AC-BACKEND-1 Routing"

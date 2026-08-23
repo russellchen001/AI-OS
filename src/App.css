@@ -1976,7 +1976,7 @@ a {
   gap: 7px;
 }
 
-.local-model-list div {
+.local-model-list > div {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1985,6 +1985,23 @@ a {
   background: rgba(148, 163, 184, 0.08);
   color: var(--text-secondary);
   font-size: 10px;
+}
+
+.local-model-list > div > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.local-model-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.local-model-actions button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .local-model-list small {

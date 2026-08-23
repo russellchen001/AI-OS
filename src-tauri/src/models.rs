@@ -326,6 +326,83 @@ pub fn show_ollama_model(model: String) -> Result<String, String> {
     }
 }
 
+fn ollama_manifest_path(model: &str) -> Result<std::path::PathBuf, String> {
+    let (name, tag) = model
+        .rsplit_once(':')
+        .filter(|(_, tag)| !tag.contains('/'))
+        .unwrap_or((model, "latest"));
+    let mut parts = name.split('/').collect::<Vec<_>>();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || matches!(*part, "." | ".."))
+    {
+        return Err("Ollama model name is invalid".to_owned());
+    }
+    let registry = if parts.len() > 2 {
+        parts.remove(0).to_owned()
+    } else {
+        "registry.ollama.ai".to_owned()
+    };
+    if parts.len() == 1 {
+        parts.insert(0, "library");
+    }
+    let models_dir = std::env::var_os("OLLAMA_MODELS")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| std::path::PathBuf::from(home).join(".ollama/models"))
+        })
+        .ok_or_else(|| "Ollama model folder is unavailable".to_owned())?;
+    Ok(parts
+        .into_iter()
+        .fold(models_dir.join("manifests").join(registry), |path, part| {
+            path.join(part)
+        })
+        .join(tag))
+}
+
+#[tauri::command]
+pub fn show_ollama_model_in_finder(model: String) -> Result<(), String> {
+    let manifest_path = ollama_manifest_path(model.trim())?;
+    if !manifest_path.is_file() {
+        return Err("Ollama model manifest was not found".to_owned());
+    }
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(&manifest_path)
+            .map_err(|_| "Ollama model manifest could not be read".to_owned())?,
+    )
+    .map_err(|_| "Ollama model manifest is invalid".to_owned())?;
+    let digest = manifest
+        .get("layers")
+        .and_then(Value::as_array)
+        .and_then(|layers| {
+            layers
+                .iter()
+                .max_by_key(|layer| layer.get("size").and_then(Value::as_u64).unwrap_or(0))
+        })
+        .and_then(|layer| layer.get("digest"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Ollama model weight file was not found".to_owned())?;
+    let blob_path = manifest_path
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == "manifests"))
+        .and_then(std::path::Path::parent)
+        .ok_or_else(|| "Ollama model folder is unavailable".to_owned())?
+        .join("blobs")
+        .join(digest.replace(':', "-"));
+    if !blob_path.is_file() {
+        return Err("Ollama model weight file no longer exists".to_owned());
+    }
+    Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(blob_path)
+        .status()
+        .map_err(|_| "AI-OS could not open this model in Finder".to_owned())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Finder could not reveal this Ollama model".to_owned())
+}
+
 pub(crate) fn execute_local_model_capability(
     capability: &str,
     input: &Value,

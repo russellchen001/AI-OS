@@ -5,6 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    os::unix::fs::PermissionsExt,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -18,7 +19,9 @@ use tokio_util::sync::CancellationToken;
 const KEYCHAIN_SERVICE: &str = "com.ai-os.provider";
 const OAUTH_CLIENT_KEYCHAIN_SERVICE: &str = "com.ai-os.oauth-client";
 const OMLX_HEALTH_URL: &str = "http://127.0.0.1:8000/health";
+const OMLX_ADMIN_URL: &str = "http://127.0.0.1:8000/admin/api";
 const OMLX_BUNDLE_ID: &str = "app.omlx";
+const OMLX_EXECUTION_MODEL: &str = "Qwen3.5-9B-4bit";
 
 const PROVIDER_INSTANCES_FILE: &str = "provider-instances.json";
 
@@ -28,6 +31,186 @@ pub(crate) struct OmlxRuntimeStatus {
     supported: bool,
     installed: bool,
     running: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct OmlxAdminModel {
+    name: String,
+    #[serde(skip_serializing)]
+    path: String,
+    #[serde(rename(serialize = "displayName", deserialize = "display_name"))]
+    display_name: String,
+    size: u64,
+    #[serde(rename(serialize = "sizeFormatted", deserialize = "size_formatted"))]
+    size_formatted: String,
+}
+
+#[derive(Deserialize)]
+struct OmlxAdminModels {
+    models: Vec<OmlxAdminModel>,
+}
+
+async fn omlx_admin_session(client: &reqwest::Client) -> Result<String, String> {
+    let credential = read_current_credential("omlx-local").await?;
+    let response = client
+        .post(format!("{OMLX_ADMIN_URL}/login"))
+        .json(&serde_json::json!({ "api_key": credential.value, "remember": false }))
+        .send()
+        .await
+        .map_err(|_| "oMLX admin service could not be reached".to_owned())?;
+    if !response.status().is_success() {
+        return Err("oMLX rejected the saved API key for model management".to_owned());
+    }
+    response
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::to_owned)
+        .ok_or_else(|| "oMLX did not create a model management session".to_owned())
+}
+
+async fn omlx_admin_models(
+    client: &reqwest::Client,
+    cookie: &str,
+) -> Result<Vec<OmlxAdminModel>, String> {
+    client
+        .get(format!("{OMLX_ADMIN_URL}/hf/models"))
+        .header(reqwest::header::COOKIE, cookie)
+        .send()
+        .await
+        .map_err(|_| "oMLX model manager could not be reached".to_owned())?
+        .error_for_status()
+        .map_err(|_| "oMLX could not list its managed models".to_owned())?
+        .json::<OmlxAdminModels>()
+        .await
+        .map(|result| result.models)
+        .map_err(|_| "oMLX returned invalid model details".to_owned())
+}
+
+async fn omlx_admin_client() -> Result<(reqwest::Client, String), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "AI-OS could not initialize oMLX model management".to_owned())?;
+    let cookie = omlx_admin_session(&client).await?;
+    Ok((client, cookie))
+}
+
+fn omlx_download_result(tasks: &Value, task_id: &str) -> Option<Result<(), String>> {
+    let task = tasks
+        .get("tasks")?
+        .as_array()?
+        .iter()
+        .find(|item| item.get("task_id").and_then(Value::as_str) == Some(task_id))?;
+    match task.get("status").and_then(Value::as_str) {
+        Some("completed") => Some(Ok(())),
+        Some("failed") | Some("cancelled") => Some(Err(task
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("download failed")
+            .to_owned())),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn list_omlx_admin_models() -> Result<Vec<OmlxAdminModel>, String> {
+    let (client, cookie) = omlx_admin_client().await?;
+    omlx_admin_models(&client, &cookie).await
+}
+
+#[tauri::command]
+pub(crate) async fn show_omlx_model(model: String) -> Result<OmlxAdminModel, String> {
+    let (client, cookie) = omlx_admin_client().await?;
+    omlx_admin_models(&client, &cookie)
+        .await?
+        .into_iter()
+        .find(|entry| entry.name == model || entry.display_name == model)
+        .ok_or_else(|| "oMLX model was not found".to_owned())
+}
+
+#[tauri::command]
+pub(crate) async fn show_omlx_model_in_finder(model: String) -> Result<(), String> {
+    let details = show_omlx_model(model).await?;
+    let path = std::path::Path::new(&details.path);
+    if !path.exists() {
+        return Err("oMLX model folder no longer exists".to_owned());
+    }
+    std::process::Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(path)
+        .status()
+        .map_err(|_| "AI-OS could not open this model in Finder".to_owned())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Finder could not reveal this oMLX model".to_owned())
+}
+
+#[tauri::command]
+pub(crate) async fn delete_omlx_model(model: String) -> Result<String, String> {
+    let (client, cookie) = omlx_admin_client().await?;
+    let mut url = reqwest::Url::parse(&format!("{OMLX_ADMIN_URL}/hf/models/"))
+        .map_err(|_| "oMLX delete URL is invalid".to_owned())?;
+    url.path_segments_mut()
+        .map_err(|_| "oMLX delete URL is invalid".to_owned())?
+        .push(model.trim());
+    let response = client
+        .delete(url)
+        .header(reqwest::header::COOKIE, cookie)
+        .send()
+        .await
+        .map_err(|_| "oMLX model manager could not be reached".to_owned())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "oMLX could not delete model ({})",
+            response.status()
+        ));
+    }
+    Ok(format!("Deleted oMLX model: {}", model.trim()))
+}
+
+#[tauri::command]
+pub(crate) async fn pull_omlx_model(repo_id: String) -> Result<String, String> {
+    let repo_id = repo_id.trim();
+    if repo_id.is_empty() {
+        return Err("Enter a Hugging Face model ID".to_owned());
+    }
+    let (client, cookie) = omlx_admin_client().await?;
+    let response: Value = client
+        .post(format!("{OMLX_ADMIN_URL}/hf/download"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .json(&serde_json::json!({ "repo_id": repo_id, "hf_token": "" }))
+        .send()
+        .await
+        .map_err(|_| "oMLX model downloader could not be reached".to_owned())?
+        .error_for_status()
+        .map_err(|_| "oMLX could not start the model download".to_owned())?
+        .json()
+        .await
+        .map_err(|_| "oMLX returned an invalid download task".to_owned())?;
+    let task_id = response
+        .pointer("/task/task_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "oMLX did not return a download task".to_owned())?;
+    for _ in 0..1800 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let tasks: Value = client
+            .get(format!("{OMLX_ADMIN_URL}/hf/tasks"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .map_err(|_| "oMLX download status is unavailable".to_owned())?
+            .json()
+            .await
+            .map_err(|_| "oMLX returned invalid download status".to_owned())?;
+        if let Some(result) = omlx_download_result(&tasks, task_id) {
+            return result
+                .map(|_| format!("Downloaded oMLX model: {repo_id}"))
+                .map_err(|error| format!("oMLX model download failed: {error}"));
+        }
+    }
+    Err("oMLX model download did not finish within 30 minutes".to_owned())
 }
 
 fn omlx_supported() -> bool {
@@ -88,8 +271,128 @@ pub(crate) async fn start_omlx_runtime() -> Result<OmlxRuntimeStatus, String> {
 pub(crate) async fn auto_start_connected_omlx() {
     let connected = read_provider_instances().is_ok_and(|instances| has_connected_omlx(&instances));
     if connected && omlx_supported() && omlx_installed() {
-        let _ = start_omlx_runtime().await;
+        if start_omlx_runtime().await.is_ok() {
+            let _ = configure_omlx_openclaw_execution();
+        }
     }
+}
+
+fn object_path_mut<'a>(
+    root: &'a mut Value,
+    keys: &[&str],
+) -> Result<&'a mut serde_json::Map<String, Value>, String> {
+    let mut current = root;
+    for key in keys {
+        current = current
+            .as_object_mut()
+            .ok_or_else(|| "OpenClaw configuration has an invalid object".to_owned())?
+            .entry((*key).to_owned())
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    current
+        .as_object_mut()
+        .ok_or_else(|| "OpenClaw configuration has an invalid object".to_owned())
+}
+
+fn apply_omlx_openclaw_config(
+    config: &mut Value,
+    model_id: &str,
+    secret_path: &std::path::Path,
+) -> Result<(), String> {
+    object_path_mut(config, &["secrets", "providers"])?.insert(
+        "ai_os_omlx_key".to_owned(),
+        serde_json::json!({
+            "source": "file",
+            "path": secret_path,
+            "mode": "singleValue"
+        }),
+    );
+    object_path_mut(config, &["models", "providers"])?.insert(
+        "omlx".to_owned(),
+        serde_json::json!({
+            "baseUrl": "http://127.0.0.1:8000/v1",
+            "api": "openai-completions",
+            "auth": "api-key",
+            "apiKey": { "source": "file", "provider": "ai_os_omlx_key", "id": "value" },
+            "models": [{
+                "id": model_id,
+                "name": "Qwen3.5 9B 4bit",
+                "reasoning": false,
+                "input": ["text"],
+                "contextWindow": 65536,
+                "contextTokens": 65536,
+                "maxTokens": 32768,
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+            }]
+        }),
+    );
+    let allowed_models = object_path_mut(config, &["agents", "defaults", "models"])?;
+    allowed_models.retain(|provider_model, _| {
+        !provider_model.starts_with("ollama/") && !provider_model.starts_with("ollama-ai-os/")
+    });
+    allowed_models.insert(format!("omlx/{model_id}"), serde_json::json!({}));
+    let agents = config
+        .pointer_mut("/agents/list")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "OpenClaw execution-agent list is unavailable".to_owned())?;
+    for agent in agents.iter_mut().filter(|agent| {
+        matches!(
+            agent.get("id").and_then(Value::as_str),
+            Some("ai-os-files" | "ai-os-exec-standard")
+        )
+    }) {
+        object_path_mut(agent, &["model"])?.insert(
+            "primary".to_owned(),
+            Value::String(format!("omlx/{model_id}")),
+        );
+        object_path_mut(agent, &["params"])?.insert("num_ctx".to_owned(), Value::from(65_536));
+    }
+    Ok(())
+}
+
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
+    let directory = path
+        .parent()
+        .ok_or_else(|| "Secure OpenClaw directory is unavailable".to_owned())?;
+    std::fs::create_dir_all(directory)
+        .map_err(|_| "AI-OS could not create the secure OpenClaw directory".to_owned())?;
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "AI-OS could not secure the OpenClaw directory".to_owned())?;
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, contents)
+        .map_err(|_| "AI-OS could not write the OpenClaw credential bridge".to_owned())?;
+    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
+        .map_err(|_| "AI-OS could not secure the OpenClaw credential bridge".to_owned())?;
+    std::fs::rename(temporary, path)
+        .map_err(|_| "AI-OS could not finalize the OpenClaw credential bridge".to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn configure_omlx_openclaw_execution() -> Result<String, String> {
+    if !omlx_supported() {
+        return Err("oMLX execution requires an Apple Silicon Mac".to_owned());
+    }
+    let instances = read_provider_instances()?;
+    let model_id = connected_provider_model_ids(&instances, "omlx")
+        .into_iter()
+        .find(|model| model.ends_with(OMLX_EXECUTION_MODEL))
+        .ok_or_else(|| format!("Download {OMLX_EXECUTION_MODEL} in oMLX first"))?;
+    let home = dirs::home_dir().ok_or_else(|| "Home directory is unavailable".to_owned())?;
+    let openclaw_directory = home.join(".openclaw");
+    let secret_path = openclaw_directory.join("ai-os-secrets/omlx-api-key");
+    write_private_file(&secret_path, &read_secret("omlx-local")?)?;
+
+    let config_path = openclaw_directory.join("openclaw.json");
+    let mut config: Value = serde_json::from_slice(
+        &std::fs::read(&config_path)
+            .map_err(|_| "AI-OS could not read the OpenClaw configuration".to_owned())?,
+    )
+    .map_err(|_| "OpenClaw configuration is malformed".to_owned())?;
+    apply_omlx_openclaw_config(&mut config, &model_id, &secret_path)?;
+    let contents = serde_json::to_vec_pretty(&config)
+        .map_err(|_| "AI-OS could not serialize the OpenClaw configuration".to_owned())?;
+    write_private_file(&config_path, &contents)?;
+    Ok(model_id)
 }
 
 fn has_connected_omlx(instances: &[ProviderInstance]) -> bool {
@@ -4097,6 +4400,41 @@ mod tests {
     }
 
     #[test]
+    fn parses_omlx_admin_model_details() {
+        let model: OmlxAdminModel = serde_json::from_value(serde_json::json!({
+            "name": "Qwen2.5-7B-Instruct-4bit",
+            "path": "/Users/test/.omlx/models/Qwen2.5-7B-Instruct-4bit",
+            "display_name": "Qwen 2.5 7B",
+            "size": 4190000000_u64,
+            "size_formatted": "3.9 GB"
+        }))
+        .unwrap();
+        assert_eq!(model.name, "Qwen2.5-7B-Instruct-4bit");
+        assert_eq!(model.size_formatted, "3.9 GB");
+    }
+
+    #[test]
+    fn accepts_only_completed_omlx_downloads_as_success() {
+        let completed = serde_json::json!({
+            "tasks": [{"task_id": "task-1", "status": "completed", "error": ""}]
+        });
+        assert_eq!(omlx_download_result(&completed, "task-1"), Some(Ok(())));
+
+        let failed = serde_json::json!({
+            "tasks": [{"task_id": "task-1", "status": "failed", "error": "disk full"}]
+        });
+        assert_eq!(
+            omlx_download_result(&failed, "task-1"),
+            Some(Err("disk full".to_owned()))
+        );
+
+        let running = serde_json::json!({
+            "tasks": [{"task_id": "task-1", "status": "downloading", "progress": 42.0}]
+        });
+        assert_eq!(omlx_download_result(&running, "task-1"), None);
+    }
+
+    #[test]
     fn parses_omlx_sse_data_line() {
         let line = r#"data: {"choices":[{"delta":{"content":"chunk"}}]}"#;
         assert_eq!(omlx_stream_line(line).as_deref(), Some("chunk"));
@@ -4289,6 +4627,69 @@ mod tests {
         omlx.connection_state = ProviderConnectionState::NotConfigured;
         assert!(!has_connected_omlx(&[omlx]));
         assert!(!has_connected_omlx(&[provider_fixture()]));
+    }
+
+    #[test]
+    fn omlx_replaces_both_openclaw_execution_agent_models() {
+        let mut config = serde_json::json!({
+            "agents": {
+              "defaults": {"models": {
+                "ollama/qwen3:8b": {},
+                "ollama-ai-os/qwen3:4b-instruct": {},
+                "openai/gpt-test": {}
+              }},
+              "list": [
+                {"id": "main"},
+                {"id": "ai-os-files", "model": {"primary": "ollama-ai-os/qwen3:4b-instruct"}, "params": {"num_ctx": 32768}},
+                {"id": "ai-os-exec-standard", "model": {"primary": "ollama/qwen3:8b"}, "params": {"num_ctx": 32768}}
+              ]
+            }
+        });
+        apply_omlx_openclaw_config(
+            &mut config,
+            "Qwen3.5-9B-4bit",
+            std::path::Path::new("/tmp/omlx-api-key"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            config
+                .pointer("/models/providers/omlx/api")
+                .and_then(Value::as_str),
+            Some("openai-completions")
+        );
+        assert_eq!(
+            config
+                .pointer("/models/providers/omlx/apiKey/provider")
+                .and_then(Value::as_str),
+            Some("ai_os_omlx_key")
+        );
+        assert!(config
+            .pointer("/agents/defaults/models/omlx~1Qwen3.5-9B-4bit")
+            .is_some());
+        assert!(config
+            .pointer("/agents/defaults/models/ollama~1qwen3:8b")
+            .is_none());
+        assert!(config
+            .pointer("/agents/defaults/models/ollama-ai-os~1qwen3:4b-instruct")
+            .is_none());
+        assert!(config
+            .pointer("/agents/defaults/models/openai~1gpt-test")
+            .is_some());
+        for index in [1, 2] {
+            assert_eq!(
+                config
+                    .pointer(&format!("/agents/list/{index}/model/primary"))
+                    .and_then(Value::as_str),
+                Some("omlx/Qwen3.5-9B-4bit")
+            );
+            assert_eq!(
+                config
+                    .pointer(&format!("/agents/list/{index}/params/num_ctx"))
+                    .and_then(Value::as_u64),
+                Some(65_536)
+            );
+        }
     }
 
     #[test]

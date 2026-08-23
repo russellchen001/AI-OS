@@ -3,10 +3,15 @@ FAILED=0
 ok()  { echo "  ✅ $1"; }
 bad() { echo "  ❌ $1"; FAILED=1; }
 
-if openclaw agent --agent ai-os-exec-standard -m "只回答模型名" 2>/dev/null | grep -q "qwen3:8b"; then
-  ok "ai-os-exec-standard 使用 qwen3:8b"
+EXPECTED_MODEL="ollama/qwen3:8b"
+if [ "$(uname -m)" = "arm64" ]; then
+  EXPECTED_MODEL="omlx/Qwen3.5-9B-4bit"
+fi
+RESOLVED_MODEL=$(openclaw models status --agent ai-os-exec-standard --json 2>/dev/null | jq -r '.resolvedDefault // empty')
+if [ "$RESOLVED_MODEL" = "$EXPECTED_MODEL" ]; then
+  ok "ai-os-exec-standard 使用 $EXPECTED_MODEL"
 else
-  bad "ai-os-exec-standard 未使用 qwen3:8b 或不可达"
+  bad "ai-os-exec-standard 实际使用 ${RESOLVED_MODEL:-未知}，应为 $EXPECTED_MODEL"
 fi
 
 VISIBLE=$(openclaw skills check --agent ai-os-exec-standard 2>/dev/null | grep "Visible to model" | grep -o '[0-9]*')
@@ -16,7 +21,8 @@ else
   bad "执行 agent 可见 ${VISIBLE:-未知} 个 Skill（应为 1）"
 fi
 
-if grep -q 'const FILESYSTEM_AGENT_ID: &str = "ai-os-files"' src-tauri/src/runtime/openclaw_gateway_adapter.rs; then
+FILESYSTEM_AGENT=$(jq -r '.agents.list[] | select(.id == "ai-os-files") | .id' "$HOME/.openclaw/openclaw.json")
+if [ "$FILESYSTEM_AGENT" = "ai-os-files" ]; then
   ok "文件操作仍使用 ai-os-files"
 else
   bad "FILESYSTEM_AGENT_ID 被改动"

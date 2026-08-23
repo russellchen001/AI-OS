@@ -107,8 +107,8 @@ Current execution agents:
 
 | Agent | Model | num_ctx | Skills | Tools | Used for |
 | --- | --- | ---: | --- | --- | --- |
-| `ai-os-files` | `ollama-ai-os/qwen3:4b-instruct` | 65536 | baidu-drive | exec, read | Filesystem scan/read/write/move |
-| `ai-os-exec-standard` | `ollama/qwen3:8b` | 65536 | baidu-drive | exec, read | Download execution |
+| `ai-os-files` | `omlx/Qwen3.5-9B-4bit` on Apple Silicon; existing Ollama model elsewhere | 65536 | baidu-drive | exec, read | Filesystem scan/read/write/move |
+| `ai-os-exec-standard` | `omlx/Qwen3.5-9B-4bit` on Apple Silicon; existing Ollama model elsewhere | 65536 | baidu-drive | exec, read | Download execution |
 
 Filesystem operations remain on `ai-os-files`.
 
@@ -288,6 +288,7 @@ be trusted as proof that a download actually completed.
 | AI Center End-to-End QA | Auto/Local First, manual selection, multi-model, streaming, cancellation, fallback, and analytics verified | `verify/verify_ai_center_e2e_qa.sh` |
 | oMLX AI Center | Native oMLX provider, Keychain-backed Bearer auth, model discovery, My AI setup, Local First routing, and OpenAI-compatible streaming/non-streaming Chat execution | `verify/verify_omlx_ai_center_step1.sh`; automated provider suite and full Rust regression passed; real manual oMLX Chat UI E2E passed 2026-08-23 |
 | oMLX local service UX | Connected oMLX instances move into On this Mac with runtime health, models, default model, refresh, start, and connection management; connected Apple Silicon installations auto-start when AI-OS opens | `verify/verify_omlx_ai_center_step1.sh`; 442 Rust tests and frontend production build passed; real Stopped → automatic Ready UI E2E passed 2026-08-23 |
+| oMLX local model management | My AI exposes Details, Show in Finder, Delete, Pull model, and Refresh; oMLX admin authentication remains backend-only through the saved Keychain API key, Finder uses the server-returned model path, destructive deletion requires confirmation, and downloads report success only after the oMLX task completes | `verify/verify_omlx_ai_center_step1.sh`; Provider behavior tests and frontend production build passed 2026-08-23; Details UI E2E passed, Finder/Delete/Pull E2E pending |
 | P15 Filesystem scan | Explicit PlanStep execution, one-time confirmation, permission enforcement, real OpenClaw `exec` scan, readable result rendering, Work-specific errors, and stable local message times | `verify/verify_p15_file_execution_contract.sh`, `verify/verify_p15_file_scan_confirmation.sh`; real UI E2E passed 2026-08-15 with `.DS_Store`, `Lable_副本.docx`, and `__副本.jpeg` |
 | P15 Filesystem read | Explicit file picker and confirmation, real OpenClaw text read, MIME and size detection, 1 MB read limit, 64 KiB output limit, binary/unsupported handling, and readable Chat rendering | `verify/verify_p15_file_read.sh`; real UI E2E passed 2026-08-15 with repository `README.md` content |
 | P15 Filesystem write | Explicit save-path selection and confirmation, real OpenClaw text creation, 4 KiB input limit, private 0600 permissions, and create-only/no-overwrite failure handling | `verify/verify_p15_file_write.sh`; isolated real OpenClaw create/no-overwrite smoke and real UI E2E passed 2026-08-15 with a 27-byte text file |
@@ -409,8 +410,10 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 - oMLX uses the independent `omlx-local` Provider instance, Keychain-backed Bearer authentication, `/v1/models` discovery, and OpenAI-compatible Chat endpoints
 - AI-OS auto-starts the installed oMLX macOS app only when an `omlx-local` instance is connected and the machine is Apple Silicon; unsupported machines retain Ollama without attempting oMLX startup
 - My AI treats connected oMLX as a local service under On this Mac; it is removed from Add another Provider until disconnected
+- On Apple Silicon, a connected oMLX instance replaces Ollama in My AI and both OpenClaw execution agents. Ollama remains an optional Add another Provider entry and remains the default local engine on unsupported computers
+- OpenClaw reads the oMLX credential through a private 0600 file SecretRef exported from the existing Keychain credential, because the separate OpenClaw process cannot directly read AI-OS's Keychain item
 - The canonical AI Center streaming command owns oMLX candidate attempts, chunk emission, cancellation, and fallback decisions; the UI does not call oMLX directly
-- OpenClaw execution agents and P15 local-model management remain Ollama-bound
+- OpenClaw execution agents use `omlx/Qwen3.5-9B-4bit` on Apple Silicon; oMLX model management has Details, Show in Finder, Delete, Pull model, and Refresh parity
 - Explicit manual model selection never silently falls back
 - Fallback occurs only before output has started
 - Cancellation stops the current stream without later output continuation
@@ -1082,3 +1085,4 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-23 09:59  fix(errors): classify runtime failures by kind instead of matching prose
 - 2026-08-23 12:10  complete AC execution model
 - 2026-08-23 15:54  完成 oMLX 自动启动与 My AI 本地服务卡片
+- 2026-08-23 17:16  完成 oMLX 全面替代 Ollama及本地模型管理对齐
