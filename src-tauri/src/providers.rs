@@ -753,6 +753,103 @@ pub(crate) struct ResolveAiCenterRouteInput {
     cancelled: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExecutionCapabilityRequirement {
+    pub minimum_context_window: u64,
+}
+
+pub(crate) fn execution_capability_requirement(
+    capability: &str,
+) -> Option<ExecutionCapabilityRequirement> {
+    match capability {
+        "download.start" => Some(ExecutionCapabilityRequirement {
+            // Current measured requirement for baidu-drive execution.
+            minimum_context_window: 65_536,
+        }),
+        _ => None,
+    }
+}
+
+fn normalized_execution_model(model: &str) -> Option<(&str, &str)> {
+    let (provider_id, model_id) = model.trim().split_once('/')?;
+
+    let provider_id = if provider_id == "ollama" || provider_id == "ollama-ai-os" {
+        "ollama"
+    } else {
+        provider_id
+    };
+
+    Some((provider_id, model_id))
+}
+
+fn execution_agent_candidates_from_config(
+    capability: &str,
+    config: &serde_json::Value,
+    route_candidates: &[AiCenterRouteCandidate],
+) -> Result<Vec<String>, String> {
+    let requirement = execution_capability_requirement(capability)
+        .ok_or_else(|| format!("No execution requirement declared for {capability}"))?;
+
+    let agents = config["agents"]["list"]
+        .as_array()
+        .ok_or_else(|| "OpenClaw execution-agent list is unavailable".to_owned())?;
+
+    let mut candidates = agents
+        .iter()
+        .filter_map(|agent| {
+            let agent_id = agent["id"].as_str()?;
+
+            if !agent_id.starts_with("ai-os-exec-") {
+                return None;
+            }
+
+            let num_ctx = agent["params"]["num_ctx"].as_u64()?;
+            if num_ctx < requirement.minimum_context_window {
+                return None;
+            }
+
+            let primary_model = agent["model"]["primary"].as_str()?;
+            let (provider_id, model_id) = normalized_execution_model(primary_model)?;
+
+            let route_index = route_candidates.iter().position(|candidate| {
+                let candidate_provider = if candidate.provider_id == "ollama"
+                    || candidate.provider_instance_id == "ollama-local"
+                {
+                    "ollama"
+                } else {
+                    candidate.provider_id.as_str()
+                };
+
+                candidate_provider == provider_id && candidate.model_id == model_id
+            })?;
+
+            Some((route_index, agent_id.to_owned()))
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by_key(|(route_index, _)| *route_index);
+
+    Ok(candidates
+        .into_iter()
+        .map(|(_, agent_id)| agent_id)
+        .collect())
+}
+
+pub(crate) fn execution_agent_candidates(capability: &str) -> Result<Vec<String>, String> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| "Unable to determine OpenClaw configuration location".to_owned())?;
+
+    let contents = std::fs::read_to_string(home.join(".openclaw/openclaw.json"))
+        .map_err(|_| "Unable to read OpenClaw execution-agent configuration".to_owned())?;
+
+    let config: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|_| "OpenClaw execution-agent configuration is malformed".to_owned())?;
+
+    let (_, route_candidates) = route_candidates()?;
+
+    execution_agent_candidates_from_config(capability, &config, &route_candidates)
+}
+
 fn auto_route_candidates(
     instances: &[ProviderInstance],
     local_model_ids: &[String],
@@ -3742,6 +3839,69 @@ mod tests {
             updated_at: "2026-08-01T00:00:00Z".to_owned(),
             last_tested_at: Some("2026-08-01T00:00:00Z".to_owned()),
         }
+    }
+
+    #[test]
+    fn execution_agent_candidates_follow_ai_center_order_and_context_requirement() {
+        let config = serde_json::json!({
+            "agents": {
+                "list": [
+                    {
+                        "id": "ai-os-files",
+                        "model": {
+                            "primary": "ollama-ai-os/qwen3:4b-instruct"
+                        },
+                        "params": {
+                            "num_ctx": 65536
+                        }
+                    },
+                    {
+                        "id": "ai-os-exec-too-small",
+                        "model": {
+                            "primary": "ollama/qwen2.5:7b"
+                        },
+                        "params": {
+                            "num_ctx": 32768
+                        }
+                    },
+                    {
+                        "id": "ai-os-exec-cloud",
+                        "model": {
+                            "primary": "openai/gpt-test"
+                        },
+                        "params": {
+                            "num_ctx": 128000
+                        }
+                    },
+                    {
+                        "id": "ai-os-exec-standard",
+                        "model": {
+                            "primary": "ollama/qwen3:8b"
+                        },
+                        "params": {
+                            "num_ctx": 65536
+                        }
+                    }
+                ]
+            }
+        });
+
+        let route_candidates = auto_route_candidates(
+            &[provider_fixture()],
+            &["qwen3:8b".to_owned(), "qwen2.5:7b".to_owned()],
+        );
+
+        let candidates =
+            execution_agent_candidates_from_config("download.start", &config, &route_candidates)
+                .unwrap();
+
+        assert_eq!(
+            candidates,
+            vec![
+                "ai-os-exec-standard".to_owned(),
+                "ai-os-exec-cloud".to_owned(),
+            ]
+        );
     }
 
     #[test]

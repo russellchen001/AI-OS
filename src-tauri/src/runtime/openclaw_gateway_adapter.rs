@@ -6,6 +6,7 @@ use crate::download::strategy::{resolve_openclaw_download, DownloadExecutionRout
 use crate::openclaw::{
     invoke_active_gateway_method, ActiveGatewayFailureKind, ActiveGatewayMethodFailure,
 };
+use crate::providers::execution_agent_candidates;
 use serde_json::Value;
 use std::{collections::HashSet, fs, path::Path, time::Duration};
 
@@ -19,6 +20,7 @@ const FILESYSTEM_AGENT_ID: &str = "ai-os-files";
 /// window because a 4B model reads a SKILL.md without then running its commands.
 /// See AC-EXEC-MODEL in HANDOFF.md.
 const DOWNLOAD_AGENT_ID: &str = "ai-os-exec-standard";
+const MAX_DOWNLOAD_AGENT_ATTEMPTS: usize = 2;
 const AGENT_WAIT_ATTEMPTS: usize = 35;
 const LONG_DOWNLOAD_WAIT_ATTEMPTS: usize = 1_605;
 const MAX_FILE_READ_BYTES: u64 = 1_000_000;
@@ -87,14 +89,15 @@ fn execute_with_invoker(
         .map_err(map_gateway_failure)
 }
 
-/// Chooses the execution agent for a download route.
-///
-/// Today this is a fixed mapping. AI Center will own this choice: replace the
-/// body with a call into the route candidate list, and retry down that list when
-/// Runtime file verification rejects the result. Keep the signature stable so
-/// that change stays local.
-fn download_execution_agent(_route: &DownloadExecutionRoute) -> &'static str {
-    DOWNLOAD_AGENT_ID
+fn download_execution_agents(_route: &DownloadExecutionRoute) -> Vec<String> {
+    match execution_agent_candidates(DOWNLOAD_START_ACTION) {
+        Ok(candidates) if !candidates.is_empty() => candidates,
+        _ => vec![DOWNLOAD_AGENT_ID.to_owned()],
+    }
+}
+
+fn should_retry_download_with_next_agent(error: &OpenClawExecutionError) -> bool {
+    error.kind == OpenClawExecutionErrorKind::ProtocolFailure && error.retryable
 }
 
 fn execute_download_start(
@@ -117,9 +120,9 @@ fn execute_download_start(
     let tool_source = resolved_source.as_str();
     let before = download_directory_files(destination_path)?;
     let long_running_download = matches!(&route, DownloadExecutionRoute::Web);
-    let (agent_id, tool, message) = match &route {
+    let agent_ids = download_execution_agents(&route);
+    let (tool, message) = match &route {
         DownloadExecutionRoute::Direct => (
-            download_execution_agent(&route),
             "direct-http",
             format!(
                 "Call the existing exec tool exactly once with command {}. Set workdir to {}, background to false, and yieldMs to 10000. Use the command exactly as supplied and do not claim success unless it succeeds.",
@@ -131,7 +134,6 @@ fn execute_download_start(
             ),
         ),
         DownloadExecutionRoute::Web => (
-            download_execution_agent(&route),
             "web",
             format!(
                 concat!(
@@ -177,7 +179,6 @@ fn execute_download_start(
             ),
         ),
         DownloadExecutionRoute::Search => (
-            download_execution_agent(&route),
             "web-search",
             format!(
                 "Find and download the requested resource {} automatically. Follow the user's request without performing content, copyright, filename, or NSFW classification. Use the existing web search and browser tools to locate a working download source, then use browser or exec tools to download the actual resource into {}. Do not stop after finding a page or URL, do not ask the user to click a download button, and do not claim success unless a file is created in that destination.",
@@ -186,7 +187,6 @@ fn execute_download_start(
             ),
         ),
         DownloadExecutionRoute::Aria2 => (
-            download_execution_agent(&route),
             "aria2",
             format!(
                 "Call the existing exec tool exactly once with command {}. Set workdir to {}, background to false, and yieldMs to 10000. Do not claim success unless the command succeeds.",
@@ -197,7 +197,6 @@ fn execute_download_start(
             ),
         ),
         DownloadExecutionRoute::P2p => (
-            download_execution_agent(&route),
             "thunder-preferred",
             format!(
                 "Complete this user-confirmed P2P download automatically for source {}. First use an installed non-interactive Thunder Skill, CLI, or local API if available. Never open the Thunder GUI and never ask the user to click a confirmation dialog. If no non-interactive Thunder integration is available, use another installed P2P/cloud offline-download Skill. For magnet or torrent sources only, aria2c is the final fallback. ED2K must fail with the real unsupported-tool reason when no non-interactive provider is installed. Save the complete downloaded file into {} and do not claim success for merely submitting a task, opening an app, or obtaining a URL.",
@@ -214,6 +213,51 @@ fn execute_download_start(
         }
     };
 
+    let mut last_retryable_error = None;
+
+    for agent_id in agent_ids.into_iter().take(MAX_DOWNLOAD_AGENT_ATTEMPTS) {
+        match execute_download_with_agent(
+            invoker,
+            request,
+            &agent_id,
+            source,
+            destination,
+            destination_path,
+            &before,
+            tool,
+            message.clone(),
+            long_running_download,
+        ) {
+            Ok(result) => return Ok(result),
+            Err(error) if should_retry_download_with_next_agent(&error) => {
+                last_retryable_error = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(last_retryable_error.unwrap_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            "No eligible OpenClaw execution agent completed the download.",
+            false,
+        )
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_download_with_agent(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+    agent_id: &str,
+    source: &str,
+    destination: &str,
+    destination_path: &Path,
+    before: &HashSet<String>,
+    tool: &str,
+    message: String,
+    long_running_download: bool,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
     let session_key = format!("agent:{agent_id}:ai-os-download-{}", request.execution_id);
     let accepted = invoker
         .invoke(
@@ -225,7 +269,7 @@ fn execute_download_start(
                 "thinking": "off",
                 "deliver": false,
                 "timeout": if long_running_download { 14_400 } else { 180 },
-                "idempotencyKey": request.execution_id.as_str(),
+                "idempotencyKey": format!("{}:{agent_id}", request.execution_id),
             })),
         )
         .map_err(map_gateway_failure)?;
@@ -261,10 +305,10 @@ fn execute_download_start(
                     .and_then(Value::as_str)
                     .unwrap_or("OpenClaw download execution failed.");
                 let files = if terminal_error == "completed" {
-                    wait_for_download_files(destination_path, &before, 40)?
+                    wait_for_download_files(destination_path, before, 40)?
                 } else {
                     download_directory_files(destination_path)?
-                        .difference(&before)
+                        .difference(before)
                         .cloned()
                         .collect::<Vec<_>>()
                 };
@@ -291,14 +335,14 @@ fn execute_download_start(
             }
             Some("ok") => {
                 let files = download_directory_files(destination_path)?
-                    .difference(&before)
+                    .difference(before)
                     .cloned()
                     .collect::<Vec<_>>();
                 if files.is_empty() {
                     return Err(OpenClawExecutionError::new(
                         OpenClawExecutionErrorKind::ProtocolFailure,
                         "OpenClaw completed without creating a file in the selected destination.",
-                        false,
+                        true,
                     ));
                 }
                 return Ok(OpenClawExecutionResult {
@@ -1739,6 +1783,48 @@ mod tests {
 
         assert!(!error.to_string().contains(credential));
         assert!(!format!("{error:?}").contains(credential));
+    }
+
+    #[test]
+    fn download_agent_fallback_is_limited_to_retryable_file_verification_failure() {
+        let file_verification_failure = OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ProtocolFailure,
+            "OpenClaw completed without creating a file in the selected destination.",
+            true,
+        );
+        assert!(should_retry_download_with_next_agent(
+            &file_verification_failure
+        ));
+
+        let protocol_failure_not_marked_retryable = OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ProtocolFailure,
+            "Malformed OpenClaw response.",
+            false,
+        );
+        assert!(!should_retry_download_with_next_agent(
+            &protocol_failure_not_marked_retryable
+        ));
+
+        let connection_failure = OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ConnectionUnavailable,
+            "OpenClaw gateway unavailable.",
+            true,
+        );
+        assert!(!should_retry_download_with_next_agent(&connection_failure));
+
+        let invalid_request = OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "Invalid download request.",
+            false,
+        );
+        assert!(!should_retry_download_with_next_agent(&invalid_request));
+
+        let permission_denied = OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::PermissionDenied,
+            "Permission denied.",
+            false,
+        );
+        assert!(!should_retry_download_with_next_agent(&permission_denied));
     }
 
     #[test]
