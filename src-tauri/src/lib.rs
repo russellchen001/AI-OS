@@ -11,6 +11,7 @@ mod mcp_runtime;
 mod memory;
 mod memory_service;
 mod models;
+mod macos_permissions;
 mod multillm;
 mod openclaw;
 pub mod planner;
@@ -147,6 +148,7 @@ pub fn run() {
             backup::delete_backup,
             logs::get_logs,
             logs::clear_logs,
+            macos_permissions::check_macos_mail_calendar_permissions,
             models::list_ollama_models,
             models::pull_ollama_model,
             models::delete_ollama_model,
