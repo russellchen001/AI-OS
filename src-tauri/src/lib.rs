@@ -125,6 +125,7 @@ pub fn run() {
                 task_runtime_state.clone(),
                 emitter,
             ));
+            tauri::async_runtime::spawn(providers::auto_start_connected_omlx());
             Ok(())
         })
         .plugin(tauri_plugin_fs::init())
@@ -203,6 +204,8 @@ pub fn run() {
             providers::delete_provider_credential,
             providers::discover_provider_models,
             providers::test_provider_connection,
+            providers::get_omlx_runtime_status,
+            providers::start_omlx_runtime,
             providers::begin_provider_oauth,
             providers::begin_grok_device_auth,
             providers::complete_grok_device_auth,

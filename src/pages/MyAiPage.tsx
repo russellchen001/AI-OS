@@ -37,6 +37,7 @@ import {
 
 const OAUTH_FRONTEND_TIMEOUT_MS = 5 * 60 * 1000;
 type ClaudeCodeStatus = { installed: boolean; authenticated: boolean; message: string };
+type OmlxRuntimeStatus = { supported: boolean; installed: boolean; running: boolean };
 type DeviceAuth = {
   state: string;
   verificationUri: string;
@@ -146,6 +147,13 @@ const providerCatalog = [
     description: "Connect another compatible provider",
     connection: "Guided setup",
   },
+  {
+    id: "omlx",
+    mark: "M",
+    name: "oMLX",
+    description: "Local AI engine optimized for Apple Silicon",
+    connection: "API key",
+  },
 ];
 
 function loadConfiguredProviderIds(): Set<string> {
@@ -177,6 +185,8 @@ function MyAiPage({
     ProviderAdapterDescriptor[]
   >([]);
   const [ollamaAdapterModels, setOllamaAdapterModels] = useState<ProviderModelEntry[]>([]);
+  const [omlxRuntime, setOmlxRuntime] = useState<OmlxRuntimeStatus | null>(null);
+  const [omlxLoading, setOmlxLoading] = useState(false);
   const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
   const localModelCount = ollamaAdapterModels.length || localModels.length;
   const ollamaInstalled = ollamaRuntime?.availability !== "not-installed";
@@ -218,6 +228,51 @@ function MyAiPage({
           instance.providerId,
       ),
   ]);
+  const omlxInstance = providerInstances.find(
+    (instance) => instance.id === "omlx-local" && instance.connectionState === "connected",
+  );
+  const omlxState = !omlxRuntime?.supported
+    ? { badge: "Unavailable", description: "oMLX requires an Apple Silicon Mac." }
+    : !omlxRuntime.installed
+      ? { badge: "Not installed", description: "Install oMLX to use Apple Silicon models." }
+      : omlxLoading
+        ? { badge: "Checking", description: "AI-OS is checking the oMLX local server." }
+        : !omlxRuntime.running
+          ? { badge: "Stopped", description: "oMLX is connected and will start when AI-OS opens." }
+          : {
+              badge: "Ready",
+              description: `${omlxInstance?.models.length ?? 0} local model${omlxInstance?.models.length === 1 ? "" : "s"} available`,
+            };
+
+  async function refreshOmlx(startIfStopped = false) {
+    setOmlxLoading(true);
+    try {
+      let status = await invoke<OmlxRuntimeStatus>("get_omlx_runtime_status");
+      if (startIfStopped && status.supported && status.installed && !status.running) {
+        status = await invoke<OmlxRuntimeStatus>("start_omlx_runtime");
+      }
+      setOmlxRuntime(status);
+      if (status.running && omlxInstance) {
+        const result = await (await getProviderAdapter("omlx")).testConnection("omlx-local");
+        const defaultModel = omlxInstance.models.find((model) => model.isDefault)?.remoteModelId;
+        const refreshed = await saveProviderInstance({
+          ...omlxInstance,
+          models: result.discoveredModels.map((model) => ({
+            ...model,
+            isDefault: model.remoteModelId === defaultModel,
+          })),
+          updatedAt: new Date().toISOString(),
+        });
+        setProviderInstances((current) => current.map((instance) =>
+          instance.id === "omlx-local" ? refreshed : instance,
+        ));
+      }
+    } catch {
+      setOmlxRuntime((current) => current ? { ...current, running: false } : null);
+    } finally {
+      setOmlxLoading(false);
+    }
+  }
   const [setup, setSetup] = useState<{
     providerId: string;
     provider: string;
@@ -275,6 +330,10 @@ function MyAiPage({
       );
     };
   }, []);
+
+  useEffect(() => {
+    if (omlxInstance) void refreshOmlx(true);
+  }, [Boolean(omlxInstance)]);
 
   useEffect(() => {
     if (!setup) return;
@@ -391,7 +450,8 @@ function MyAiPage({
   }
 
   function providerInstanceId(provider: string): string {
-    return `${provider.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom"}-default`;
+    const normalizedProviderId = provider.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom";
+    return normalizedProviderId === "omlx" ? "omlx-local" : `${normalizedProviderId}-default`;
   }
 
   function openManage(instanceId: string) {
@@ -1013,13 +1073,64 @@ function MyAiPage({
         </div>
       </article>
 
+      {omlxInstance && omlxRuntime?.supported && (
+        <article className="local-provider-card local-provider-card-omlx">
+          <div className="provider-card-heading">
+            <div className="provider-mark provider-mark-omlx">M</div>
+            <div>
+              <h3>oMLX</h3>
+              <p>{omlxState.description}</p>
+            </div>
+            <span className={`connection-badge ${omlxRuntime.running ? "connection-badge-ready" : ""}`}>
+              {omlxState.badge}
+            </span>
+          </div>
+          <div className="local-model-list">
+            {omlxInstance.models.slice(0, 4).map((model) => (
+              <div key={model.id}>
+                <span>{model.displayName}</span>
+                {model.isDefault && <small>Default</small>}
+              </div>
+            ))}
+          </div>
+          <div className="local-provider-actions">
+            {!omlxRuntime.running ? (
+              <button
+                type="button"
+                className="manage-models-button local-provider-primary"
+                disabled={omlxLoading}
+                onClick={() => void refreshOmlx(true)}
+              >
+                {omlxLoading ? "Starting oMLX…" : "Start oMLX"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="manage-models-button local-provider-primary"
+                onClick={() => openManage("omlx-local")}
+              >
+                Manage connection <span>→</span>
+              </button>
+            )}
+            <button
+              type="button"
+              className="local-provider-refresh"
+              disabled={omlxLoading}
+              onClick={() => void refreshOmlx(false)}
+            >
+              {omlxLoading ? "Checking…" : "Refresh"}
+            </button>
+          </div>
+        </article>
+      )}
+
       <div className="provider-section-heading catalog-heading">
         <h2>Add another Provider</h2>
         <span>Pick a service — AI‑OS will guide the setup</span>
       </div>
 
       <div className="provider-catalog">
-        {providerCatalog.map((provider) => (
+        {providerCatalog.filter((provider) => !configuredProviderIds.has(provider.id)).map((provider) => (
           <article key={provider.id} className="catalog-provider">
             <div className={`catalog-provider-mark catalog-provider-mark-${provider.id}`}>
               {provider.mark}

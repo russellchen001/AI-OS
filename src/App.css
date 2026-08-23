@@ -1883,6 +1883,11 @@ a {
 .provider-mark-google { background: #356eaa; }
 .provider-mark-grok { background: #111; }
 .provider-mark-ollama { background: #4f5652; }
+.provider-mark-omlx { background: #176b52; }
+
+.local-provider-card + .local-provider-card {
+  margin-top: 12px;
+}
 
 .provider-card-heading h3,
 .provider-card-heading p {

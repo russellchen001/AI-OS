@@ -286,6 +286,8 @@ be trusted as proof that a download actually completed.
 | P14 Memory Retrieval | User memories are injected as hidden system context for ordinary Chat requests without entering conversation history | `verify/verify_p14_memory_retrieval.sh` |
 | P14 General Memory Policy | Structured language, response detail, currency, and budget defaults with request-only overrides | `verify/verify_p14_general_memory_policy.sh` |
 | AI Center End-to-End QA | Auto/Local First, manual selection, multi-model, streaming, cancellation, fallback, and analytics verified | `verify/verify_ai_center_e2e_qa.sh` |
+| oMLX AI Center | Native oMLX provider, Keychain-backed Bearer auth, model discovery, My AI setup, Local First routing, and OpenAI-compatible streaming/non-streaming Chat execution | `verify/verify_omlx_ai_center_step1.sh`; automated provider suite and full Rust regression passed; real manual oMLX Chat UI E2E passed 2026-08-23 |
+| oMLX local service UX | Connected oMLX instances move into On this Mac with runtime health, models, default model, refresh, start, and connection management; connected Apple Silicon installations auto-start when AI-OS opens | `verify/verify_omlx_ai_center_step1.sh`; 442 Rust tests and frontend production build passed; real Stopped → automatic Ready UI E2E passed 2026-08-23 |
 | P15 Filesystem scan | Explicit PlanStep execution, one-time confirmation, permission enforcement, real OpenClaw `exec` scan, readable result rendering, Work-specific errors, and stable local message times | `verify/verify_p15_file_execution_contract.sh`, `verify/verify_p15_file_scan_confirmation.sh`; real UI E2E passed 2026-08-15 with `.DS_Store`, `Lable_副本.docx`, and `__副本.jpeg` |
 | P15 Filesystem read | Explicit file picker and confirmation, real OpenClaw text read, MIME and size detection, 1 MB read limit, 64 KiB output limit, binary/unsupported handling, and readable Chat rendering | `verify/verify_p15_file_read.sh`; real UI E2E passed 2026-08-15 with repository `README.md` content |
 | P15 Filesystem write | Explicit save-path selection and confirmation, real OpenClaw text creation, 4 KiB input limit, private 0600 permissions, and create-only/no-overwrite failure handling | `verify/verify_p15_file_write.sh`; isolated real OpenClaw create/no-overwrite smoke and real UI E2E passed 2026-08-15 with a 27-byte text file |
@@ -318,6 +320,7 @@ AI Center End-to-End QA passed:
 | xAI Grok | RFC 8628 device auth + API key | Verified — grok-4.5 |
 | Anthropic Claude Code | Official `claude` CLI as local proxy | Verified — Claude Pro |
 | Ollama (local) | Local runtime | Verified — qwen2.5:7b, qwen3:8b, deepseek-r1:8b |
+| oMLX (local, Apple Silicon) | Local OpenAI-compatible API + API key | Verified — DeepSeek-R1-Distill-Qwen-7B-4bit discovered; authenticated SSE and real AI-OS Chat UI E2E passed 2026-08-23 |
 | DeepSeek | API key | Implemented, key not yet entered |
 | OpenRouter | PKCE + API key | Implemented, no account yet |
 | Kimi Code | RFC 8628 device auth | Implemented, no account yet |
@@ -401,7 +404,13 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 - Multi-model execution is fully concurrent; participants never use Auto fallback
 - Participant ordering is deterministic after normalization; duplicates removed pre-execution
 - Aggregated results preserve per-model P13-M4 metadata
-- Auto routing is Local First: local Ollama models are attempted before connected cloud defaults
+- Auto routing is Local First: connected oMLX models are attempted first, then local Ollama models, then connected cloud defaults
+- oMLX is the preferred Apple Silicon local engine; machines without a connected oMLX instance naturally continue through Ollama without a separate platform-specific route
+- oMLX uses the independent `omlx-local` Provider instance, Keychain-backed Bearer authentication, `/v1/models` discovery, and OpenAI-compatible Chat endpoints
+- AI-OS auto-starts the installed oMLX macOS app only when an `omlx-local` instance is connected and the machine is Apple Silicon; unsupported machines retain Ollama without attempting oMLX startup
+- My AI treats connected oMLX as a local service under On this Mac; it is removed from Add another Provider until disconnected
+- The canonical AI Center streaming command owns oMLX candidate attempts, chunk emission, cancellation, and fallback decisions; the UI does not call oMLX directly
+- OpenClaw execution agents and P15 local-model management remain Ollama-bound
 - Explicit manual model selection never silently falls back
 - Fallback occurs only before output has started
 - Cancellation stops the current stream without later output continuation
@@ -1072,3 +1081,4 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-23 09:35  feat(p15): complete download skill with dedicated 8B execution agent
 - 2026-08-23 09:59  fix(errors): classify runtime failures by kind instead of matching prose
 - 2026-08-23 12:10  complete AC execution model
+- 2026-08-23 15:54  完成 oMLX 自动启动与 My AI 本地服务卡片

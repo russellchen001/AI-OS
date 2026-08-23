@@ -17,8 +17,88 @@ use tokio_util::sync::CancellationToken;
 
 const KEYCHAIN_SERVICE: &str = "com.ai-os.provider";
 const OAUTH_CLIENT_KEYCHAIN_SERVICE: &str = "com.ai-os.oauth-client";
+const OMLX_HEALTH_URL: &str = "http://127.0.0.1:8000/health";
+const OMLX_BUNDLE_ID: &str = "app.omlx";
 
 const PROVIDER_INSTANCES_FILE: &str = "provider-instances.json";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OmlxRuntimeStatus {
+    supported: bool,
+    installed: bool,
+    running: bool,
+}
+
+fn omlx_supported() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
+
+fn omlx_installed() -> bool {
+    std::path::Path::new("/Applications/oMLX.app").exists()
+}
+
+async fn omlx_running() -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(OMLX_HEALTH_URL)
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
+}
+
+#[tauri::command]
+pub(crate) async fn get_omlx_runtime_status() -> OmlxRuntimeStatus {
+    OmlxRuntimeStatus {
+        supported: omlx_supported(),
+        installed: omlx_installed(),
+        running: omlx_running().await,
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn start_omlx_runtime() -> Result<OmlxRuntimeStatus, String> {
+    if !omlx_supported() {
+        return Err("oMLX requires an Apple Silicon Mac".to_owned());
+    }
+    if !omlx_installed() {
+        return Err("oMLX is not installed".to_owned());
+    }
+    if !omlx_running().await {
+        std::process::Command::new("/usr/bin/open")
+            .args(["-b", OMLX_BUNDLE_ID])
+            .status()
+            .map_err(|_| "AI-OS could not start oMLX".to_owned())?;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if omlx_running().await {
+                return Ok(get_omlx_runtime_status().await);
+            }
+        }
+        return Err("oMLX opened but its local server did not become ready".to_owned());
+    }
+    Ok(get_omlx_runtime_status().await)
+}
+
+pub(crate) async fn auto_start_connected_omlx() {
+    let connected = read_provider_instances().is_ok_and(|instances| has_connected_omlx(&instances));
+    if connected && omlx_supported() && omlx_installed() {
+        let _ = start_omlx_runtime().await;
+    }
+}
+
+fn has_connected_omlx(instances: &[ProviderInstance]) -> bool {
+    instances.iter().any(|instance| {
+        instance.id == "omlx-local"
+            && instance.provider_id == "omlx"
+            && instance.connection_state == ProviderConnectionState::Connected
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -850,23 +930,50 @@ pub(crate) fn execution_agent_candidates(capability: &str) -> Result<Vec<String>
     execution_agent_candidates_from_config(capability, &config, &route_candidates)
 }
 
+fn connected_provider_model_ids(instances: &[ProviderInstance], provider_id: &str) -> Vec<String> {
+    let mut models = instances
+        .iter()
+        .filter(|instance| {
+            instance.provider_id == provider_id
+                && instance.connection_state == ProviderConnectionState::Connected
+        })
+        .flat_map(|instance| instance.models.iter().filter(|model| model.enabled))
+        .collect::<Vec<_>>();
+    models.sort_by_key(|model| !model.is_default);
+    models
+        .into_iter()
+        .map(|model| model.remote_model_id.clone())
+        .collect()
+}
+
 fn auto_route_candidates(
     instances: &[ProviderInstance],
-    local_model_ids: &[String],
+    omlx_model_ids: &[String],
+    ollama_model_ids: &[String],
 ) -> Vec<AiCenterRouteCandidate> {
-    let mut candidates = local_model_ids
+    let mut candidates = omlx_model_ids
         .iter()
         .map(|model_id| AiCenterRouteCandidate {
-            provider_id: "ollama".to_owned(),
-            provider_instance_id: "ollama-local".to_owned(),
+            provider_id: "omlx".to_owned(),
+            provider_instance_id: "omlx-local".to_owned(),
             model_id: model_id.clone(),
         })
         .collect::<Vec<_>>();
 
-    for instance in instances
-        .iter()
-        .filter(|instance| instance.connection_state == ProviderConnectionState::Connected)
-    {
+    candidates.extend(
+        ollama_model_ids
+            .iter()
+            .map(|model_id| AiCenterRouteCandidate {
+                provider_id: "ollama".to_owned(),
+                provider_instance_id: "ollama-local".to_owned(),
+                model_id: model_id.clone(),
+            }),
+    );
+
+    for instance in instances.iter().filter(|instance| {
+        instance.provider_id != "omlx"
+            && instance.connection_state == ProviderConnectionState::Connected
+    }) {
         let mut enabled = instance
             .models
             .iter()
@@ -885,7 +992,12 @@ fn auto_route_candidates(
 }
 
 fn execution_source(candidate: &AiCenterRouteCandidate) -> AiCenterExecutionSource {
-    if candidate.provider_id == "ollama" || candidate.provider_instance_id == "ollama-local" {
+    if matches!(candidate.provider_id.as_str(), "omlx" | "ollama")
+        || matches!(
+            candidate.provider_instance_id.as_str(),
+            "omlx-local" | "ollama-local"
+        )
+    {
         AiCenterExecutionSource::Local
     } else {
         AiCenterExecutionSource::Cloud
@@ -975,12 +1087,13 @@ fn canonical_metadata(
 
 fn route_candidates() -> Result<(Vec<ProviderInstance>, Vec<AiCenterRouteCandidate>), String> {
     let instances = read_provider_instances()?;
+    let omlx_model_ids = connected_provider_model_ids(&instances, "omlx");
     let local_model_ids = crate::models::list_ollama_models()
         .unwrap_or_default()
         .into_iter()
         .map(|model| model.model)
         .collect::<Vec<_>>();
-    let candidates = auto_route_candidates(&instances, &local_model_ids);
+    let candidates = auto_route_candidates(&instances, &omlx_model_ids, &local_model_ids);
     Ok((instances, candidates))
 }
 
@@ -1280,6 +1393,20 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             false,
             false,
             None,
+        ),
+        provider_adapter(
+            "omlx",
+            "oMLX",
+            ProviderAdapterKind::Native,
+            &[ProviderCredentialKind::ApiKey],
+            &["chat"],
+            true,
+            false,
+            Some(ProviderAdapterSpec {
+                id: "omlx",
+                models_url: "http://127.0.0.1:8000/v1/models",
+                auth: AuthStyle::Bearer,
+            }),
         ),
         provider_adapter(
             "ollama",
@@ -2832,6 +2959,12 @@ fn extract_openai_response_text(body: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn extract_chat_completion_text(body: &Value) -> Option<String> {
+    body.pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 #[tauri::command]
 pub(crate) async fn generate_provider_response(
     input: GenerateProviderResponseInput,
@@ -2932,6 +3065,14 @@ pub(crate) async fn generate_provider_response(
                 "messages": [{"role": "user", "content": prompt}]
             }),
         ),
+        "omlx" => (
+            client.post("http://127.0.0.1:8000/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id,
+                "stream": false,
+                "messages": [{"role": "user", "content": prompt}]
+            }),
+        ),
         "ollama" => (
             client.post("http://127.0.0.1:11434/api/chat"),
             serde_json::json!({
@@ -2978,10 +3119,7 @@ pub(crate) async fn generate_provider_response(
             .pointer("/message/content")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        _ => body
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        _ => extract_chat_completion_text(&body),
     }
     .filter(|text| !text.trim().is_empty())
     .ok_or_else(|| "The selected Provider returned no text".to_owned())?;
@@ -3125,6 +3263,105 @@ fn stream_text(provider_id: &str, uses_responses_api: bool, value: &Value) -> Op
     }
 }
 
+struct OmlxStreamOutcome {
+    output: String,
+    cancelled: bool,
+    interrupted: bool,
+}
+
+async fn send_omlx_stream_request(
+    candidate: &AiCenterRouteCandidate,
+    messages: &[ProviderChatMessage],
+    token: &CancellationToken,
+) -> Result<reqwest::Response, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
+    let credential = read_current_credential(&candidate.provider_instance_id).await?;
+    let request = authenticate_provider_request(
+        client.post("http://127.0.0.1:8000/v1/chat/completions"),
+        AuthStyle::Bearer,
+        credential,
+    );
+    let body = serde_json::json!({
+        "model": candidate.model_id,
+        "stream": true,
+        "messages": messages,
+    });
+    let response = tokio::select! {
+        _ = token.cancelled() => return Err("cancelled".to_owned()),
+        response = request.json(&body).send() => response
+            .map_err(|_| "AI Center could not reach the selected Provider".to_owned())?,
+    };
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    Err(match response.status().as_u16() {
+        401 | 403 => "The selected Provider needs to be reconnected".to_owned(),
+        429 => "The selected Provider is busy or rate limited".to_owned(),
+        status => format!("The selected Provider returned status {status}"),
+    })
+}
+
+fn omlx_stream_line(line: &str) -> Option<String> {
+    let data = line.trim().strip_prefix("data:")?.trim();
+    if data.is_empty() || data == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str::<Value>(data)
+        .ok()
+        .and_then(|value| stream_text("omlx", false, &value))
+}
+
+async fn consume_omlx_stream(
+    app: &AppHandle,
+    operation_id: &str,
+    response: reqwest::Response,
+    token: &CancellationToken,
+) -> OmlxStreamOutcome {
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut outcome = OmlxStreamOutcome {
+        output: String::new(),
+        cancelled: false,
+        interrupted: false,
+    };
+    loop {
+        let next = tokio::select! {
+            _ = token.cancelled() => {
+                outcome.cancelled = true;
+                None
+            }
+            item = stream.next() => item,
+        };
+        let Some(item) = next else { break };
+        let bytes = match item {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                outcome.interrupted = true;
+                break;
+            }
+        };
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(position) = buffer.find('\n') {
+            let line = buffer[..position].to_owned();
+            buffer.drain(..=position);
+            if let Some(text) = omlx_stream_line(&line) {
+                outcome.output.push_str(&text);
+                let _ = app.emit(
+                    "ai-center://chunk",
+                    AiCenterChunkEvent {
+                        operation_id: operation_id.to_owned(),
+                        text,
+                    },
+                );
+            }
+        }
+    }
+    outcome
+}
+
 #[tauri::command]
 pub(crate) async fn execute_ai_center_stream(
     app: AppHandle,
@@ -3150,13 +3387,14 @@ pub(crate) async fn execute_ai_center_stream(
         .insert(operation_id.clone(), token.clone());
     let mut attempts = Vec::new();
     let mut last_error = None;
+    let mut emitted_output = false;
 
     loop {
         let route_input = ResolveAiCenterRouteInput {
             route_mode: input.route_mode,
             manual_candidate: input.manual_candidate.clone(),
             attempted_count: attempts.len(),
-            emitted_output: false,
+            emitted_output,
             cancelled: token.is_cancelled(),
         };
         let Some(candidate) = select_route_candidate(&route_input, &candidates)? else {
@@ -3210,18 +3448,42 @@ pub(crate) async fn execute_ai_center_stream(
         let attempt_started_at = chrono::Utc::now().to_rfc3339();
         let attempt_started = Instant::now();
         let attempt_operation_id = format!("{}-{}", operation_id, attempts.len());
-        let execution = execute_candidate(
-            &candidate,
-            &prompt,
-            &instances,
-            Some(attempt_operation_id.clone()),
-        );
-        let result = tokio::select! {
-            _ = token.cancelled() => {
-                let _ = crate::claude_code::cancel_claude_code_request(attempt_operation_id);
-                Err("cancelled".to_owned())
+        let response_streamed = candidate.provider_id == "omlx";
+        let result = if response_streamed {
+            match send_omlx_stream_request(&candidate, &input.messages, &token).await {
+                Ok(response) => {
+                    let outcome = consume_omlx_stream(&app, &operation_id, response, &token).await;
+                    emitted_output = !outcome.output.is_empty();
+                    if outcome.cancelled {
+                        Err("cancelled".to_owned())
+                    } else if outcome.interrupted {
+                        Err("The Provider stream was interrupted".to_owned())
+                    } else if outcome.output.trim().is_empty() {
+                        Err("The selected Provider returned no text".to_owned())
+                    } else {
+                        Ok(GenerateProviderResponseResult {
+                            provider_id: candidate.provider_id.clone(),
+                            model_id: candidate.model_id.clone(),
+                            text: outcome.output,
+                        })
+                    }
+                }
+                Err(error) => Err(error),
             }
-            result = execution => result
+        } else {
+            let execution = execute_candidate(
+                &candidate,
+                &prompt,
+                &instances,
+                Some(attempt_operation_id.clone()),
+            );
+            tokio::select! {
+                _ = token.cancelled() => {
+                    let _ = crate::claude_code::cancel_claude_code_request(attempt_operation_id);
+                    Err("cancelled".to_owned())
+                }
+                result = execution => result
+            }
         };
         match result {
             Ok(response) => {
@@ -3242,13 +3504,15 @@ pub(crate) async fn execute_ai_center_stream(
                     &response.text,
                     attempts,
                 );
-                let _ = app.emit(
-                    "ai-center://chunk",
-                    AiCenterChunkEvent {
-                        operation_id: operation_id.clone(),
-                        text: response.text,
-                    },
-                );
+                if !response_streamed {
+                    let _ = app.emit(
+                        "ai-center://chunk",
+                        AiCenterChunkEvent {
+                            operation_id: operation_id.clone(),
+                            text: response.text,
+                        },
+                    );
+                }
                 let _ = app.emit(
                     "ai-center://done",
                     AiCenterDoneEvent {
@@ -3414,6 +3678,13 @@ pub(crate) async fn start_provider_response_stream(
         ),
         "meta" => (
             client.post("https://api.meta.ai/v1/chat/completions"),
+            serde_json::json!({
+                "model": model_id, "stream": true,
+                "messages": messages
+            }),
+        ),
+        "omlx" => (
+            client.post("http://127.0.0.1:8000/v1/chat/completions"),
             serde_json::json!({
                 "model": model_id, "stream": true,
                 "messages": messages
@@ -3813,6 +4084,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parses_omlx_openai_compatible_stream_chunk() {
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "Hello from oMLX"}}]
+        });
+
+        assert_eq!(
+            stream_text("omlx", false, &chunk).as_deref(),
+            Some("Hello from oMLX")
+        );
+    }
+
+    #[test]
+    fn parses_omlx_sse_data_line() {
+        let line = r#"data: {"choices":[{"delta":{"content":"chunk"}}]}"#;
+        assert_eq!(omlx_stream_line(line).as_deref(), Some("chunk"));
+        assert_eq!(omlx_stream_line("data: [DONE]"), None);
+    }
+
+    #[test]
+    fn parses_omlx_openai_compatible_non_streaming_response() {
+        let body = serde_json::json!({
+            "choices": [{"message": {"content": "complete"}}]
+        });
+        assert_eq!(
+            extract_chat_completion_text(&body).as_deref(),
+            Some("complete")
+        );
+    }
+
     fn provider_fixture() -> ProviderInstance {
         ProviderInstance {
             id: "openai-default".to_owned(),
@@ -3888,6 +4189,7 @@ mod tests {
 
         let route_candidates = auto_route_candidates(
             &[provider_fixture()],
+            &[],
             &["qwen3:8b".to_owned(), "qwen2.5:7b".to_owned()],
         );
 
@@ -3905,7 +4207,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_route_candidates_preserve_local_first_and_default_model_order() {
+    fn auto_route_candidates_prefer_omlx_then_ollama_then_cloud() {
         let mut instance = provider_fixture();
         let mut secondary = instance.models[0].clone();
         secondary.id = "openai-default:gpt-secondary".to_owned();
@@ -3914,18 +4216,85 @@ mod tests {
         secondary.is_default = false;
         instance.models.insert(0, secondary);
 
-        let candidates = auto_route_candidates(&[instance], &["qwen3:8b".to_owned()]);
+        let candidates = auto_route_candidates(
+            &[instance],
+            &["mlx-community/Qwen3-8B-4bit".to_owned()],
+            &["qwen3:8b".to_owned()],
+        );
         let order = candidates
             .iter()
             .map(|candidate| candidate.model_id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(order, vec!["qwen3:8b", "gpt-test", "gpt-secondary"]);
+        assert_eq!(
+            order,
+            vec![
+                "mlx-community/Qwen3-8B-4bit",
+                "qwen3:8b",
+                "gpt-test",
+                "gpt-secondary"
+            ]
+        );
+        assert_eq!(candidates[0].provider_id, "omlx");
+        assert_eq!(candidates[0].provider_instance_id, "omlx-local");
+        assert_eq!(
+            execution_source(&candidates[0]),
+            AiCenterExecutionSource::Local
+        );
+        assert_eq!(candidates[1].provider_id, "ollama");
+        assert_eq!(candidates[1].provider_instance_id, "ollama-local");
+    }
+
+    #[test]
+    fn connected_omlx_models_enter_local_candidates_once() {
+        let mut omlx = provider_fixture();
+        omlx.id = "omlx-local".to_owned();
+        omlx.provider_id = "omlx".to_owned();
+        omlx.models[0].remote_model_id = "omlx-default".to_owned();
+        let mut disabled = omlx.models[0].clone();
+        disabled.remote_model_id = "omlx-disabled".to_owned();
+        disabled.enabled = false;
+        disabled.is_default = false;
+        omlx.models.push(disabled);
+        let instances = vec![omlx, provider_fixture()];
+
+        let omlx_model_ids = connected_provider_model_ids(&instances, "omlx");
+        let candidates =
+            auto_route_candidates(&instances, &omlx_model_ids, &["qwen3:8b".to_owned()]);
+        let order = candidates
+            .iter()
+            .map(|candidate| candidate.model_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(order, vec!["omlx-default", "qwen3:8b", "gpt-test"]);
+        assert_eq!(candidates[0].provider_id, "omlx");
+        assert_eq!(candidates[0].provider_instance_id, "omlx-local");
+        assert_eq!(
+            order
+                .iter()
+                .filter(|model| **model == "omlx-default")
+                .count(),
+            1
+        );
+        assert!(!order.contains(&"omlx-disabled"));
+    }
+
+    #[test]
+    fn auto_start_requires_a_connected_omlx_instance() {
+        let mut omlx = provider_fixture();
+        omlx.id = "omlx-local".to_owned();
+        omlx.provider_id = "omlx".to_owned();
+        assert!(has_connected_omlx(&[omlx.clone()]));
+
+        omlx.connection_state = ProviderConnectionState::NotConfigured;
+        assert!(!has_connected_omlx(&[omlx]));
+        assert!(!has_connected_omlx(&[provider_fixture()]));
     }
 
     #[test]
     fn route_selection_allows_only_auto_pre_output_fallback() {
-        let candidates = auto_route_candidates(&[provider_fixture()], &["qwen3:8b".to_owned()]);
+        let candidates =
+            auto_route_candidates(&[provider_fixture()], &[], &["qwen3:8b".to_owned()]);
         let input =
             |route_mode, attempted_count, emitted_output, cancelled| ResolveAiCenterRouteInput {
                 route_mode,
@@ -3965,7 +4334,7 @@ mod tests {
 
     #[test]
     fn auto_route_falls_back_to_cloud_when_no_local_models_are_available() {
-        let candidates = auto_route_candidates(&[provider_fixture()], &[]);
+        let candidates = auto_route_candidates(&[provider_fixture()], &[], &[]);
         let input = ResolveAiCenterRouteInput {
             route_mode: AiCenterRouteMode::Auto,
             manual_candidate: None,
@@ -3983,7 +4352,8 @@ mod tests {
 
     #[test]
     fn manual_route_executes_only_the_requested_candidate() {
-        let candidates = auto_route_candidates(&[provider_fixture()], &["qwen2.5:7b".to_owned()]);
+        let candidates =
+            auto_route_candidates(&[provider_fixture()], &[], &["qwen2.5:7b".to_owned()]);
         let requested = candidates[1].clone();
         let input = |attempted_count| ResolveAiCenterRouteInput {
             route_mode: AiCenterRouteMode::Manual,
@@ -4162,6 +4532,7 @@ mod tests {
                 "kimi",
                 "meta",
                 "compatible",
+                "omlx",
                 "ollama",
             ]
         );
@@ -4195,6 +4566,7 @@ mod tests {
             "openrouter",
             "kimi",
             "meta",
+            "omlx",
             "ollama",
         ] {
             let descriptor = get_provider_adapter(provider_id.to_owned()).unwrap();
@@ -4214,6 +4586,28 @@ mod tests {
         assert_eq!(deepseek.models_url, "https://api.deepseek.com/models");
         assert!(matches!(grok.auth, AuthStyle::Bearer));
         assert!(matches!(deepseek.auth, AuthStyle::Bearer));
+    }
+
+    #[test]
+    fn omlx_adapter_requires_api_key_and_supports_model_discovery() {
+        let descriptor = get_provider_adapter("omlx".to_owned()).unwrap();
+        let spec = adapter_spec("omlx").unwrap();
+
+        assert_eq!(descriptor.provider_id, "omlx");
+        assert_eq!(descriptor.display_name, "oMLX");
+        assert_eq!(
+            descriptor.authentication_methods,
+            vec![ProviderAuthenticationMethod::ApiKey]
+        );
+        assert_eq!(
+            descriptor.credential_kinds,
+            vec![ProviderCredentialKind::ApiKey]
+        );
+        assert!(descriptor.capabilities.contains(&"chat".to_owned()));
+        assert!(descriptor.supports_model_discovery);
+        assert_eq!(spec.models_url, "http://127.0.0.1:8000/v1/models");
+        assert!(matches!(spec.auth, AuthStyle::Bearer));
+        assert_ne!(descriptor.provider_id, "ollama");
     }
 
     #[test]
