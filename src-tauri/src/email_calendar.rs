@@ -172,3 +172,56 @@ end tell
         Err("Calendar creation is only supported on macOS.".to_owned())
     }
 }
+
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MailDraftResult {
+    pub created: bool,
+    pub description: String,
+}
+
+#[tauri::command]
+pub(crate) fn create_mail_draft(
+    recipient: String,
+    subject: String,
+    body: String,
+) -> Result<MailDraftResult, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {{subject:"{}", content:"{}", visible:false}}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {{address:"{}"}}
+    end tell
+end tell
+"#,
+            subject.replace('"', "\\\""),
+            body.replace('"', "\\\""),
+            recipient.replace('"', "\\\"")
+        );
+
+        std::process::Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        return Ok(MailDraftResult {
+            created: true,
+            description: "Mail draft created. Review before sending.".to_owned(),
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (recipient, subject, body);
+
+        Ok(MailDraftResult {
+            created: false,
+            description: "Mail drafts require macOS Mail.app.".to_owned(),
+        })
+    }
+}
