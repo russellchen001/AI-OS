@@ -95,6 +95,148 @@ Things to settle when this is specified:
 
 ---
 
+## AC-EXEC-MODEL — handoff 2026-08-23
+
+**Status: decided, partially implemented. Continue from here.**
+
+### What is already done
+
+Download execution runs on a dedicated agent instead of the filesystem agent.
+
+| Agent | Model | num_ctx | Skills | Tools | Used for |
+|---|---|---|---|---|---|
+| `ai-os-files` | `ollama-ai-os/qwen3:4b-instruct` | 65536 | baidu-drive | exec, read | Filesystem scan/read/write/move |
+| `ai-os-exec-standard` | `ollama/qwen3:8b` | 65536 | baidu-drive | exec, read | All download routes |
+
+`download_execution_agent()` in `src-tauri/src/runtime/openclaw_gateway_adapter.rs`
+(around line 96) maps a route to an agent. It is a fixed mapping today. All five
+download route arms call it. `verify/verify_p15_download_exec_agent.sh` covers
+agent model, skill scope, and that filesystem work still uses the 4B agent.
+
+Verified end to end on 2026-08-23: a Baidu share link was transferred and
+downloaded through the app, 9.8 MB landed in the chosen directory, and the
+matching session exists under `~/.openclaw/agents/ai-os-exec-standard/sessions/`.
+
+### Why this failed for a week
+
+`ai-os-files` was pinned to a 4B model. It read the SKILL.md and then stopped
+without running the commands it had just read — 5 reads, 2 unrelated execs, no
+`bdpan` call. Under `qwen3:8b` the same request produced 8 execs
+(`bdpan transfer` -> `transfer list` -> `transfer select` -> `download`) and the
+file landed.
+
+Nothing else in the chain was broken: AI-OS, gateway, agent registration, skill
+installation, `bdpan`, Baidu login, destination directory, and the prompt were
+all correct throughout.
+
+### Why agent granularity, not model override
+
+The gateway rejects a per-run model override from AI-OS:
+`provider/model overrides are not authorized for this caller`. The CLI accepts
+`--model`; the gateway `agent` method does not.
+
+Agent granularity is the better boundary regardless. An execution agent binds
+model, context window, skill allowlist, tool permissions, and workspace as one
+unit. Swapping only the model breaks that pairing — `qwen3:8b` defaults to a 32K
+window while `qwen3:4b-instruct` runs at 64K, and a long SKILL.md plus history
+overflows 32K. Capability alone is not a sufficient selection criterion.
+
+Skill count matters too: with all 25 skills visible, the 8B agent timed out
+before doing any work because the system prompt alone consumed the context.
+
+### What remains
+
+**Goal:** AI Center chooses the execution agent, and Runtime retries down the
+candidate list when file verification rejects a result.
+
+**Blocker to clear first:** `auto_route_candidates()` in `src-tauri/src/providers.rs`
+(around line 756) is private. `AiCenterRouteCandidate` at line 733 holds
+`provider_id`, `provider_instance_id`, `model_id`.
+
+Suggested order, each step independently verifiable:
+
+1. Expose an AI Center function that returns execution agents in preference
+   order for a given task shape. Do not leak `AiCenterRouteCandidate` into the
+   adapter — return agent ids. AI Center owns the mapping from model preference
+   to agent.
+2. Replace the body of `download_execution_agent()` with that call. Keep the
+   signature stable; the five call sites should not change.
+3. On `ProtocolFailure` from file verification, retry with the next agent. Cap
+   the attempts. Do not retry `InvalidRequest` or `PermissionDenied` — a
+   different agent will not fix a bad request.
+
+**Decisions the project owner must make before implementing step 1:**
+
+- What orders the candidate list — Local First as in conversation routing, or
+  capability first for execution?
+- How does context window enter the decision? A capable model with a window too
+  small for the SKILL.md will fail; today that is only avoided by pinning
+  `num_ctx` per agent.
+- How many retries before reporting failure? Each attempt costs minutes on a
+  local model.
+- Do cloud execution agents belong in the list at all? They are faster and more
+  capable, but Local First is a product principle.
+
+### Constraints to preserve
+
+- Filesystem operations stay on `ai-os-files`. The 4B model is adequate there
+  and has the larger window. `verify_p15_download_exec_agent.sh` asserts this.
+- Execution agents keep a minimal skill allowlist and only `exec` and `read`.
+  A download agent must not see note-taking or browser skills.
+- Runtime file verification stays. The model reports success while its `exec`
+  has failed; only the file check catches that. Never trust an agent's
+  self-report.
+- Adding an agent must not require changes to Task Engine, Planner, or Runtime.
+
+### Diagnosis method
+
+Before theorising about any agent execution failure, count what it actually
+called:
+
+```bash
+cd ~/.openclaw/agents/<agent>/sessions
+ls -t *.trajectory.jsonl | head -1 | xargs grep -o '"name":"[a-z_]*"' | sort | uniq -c
+```
+
+### Related work completed the same night
+
+Runtime errors now carry a machine-readable kind prefix, e.g.
+`[ConnectionUnavailable] ...`, set in `OpenClawExecutionError::new`. The frontend
+classifies on that prefix in `src/services/tasks.ts` instead of matching prose.
+Previously `destination is unavailable` rendered as "OpenClaw is unavailable",
+which sent debugging in the wrong direction for two days. Do not reintroduce
+substring matching on error wording.
+
+Prompt ordering for the Web download route was corrected: curl first, installed
+Skill only when the page needs login, JavaScript, or a cloud-drive account.
+Skill-first ordering broke ordinary page downloads, which are the common case.
+
+### Known issues, not blocking
+
+- `bdpan download` creates a directory named after the file and places the file
+  inside it. Cosmetic; verification still passes.
+- 8B at 64K is slow on this machine. A cloud execution agent would help
+  latency-sensitive work; that is part of the decision above.
+- Real end-to-end download in `verify_p15_download_complete.sh` and
+  `verify_p15_baidu_official.sh` is now a manual confirmation step. Local model
+  execution is probabilistic and automating "the model did the right thing every
+  time" produced flaky failures. Everything deterministic is still automated.
+
+### Cloud-drive scope
+
+Drives remain in v1.0 as one download route among HTTP, FTP, BT, ED2K, magnet,
+and Thunder, all already implemented. Chinese-internet resources are often only
+distributed through drives, so this is a real gap rather than an optional extra.
+
+Drive services are private APIs, not open protocols. Any tool is a reverse
+engineering effort, needs the user's credentials, and breaks when the provider
+changes. Candidates found on ClawHub for later evaluation, not to be started
+before AC-EXEC-MODEL lands: `pansou` (search across 12 drive services),
+`baidupcs-go` (mature CLI with offline download), `baidu-netdisk-storage`.
+Note that `baidu-drive` confines operations to `/apps/bdpan/`.
+
+---
+
 ## Repository state
 
 | | |
