@@ -287,6 +287,45 @@ explicit filename has not been re-tested since the model change.
 
 ---
 
+## P15 progress
+
+Master Guide defines ten capability areas for P15. This table is the single
+answer to "how far along is P15". Update it when an area lands; do not let
+milestone names in this file be the only record, because they do not map to the
+Master Guide's vocabulary on their own.
+
+| # | Capability area | Status | Acceptance |
+|---|---|---|---|
+| 1 | Downloads | Done | `verify_p15_download_*`, `verify_p15_baidu_official` |
+| 2 | File management | Done | `verify_p15_file_*`, `verify_p15_filesystem_provider_*` |
+| 3 | Browser and search | Done | `verify_p15_browser_*` |
+| 4 | Local model management | Done | `verify_p15_local_model_*` |
+| 5 | Email and calendar | Not started | — |
+| 6 | NAS management | Not started | — |
+| 7 | Document, spreadsheet, presentation | Not started | — |
+| 8 | Smart home and device control | Not started | — |
+| 9 | Local generative media | Not started | — |
+| 10 | Cognitive distillation foundation | Not started | — |
+
+**4 of 10 complete.**
+
+Supporting infrastructure, not a capability area in its own right:
+`verify_p15_mcp_*` (MCP tool and skill execution) and
+`verify_p15_openclaw_history_compat`. Every capability above depends on these,
+so a regression there breaks several areas at once.
+
+Also complete and shared by all execution work: AC-EXEC-MODEL — AI Center
+selects the execution agent, with capability and context window as hard
+admission gates, Local First second, and one fallback attempt. See
+`verify_ac_exec_model_*`.
+
+Naming note: today's Download work appears as AC-EXEC-MODEL in this file, as
+`p15_download_*` in acceptance, and as one word ("Downloads") in the Master
+Guide. When adding an area, record all three names here so the mapping stays
+findable.
+
+---
+
 ## Repository state
 
 | | |
