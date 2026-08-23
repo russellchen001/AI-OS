@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize)]
@@ -223,5 +223,70 @@ end tell
             created: false,
             description: "Mail drafts require macOS Mail.app.".to_owned(),
         })
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MailSendConfirmation {
+    pub recipient: String,
+    pub subject: String,
+    pub body: String,
+    pub requires_confirmation: bool,
+}
+
+#[tauri::command]
+pub(crate) fn prepare_native_mail_send_confirmation(
+    recipient: String,
+    subject: String,
+    body: String,
+) -> Result<MailSendConfirmation, String> {
+    if recipient.trim().is_empty() {
+        return Err("Recipient is required".to_owned());
+    }
+
+    Ok(MailSendConfirmation {
+        recipient,
+        subject,
+        body,
+        requires_confirmation: true,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn send_native_mail_after_confirmation(
+    confirmation: MailSendConfirmation,
+) -> Result<String, String> {
+    if !confirmation.requires_confirmation {
+        return Err("Mail sending requires explicit confirmation".to_owned());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"tell application "Mail"
+                set newMessage to make new outgoing message with properties {{subject:"{}", content:"{}", visible:true}}
+                tell newMessage
+                    make new to recipient at end of to recipients with properties {{address:"{}"}}
+                    send
+                end tell
+            end tell"#,
+            confirmation.subject,
+            confirmation.body,
+            confirmation.recipient
+        );
+
+        std::process::Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        return Ok("Mail sent".to_owned());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Native Mail sending is only supported on macOS.".to_owned())
     }
 }
