@@ -10,6 +10,7 @@ mod mcp;
 mod mcp_runtime;
 mod memory;
 mod memory_service;
+mod email_calendar;
 mod models;
 mod macos_permissions;
 mod multillm;
@@ -149,7 +150,10 @@ pub fn run() {
             logs::get_logs,
             logs::clear_logs,
             macos_permissions::check_macos_mail_calendar_permissions,
-            models::list_ollama_models,
+            email_calendar::list_native_mail,
+            email_calendar::search_native_mail,
+            email_calendar::list_native_calendar,
+models::list_ollama_models,
             models::pull_ollama_model,
             models::delete_ollama_model,
             models::run_ollama_model,
