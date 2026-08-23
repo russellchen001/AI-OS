@@ -309,6 +309,25 @@ Master Guide's vocabulary on their own.
 
 **4 of 10 complete.**
 
+### Remaining P15 order — decided 2026-08-23
+
+1. Email and calendar
+2. Document, spreadsheet, presentation
+3. Local generative media
+4. Cognitive distillation foundation
+5. NAS management — blocked on hardware
+6. Smart home and device control — blocked on hardware
+
+NAS and smart home are last because the hardware has not arrived. Writing them
+without a device to test against produces code nobody can verify, which is how
+the CSS regressions survived for months.
+
+Cognitive distillation sits second to last: it is the prerequisite for P16 AI
+Council, but it is closer to research than to a shippable capability, and the
+first three areas are what make AI-OS usable day to day.
+
+
+
 Supporting infrastructure, not a capability area in its own right:
 `verify_p15_mcp_*` (MCP tool and skill execution) and
 `verify_p15_openclaw_history_compat`. Every capability above depends on these,
