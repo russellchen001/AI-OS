@@ -345,6 +345,93 @@ findable.
 
 ---
 
+## P15-1 Email and calendar — architecture decided, not started
+
+**Decided 2026-08-23. These choices are made; do not reopen them at implementation time.**
+
+### Native first, cloud as an optional supplement
+
+Read and everyday operations go through the system apps — Mail.app and
+Calendar.app via AppleScript and EventKit. Cloud APIs (Gmail API, Microsoft
+Graph) are added only for what native cannot do, and only as an opt-in
+enhancement in Settings.
+
+This is a product decision, not a technical one. The Master Guide's first
+principle is that the user does not configure anything and does not need to know
+which tool AI-OS used. The user already signed into Gmail, iCloud, or Outlook in
+macOS. Reading Calendar.app needs no OAuth, no API key, no developer app
+registration — the capability works the moment it ships.
+
+If the first use of email opened an OAuth consent screen and asked the user to
+register a Google Cloud project, that principle would be broken on day one.
+
+Layering:
+
+- Native: list mail, search, read, list and create calendar events, draft and
+  send replies
+- Cloud API: only where native genuinely cannot deliver — complex server-side
+  search, bulk archive, cross-account operations
+- Cloud connection lives in Settings as an enhancement, never as a first-run
+  requirement
+
+Accepted trade-offs: AppleScript access to Mail is awkward (slow search, clumsy
+attachment handling) and this path is macOS only. Both are acceptable because
+AI-OS is a macOS product today and zero-configuration matters more than search
+latency. Cloud APIs also conflict with Local First: message bodies would travel
+over the network even under the user's own account. Native keeps the data on
+the machine.
+
+### Permissions are step one, not an afterthought
+
+macOS gates Mail and Calendar behind privacy consent. Under Tauri dev the
+consent dialog frequently does not appear and the call simply fails — exactly
+what happened with the Downloads directory, where a permission failure surfaced
+as "must be an existing absolute directory" and sent debugging in the wrong
+direction.
+
+The first implementation step is therefore permission detection and guidance,
+before any feature work:
+
+- Detect whether AI-OS holds Automation and Calendar access
+- If not, name the exact System Settings pane the user must open
+- Never let a permission failure surface as a generic capability error
+
+### Sending requires confirmation
+
+Reading is automatic. Sending is not.
+
+"Reply for me" means AI-OS sends mail as the user. This is the same class of
+risk as the destructive-operation confirmation already required for downloads,
+and worse — a sent message cannot be recalled.
+
+Fixed rule: read automatically, always confirm before sending. The confirmation
+must show recipient, subject, and body exactly as they will be sent. This
+applies to replies, forwards, new messages, and calendar invitations that
+involve other people.
+
+### Implementation order
+
+1. Permission detection and guidance
+2. Read: list and search mail, list calendar events
+3. Create: calendar events with no external attendees (low risk)
+4. Draft: compose replies without sending
+5. Send: with mandatory confirmation surface
+6. Cloud API supplement, only if steps 2-5 expose a real gap
+
+Each step ships its own acceptance script. Steps 1-4 are automatable; step 5
+needs manual confirmation of the confirmation surface itself.
+
+### Open question, answer during step 2
+
+Which native path for mail — AppleScript against Mail.app, or reading the local
+mail store directly? AppleScript is the supported interface but slow; direct
+store access is faster but undocumented and breaks on macOS updates. Decide
+after measuring AppleScript search on a real mailbox, not before.
+
+Calendar has no equivalent question: EventKit is the correct supported interface.
+
+---
+
 ## Repository state
 
 | | |
