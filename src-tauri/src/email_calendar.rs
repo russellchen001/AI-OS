@@ -95,3 +95,80 @@ pub(crate) fn search_native_mail(query: String) -> Result<Vec<MailSummary>, Stri
         })
         .collect())
 }
+
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateCalendarEventRequest {
+    pub title: String,
+    pub start: String,
+    pub end: String,
+}
+
+
+#[tauri::command]
+pub(crate) fn create_native_calendar_event(
+    request: CreateCalendarEventRequest,
+) -> Result<String, String> {
+
+    if request.title.trim().is_empty() {
+        return Err("Calendar event title cannot be empty.".to_owned());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let escaped_title = request
+            .title
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"");
+
+        let escaped_start = request
+            .start
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"");
+
+        let escaped_end = request
+            .end
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"");
+
+
+        let script = format!(
+r#"
+tell application "Calendar"
+    set newEvent to make new event at end of events of calendar 1 with properties {{summary:"{}", start date:date "{}", end date:date "{}"}}
+    return summary of newEvent
+end tell
+"#,
+            escaped_title,
+            escaped_start,
+            escaped_end
+        );
+
+
+        let output = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+
+        if !output.status.success() {
+            return Err(
+                String::from_utf8_lossy(&output.stderr).to_string()
+            );
+        }
+
+
+        return Ok(
+            String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_owned()
+        );
+    }
+
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Calendar creation is only supported on macOS.".to_owned())
+    }
+}
