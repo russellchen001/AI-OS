@@ -3,6 +3,7 @@ mod browser;
 mod claude_code;
 mod conversations;
 mod download;
+mod document;
 mod filesystem;
 mod health;
 mod logs;
@@ -135,6 +136,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            document::list_document_capabilities,
             system_metrics,
             conversations::list_native_conversations,
             conversations::save_native_conversation,

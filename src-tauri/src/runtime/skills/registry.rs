@@ -34,6 +34,18 @@ fn skill(
 }
 
 pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
+        skill(
+            "document",
+            "Document workflow foundation",
+            &[
+                "document.read",
+                "document.create",
+                "document.convert",
+            ],
+            "openclaw",
+            "document",
+        ),
+
     vec![
         skill(
             "filesystem",
