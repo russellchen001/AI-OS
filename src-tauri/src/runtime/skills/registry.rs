@@ -34,19 +34,21 @@ fn skill(
 }
 
 pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
+    vec![
         skill(
             "document",
-            "Document workflow foundation",
+            "Documents",
+            "productivity",
+            "Read, create and convert document, spreadsheet and presentation files.",
             &[
                 "document.read",
                 "document.create",
                 "document.convert",
             ],
+            &["filesystem.read", "filesystem.write"],
             "openclaw",
             "document",
         ),
-
-    vec![
         skill(
             "filesystem",
             "Filesystem",
@@ -212,16 +214,23 @@ mod tests {
     fn list_command_returns_canonical_registry() {
         let skills = list_skills();
 
-        assert_eq!(skills.len(), 5);
-        assert_eq!(skills[0].id, "filesystem");
-        assert_eq!(skills[1].id, "openclaw-session");
-        assert_eq!(skills[2].id, "browser");
-        assert_eq!(skills[3].id, "local-models");
-        assert_eq!(skills[3].executor.kind, "local");
-        assert_eq!(skills[3].executor.handler, "ollama");
-        assert_eq!(skills[4].id, "downloads");
-        assert_eq!(skills[4].executor.kind, "openclaw");
-        assert_eq!(skills[4].executor.handler, "downloads");
+        assert_eq!(skills.len(), 6);
+
+        assert_eq!(skills[0].id, "document");
+        assert_eq!(skills[0].executor.kind, "openclaw");
+        assert_eq!(skills[0].executor.handler, "document");
+
+        assert_eq!(skills[1].id, "filesystem");
+        assert_eq!(skills[2].id, "openclaw-session");
+        assert_eq!(skills[3].id, "browser");
+
+        assert_eq!(skills[4].id, "local-models");
+        assert_eq!(skills[4].executor.kind, "local");
+        assert_eq!(skills[4].executor.handler, "ollama");
+
+        assert_eq!(skills[5].id, "downloads");
+        assert_eq!(skills[5].executor.kind, "openclaw");
+        assert_eq!(skills[5].executor.handler, "downloads");
     }
 
     #[test]

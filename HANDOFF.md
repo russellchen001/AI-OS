@@ -302,7 +302,7 @@ Master Guide's vocabulary on their own.
 | 4 | Local model management | Done | `verify_p15_local_model_*` |
 | 5 | Email and calendar | Not started | — |
 | 6 | NAS management | Not started | — |
-| 7 | Document, spreadsheet, presentation | Not started | — |
+| 7 | Document, spreadsheet, presentation | In progress | `verify_p15_document_*`, `verify_p15_office_provider_registry` |
 | 8 | Smart home and device control | Not started | — |
 | 9 | Local generative media | Not started | — |
 | 10 | Cognitive distillation foundation | Not started | — |
@@ -373,6 +373,28 @@ Evaluation result:
 
 Next:
 Continue remaining P15 Core Skills according to capability ordering.
+
+## P15-2 Document Read — completed
+
+Status: completed 2026-08-26
+
+Implemented:
+- `document.read` Skill registry entry
+- Office Provider Registry with Local First ordering
+- macOS Native provider resolution
+- one-time permission confirmation
+- Runtime → OpenClaw Gateway execution
+- Native `/usr/bin/textutil` DOC/DOCX text extraction
+- absolute-path and supported-extension fail-closed validation
+- bounded text output
+
+Acceptance:
+- `verify/verify_p15_document_skill_registry.sh`
+- `verify/verify_p15_office_provider_registry.sh`
+- `verify/verify_p15_document_read.sh`
+
+The broader Document, Spreadsheet and Presentation capability remains in
+progress. `document.create`, spreadsheet, and presentation work have not started.
 
 ## P15-1 Email and calendar — architecture decided, not started
 
@@ -645,6 +667,15 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 - Conversation-scoped persistent overrides are not implemented
 - Streaming Provider input accepts `system` messages; Anthropic combines them into the Messages API top-level `system` field and excludes them from `messages`
 
+
+**Office Workflow Skill**
+
+- Office capabilities resolve through a provider-neutral Office Provider Registry.
+- Local First applies: macOS `document.read` resolves to the Native provider.
+- Native DOC/DOCX reading uses `/usr/bin/textutil` through the existing OpenClaw Gateway execution boundary.
+- Unsupported providers, relative paths, and unsupported extensions fail closed.
+- `document.read` requires one-time user confirmation.
+- Successful output must come from the real exec tool result; Gateway submission alone is not success.
 
 **Download Skill**
 
@@ -1263,3 +1294,4 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-23 15:54  完成 oMLX 自动启动与 My AI 本地服务卡片
 - 2026-08-23 17:16  完成 oMLX 全面替代 Ollama及本地模型管理对齐
 - 2026-08-23 20:33  fix(p15): adapt download execution to oMLX Qwen3.5-9B
+- 2026-08-26 23:23  完成 P15-1 Email Calendar 与 P15-2 Document Read

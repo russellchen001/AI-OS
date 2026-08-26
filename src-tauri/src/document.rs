@@ -1,3 +1,6 @@
+pub(crate) mod provider;
+pub(crate) mod registry;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

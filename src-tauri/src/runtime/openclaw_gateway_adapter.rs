@@ -2,6 +2,8 @@ use super::openclaw_execution::{
     OpenClawExecutionAdapter, OpenClawExecutionError, OpenClawExecutionErrorKind,
     OpenClawExecutionProgress, OpenClawExecutionRequest, OpenClawExecutionResult,
 };
+use crate::document::provider::OfficeProviderId;
+use crate::document::registry::resolve_office_provider;
 use crate::download::strategy::{resolve_openclaw_download, DownloadExecutionRoute};
 use crate::openclaw::{
     invoke_active_gateway_method, ActiveGatewayFailureKind, ActiveGatewayMethodFailure,
@@ -12,6 +14,7 @@ use std::{collections::HashSet, fs, io::Read, path::Path, time::Duration};
 
 const FILESYSTEM_SCAN_ACTION: &str = "filesystem.scan";
 const FILESYSTEM_READ_ACTION: &str = "filesystem.read";
+const DOCUMENT_READ_ACTION: &str = "document.read";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const DOWNLOAD_START_ACTION: &str = "download.start";
@@ -68,6 +71,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == FILESYSTEM_READ_ACTION {
         return execute_filesystem_read(invoker, request);
+    }
+    if request.action.as_str() == DOCUMENT_READ_ACTION {
+        return execute_document_read(invoker, request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -784,6 +790,192 @@ fn execute_filesystem_read(
     ))
 }
 
+fn execute_document_read(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let path = request
+        .input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "document.read requires path",
+                false,
+            )
+        })?;
+
+    let document_path = Path::new(path);
+    if !document_path.is_absolute() {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.read requires an absolute file path",
+            false,
+        ));
+    }
+
+    let provider = resolve_office_provider(DOCUMENT_READ_ACTION).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            "No available Office Provider supports document.read.",
+            false,
+        )
+    })?;
+
+    if provider.id != OfficeProviderId::MacosNative {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office Provider {} does not yet have a document.read adapter.",
+                provider.name
+            ),
+            false,
+        ));
+    }
+
+    let extension = document_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "doc" | "docx") {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.read currently supports DOC and DOCX files",
+            false,
+        ));
+    }
+
+    let workdir = document_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .and_then(Path::to_str)
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "document.read requires an absolute file path",
+                false,
+            )
+        })?;
+
+    let quoted_path = shell_quote(path);
+    let command = format!(
+        "/usr/bin/textutil -convert txt -stdout -- {quoted_path} | /usr/bin/head -c {MAX_FILE_OUTPUT_BYTES}"
+    );
+    let session_key = format!(
+        "agent:{FILESYSTEM_AGENT_ID}:ai-os-document-read-{}",
+        request.execution_id
+    );
+    let message = format!(
+        "This is an AI-OS internal capability request. The label document.read is NOT an OpenClaw tool name. Call the existing exec tool exactly once with command {} and workdir {}. Keep background false and yieldMs 10000. Use the command exactly as supplied without adding or changing flags, pipes, or wrappers. This is read-only. Do not claim success without the tool output.",
+        serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".to_owned()),
+        serde_json::to_string(workdir).unwrap_or_else(|_| "\"\"".to_owned())
+    );
+
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": FILESYSTEM_AGENT_ID,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": 120,
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|run_id| !run_id.trim().is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    for _ in 0..AGENT_WAIT_ATTEMPTS {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("ok") => {
+                let history = invoker
+                    .invoke(
+                        "chat.history",
+                        Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
+                    )
+                    .map_err(map_gateway_failure)?;
+                let output = document_read_output(&history, path).ok_or_else(|| {
+                    OpenClawExecutionError::new(
+                        OpenClawExecutionErrorKind::ProtocolFailure,
+                        "OpenClaw document read completed without a valid exec tool result.",
+                        false,
+                    )
+                })?;
+                return Ok(OpenClawExecutionResult {
+                    output,
+                    summary: Some("OpenClaw completed the document read.".to_owned()),
+                });
+            }
+            Some("error") => {
+                let message = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw agent execution failed.");
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    message,
+                    false,
+                ));
+            }
+            Some("timeout") => continue,
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid agent terminal status.",
+                    false,
+                ));
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw document read timed out.",
+        true,
+    ))
+}
+
+fn document_read_output(history: &Value, path: &str) -> Option<Value> {
+    let tool_result = latest_successful_exec_result(history)?;
+    let content = tool_result
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(serde_json::json!({
+        "path": path,
+        "status": "text",
+        "content": content,
+    }))
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -1379,6 +1571,75 @@ mod tests {
         }]});
 
         assert_eq!(filesystem_scan_output(&history, "/safe/example"), None);
+    }
+
+    #[test]
+    fn document_read_rejects_relative_path_without_gateway_call() {
+        let invoker = RecordingInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcome: Ok(json!({"unexpected": true})),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request("document.read", json!({"path": "relative/report.docx"})),
+            &mut |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+        assert!(!error.retryable);
+        assert!(error.message.contains("absolute file path"));
+        assert!(invoker.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn document_read_uses_native_textutil_and_returns_text_result() {
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"type": "text", "text": "Document body\n"}]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"status": "accepted", "runId": "document-read-run"})),
+                Ok(json!({"runId": "document-read-run", "status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request(
+                "document.read",
+                json!({
+                    "path": "/safe/example/read me.docx"
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({
+                "path": "/safe/example/read me.docx",
+                "status": "text",
+                "content": "Document body\n",
+            })
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait", "chat.history"]
+        );
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("document.read is NOT an OpenClaw tool name"));
+        assert!(message.contains("/usr/bin/textutil -convert txt -stdout"));
+        assert!(message.contains("/usr/bin/head -c 65536"));
+        assert!(calls.iter().all(|call| call.0 != "document.read"));
     }
 
     #[test]

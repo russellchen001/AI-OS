@@ -2,18 +2,18 @@ mod backup;
 mod browser;
 mod claude_code;
 mod conversations;
-mod download;
 mod document;
+mod download;
+mod email_calendar;
 mod filesystem;
 mod health;
 mod logs;
+mod macos_permissions;
 mod mcp;
 mod mcp_runtime;
 mod memory;
 mod memory_service;
-mod email_calendar;
 mod models;
-mod macos_permissions;
 mod multillm;
 mod openclaw;
 pub mod planner;
@@ -159,7 +159,7 @@ pub fn run() {
             email_calendar::prepare_native_mail_send_confirmation,
             email_calendar::send_native_mail_after_confirmation,
             email_calendar::create_mail_draft,
-models::list_ollama_models,
+            models::list_ollama_models,
             models::pull_ollama_model,
             models::delete_ollama_model,
             models::run_ollama_model,

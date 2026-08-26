@@ -22,15 +22,11 @@ pub(crate) fn check_macos_mail_calendar_permissions() -> MacosPermissionStatus {
         MacosPermissionStatus {
             mail_automation: PermissionState {
                 granted: false,
-                description:
-                    "Mail Automation permission detection foundation is ready."
-                        .to_owned(),
+                description: "Mail Automation permission detection foundation is ready.".to_owned(),
             },
             calendar_access: PermissionState {
                 granted: false,
-                description:
-                    "Calendar permission detection foundation is ready."
-                        .to_owned(),
+                description: "Calendar permission detection foundation is ready.".to_owned(),
             },
             guidance: vec![
                 "Open System Settings → Privacy & Security → Automation for Mail access."
