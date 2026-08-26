@@ -15,6 +15,7 @@ use std::{collections::HashSet, fs, io::Read, path::Path, time::Duration};
 const FILESYSTEM_SCAN_ACTION: &str = "filesystem.scan";
 const FILESYSTEM_READ_ACTION: &str = "filesystem.read";
 const DOCUMENT_READ_ACTION: &str = "document.read";
+const DOCUMENT_CREATE_ACTION: &str = "document.create";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const DOWNLOAD_START_ACTION: &str = "download.start";
@@ -74,6 +75,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == DOCUMENT_READ_ACTION {
         return execute_document_read(invoker, request);
+    }
+    if request.action.as_str() == DOCUMENT_CREATE_ACTION {
+        return execute_document_create(invoker, request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -788,6 +792,259 @@ fn execute_filesystem_read(
         "OpenClaw agent execution timed out.",
         true,
     ))
+}
+
+fn execute_document_create(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let (path, session_key, run_id) = start_document_create(invoker, request)?;
+    finish_document_create(invoker, &path, &session_key, &run_id)
+}
+
+fn finish_document_create(
+    invoker: &dyn GatewayMethodInvoker,
+    path: &str,
+    session_key: &str,
+    run_id: &str,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    for _ in 0..AGENT_WAIT_ATTEMPTS {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("ok") => {
+                let history = invoker
+                    .invoke(
+                        "chat.history",
+                        Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
+                    )
+                    .map_err(map_gateway_failure)?;
+                let output = document_create_output(&history, path).ok_or_else(|| {
+                    OpenClawExecutionError::new(
+                        OpenClawExecutionErrorKind::ProtocolFailure,
+                        "OpenClaw document create completed without a valid exec tool result.",
+                        false,
+                    )
+                })?;
+                return Ok(OpenClawExecutionResult {
+                    output,
+                    summary: Some("OpenClaw completed the document creation.".to_owned()),
+                });
+            }
+            Some("error") => {
+                let message = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw agent execution failed.");
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    message,
+                    false,
+                ));
+            }
+            Some("timeout") => continue,
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid agent terminal status.",
+                    false,
+                ));
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw document creation timed out.",
+        true,
+    ))
+}
+
+fn start_document_create(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<(String, String, String), OpenClawExecutionError> {
+    let (path, content, workdir) = document_create_input(request)?;
+    let provider = resolve_office_provider(DOCUMENT_CREATE_ACTION).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            "No available Office Provider supports document.create.",
+            false,
+        )
+    })?;
+    if provider.id != OfficeProviderId::MacosNative {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office Provider {} does not yet have a document.create adapter.",
+                provider.name
+            ),
+            false,
+        ));
+    }
+
+    let command = document_create_command(path, content, workdir);
+    let session_key = format!(
+        "agent:{FILESYSTEM_AGENT_ID}:ai-os-document-create-{}",
+        request.execution_id
+    );
+    let message = format!(
+        "This is an AI-OS internal capability request. The label document.create is NOT an OpenClaw tool name. Call the existing exec tool exactly once with command {} and workdir {}. Keep background false and yieldMs 10000. Use the command exactly as supplied without adding or changing flags, pipes, or wrappers. Create only; never overwrite an existing file. Do not claim success without the tool output.",
+        serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".to_owned()),
+        serde_json::to_string(workdir).unwrap_or_else(|_| "\"\"".to_owned())
+    );
+
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": FILESYSTEM_AGENT_ID,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": 120,
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    Ok((path.to_owned(), session_key, run_id.to_owned()))
+}
+
+fn document_create_command(path: &str, content: &str, workdir: &str) -> String {
+    let format = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("docx");
+    format!(
+        "target={}; content={}; workdir={}; if [ -e \"$target\" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; else tmpdir=$(/usr/bin/mktemp -d \"$workdir/.ai-os-document.XXXXXX\") || exit 1; trap '/bin/rm -rf \"$tmpdir\"' EXIT; /usr/bin/printf '%s' \"$content\" > \"$tmpdir/source.txt\" || exit 1; if /usr/bin/textutil -convert {} -output \"$tmpdir/output.{}\" \"$tmpdir/source.txt\" >/dev/null 2>&1 && /bin/ln \"$tmpdir/output.{}\" \"$target\"; then size=$(/usr/bin/stat -f %z -- \"$target\") || exit 1; /usr/bin/printf 'AIOS_DOCUMENT_CREATED=%s\n' \"$size\"; elif [ -e \"$target\" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; else /usr/bin/printf 'AIOS_FAILED\n'; fi; fi",
+        shell_quote(path),
+        shell_quote(content),
+        shell_quote(workdir),
+        format,
+        format,
+        format,
+    )
+}
+
+fn document_create_output(history: &Value, path: &str) -> Option<Value> {
+    let text = latest_successful_exec_result(history)?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Some((_, size)) = text.rsplit_once("AIOS_DOCUMENT_CREATED=") {
+        return Some(serde_json::json!({
+            "path": path,
+            "status": "created",
+            "bytesWritten": size.trim().parse::<u64>().ok()?,
+        }));
+    }
+    if text.lines().any(|line| line.trim() == "AIOS_EXISTS") {
+        return Some(serde_json::json!({"path": path, "status": "exists"}));
+    }
+    if text.lines().any(|line| line.trim() == "AIOS_FAILED") {
+        return Some(serde_json::json!({"path": path, "status": "failed"}));
+    }
+    None
+}
+
+fn document_create_input<'a>(
+    request: &'a OpenClawExecutionRequest,
+) -> Result<(&'a str, &'a str, &'a str), OpenClawExecutionError> {
+    let path = request
+        .input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "document.create requires path",
+                false,
+            )
+        })?;
+    let content = request
+        .input
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "document.create requires text content",
+                false,
+            )
+        })?;
+    if content.len() > MAX_FILE_WRITE_BYTES {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.create content exceeds the 4096 byte limit",
+            false,
+        ));
+    }
+    if request
+        .input
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.create overwrite is not permitted",
+            false,
+        ));
+    }
+
+    let target = Path::new(path);
+    if !target.is_absolute() {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.create requires an absolute file path",
+            false,
+        ));
+    }
+    let format = target
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !matches!(format.as_str(), "doc" | "docx") {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.create currently supports DOC and DOCX files",
+            false,
+        ));
+    }
+    let workdir = target.parent().and_then(Path::to_str).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.create requires an absolute file path",
+            false,
+        )
+    })?;
+
+    Ok((path, content, workdir))
 }
 
 fn execute_document_read(
@@ -1571,6 +1828,130 @@ mod tests {
         }]});
 
         assert_eq!(filesystem_scan_output(&history, "/safe/example"), None);
+    }
+
+    #[test]
+    fn document_create_uses_native_textutil_and_returns_created_result() {
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text": "AIOS_DOCUMENT_CREATED=2048\n"}]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"status": "accepted", "runId": "document-create-run"})),
+                Ok(json!({"runId": "document-create-run", "status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request(
+                "document.create",
+                json!({
+                    "path": "/safe/example/new report.docx",
+                    "content": "Document body"
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({
+                "path": "/safe/example/new report.docx",
+                "status": "created",
+                "bytesWritten": 2048,
+            })
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait", "chat.history"]
+        );
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("document.create is NOT an OpenClaw tool name"));
+        assert!(message.contains("/usr/bin/textutil -convert docx"));
+        assert!(message.contains("/bin/ln"));
+        assert!(message.contains("never overwrite"));
+        assert!(calls.iter().all(|call| call.0 != "document.create"));
+    }
+
+    #[test]
+    fn document_create_native_helpers_enforce_no_overwrite_and_map_results() {
+        let command =
+            document_create_command("/safe/O'Reilly report.docx", "Document body", "/safe");
+
+        assert!(command.contains("/usr/bin/textutil -convert docx"));
+        assert!(command.contains("/usr/bin/mktemp -d"));
+        assert!(command.contains("/bin/ln"));
+        assert!(command.contains("AIOS_EXISTS"));
+        assert!(command.contains(r#"target='/safe/O'\''Reilly report.docx'"#));
+
+        let created = json!({"messages": [{
+            "role": "toolResult", "toolName": "exec", "isError": false,
+            "content": [{"text": "AIOS_DOCUMENT_CREATED=2048\n"}]
+        }]});
+        let exists = json!({"messages": [{
+            "role": "toolResult", "toolName": "exec", "isError": false,
+            "content": [{"text": "AIOS_EXISTS\n"}]
+        }]});
+        let failed = json!({"messages": [{
+            "role": "toolResult", "toolName": "exec", "isError": false,
+            "content": [{"text": "AIOS_FAILED\n"}]
+        }]});
+
+        assert_eq!(
+            document_create_output(&created, "/safe/report.docx").unwrap(),
+            json!({
+                "path": "/safe/report.docx",
+                "status": "created",
+                "bytesWritten": 2048,
+            })
+        );
+        assert_eq!(
+            document_create_output(&exists, "/safe/report.docx").unwrap(),
+            json!({"path": "/safe/report.docx", "status": "exists"})
+        );
+        assert_eq!(
+            document_create_output(&failed, "/safe/report.docx").unwrap(),
+            json!({"path": "/safe/report.docx", "status": "failed"})
+        );
+    }
+
+    #[test]
+    fn document_create_input_enforces_safe_create_contract() {
+        let valid = request(
+            "document.create",
+            json!({"path": "/safe/report.docx", "content": "Document body"}),
+        );
+        assert_eq!(
+            document_create_input(&valid).unwrap(),
+            ("/safe/report.docx", "Document body", "/safe")
+        );
+
+        for input in [
+            json!({"path": "relative.docx", "content": "body"}),
+            json!({"path": "/safe/report.docx", "content": "body", "overwrite": true}),
+            json!({"path": "/safe/report.txt", "content": "body"}),
+        ] {
+            let error = document_create_input(&request("document.create", input)).unwrap_err();
+            assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+            assert!(!error.retryable);
+        }
+
+        let oversized = "x".repeat(MAX_FILE_WRITE_BYTES + 1);
+        let request = request(
+            "document.create",
+            json!({"path": "/safe/report.docx", "content": oversized}),
+        );
+        let error = document_create_input(&request).unwrap_err();
+        assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+        assert!(error.message.contains("4096 byte limit"));
     }
 
     #[test]

@@ -56,6 +56,7 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
                     "filesystem.scan"
                         | "filesystem.read"
                         | "document.read"
+                        | "document.create"
                         | "filesystem.write"
                         | "filesystem.move"
                         | "download.start"
@@ -476,6 +477,30 @@ mod tests {
             "execution-document-read",
             "document.read",
             json!({"path": "/safe/example.docx"}),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gate.authorize(&request).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+        assert_eq!(
+            gate.authorize(&request.with_user_confirmation(true))
+                .unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn document_create_requires_and_accepts_one_time_user_confirmation() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let request = OpenClawExecutionRequest::new(
+            "execution-document-create",
+            "document.create",
+            json!({
+                "path": "/safe/example.docx",
+                "content": "Document body"
+            }),
         )
         .unwrap();
 

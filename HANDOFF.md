@@ -374,7 +374,7 @@ Evaluation result:
 Next:
 Continue remaining P15 Core Skills according to capability ordering.
 
-## P15-2 Document Read — completed
+## P15-2 Document Read and Create — completed
 
 Status: completed 2026-08-26
 
@@ -387,14 +387,19 @@ Implemented:
 - Native `/usr/bin/textutil` DOC/DOCX text extraction
 - absolute-path and supported-extension fail-closed validation
 - bounded text output
+- `document.create` one-time permission confirmation
+- Native `/usr/bin/textutil` DOC/DOCX creation
+- absolute-path, extension and 4096-byte input validation
+- atomic create-only behavior with no overwrite
 
 Acceptance:
 - `verify/verify_p15_document_skill_registry.sh`
 - `verify/verify_p15_office_provider_registry.sh`
 - `verify/verify_p15_document_read.sh`
+- `verify/verify_p15_document_create.sh`
 
 The broader Document, Spreadsheet and Presentation capability remains in
-progress. `document.create`, spreadsheet, and presentation work have not started.
+progress. Spreadsheet and presentation work have not started.
 
 ## P15-1 Email and calendar — architecture decided, not started
 
@@ -672,9 +677,10 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 
 - Office capabilities resolve through a provider-neutral Office Provider Registry.
 - Local First applies: macOS `document.read` resolves to the Native provider.
-- Native DOC/DOCX reading uses `/usr/bin/textutil` through the existing OpenClaw Gateway execution boundary.
+- Native DOC/DOCX reading and creation use `/usr/bin/textutil` through the existing OpenClaw Gateway execution boundary.
 - Unsupported providers, relative paths, and unsupported extensions fail closed.
-- `document.read` requires one-time user confirmation.
+- `document.read` and `document.create` require one-time user confirmation.
+- `document.create` accepts bounded text input and creates atomically without overwriting an existing target.
 - Successful output must come from the real exec tool result; Gateway submission alone is not success.
 
 **Download Skill**
@@ -1295,3 +1301,4 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-23 17:16  完成 oMLX 全面替代 Ollama及本地模型管理对齐
 - 2026-08-23 20:33  fix(p15): adapt download execution to oMLX Qwen3.5-9B
 - 2026-08-26 23:23  完成 P15-1 Email Calendar 与 P15-2 Document Read
+- 2026-08-27 00:07  完成 P15-2 Document Create
