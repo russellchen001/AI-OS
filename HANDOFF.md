@@ -289,7 +289,7 @@ explicit filename has not been re-tested since the model change.
 
 ## P15 progress
 
-Master Guide defines ten capability areas for P15. This table is the single
+Master Guide defines eleven capability areas for P15. This table is the single
 answer to "how far along is P15". Update it when an area lands; do not let
 milestone names in this file be the only record, because they do not map to the
 Master Guide's vocabulary on their own.
@@ -344,6 +344,111 @@ Guide. When adding an area, record all three names here so the mapping stays
 findable.
 
 ---
+
+## P15 roadmap amendment — 2026-08-28
+
+**Status: decided. Do not reopen this scope during implementation unless the
+roadmap is explicitly revised.**
+
+Smart Home / Device Control is removed from the current P15 implementation
+scope and deferred. There is no current smart-home hardware available for real
+end-to-end validation, so P15 must not ship a mock-only implementation merely
+to satisfy the roadmap.
+
+Two capabilities are added to P15:
+
+1. Computer Control
+2. Vehicle Control
+
+### Computer Control v1
+
+Purpose: fill deterministic macOS system-level gaps that Computer Use and
+OpenClaw do not handle cleanly or reliably.
+
+Computer Control does not replace Computer Use and does not become another
+general-purpose Agent.
+
+Fixed ownership:
+
+- Computer Use: visual GUI interaction, clicking, typing, dragging, and other
+  screen-driven operations
+- OpenClaw: general Agent execution and tool-driven work
+- Computer Control: deterministic macOS system state and direct system
+  operations
+- Domain Skills: Office, Vehicle, Downloads, NAS, generative media, and other
+  specialist capabilities
+
+Computer Control v1 may cover:
+
+- system.storage
+- system.cpu
+- system.memory
+- system.network
+- system.process.*
+- system.app.*
+- system.clipboard.*
+- system.audio.*
+- system.power.*
+- system.notification.*
+- system.permissions.*
+
+Do not expand Computer Control into GUI automation already owned by Computer
+Use.
+
+### Vehicle Control v1
+
+Vehicle Control is a separate domain Skill. v1 supports Tesla only.
+
+Architecture:
+
+Vehicle Control → Tesla Provider → official Tesla Fleet API
+
+The official Tesla App may also be used as a handoff / authorization surface
+when Tesla requires its own UI, pairing flow, user confirmation, or active
+supervision.
+
+Vehicle Control v1 should include official capabilities where available for:
+
+- vehicle state
+- battery and charging state
+- climate
+- lock / unlock
+- charging start / stop and charging limits
+- navigation destinations and waypoints
+- other supported non-driving remote commands
+
+Navigation is part of Vehicle Control v1.
+
+Vehicle Control must not:
+
+- reverse-engineer unsupported Tesla private APIs
+- treat the Tesla App as an unofficial programmable API
+- use Computer Use to bypass Tesla safety controls
+- directly control steering, acceleration, braking, FSD driving, or Actually
+  Smart Summon when Tesla has not exposed an appropriate official third-party
+  interface
+
+FSD / Actually Smart Summon remain future extension areas. Reserve conceptual
+space for `vehicle.autonomy.*` and `vehicle.summon.*`, but do not implement
+them until Tesla exposes an official supported interface.
+
+### Updated remaining P15 execution order
+
+After the current Office capability:
+
+1. Computer Control v1
+2. Vehicle Control v1 — Tesla Provider
+3. Local generative media
+4. Cognitive distillation foundation
+5. NAS management foundation — hardware E2E remains blocked until storage is
+   installed
+
+Computer Control and Vehicle Control are implemented serially, not in
+parallel.
+
+NAS remains in P15, but hardware-dependent storage behavior must not be marked
+complete without real hardware E2E.
+
 
 ## P15-1 Email and calendar — completed
 

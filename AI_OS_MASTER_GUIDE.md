@@ -906,8 +906,8 @@ Initial capability areas:
 - NAS management
 - Document, spreadsheet, and presentation workflows
 - Local model management
-- Smart home and device control
-
+- Computer control
+- Vehicle control
 Additional P15 capability foundations:
 
 ### Local Generative Media Skill
@@ -929,6 +929,43 @@ Goals:
 - Create reusable cognitive representations for future strategic simulation
 - Avoid simple personality imitation or prompt-based role play
 - Provide explainable foundations for future AI Council and Strategic Intelligence capabilities
+
+
+### P15 Computer Control and Vehicle Control boundary
+
+P15 no longer implements Smart Home / Device Control. That capability is
+deferred outside the current P15 scope because there is no real hardware
+available for end-to-end validation.
+
+Computer Control fills deterministic macOS system-level gaps that are not a
+good fit for Computer Use or general OpenClaw execution. It does not duplicate
+GUI automation. Its v1 scope is system state and direct system operations such
+as storage, CPU, memory, network, process, application, clipboard, audio,
+power, notification, and permission capabilities.
+
+Vehicle Control is a separate domain Skill. P15 v1 supports Tesla only through
+an official Tesla Provider.
+
+Vehicle Control v1 includes, where supported by Tesla's official interfaces:
+
+- Vehicle state and battery / charging state
+- Climate control
+- Lock and unlock
+- Charging operations and charging limits
+- Navigation destinations and waypoints
+- Other non-driving remote commands exposed by the official Tesla Fleet API
+
+Tesla App integration is permitted as an official handoff and authorization
+path when Tesla requires its own application or user supervision. AI-OS must
+not reverse-engineer unsupported Tesla private APIs.
+
+FSD, Actually Smart Summon, autonomous driving, steering, acceleration,
+braking, and other vehicle-motion control are not P15 capabilities. Future
+`vehicle.autonomy.*` or `vehicle.summon.*` capabilities may only be implemented
+if Tesla exposes an appropriate official third-party interface.
+
+Computer Use must not automate safety-critical Tesla App vehicle-motion
+controls as a substitute for an unavailable official API.
 
 
 ## P16 — Strategic Intelligence and AI Council
