@@ -124,6 +124,17 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn document_convert_resolves_to_macos_native_first() {
+        let provider =
+            resolve_office_provider("document.convert").expect("document.convert provider");
+
+        assert_eq!(provider.id, OfficeProviderId::MacosNative);
+        assert!(provider.local);
+        assert_eq!(provider.priority, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn document_create_resolves_to_macos_native_first() {
         let provider =
             resolve_office_provider("document.create").expect("document.create provider");

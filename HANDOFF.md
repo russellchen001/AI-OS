@@ -374,7 +374,7 @@ Evaluation result:
 Next:
 Continue remaining P15 Core Skills according to capability ordering.
 
-## P15-2 Document Read and Create — completed
+## P15-2 Document Read, Create and Convert — completed
 
 Status: completed 2026-08-26
 
@@ -391,12 +391,16 @@ Implemented:
 - Native `/usr/bin/textutil` DOC/DOCX creation
 - absolute-path, extension and 4096-byte input validation
 - atomic create-only behavior with no overwrite
+- `document.convert` one-time permission confirmation
+- Native DOC ↔ DOCX conversion through `/usr/bin/textutil`
+- absolute source/destination validation and atomic no-overwrite output
 
 Acceptance:
 - `verify/verify_p15_document_skill_registry.sh`
 - `verify/verify_p15_office_provider_registry.sh`
 - `verify/verify_p15_document_read.sh`
 - `verify/verify_p15_document_create.sh`
+- `verify/verify_p15_document_convert.sh`
 
 The broader Document, Spreadsheet and Presentation capability remains in
 progress. Spreadsheet and presentation work have not started.
@@ -677,10 +681,11 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 
 - Office capabilities resolve through a provider-neutral Office Provider Registry.
 - Local First applies: macOS `document.read` resolves to the Native provider.
-- Native DOC/DOCX reading and creation use `/usr/bin/textutil` through the existing OpenClaw Gateway execution boundary.
+- Native DOC/DOCX reading, creation and conversion use `/usr/bin/textutil` through the existing OpenClaw Gateway execution boundary.
 - Unsupported providers, relative paths, and unsupported extensions fail closed.
-- `document.read` and `document.create` require one-time user confirmation.
+- `document.read`, `document.create` and `document.convert` require one-time user confirmation.
 - `document.create` accepts bounded text input and creates atomically without overwriting an existing target.
+- `document.convert` supports DOC ↔ DOCX only; source and destination must be distinct absolute paths, and the destination is never overwritten.
 - Successful output must come from the real exec tool result; Gateway submission alone is not success.
 
 **Download Skill**
@@ -1302,3 +1307,4 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-23 20:33  fix(p15): adapt download execution to oMLX Qwen3.5-9B
 - 2026-08-26 23:23  完成 P15-1 Email Calendar 与 P15-2 Document Read
 - 2026-08-27 00:07  完成 P15-2 Document Create
+- 2026-08-27 20:46  完成 P15-2 Document Convert

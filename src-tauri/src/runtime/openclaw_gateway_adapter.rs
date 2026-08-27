@@ -16,6 +16,7 @@ const FILESYSTEM_SCAN_ACTION: &str = "filesystem.scan";
 const FILESYSTEM_READ_ACTION: &str = "filesystem.read";
 const DOCUMENT_READ_ACTION: &str = "document.read";
 const DOCUMENT_CREATE_ACTION: &str = "document.create";
+const DOCUMENT_CONVERT_ACTION: &str = "document.convert";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const DOWNLOAD_START_ACTION: &str = "download.start";
@@ -78,6 +79,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == DOCUMENT_CREATE_ACTION {
         return execute_document_create(invoker, request);
+    }
+    if request.action.as_str() == DOCUMENT_CONVERT_ACTION {
+        return execute_document_convert(invoker, request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -969,6 +973,281 @@ fn document_create_output(history: &Value, path: &str) -> Option<Value> {
     None
 }
 
+fn execute_document_convert(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let (source, destination, session_key, run_id) = start_document_convert(invoker, request)?;
+    finish_document_convert(invoker, &source, &destination, &session_key, &run_id)
+}
+
+fn finish_document_convert(
+    invoker: &dyn GatewayMethodInvoker,
+    source: &str,
+    destination: &str,
+    session_key: &str,
+    run_id: &str,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    for _ in 0..AGENT_WAIT_ATTEMPTS {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("ok") => {
+                let history = invoker
+                    .invoke(
+                        "chat.history",
+                        Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
+                    )
+                    .map_err(map_gateway_failure)?;
+                let output =
+                    document_convert_output(&history, source, destination).ok_or_else(|| {
+                        OpenClawExecutionError::new(
+                            OpenClawExecutionErrorKind::ProtocolFailure,
+                            "OpenClaw document conversion completed without a valid exec tool result.",
+                            false,
+                        )
+                    })?;
+                return Ok(OpenClawExecutionResult {
+                    output,
+                    summary: Some("OpenClaw completed the document conversion.".to_owned()),
+                });
+            }
+            Some("error") => {
+                let message = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw agent execution failed.");
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    message,
+                    false,
+                ));
+            }
+            Some("timeout") => continue,
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid agent terminal status.",
+                    false,
+                ));
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw document conversion timed out.",
+        true,
+    ))
+}
+
+fn start_document_convert(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<(String, String, String, String), OpenClawExecutionError> {
+    let (source, destination, workdir, format) = document_convert_input(request)?;
+    let provider = resolve_office_provider(DOCUMENT_CONVERT_ACTION).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            "No available Office Provider supports document.convert.",
+            false,
+        )
+    })?;
+    if provider.id != OfficeProviderId::MacosNative {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office Provider {} does not yet have a document.convert adapter.",
+                provider.name
+            ),
+            false,
+        ));
+    }
+
+    let command = document_convert_command(source, destination, workdir, &format);
+    let session_key = format!(
+        "agent:{FILESYSTEM_AGENT_ID}:ai-os-document-convert-{}",
+        request.execution_id
+    );
+    let message = format!(
+        "This is an AI-OS internal capability request. The label document.convert is NOT an OpenClaw tool name. Call the existing exec tool exactly once with command {} and workdir {}. Keep background false and yieldMs 10000. Use the command exactly as supplied without adding or changing flags, pipes, or wrappers. Create only; never overwrite an existing file. Do not claim success without the tool output.",
+        serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".to_owned()),
+        serde_json::to_string(workdir).unwrap_or_else(|_| "\"\"".to_owned())
+    );
+
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": FILESYSTEM_AGENT_ID,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": 120,
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    Ok((
+        source.to_owned(),
+        destination.to_owned(),
+        session_key,
+        run_id.to_owned(),
+    ))
+}
+
+fn document_convert_command(
+    source: &str,
+    destination: &str,
+    workdir: &str,
+    format: &str,
+) -> String {
+    format!(
+        "source={}; target={}; workdir={}; if [ ! -f \"$source\" ]; then /usr/bin/printf 'AIOS_SOURCE_MISSING\n'; elif [ -e \"$target\" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; else tmpdir=$(/usr/bin/mktemp -d \"$workdir/.ai-os-document-convert.XXXXXX\") || exit 1; trap '/bin/rm -rf \"$tmpdir\"' EXIT; if /usr/bin/textutil -convert {} -output \"$tmpdir/output.{}\" \"$source\" >/dev/null 2>&1 && /bin/ln \"$tmpdir/output.{}\" \"$target\"; then size=$(/usr/bin/stat -f %z -- \"$target\") || exit 1; /usr/bin/printf 'AIOS_DOCUMENT_CONVERTED=%s\n' \"$size\"; elif [ -e \"$target\" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; else /usr/bin/printf 'AIOS_FAILED\n'; fi; fi",
+        shell_quote(source),
+        shell_quote(destination),
+        shell_quote(workdir),
+        format,
+        format,
+        format,
+    )
+}
+
+fn document_convert_output(history: &Value, source: &str, destination: &str) -> Option<Value> {
+    let text = latest_successful_exec_result(history)?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Some((_, size)) = text.rsplit_once("AIOS_DOCUMENT_CONVERTED=") {
+        return Some(serde_json::json!({
+            "source": source,
+            "destination": destination,
+            "status": "converted",
+            "bytesWritten": size.trim().parse::<u64>().ok()?,
+        }));
+    }
+    for (marker, status) in [
+        ("AIOS_SOURCE_MISSING", "source_missing"),
+        ("AIOS_EXISTS", "exists"),
+        ("AIOS_FAILED", "failed"),
+    ] {
+        if text.lines().any(|line| line.trim() == marker) {
+            return Some(serde_json::json!({
+                "source": source,
+                "destination": destination,
+                "status": status,
+            }));
+        }
+    }
+    None
+}
+
+fn document_convert_input<'a>(
+    request: &'a OpenClawExecutionRequest,
+) -> Result<(&'a str, &'a str, &'a str, String), OpenClawExecutionError> {
+    let required_path = |field: &str| {
+        request
+            .input
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::InvalidRequest,
+                    format!("document.convert requires {field}"),
+                    false,
+                )
+            })
+    };
+    let source = required_path("source")?;
+    let destination = required_path("destination")?;
+
+    if request
+        .input
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.convert overwrite is not permitted",
+            false,
+        ));
+    }
+
+    let source_path = Path::new(source);
+    let destination_path = Path::new(destination);
+    if !source_path.is_absolute() || !destination_path.is_absolute() {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.convert requires absolute source and destination paths",
+            false,
+        ));
+    }
+    if source_path == destination_path {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.convert source and destination must differ",
+            false,
+        ));
+    }
+
+    let extension = |value: &Path| {
+        value
+            .extension()
+            .and_then(|item| item.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default()
+    };
+    let source_format = extension(source_path);
+    let destination_format = extension(destination_path);
+    if !matches!(source_format.as_str(), "doc" | "docx")
+        || !matches!(destination_format.as_str(), "doc" | "docx")
+    {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "document.convert currently supports DOC and DOCX files",
+            false,
+        ));
+    }
+
+    let workdir = destination_path
+        .parent()
+        .and_then(Path::to_str)
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "document.convert requires an absolute destination path",
+                false,
+            )
+        })?;
+
+    Ok((source, destination, workdir, destination_format))
+}
+
 fn document_create_input<'a>(
     request: &'a OpenClawExecutionRequest,
 ) -> Result<(&'a str, &'a str, &'a str), OpenClawExecutionError> {
@@ -1828,6 +2107,141 @@ mod tests {
         }]});
 
         assert_eq!(filesystem_scan_output(&history, "/safe/example"), None);
+    }
+
+    #[test]
+    fn document_convert_uses_native_textutil_and_returns_converted_result() {
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text": "AIOS_DOCUMENT_CONVERTED=3072\n"}]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"status": "accepted", "runId": "document-convert-run"})),
+                Ok(json!({"runId": "document-convert-run", "status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request(
+                "document.convert",
+                json!({
+                    "source": "/safe/source file.doc",
+                    "destination": "/safe/result file.docx"
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({
+                "source": "/safe/source file.doc",
+                "destination": "/safe/result file.docx",
+                "status": "converted",
+                "bytesWritten": 3072,
+            })
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait", "chat.history"]
+        );
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("document.convert is NOT an OpenClaw tool name"));
+        assert!(message.contains("/usr/bin/textutil -convert docx"));
+        assert!(message.contains("/bin/ln"));
+        assert!(message.contains("never overwrite"));
+        assert!(calls.iter().all(|call| call.0 != "document.convert"));
+    }
+
+    #[test]
+    fn document_convert_native_helpers_enforce_safe_conversion_and_map_results() {
+        let command = document_convert_command(
+            "/safe/source file.doc",
+            "/safe/result file.docx",
+            "/safe",
+            "docx",
+        );
+
+        assert!(command.contains("/usr/bin/textutil -convert docx"));
+        assert!(command.contains("[ ! -f \"$source\" ]"));
+        assert!(command.contains("/usr/bin/mktemp -d"));
+        assert!(command.contains("/bin/ln"));
+        assert!(command.contains("AIOS_SOURCE_MISSING"));
+        assert!(command.contains("AIOS_EXISTS"));
+
+        let converted = json!({"messages": [{
+            "role": "toolResult", "toolName": "exec", "isError": false,
+            "content": [{"text": "AIOS_DOCUMENT_CONVERTED=3072\n"}]
+        }]});
+        assert_eq!(
+            document_convert_output(&converted, "/safe/source.doc", "/safe/result.docx",).unwrap(),
+            json!({
+                "source": "/safe/source.doc",
+                "destination": "/safe/result.docx",
+                "status": "converted",
+                "bytesWritten": 3072,
+            })
+        );
+
+        for (marker, status) in [
+            ("AIOS_SOURCE_MISSING", "source_missing"),
+            ("AIOS_EXISTS", "exists"),
+            ("AIOS_FAILED", "failed"),
+        ] {
+            let history = json!({"messages": [{
+                "role": "toolResult", "toolName": "exec", "isError": false,
+                "content": [{"text": format!("{marker}\n")}]
+            }]});
+            assert_eq!(
+                document_convert_output(&history, "/safe/source.doc", "/safe/result.docx",)
+                    .unwrap()["status"],
+                json!(status)
+            );
+        }
+    }
+
+    #[test]
+    fn document_convert_input_enforces_safe_conversion_contract() {
+        let valid = request(
+            "document.convert",
+            json!({
+                "source": "/safe/source.doc",
+                "destination": "/safe/result.docx"
+            }),
+        );
+        assert_eq!(
+            document_convert_input(&valid).unwrap(),
+            (
+                "/safe/source.doc",
+                "/safe/result.docx",
+                "/safe",
+                "docx".to_owned(),
+            )
+        );
+
+        for input in [
+            json!({"source": "relative.doc", "destination": "/safe/result.docx"}),
+            json!({"source": "/safe/file.docx", "destination": "/safe/file.docx"}),
+            json!({"source": "/safe/source.txt", "destination": "/safe/result.docx"}),
+            json!({
+                "source": "/safe/source.doc",
+                "destination": "/safe/result.docx",
+                "overwrite": true
+            }),
+        ] {
+            let request = request("document.convert", input);
+            let error = document_convert_input(&request).unwrap_err();
+            assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+            assert!(!error.retryable);
+        }
     }
 
     #[test]
