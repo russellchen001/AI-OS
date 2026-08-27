@@ -1,38 +1,57 @@
 #!/bin/bash
+set -u
 
-TEST_LOG="/tmp/ac-exec-step3b2-tests.verified.log"
-CHECK_LOG="/tmp/ac-exec-step3b2-check.verified.log"
+NAME="AC-EXEC-MODEL Step 3B-2"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+cd "$ROOT" || exit 1
 
-echo "AC-EXEC-MODEL Step 3B-2"
+fail() {
+  echo "✗ $1"
+  echo "FAIL $NAME: $1"
+  exit 1
+}
 
-if [ ! -s "$TEST_LOG" ]; then
-    echo "✗ Adapter test result unavailable"
-    echo "FAIL AC-EXEC-MODEL Step 3B-2: missing test result"
-    exit 1
-fi
+echo "$NAME"
 
-if tail -20 "$TEST_LOG" | grep -q "29 passed; 0 failed"; then
-    echo "✓ OpenClaw adapter behavior passed"
-else
-    echo "✗ OpenClaw adapter tests did not pass"
-    echo "FAIL AC-EXEC-MODEL Step 3B-2: adapter tests"
-    exit 1
-fi
+cargo test \
+  --manifest-path src-tauri/Cargo.toml \
+  runtime::openclaw_gateway_adapter::tests \
+  --lib >"$TMP_DIR/tests.log" 2>&1 ||
+  {
+    tail -30 "$TMP_DIR/tests.log"
+    fail "adapter tests"
+  }
 
-if [ ! -s "$CHECK_LOG" ]; then
-    echo "✗ Rust compile result unavailable"
-    echo "FAIL AC-EXEC-MODEL Step 3B-2: missing compile result"
-    exit 1
-fi
+grep -Eq "running [1-9][0-9]* tests" "$TMP_DIR/tests.log" ||
+  {
+    tail -30 "$TMP_DIR/tests.log"
+    fail "adapter tests did not run"
+  }
 
-if tail -20 "$CHECK_LOG" | grep -q "Finished .*dev.* profile"; then
-    echo "✓ Rust compile passed"
-else
-    echo "✗ Rust compile did not pass"
-    echo "FAIL AC-EXEC-MODEL Step 3B-2: compile"
-    exit 1
-fi
+grep -q "download_agent_fallback_is_limited_to_retryable_file_verification_failure ... ok" \
+  "$TMP_DIR/tests.log" ||
+  {
+    tail -30 "$TMP_DIR/tests.log"
+    fail "sequential candidate fallback test missing"
+  }
 
+grep -q "test result: ok\." "$TMP_DIR/tests.log" ||
+  {
+    tail -30 "$TMP_DIR/tests.log"
+    fail "adapter test result"
+  }
+
+echo "✓ OpenClaw adapter behavior passed"
+
+cargo check --manifest-path src-tauri/Cargo.toml >"$TMP_DIR/check.log" 2>&1 ||
+  {
+    tail -30 "$TMP_DIR/check.log"
+    fail "Rust compile"
+  }
+
+echo "✓ Rust compile passed"
 echo "✓ Sequential AI Center execution-agent fallback is build-valid"
-echo "PASS AC-EXEC-MODEL Step 3B-2"
+echo "PASS $NAME"
 exit 0

@@ -139,6 +139,23 @@ mod tests {
         assert!(resolved.supports("spreadsheet.read"));
     }
 
+    #[test]
+    fn spreadsheet_create_uses_first_available_office_provider() {
+        let providers = office_providers();
+        let expected = providers
+            .iter()
+            .filter(|provider| provider.available && provider.supports("spreadsheet.create"))
+            .min_by_key(|provider| provider.priority)
+            .expect("spreadsheet.create provider");
+        let resolved = resolve_office_provider("spreadsheet.create")
+            .expect("spreadsheet.create should resolve");
+
+        assert_ne!(resolved.id, OfficeProviderId::MacosNative);
+        assert_eq!(resolved.id, expected.id);
+        assert_eq!(resolved.priority, expected.priority);
+        assert!(resolved.supports("spreadsheet.create"));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn document_convert_resolves_to_macos_native_first() {

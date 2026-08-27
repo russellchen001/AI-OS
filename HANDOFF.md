@@ -405,26 +405,33 @@ Acceptance:
 The broader Document, Spreadsheet and Presentation capability remains in
 progress. Spreadsheet Create and presentation work have not started.
 
-## P15-3 Spreadsheet Read — completed
+## P15-3 Spreadsheet Read and Create — completed
 
-Status: completed 2026-08-27
+Status: completed 2026-08-28
 
 Implemented:
 - `spreadsheet.read` and `spreadsheet.create` Skill Registry capabilities
-- `spreadsheet.read` one-time permission confirmation
+- one-time permission confirmation for read and create
 - Local First Office Provider resolution
 - Microsoft Excel for Mac AppleScript adapter
 - absolute XLS/XLSX path validation
-- first-worksheet used-range reading
-- sheet name, row count, column count and TSV output
-- 65,536-byte bounded output
-- workbook close without saving
+- Spreadsheet Read first-worksheet used-range reading
+- sheet name, row count, column count and bounded TSV output
+- Spreadsheet Read workbook close without saving
+- Spreadsheet Create bounded TSV input
+- Excel-container workbook generation
+- XLS and XLSX output selection
+- fail-closed unsupported Provider behavior
+- no-overwrite target movement
+- Runtime → OpenClaw Gateway execution
+- success only from a real exec tool result
 
 Acceptance:
 - `verify/verify_p15_spreadsheet_read.sh`
+- `verify/verify_p15_spreadsheet_create.sh`
 - `verify/fixtures/p15-spreadsheet-read.xlsx`
 
-Spreadsheet Create and presentation work have not started.
+Presentation work has not started.
 
 ## P15-1 Email and calendar — architecture decided, not started
 
@@ -708,8 +715,11 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 - `document.create` accepts bounded text input and creates atomically without overwriting an existing target.
 - `document.convert` supports DOC ↔ DOCX only; source and destination must be distinct absolute paths, and the destination is never overwritten.
 - Spreadsheet Read skips `MacosNative`, which does not claim spreadsheet capabilities, and resolves to the first available Office Provider.
-- The current executable Spreadsheet Read adapter is Microsoft Excel for Mac through AppleScript; other resolved providers fail closed until their adapters exist.
+- The current executable Spreadsheet Read and Create adapter is Microsoft Excel for Mac through AppleScript; other resolved providers fail closed until their adapters exist.
 - Spreadsheet Read opens an absolute XLS/XLSX path, reads the first worksheet used range as bounded TSV, and closes without saving.
+- Spreadsheet Create accepts bounded TSV input and requires an absolute XLS/XLSX target path.
+- Because sandboxed Excel cannot save directly to arbitrary temporary paths, Spreadsheet Create generates inside Excel's container cache, then uses a no-overwrite move to the requested target.
+- `spreadsheet.read` and `spreadsheet.create` require one-time user confirmation.
 - Successful output must come from the real exec tool result; Gateway submission alone is not success.
 
 **Download Skill**
@@ -1333,3 +1343,4 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-27 00:07  完成 P15-2 Document Create
 - 2026-08-27 20:46  完成 P15-2 Document Convert
 - 2026-08-27 21:52  完成 P15-3 Spreadsheet Read
+- 2026-08-28 00:44  完成 P15-3 Spreadsheet Create 并修复 AC-EXEC 验收

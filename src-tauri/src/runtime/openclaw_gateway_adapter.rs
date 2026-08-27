@@ -18,6 +18,7 @@ const DOCUMENT_READ_ACTION: &str = "document.read";
 const DOCUMENT_CREATE_ACTION: &str = "document.create";
 const DOCUMENT_CONVERT_ACTION: &str = "document.convert";
 const SPREADSHEET_READ_ACTION: &str = "spreadsheet.read";
+const SPREADSHEET_CREATE_ACTION: &str = "spreadsheet.create";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const DOWNLOAD_START_ACTION: &str = "download.start";
@@ -86,6 +87,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == SPREADSHEET_READ_ACTION {
         return execute_spreadsheet_read(invoker, request);
+    }
+    if request.action.as_str() == SPREADSHEET_CREATE_ACTION {
+        return execute_spreadsheet_create(invoker, request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -1168,6 +1172,157 @@ fn document_convert_output(history: &Value, source: &str, destination: &str) -> 
     None
 }
 
+fn spreadsheet_create_execution(
+    request: &OpenClawExecutionRequest,
+) -> Result<(String, String, String), OpenClawExecutionError> {
+    let (path, content, workdir) = spreadsheet_create_input(request)?;
+    let provider = resolve_office_provider(SPREADSHEET_CREATE_ACTION).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            "No available Office Provider supports spreadsheet.create.",
+            false,
+        )
+    })?;
+    if provider.id != OfficeProviderId::MicrosoftOffice {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office Provider {} does not yet have a spreadsheet.create adapter.",
+                provider.name
+            ),
+            false,
+        ));
+    }
+
+    Ok((
+        path.to_owned(),
+        workdir.to_owned(),
+        spreadsheet_create_command(path, content),
+    ))
+}
+
+fn start_spreadsheet_create(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<(String, String, String), OpenClawExecutionError> {
+    let (path, workdir, command) = spreadsheet_create_execution(request)?;
+    let session_key = format!(
+        "agent:{FILESYSTEM_AGENT_ID}:ai-os-spreadsheet-create-{}",
+        request.execution_id
+    );
+    let message = format!(
+        "This is an AI-OS internal capability request. The label spreadsheet.create is NOT an OpenClaw tool name. Call the existing exec tool exactly once with command {} and workdir {}. Keep background false and yieldMs 10000. Use the command exactly as supplied without adding or changing flags, pipes, or wrappers. Create only; never overwrite an existing file. Do not claim success without the tool output.",
+        serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".to_owned()),
+        serde_json::to_string(&workdir).unwrap_or_else(|_| "\"\"".to_owned())
+    );
+
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": FILESYSTEM_AGENT_ID,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": 120,
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    Ok((path, session_key, run_id.to_owned()))
+}
+
+fn complete_spreadsheet_create(
+    invoker: &dyn GatewayMethodInvoker,
+    path: &str,
+    session_key: &str,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let history = invoker
+        .invoke(
+            "chat.history",
+            Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
+        )
+        .map_err(map_gateway_failure)?;
+    let output = spreadsheet_create_output(&history, path).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ProtocolFailure,
+            "OpenClaw spreadsheet create completed without a valid exec tool result.",
+            false,
+        )
+    })?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some("OpenClaw completed the spreadsheet create.".to_owned()),
+    })
+}
+
+fn finish_spreadsheet_create(
+    invoker: &dyn GatewayMethodInvoker,
+    path: &str,
+    session_key: &str,
+    run_id: &str,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    for _ in 0..AGENT_WAIT_ATTEMPTS {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("ok") => return complete_spreadsheet_create(invoker, path, session_key),
+            Some("error") => {
+                let message = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw agent execution failed.");
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    message,
+                    false,
+                ));
+            }
+            Some("timeout") => continue,
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid agent terminal status.",
+                    false,
+                ));
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw spreadsheet create timed out.",
+        true,
+    ))
+}
+
+fn execute_spreadsheet_create(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let (path, session_key, run_id) = start_spreadsheet_create(invoker, request)?;
+    finish_spreadsheet_create(invoker, &path, &session_key, &run_id)
+}
+
 fn execute_spreadsheet_read(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
@@ -1337,6 +1492,75 @@ fn spreadsheet_read_output(history: &Value, path: &str) -> Option<Value> {
     }))
 }
 
+fn spreadsheet_create_command(path: &str, content: &str) -> String {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("xlsx")
+        .to_ascii_lowercase();
+    format!(
+        r#"target={}; content={}; cache="$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches/com.microsoft.Excel"; if [ -e "$target" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; elif [ ! -d "$cache" ]; then /usr/bin/printf 'AIOS_FAILED\n'; else tmpdir=$(/usr/bin/mktemp -d "$cache/ai-os-spreadsheet.XXXXXX") || exit 1; trap '/bin/rm -rf "$tmpdir"' EXIT; /usr/bin/printf '%s' "$content" > "$tmpdir/source.tsv" || exit 1; result=$(/usr/bin/osascript - "$tmpdir/source.tsv" "$tmpdir/output.{}" {} <<'AIOS_APPLESCRIPT'
+on run argv
+    set sourcePath to item 1 of argv
+    set outputPath to item 2 of argv
+    set outputFormat to item 3 of argv
+    set openedWorkbook to missing value
+    tell application "Microsoft Excel"
+        try
+            open workbook workbook file name sourcePath
+            set openedWorkbook to active workbook
+            if outputFormat is "xlsx" then
+                save workbook as openedWorkbook filename outputPath file format Excel XML file format
+            else
+                save workbook as openedWorkbook filename outputPath file format Excel98to2004 file format
+            end if
+            close openedWorkbook saving no
+            return "AIOS_EXCEL_SAVED"
+        on error
+            if openedWorkbook is not missing value then
+                try
+                    close openedWorkbook saving no
+                end try
+            end if
+            return "AIOS_FAILED"
+        end try
+    end tell
+end run
+AIOS_APPLESCRIPT
+); output="$tmpdir/output.{}"; if [ "$result" = "AIOS_EXCEL_SAVED" ] && [ -f "$output" ]; then /bin/mv -n "$output" "$target"; if [ ! -e "$output" ] && [ -f "$target" ]; then size=$(/usr/bin/stat -f %z -- "$target") || exit 1; /usr/bin/printf 'AIOS_SPREADSHEET_CREATED=%s\n' "$size"; elif [ -e "$target" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; else /usr/bin/printf 'AIOS_FAILED\n'; fi; else /usr/bin/printf 'AIOS_FAILED\n'; fi; fi"#,
+        shell_quote(path),
+        shell_quote(content),
+        extension,
+        shell_quote(&extension),
+        extension,
+    )
+}
+
+fn spreadsheet_create_output(history: &Value, path: &str) -> Option<Value> {
+    let text = latest_successful_exec_result(history)?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Some((_, size)) = text.rsplit_once("AIOS_SPREADSHEET_CREATED=") {
+        return Some(serde_json::json!({
+            "path": path,
+            "status": "created",
+            "bytesWritten": size.trim().parse::<u64>().ok()?,
+        }));
+    }
+    if text.lines().any(|line| line.trim() == "AIOS_EXISTS") {
+        return Some(serde_json::json!({"path": path, "status": "exists"}));
+    }
+    if text.lines().any(|line| line.trim() == "AIOS_FAILED") {
+        return Some(serde_json::json!({"path": path, "status": "failed"}));
+    }
+    None
+}
+
 fn spreadsheet_read_command(path: &str) -> String {
     format!(
         r#"/usr/bin/osascript - {} <<'AIOS_APPLESCRIPT' | /usr/bin/head -c {}
@@ -1444,6 +1668,96 @@ fn spreadsheet_read_input(
         })?;
 
     Ok((path, workdir))
+}
+
+fn spreadsheet_create_target(
+    request: &OpenClawExecutionRequest,
+) -> Result<(&str, &str), OpenClawExecutionError> {
+    let path = request
+        .input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "spreadsheet.create requires path",
+                false,
+            )
+        })?;
+
+    let target = Path::new(path);
+    if !target.is_absolute() {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.create requires an absolute file path",
+            false,
+        ));
+    }
+
+    let extension = target
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "xls" | "xlsx") {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.create currently supports XLS and XLSX files",
+            false,
+        ));
+    }
+
+    let workdir = target.parent().and_then(Path::to_str).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.create requires an absolute file path",
+            false,
+        )
+    })?;
+
+    Ok((path, workdir))
+}
+
+fn spreadsheet_create_input<'a>(
+    request: &'a OpenClawExecutionRequest,
+) -> Result<(&'a str, &'a str, &'a str), OpenClawExecutionError> {
+    let (path, workdir) = spreadsheet_create_target(request)?;
+    let content = request
+        .input
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "spreadsheet.create requires TSV content",
+                false,
+            )
+        })?;
+
+    if content.len() > MAX_FILE_WRITE_BYTES {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.create content exceeds the 4096 byte limit",
+            false,
+        ));
+    }
+
+    if request
+        .input
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.create overwrite is not permitted",
+            false,
+        ));
+    }
+
+    Ok((path, content, workdir))
 }
 
 fn document_convert_input<'a>(
@@ -2393,6 +2707,83 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn spreadsheet_create_rejects_invalid_path_without_gateway_call() {
+        let invoker = RecordingInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcome: Ok(json!({"unexpected": true})),
+        };
+
+        let error = execute_with_invoker(
+            &invoker,
+            &request(
+                "spreadsheet.create",
+                json!({
+                    "path": "relative/report.xlsx",
+                    "content": "Name\tValue\nAlpha\t42"
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+        assert!(!error.retryable);
+        assert!(error.message.contains("absolute file path"));
+        assert!(invoker.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn spreadsheet_create_uses_excel_and_returns_created_result() {
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text": "AIOS_SPREADSHEET_CREATED=4096\n"}]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"status": "accepted", "runId": "spreadsheet-create-run"})),
+                Ok(json!({"runId": "spreadsheet-create-run", "status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request(
+                "spreadsheet.create",
+                json!({
+                    "path": "/safe/report file.xlsx",
+                    "content": "Name\tValue\nAlpha\t42"
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({
+                "path": "/safe/report file.xlsx",
+                "status": "created",
+                "bytesWritten": 4096,
+            })
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait", "chat.history"]
+        );
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("spreadsheet.create is NOT an OpenClaw tool name"));
+        assert!(message.contains("Microsoft Excel"));
+        assert!(message.contains("com.microsoft.Excel/Data/Library/Caches"));
+        assert!(message.contains("never overwrite"));
+        assert!(calls.iter().all(|call| call.0 != "spreadsheet.create"));
+    }
+
+    #[test]
     fn spreadsheet_read_uses_excel_and_returns_table_result() {
         let history = json!({"messages": [{
             "role": "toolResult",
@@ -2494,6 +2885,45 @@ mod tests {
     }
 
     #[test]
+    fn spreadsheet_create_helpers_enforce_container_save_and_map_results() {
+        let command = spreadsheet_create_command("/safe/report.xlsx", "Name\tValue\nAlpha\t42");
+
+        assert!(command.contains("Microsoft Excel"));
+        assert!(command.contains("com.microsoft.Excel/Data/Library/Caches"));
+        assert!(command.contains("Excel XML file format"));
+        assert!(command.contains("/bin/mv -n"));
+        assert!(command.contains("AIOS_SPREADSHEET_CREATED="));
+
+        let created = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text": "AIOS_SPREADSHEET_CREATED=4096\n"}]
+        }]});
+        assert_eq!(
+            spreadsheet_create_output(&created, "/safe/report.xlsx").unwrap(),
+            json!({
+                "path": "/safe/report.xlsx",
+                "status": "created",
+                "bytesWritten": 4096,
+            })
+        );
+
+        for (marker, status) in [("AIOS_EXISTS\n", "exists"), ("AIOS_FAILED\n", "failed")] {
+            let history = json!({"messages": [{
+                "role": "toolResult",
+                "toolName": "exec",
+                "isError": false,
+                "content": [{"text": marker}]
+            }]});
+            assert_eq!(
+                spreadsheet_create_output(&history, "/safe/report.xlsx").unwrap(),
+                json!({"path": "/safe/report.xlsx", "status": status})
+            );
+        }
+    }
+
+    #[test]
     fn spreadsheet_read_input_accepts_workbooks_and_rejects_invalid_paths() {
         for path in ["/safe/report.xlsx", "/safe/legacy.XLS"] {
             let request = request("spreadsheet.read", json!({"path": path}));
@@ -2508,6 +2938,42 @@ mod tests {
             assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
             assert!(!error.retryable);
         }
+    }
+
+    #[test]
+    fn spreadsheet_create_input_enforces_safe_create_contract() {
+        let valid = request(
+            "spreadsheet.create",
+            json!({
+                "path": "/safe/report.xlsx",
+                "content": "Name\tValue\nAlpha\t42"
+            }),
+        );
+        assert_eq!(
+            spreadsheet_create_input(&valid).unwrap(),
+            ("/safe/report.xlsx", "Name\tValue\nAlpha\t42", "/safe")
+        );
+
+        for input in [
+            json!({"path": "relative.xlsx", "content": "A\tB"}),
+            json!({"path": "/safe/report.csv", "content": "A\tB"}),
+            json!({"path": "/safe/report.xlsx", "content": "A\tB", "overwrite": true}),
+            json!({"path": "/safe/report.xlsx"}),
+        ] {
+            let error =
+                spreadsheet_create_input(&request("spreadsheet.create", input)).unwrap_err();
+            assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+            assert!(!error.retryable);
+        }
+
+        let oversized = "x".repeat(MAX_FILE_WRITE_BYTES + 1);
+        let oversized_request = request(
+            "spreadsheet.create",
+            json!({"path": "/safe/report.xlsx", "content": oversized}),
+        );
+        let error = spreadsheet_create_input(&oversized_request).unwrap_err();
+        assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+        assert!(error.message.contains("4096 byte limit"));
     }
 
     #[test]
