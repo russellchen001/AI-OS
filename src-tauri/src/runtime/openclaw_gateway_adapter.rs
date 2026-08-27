@@ -17,6 +17,7 @@ const FILESYSTEM_READ_ACTION: &str = "filesystem.read";
 const DOCUMENT_READ_ACTION: &str = "document.read";
 const DOCUMENT_CREATE_ACTION: &str = "document.create";
 const DOCUMENT_CONVERT_ACTION: &str = "document.convert";
+const SPREADSHEET_READ_ACTION: &str = "spreadsheet.read";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const DOWNLOAD_START_ACTION: &str = "download.start";
@@ -82,6 +83,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == DOCUMENT_CONVERT_ACTION {
         return execute_document_convert(invoker, request);
+    }
+    if request.action.as_str() == SPREADSHEET_READ_ACTION {
+        return execute_spreadsheet_read(invoker, request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -1164,6 +1168,284 @@ fn document_convert_output(history: &Value, source: &str, destination: &str) -> 
     None
 }
 
+fn execute_spreadsheet_read(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let (path, session_key, run_id) = start_spreadsheet_read(invoker, request)?;
+    finish_spreadsheet_read(invoker, &path, &session_key, &run_id)
+}
+
+fn finish_spreadsheet_read(
+    invoker: &dyn GatewayMethodInvoker,
+    path: &str,
+    session_key: &str,
+    run_id: &str,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    for _ in 0..AGENT_WAIT_ATTEMPTS {
+        let terminal = invoker
+            .invoke(
+                "agent.wait",
+                Some(serde_json::json!({"runId": run_id, "timeoutMs": 9_000})),
+            )
+            .map_err(map_gateway_failure)?;
+
+        match terminal.get("status").and_then(Value::as_str) {
+            Some("ok") => {
+                let history = invoker
+                    .invoke(
+                        "chat.history",
+                        Some(serde_json::json!({"sessionKey": session_key, "limit": 10})),
+                    )
+                    .map_err(map_gateway_failure)?;
+                let output = spreadsheet_read_output(&history, path).ok_or_else(|| {
+                    OpenClawExecutionError::new(
+                        OpenClawExecutionErrorKind::ProtocolFailure,
+                        "OpenClaw spreadsheet read completed without a valid exec tool result.",
+                        false,
+                    )
+                })?;
+                return Ok(OpenClawExecutionResult {
+                    output,
+                    summary: Some("OpenClaw completed the spreadsheet read.".to_owned()),
+                });
+            }
+            Some("error") => {
+                let message = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenClaw agent execution failed.");
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ExecutionFailed,
+                    message,
+                    false,
+                ));
+            }
+            Some("timeout") => continue,
+            _ => {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::ProtocolFailure,
+                    "OpenClaw returned an invalid agent terminal status.",
+                    false,
+                ));
+            }
+        }
+    }
+
+    Err(OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        "OpenClaw spreadsheet read timed out.",
+        true,
+    ))
+}
+
+fn start_spreadsheet_read(
+    invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<(String, String, String), OpenClawExecutionError> {
+    let (path, workdir) = spreadsheet_read_input(request)?;
+    let provider = resolve_office_provider(SPREADSHEET_READ_ACTION).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            "No available Office Provider supports spreadsheet.read.",
+            false,
+        )
+    })?;
+    if provider.id != OfficeProviderId::MicrosoftOffice {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office Provider {} does not yet have a spreadsheet.read adapter.",
+                provider.name
+            ),
+            false,
+        ));
+    }
+
+    let command = spreadsheet_read_command(path);
+    let session_key = format!(
+        "agent:{FILESYSTEM_AGENT_ID}:ai-os-spreadsheet-read-{}",
+        request.execution_id
+    );
+    let message = format!(
+        "This is an AI-OS internal capability request. The label spreadsheet.read is NOT an OpenClaw tool name. Call the existing exec tool exactly once with command {} and workdir {}. Keep background false and yieldMs 10000. Use the command exactly as supplied without adding or changing flags, pipes, or wrappers. This is read-only; close the workbook without saving. Do not claim success without the tool output.",
+        serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".to_owned()),
+        serde_json::to_string(workdir).unwrap_or_else(|_| "\"\"".to_owned())
+    );
+
+    let accepted = invoker
+        .invoke(
+            "agent",
+            Some(serde_json::json!({
+                "message": message,
+                "agentId": FILESYSTEM_AGENT_ID,
+                "sessionKey": session_key,
+                "thinking": "off",
+                "deliver": false,
+                "timeout": 120,
+                "idempotencyKey": request.execution_id.as_str(),
+            })),
+        )
+        .map_err(map_gateway_failure)?;
+    let run_id = accepted
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ProtocolFailure,
+                "OpenClaw did not return a run identifier.",
+                false,
+            )
+        })?;
+
+    Ok((path.to_owned(), session_key, run_id.to_owned()))
+}
+
+fn spreadsheet_read_output(history: &Value, path: &str) -> Option<Value> {
+    let text = latest_successful_exec_result(history)?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Some((_, error)) = text.rsplit_once("AIOS_FAILED=") {
+        return Some(serde_json::json!({
+            "path": path,
+            "status": "failed",
+            "error": error.trim(),
+        }));
+    }
+
+    let (_, payload) = text.split_once("AIOS_SHEET=")?;
+    let (sheet, payload) = payload.split_once("\nAIOS_ROWS=")?;
+    let (rows, payload) = payload.split_once("\nAIOS_COLUMNS=")?;
+    let (columns, content) = payload.split_once("\nAIOS_CONTENT_BEGIN\n")?;
+    let rows = rows.trim().parse::<u64>().ok()?;
+    let columns = columns.trim().parse::<u64>().ok()?;
+
+    Some(serde_json::json!({
+        "path": path,
+        "sheet": sheet.trim(),
+        "status": "table",
+        "rows": rows,
+        "columns": columns,
+        "truncated": text.len() >= MAX_FILE_OUTPUT_BYTES as usize,
+        "content": content,
+    }))
+}
+
+fn spreadsheet_read_command(path: &str) -> String {
+    format!(
+        r#"/usr/bin/osascript - {} <<'AIOS_APPLESCRIPT' | /usr/bin/head -c {}
+on joinRow(rowValues)
+    set oldDelimiters to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to tab
+    set rowText to rowValues as text
+    set AppleScript's text item delimiters to oldDelimiters
+    return rowText
+end joinRow
+
+on run argv
+    set workbookPath to item 1 of argv
+    set openedWorkbook to missing value
+    tell application "Microsoft Excel"
+        try
+            open workbook workbook file name workbookPath
+            set openedWorkbook to active workbook
+            tell worksheet 1 of openedWorkbook
+                set sheetName to name
+                set usedValues to value of used range
+            end tell
+            if class of usedValues is not list then
+                set usedValues to {{usedValues}}
+            else if (count of usedValues) > 0 then
+                if class of item 1 of usedValues is not list then
+                    set usedValues to {{usedValues}}
+                end if
+            end if
+            set rowCount to count of usedValues
+            set columnCount to count of item 1 of usedValues
+            set outputText to ""
+            repeat with rowValues in usedValues
+                set outputText to outputText & my joinRow(contents of rowValues) & linefeed
+            end repeat
+            close openedWorkbook saving no
+            return "AIOS_SHEET=" & sheetName & linefeed & ¬
+                "AIOS_ROWS=" & rowCount & linefeed & ¬
+                "AIOS_COLUMNS=" & columnCount & linefeed & ¬
+                "AIOS_CONTENT_BEGIN" & linefeed & outputText
+        on error errorMessage number errorNumber
+            if openedWorkbook is not missing value then
+                try
+                    close openedWorkbook saving no
+                end try
+            end if
+            return "AIOS_FAILED=" & errorNumber & ":" & errorMessage
+        end try
+    end tell
+end run
+AIOS_APPLESCRIPT"#,
+        shell_quote(path),
+        MAX_FILE_OUTPUT_BYTES,
+    )
+}
+
+fn spreadsheet_read_input(
+    request: &OpenClawExecutionRequest,
+) -> Result<(&str, &str), OpenClawExecutionError> {
+    let path = request
+        .input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "spreadsheet.read requires path",
+                false,
+            )
+        })?;
+
+    let workbook_path = Path::new(path);
+    if !workbook_path.is_absolute() {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.read requires an absolute file path",
+            false,
+        ));
+    }
+
+    let extension = workbook_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "xls" | "xlsx") {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.read currently supports XLS and XLSX files",
+            false,
+        ));
+    }
+
+    let workdir = workbook_path
+        .parent()
+        .and_then(Path::to_str)
+        .ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "spreadsheet.read requires an absolute file path",
+                false,
+            )
+        })?;
+
+    Ok((path, workdir))
+}
+
 fn document_convert_input<'a>(
     request: &'a OpenClawExecutionRequest,
 ) -> Result<(&'a str, &'a str, &'a str, String), OpenClawExecutionError> {
@@ -2107,6 +2389,125 @@ mod tests {
         }]});
 
         assert_eq!(filesystem_scan_output(&history, "/safe/example"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn spreadsheet_read_uses_excel_and_returns_table_result() {
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text":
+                "AIOS_SHEET=Sheet1\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_CONTENT_BEGIN\nName\tValue\nAlpha\t42.0\n"
+            }]
+        }]});
+        let invoker = ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"status": "accepted", "runId": "spreadsheet-read-run"})),
+                Ok(json!({"runId": "spreadsheet-read-run", "status": "ok"})),
+                Ok(history),
+            ])),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request(
+                "spreadsheet.read",
+                json!({"path": "/safe/report file.xlsx"}),
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        let calls = invoker.calls.lock().unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({
+                "path": "/safe/report file.xlsx",
+                "sheet": "Sheet1",
+                "status": "table",
+                "rows": 2,
+                "columns": 2,
+                "truncated": false,
+                "content": "Name\tValue\nAlpha\t42.0\n",
+            })
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["agent", "agent.wait", "chat.history"]
+        );
+        let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("spreadsheet.read is NOT an OpenClaw tool name"));
+        assert!(message.contains("Microsoft Excel"));
+        assert!(message.contains("close openedWorkbook saving no"));
+        assert!(message.contains("/usr/bin/head -c 65536"));
+        assert!(calls.iter().all(|call| call.0 != "spreadsheet.read"));
+    }
+
+    #[test]
+    fn spreadsheet_read_helpers_use_excel_and_map_table_results() {
+        let command = spreadsheet_read_command("/safe/report file.xlsx");
+
+        assert!(command.contains("/usr/bin/osascript"));
+        assert!(command.contains("Microsoft Excel"));
+        assert!(command.contains("value of used range"));
+        assert!(command.contains("close openedWorkbook saving no"));
+        assert!(command.contains("/usr/bin/head -c 65536"));
+
+        let history = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text":
+                "AIOS_SHEET=Sheet1\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_CONTENT_BEGIN\nName\tValue\nAlpha\t42.0\n"
+            }]
+        }]});
+        assert_eq!(
+            spreadsheet_read_output(&history, "/safe/report.xlsx").unwrap(),
+            json!({
+                "path": "/safe/report.xlsx",
+                "sheet": "Sheet1",
+                "status": "table",
+                "rows": 2,
+                "columns": 2,
+                "truncated": false,
+                "content": "Name\tValue\nAlpha\t42.0\n",
+            })
+        );
+
+        let failed = json!({"messages": [{
+            "role": "toolResult",
+            "toolName": "exec",
+            "isError": false,
+            "content": [{"text": "AIOS_FAILED=-1728:Workbook unavailable"}]
+        }]});
+        assert_eq!(
+            spreadsheet_read_output(&failed, "/safe/report.xlsx").unwrap(),
+            json!({
+                "path": "/safe/report.xlsx",
+                "status": "failed",
+                "error": "-1728:Workbook unavailable",
+            })
+        );
+    }
+
+    #[test]
+    fn spreadsheet_read_input_accepts_workbooks_and_rejects_invalid_paths() {
+        for path in ["/safe/report.xlsx", "/safe/legacy.XLS"] {
+            let request = request("spreadsheet.read", json!({"path": path}));
+
+            assert_eq!(spreadsheet_read_input(&request).unwrap(), (path, "/safe"));
+        }
+
+        for path in ["relative.xlsx", "/safe/report.csv", "/safe/no-extension"] {
+            let request = request("spreadsheet.read", json!({"path": path}));
+            let error = spreadsheet_read_input(&request).unwrap_err();
+
+            assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+            assert!(!error.retryable);
+        }
     }
 
     #[test]

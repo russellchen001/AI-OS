@@ -302,7 +302,7 @@ Master Guide's vocabulary on their own.
 | 4 | Local model management | Done | `verify_p15_local_model_*` |
 | 5 | Email and calendar | Not started | — |
 | 6 | NAS management | Not started | — |
-| 7 | Document, spreadsheet, presentation | In progress | `verify_p15_document_*`, `verify_p15_office_provider_registry` |
+| 7 | Document, spreadsheet, presentation | In progress | `verify_p15_document_*`, `verify_p15_spreadsheet_*`, `verify_p15_office_provider_registry` |
 | 8 | Smart home and device control | Not started | — |
 | 9 | Local generative media | Not started | — |
 | 10 | Cognitive distillation foundation | Not started | — |
@@ -403,7 +403,28 @@ Acceptance:
 - `verify/verify_p15_document_convert.sh`
 
 The broader Document, Spreadsheet and Presentation capability remains in
-progress. Spreadsheet and presentation work have not started.
+progress. Spreadsheet Create and presentation work have not started.
+
+## P15-3 Spreadsheet Read — completed
+
+Status: completed 2026-08-27
+
+Implemented:
+- `spreadsheet.read` and `spreadsheet.create` Skill Registry capabilities
+- `spreadsheet.read` one-time permission confirmation
+- Local First Office Provider resolution
+- Microsoft Excel for Mac AppleScript adapter
+- absolute XLS/XLSX path validation
+- first-worksheet used-range reading
+- sheet name, row count, column count and TSV output
+- 65,536-byte bounded output
+- workbook close without saving
+
+Acceptance:
+- `verify/verify_p15_spreadsheet_read.sh`
+- `verify/fixtures/p15-spreadsheet-read.xlsx`
+
+Spreadsheet Create and presentation work have not started.
 
 ## P15-1 Email and calendar — architecture decided, not started
 
@@ -686,6 +707,9 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 - `document.read`, `document.create` and `document.convert` require one-time user confirmation.
 - `document.create` accepts bounded text input and creates atomically without overwriting an existing target.
 - `document.convert` supports DOC ↔ DOCX only; source and destination must be distinct absolute paths, and the destination is never overwritten.
+- Spreadsheet Read skips `MacosNative`, which does not claim spreadsheet capabilities, and resolves to the first available Office Provider.
+- The current executable Spreadsheet Read adapter is Microsoft Excel for Mac through AppleScript; other resolved providers fail closed until their adapters exist.
+- Spreadsheet Read opens an absolute XLS/XLSX path, reads the first worksheet used range as bounded TSV, and closes without saving.
 - Successful output must come from the real exec tool result; Gateway submission alone is not success.
 
 **Download Skill**
@@ -1308,3 +1332,4 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-26 23:23  完成 P15-1 Email Calendar 与 P15-2 Document Read
 - 2026-08-27 00:07  完成 P15-2 Document Create
 - 2026-08-27 20:46  完成 P15-2 Document Convert
+- 2026-08-27 21:52  完成 P15-3 Spreadsheet Read

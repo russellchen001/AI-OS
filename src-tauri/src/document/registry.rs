@@ -122,6 +122,23 @@ mod tests {
         assert!(resolve_office_provider("   ").is_none());
     }
 
+    #[test]
+    fn spreadsheet_read_uses_first_available_office_provider() {
+        let providers = office_providers();
+        let expected = providers
+            .iter()
+            .filter(|provider| provider.available && provider.supports("spreadsheet.read"))
+            .min_by_key(|provider| provider.priority)
+            .expect("spreadsheet.read provider");
+        let resolved =
+            resolve_office_provider("spreadsheet.read").expect("spreadsheet.read should resolve");
+
+        assert_ne!(resolved.id, OfficeProviderId::MacosNative);
+        assert_eq!(resolved.id, expected.id);
+        assert_eq!(resolved.priority, expected.priority);
+        assert!(resolved.supports("spreadsheet.read"));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn document_convert_resolves_to_macos_native_first() {
