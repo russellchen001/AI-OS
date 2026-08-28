@@ -46,6 +46,8 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
                 "document.convert",
                 "spreadsheet.read",
                 "spreadsheet.create",
+                "presentation.read",
+                "presentation.create",
             ],
             &["filesystem.read", "filesystem.write"],
             "openclaw",
@@ -194,6 +196,18 @@ mod tests {
                 find_by_capability(capability).is_some(),
                 "missing built-in capability: {capability}"
             );
+        }
+    }
+
+    #[test]
+    fn presentation_capabilities_resolve_to_office_skill() {
+        for capability in ["presentation.read", "presentation.create"] {
+            let skill =
+                find_by_capability(capability).expect("presentation capability should resolve");
+
+            assert_eq!(skill.id, "document");
+            assert_eq!(skill.executor.kind, "openclaw");
+            assert_eq!(skill.executor.handler, "document");
         }
     }
 

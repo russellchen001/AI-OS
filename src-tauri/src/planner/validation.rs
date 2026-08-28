@@ -178,7 +178,7 @@ impl Error for PlanValidationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planner::{Plan, PlanStep, PlanStepId};
+    use crate::planner::{Plan, PlanStep, PlanStepId, TaskClosureStage};
 
     fn step(id: &str) -> PlanStep {
         PlanStep::new(id, format!("test.{id}"))
@@ -273,6 +273,7 @@ mod tests {
 
         let dependent = PlanStep {
             dependencies: vec![source_id.clone(), source_id.clone()],
+            closure_stage: TaskClosureStage::Execute,
             ..step("dependent")
         };
 

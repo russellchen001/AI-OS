@@ -48,27 +48,103 @@ create_xlsx() {
     return
   }
 
-  result=$(/usr/bin/osascript - "$source" "$output" <<'APPLESCRIPT'
+  result=$(/usr/bin/osascript - "$source" "$output" "$content" <<'APPLESCRIPT'
+on excelColumnName(columnNumber)
+    set letters to "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    set resultText to ""
+    set remaining to columnNumber
+    repeat while remaining > 0
+        set letterIndex to ((remaining - 1) mod 26) + 1
+        set resultText to character letterIndex of letters & resultText
+        set remaining to (remaining - letterIndex) div 26
+    end repeat
+    return resultText
+end excelColumnName
+
+on valuesMatch(actualValue, expectedValue)
+    try
+        set expectedNumber to expectedValue as number
+        return actualValue = expectedNumber
+    on error
+        return (actualValue as text) = expectedValue
+    end try
+end valuesMatch
+
 on run argv
-    set sourcePath to item 1 of argv
     set outputPath to item 2 of argv
+    set expectedContent to item 3 of argv
     set openedWorkbook to missing value
+    set currentPhase to "create"
 
     tell application "Microsoft Excel"
         try
-            open workbook workbook file name sourcePath
-            set openedWorkbook to active workbook
+            set openedWorkbook to make new workbook
+            set currentPhase to "write"
+            set oldDelimiters to AppleScript's text item delimiters
+            set AppleScript's text item delimiters to linefeed
+            set sourceRows to text items of expectedContent
+            repeat with rowIndex from 1 to count of sourceRows
+                set sourceRow to item rowIndex of sourceRows
+                set AppleScript's text item delimiters to tab
+                set rowValues to text items of sourceRow
+                repeat with columnIndex from 1 to count of rowValues
+                    set cellAddress to my excelColumnName(columnIndex) & rowIndex
+                    set value of range cellAddress of worksheet 1 of openedWorkbook to contents of item columnIndex of rowValues
+                end repeat
+            end repeat
+            set AppleScript's text item delimiters to oldDelimiters
+            set currentPhase to "save"
             save workbook as openedWorkbook filename outputPath ¬
                 file format Excel XML file format
+            set currentPhase to "close"
+            try
+                close openedWorkbook saving no
+            end try
+            set openedWorkbook to missing value
+            open workbook workbook file name outputPath
+            repeat 20 times
+                repeat with workbookIndex from 1 to count of workbooks
+                    set candidateWorkbook to workbook workbookIndex
+                    set candidatePath to full name of candidateWorkbook
+                    if candidatePath is outputPath then
+                        set openedWorkbook to candidateWorkbook
+                        exit repeat
+                    end if
+                end repeat
+                if openedWorkbook is not missing value then exit repeat
+                delay 0.25
+            end repeat
+            if openedWorkbook is missing value then error "Excel did not reopen the generated workbook"
+            set usedValues to value of used range of worksheet 1 of openedWorkbook
+            set contentMatches to (count of usedValues) = (count of sourceRows)
+            repeat with rowIndex from 1 to count of sourceRows
+                if rowIndex > count of usedValues then
+                    set contentMatches to false
+                    exit repeat
+                end if
+                set AppleScript's text item delimiters to tab
+                set expectedRow to text items of item rowIndex of sourceRows
+                set actualRow to item rowIndex of usedValues
+                if (count of actualRow) is not (count of expectedRow) then set contentMatches to false
+                repeat with columnIndex from 1 to count of expectedRow
+                    if columnIndex > count of actualRow or not my valuesMatch(contents of item columnIndex of actualRow, contents of item columnIndex of expectedRow) then
+                        set contentMatches to false
+                        exit repeat
+                    end if
+                end repeat
+            end repeat
+            set AppleScript's text item delimiters to oldDelimiters
             close openedWorkbook saving no
-            return "AIOS_EXCEL_SAVED"
-        on error
+            set openedWorkbook to missing value
+            if contentMatches then return "AIOS_EXCEL_SAVED"
+            return "AIOS_CONTENT_MISMATCH"
+        on error errorMessage number errorNumber
             if openedWorkbook is not missing value then
                 try
                     close openedWorkbook saving no
                 end try
             end if
-            return "AIOS_FAILED"
+            return "AIOS_FAILED=" & currentPhase & ":" & errorNumber & ":" & errorMessage
         end try
     end tell
 end run
@@ -117,7 +193,12 @@ run_test \
 
 TARGET="$TMP_DIR/created.xlsx"
 CONTENT=$'Name\tValue\nAlpha\t42'
-CREATE_RESULT="$(create_xlsx "$TARGET" "$CONTENT")"
+CREATE_RESULT=""
+for attempt in 1 2 3; do
+  CREATE_RESULT="$(create_xlsx "$TARGET" "$CONTENT")"
+  [[ "$CREATE_RESULT" == AIOS_SPREADSHEET_CREATED=* ]] && break
+  sleep 1
+done
 
 [[ "$CREATE_RESULT" == AIOS_SPREADSHEET_CREATED=* ]] ||
   fail "Real XLSX creation"
@@ -129,50 +210,6 @@ AFTER_HASH="$(shasum -a 256 "$TARGET" | cut -d' ' -f1)"
 
 [ "$EXISTS_RESULT" = "AIOS_EXISTS" ] || fail "Existing target detection"
 [ "$BEFORE_HASH" = "$AFTER_HASH" ] || fail "Existing target was overwritten"
-
-/usr/bin/osascript - "$TARGET" <<'APPLESCRIPT' >"$TMP_DIR/readback.txt"
-on joinRow(rowValues)
-    set oldDelimiters to AppleScript's text item delimiters
-    set AppleScript's text item delimiters to tab
-    set rowText to rowValues as text
-    set AppleScript's text item delimiters to oldDelimiters
-    return rowText
-end joinRow
-
-on run argv
-    set workbookPath to item 1 of argv
-    set openedWorkbook to missing value
-
-    tell application "Microsoft Excel"
-        try
-            open workbook workbook file name workbookPath
-            set openedWorkbook to active workbook
-            tell worksheet 1 of openedWorkbook
-                set usedValues to value of used range
-            end tell
-
-            set outputText to ""
-            repeat with rowValues in usedValues
-                set outputText to outputText & my joinRow(contents of rowValues) & linefeed
-            end repeat
-
-            close openedWorkbook saving no
-            return outputText
-        on error errorMessage number errorNumber
-            if openedWorkbook is not missing value then
-                try
-                    close openedWorkbook saving no
-                end try
-            end if
-            return "AIOS_FAILED=" & errorNumber & ":" & errorMessage
-        end try
-    end tell
-end run
-APPLESCRIPT
-
-READBACK="$(<"$TMP_DIR/readback.txt")"
-[[ "$READBACK" == *$'Name\tValue\nAlpha\t42.0'* ]] ||
-  fail "Created XLSX content mismatch"
 
 echo "✓ Real XLSX create, read and no-overwrite"
 echo "PASS $NAME"

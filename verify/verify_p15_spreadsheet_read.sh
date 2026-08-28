@@ -47,7 +47,8 @@ run_test \
 
 [ -s "$FIXTURE" ] || fail "Real XLSX fixture missing"
 
-/usr/bin/osascript - "$FIXTURE" <<'APPLESCRIPT' | /usr/bin/head -c 65536 >"$TMP_DIR/result.txt"
+read_fixture() {
+  /usr/bin/osascript - "$FIXTURE" <<'APPLESCRIPT' | /usr/bin/head -c 65536
 on joinRow(rowValues)
     set oldDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to tab
@@ -62,7 +63,19 @@ on run argv
     tell application "Microsoft Excel"
         try
             open workbook workbook file name workbookPath
-            set openedWorkbook to active workbook
+            repeat 20 times
+                repeat with workbookIndex from 1 to count of workbooks
+                    set candidateWorkbook to workbook workbookIndex
+                    set candidatePath to full name of candidateWorkbook
+                    if candidatePath is workbookPath then
+                        set openedWorkbook to candidateWorkbook
+                        exit repeat
+                    end if
+                end repeat
+                if openedWorkbook is not missing value then exit repeat
+                delay 0.25
+            end repeat
+            if openedWorkbook is missing value then error "Excel did not open the workbook"
             tell worksheet 1 of openedWorkbook
                 set sheetName to name
                 set usedValues to value of used range
@@ -89,7 +102,18 @@ on run argv
     end tell
 end run
 APPLESCRIPT
-RESULT="$(<"$TMP_DIR/result.txt")"
+}
+
+RESULT=""
+for attempt in 1 2 3; do
+  RESULT="$(read_fixture)"
+  if [[ "$RESULT" == AIOS_SHEET=* ]] &&
+    [[ "$RESULT" == *$'AIOS_ROWS=2\nAIOS_COLUMNS=2'* ]] &&
+    [[ "$RESULT" == *$'Name\tValue\nAlpha\t42.0'* ]]; then
+    break
+  fi
+  sleep 1
+done
 
 [[ "$RESULT" == AIOS_SHEET=* ]] || fail "Real Excel read"
 [[ "$RESULT" == *$'AIOS_ROWS=2\nAIOS_COLUMNS=2'* ]] ||

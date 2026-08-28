@@ -60,6 +60,7 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
                         | "document.convert"
                         | "spreadsheet.read"
                         | "spreadsheet.create"
+                        | "presentation.read"
                         | "filesystem.write"
                         | "filesystem.move"
                         | "download.start"
@@ -573,6 +574,27 @@ mod tests {
                 "path": "/safe/workbook.xlsx",
                 "content": "Name\tValue\nAlpha\t42"
             }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gate.authorize(&request).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+        assert_eq!(
+            gate.authorize(&request.with_user_confirmation(true))
+                .unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn presentation_read_requires_and_accepts_one_time_user_confirmation() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let request = OpenClawExecutionRequest::new(
+            "execution-presentation-read",
+            "presentation.read",
+            json!({"path": "/safe/presentation.pptx"}),
         )
         .unwrap();
 

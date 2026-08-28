@@ -287,12 +287,55 @@ explicit filename has not been re-tested since the model change.
 
 ---
 
+## P15 Real-World Task Closure — decided 2026-08-29
+
+The unified real-world task closure is:
+
+Research → Verify → Ask → Compare → Decide → Timing → Confirm → Execute → Validate → Distill
+
+Chinese product meaning:
+
+查 → 验 → 问 → 比 → 决 → 择时 → 确认 → 执 → 验收 → 沉淀
+
+- This is the general AI-OS real-world task closure, not a Commerce or Shopping-specific capability.
+- Planner orchestrates the stages; Skills provide concrete capabilities; Runtime performs real execution and does not own business decisions.
+- Memory / Cognitive Distillation consumes structured results that are eligible for distillation under its own policy.
+- Real-time data must distinguish search discovery, verified data, account-state truth, and the final executable result. Freshness is a required decision input.
+- When external information is insufficient, Ask may use Browser, Email, customer service, contacts, or other capabilities to fill the gap.
+- Compare must apply the user's real constraints instead of comparing surface price alone.
+- Timing must decide whether now is the best execution time, including billing and payment cycles, exchange rates, offer expiry, inventory, shipping, booking windows, maintenance windows, and market volatility.
+- Confirm is required for actions needing user authorization, including payment, submission, deletion, sending, and signing.
+- Execute must be followed by Validate; a submitted request is not proof of completion.
+- Distill does not automatically write every task to long-term Memory. It produces structured results for Memory / Cognitive Distillation to consume according to their policies.
+
+Design source: a hard-drive purchase exposed conflicts between stale or sold-out public-search prices and the live product page. AI-OS must prefer current, verifiable, executable information and account for the user's shipping, warranty value, exchange rate, and payment cycle.
+
+### P15 Skill implementation alignment — verified 2026-08-29
+
+Browser/Search, Downloads, File Management, Local Model Management,
+Email/Calendar, Document, and the implemented Spreadsheet capabilities now
+provide structured evidence and real-result validation inputs for the Planner
+closure. These Skills provide capabilities only; none owns or reimplements the
+Planner's full closure.
+
+Evidence records source, provider, observation time, freshness, and a stable
+state. Search discovery is not the same as verified evidence, authenticated
+account state, an executable result, or a validated completed action. Timing
+remains Planner metadata and may delay Execute without moving business rules
+into Skills or Runtime. Execute must be followed by Validate; submission or a
+successful command alone is not completion. Distill produces structured output
+for later policy-controlled consumption and does not automatically write
+long-term Memory.
+
+Spreadsheet Read and Create real Excel E2E passed on 2026-08-29. Create now
+saves the workbook, reopens the generated workbook, reads the first worksheet
+used range, and requires TSV read-back equality before reporting success.
+
 ## P15 progress
 
-Master Guide defines eleven capability areas for P15. This table is the single
-answer to "how far along is P15". Update it when an area lands; do not let
-milestone names in this file be the only record, because they do not map to the
-Master Guide's vocabulary on their own.
+This table is the single answer to "how far along is the current P15
+implementation scope". It reflects the latest roadmap amendments in this
+HANDOFF, including deferred and replacement capabilities.
 
 | # | Capability area | Status | Acceptance |
 |---|---|---|---|
@@ -300,16 +343,19 @@ Master Guide's vocabulary on their own.
 | 2 | File management | Done | `verify_p15_file_*`, `verify_p15_filesystem_provider_*` |
 | 3 | Browser and search | Done | `verify_p15_browser_*` |
 | 4 | Local model management | Done | `verify_p15_local_model_*` |
-| 5 | Email and calendar | Not started | — |
+| 5 | Email and calendar | Done | `verify_p15_email_calendar_*` |
 | 6 | NAS management | Not started | — |
 | 7 | Document, spreadsheet, presentation | In progress | `verify_p15_document_*`, `verify_p15_spreadsheet_*`, `verify_p15_office_provider_registry` |
-| 8 | Smart home and device control | Not started | — |
-| 9 | Local generative media | Not started | — |
-| 10 | Cognitive distillation foundation | Not started | — |
+| 8 | Computer Control | Not started | — |
+| 9 | Vehicle Control | Not started | — |
+| 10 | Local generative media | Not started | — |
+| 11 | Cognitive distillation foundation | Not started | — |
 
-**4 of 10 complete.**
+**5 of 11 complete.**
 
-### Remaining P15 order — decided 2026-08-23
+### Historical remaining P15 order — decided 2026-08-23, superseded 2026-08-28
+
+This ordering is retained as history and is not the current implementation status.
 
 1. Email and calendar
 2. Document, spreadsheet, presentation
@@ -538,7 +584,9 @@ Acceptance:
 
 Presentation work has not started.
 
-## P15-1 Email and calendar — architecture decided, not started
+## P15-1 Email and calendar — historical architecture decision, implementation completed
+
+This pre-implementation status was superseded by the completed milestone above on 2026-08-23.
 
 **Decided 2026-08-23. These choices are made; do not reopen them at implementation time.**
 

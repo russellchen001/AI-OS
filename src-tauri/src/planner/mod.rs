@@ -5,8 +5,8 @@ pub mod service;
 pub mod validation;
 
 pub use domain::{
-    Plan, PlanDomainError, PlanId, PlanStatus, PlanStep, PlanStepId, PlanStepStatus, StepInput,
-    StepOutput, TimestampMs,
+    EvidenceMetadata, EvidenceState, Plan, PlanDomainError, PlanId, PlanStatus, PlanStep,
+    PlanStepId, PlanStepStatus, StepInput, StepOutput, TaskClosureStage, TimestampMs,
 };
 
 pub use execution::{PlanExecutionCoordinator, PlanExecutionError};

@@ -12,6 +12,42 @@ pub type TimestampMs = u64;
 pub type StepInput = BTreeMap<String, Value>;
 pub type StepOutput = Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EvidenceState {
+    Discovered,
+    Verified,
+    Authenticated,
+    Executable,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceMetadata {
+    pub source: String,
+    pub provider: String,
+    pub observed_at: TimestampMs,
+    pub freshness_ms: Option<u64>,
+    pub state: EvidenceState,
+}
+
+impl EvidenceMetadata {
+    pub fn observed(
+        source: impl Into<String>,
+        provider: impl Into<String>,
+        state: EvidenceState,
+    ) -> Self {
+        Self {
+            source: source.into(),
+            provider: provider.into(),
+            observed_at: now_ms(),
+            freshness_ms: Some(0),
+            state,
+        }
+    }
+}
+
 static PLAN_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 static STEP_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -125,6 +161,22 @@ pub enum PlanStepStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TaskClosureStage {
+    Research,
+    Verify,
+    Ask,
+    Compare,
+    Decide,
+    Timing,
+    Confirm,
+    #[default]
+    Execute,
+    Validate,
+    Distill,
+}
+
 impl PlanStepStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
@@ -159,6 +211,8 @@ pub struct PlanStep {
     pub dependencies: Vec<PlanStepId>,
     pub input: StepInput,
     #[serde(default)]
+    pub closure_stage: TaskClosureStage,
+    #[serde(default)]
     pub user_confirmed: bool,
     pub output: Option<StepOutput>,
     pub status: PlanStepStatus,
@@ -191,6 +245,7 @@ impl PlanStep {
             capability,
             dependencies: Vec::new(),
             input: StepInput::new(),
+            closure_stage: TaskClosureStage::Execute,
             user_confirmed: false,
             output: None,
             status: PlanStepStatus::Pending,
@@ -206,6 +261,11 @@ impl PlanStep {
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = description.into();
+        self
+    }
+
+    pub fn with_closure_stage(mut self, closure_stage: TaskClosureStage) -> Self {
+        self.closure_stage = closure_stage;
         self
     }
 
@@ -429,9 +489,62 @@ mod tests {
 
         assert!(step.id.as_str().starts_with("step_"));
         assert_eq!(step.status, PlanStepStatus::Pending);
+        assert_eq!(step.closure_stage, TaskClosureStage::Execute);
         assert!(step.dependencies.is_empty());
         assert!(step.input.is_empty());
         assert!(step.output.is_none());
+    }
+
+    #[test]
+    fn preserves_task_closure_stage_and_legacy_plan_step_compatibility() {
+        let dependency = PlanStepId::from_static("research");
+        let mut step = PlanStep::new("choose execution time", "task.timing")
+            .unwrap()
+            .depends_on(dependency.clone())
+            .with_closure_stage(TaskClosureStage::Timing);
+
+        step.transition_to(PlanStepStatus::Ready).unwrap();
+
+        let serialized = serde_json::to_value(&step).unwrap();
+        let restored: PlanStep = serde_json::from_value(serialized.clone()).unwrap();
+
+        assert_eq!(restored.closure_stage, TaskClosureStage::Timing);
+        assert_eq!(restored.dependencies, vec![dependency]);
+        assert_eq!(restored.status, PlanStepStatus::Ready);
+        assert!(!restored.input.contains_key("closure_stage"));
+
+        let mut legacy = serialized;
+        legacy.as_object_mut().unwrap().remove("closure_stage");
+
+        let restored_legacy: PlanStep = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored_legacy.closure_stage, TaskClosureStage::Execute);
+    }
+
+    #[test]
+    fn stores_evidence_timing_dependencies_and_distill_output() {
+        let compare = PlanStep::new("compare evidence", "planner.compare")
+            .unwrap()
+            .with_closure_stage(TaskClosureStage::Compare);
+        let timing = PlanStep::new("choose timing", "planner.timing")
+            .unwrap()
+            .with_closure_stage(TaskClosureStage::Timing)
+            .depends_on(compare.id.clone());
+        let evidence = EvidenceMetadata::observed(
+            "https://example.com/result",
+            "browser",
+            EvidenceState::Discovered,
+        );
+        let distill = json!({
+            "evidence": evidence,
+            "validation": {"completed": false},
+            "timing": {"executeNow": false}
+        });
+
+        assert_eq!(timing.dependencies, vec![compare.id]);
+        assert_eq!(timing.closure_stage, TaskClosureStage::Timing);
+        assert_eq!(distill["evidence"]["state"], "DISCOVERED");
+        assert_eq!(distill["timing"]["executeNow"], false);
+        assert!(distill.get("memoryWrite").is_none());
     }
 
     #[test]

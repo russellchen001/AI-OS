@@ -1499,23 +1499,115 @@ fn spreadsheet_create_command(path: &str, content: &str) -> String {
         .unwrap_or("xlsx")
         .to_ascii_lowercase();
     format!(
-        r#"target={}; content={}; cache="$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches/com.microsoft.Excel"; if [ -e "$target" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; elif [ ! -d "$cache" ]; then /usr/bin/printf 'AIOS_FAILED\n'; else tmpdir=$(/usr/bin/mktemp -d "$cache/ai-os-spreadsheet.XXXXXX") || exit 1; trap '/bin/rm -rf "$tmpdir"' EXIT; /usr/bin/printf '%s' "$content" > "$tmpdir/source.tsv" || exit 1; result=$(/usr/bin/osascript - "$tmpdir/source.tsv" "$tmpdir/output.{}" {} <<'AIOS_APPLESCRIPT'
+        r#"target={}; content={}; cache="$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches/com.microsoft.Excel"; if [ -e "$target" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; elif [ ! -d "$cache" ]; then /usr/bin/printf 'AIOS_FAILED\n'; else tmpdir=$(/usr/bin/mktemp -d "$cache/ai-os-spreadsheet.XXXXXX") || exit 1; trap '/bin/rm -rf "$tmpdir"' EXIT; /usr/bin/printf '%s' "$content" > "$tmpdir/source.tsv" || exit 1; result=$(/usr/bin/osascript - "$tmpdir/source.tsv" "$tmpdir/output.{}" {} "$content" <<'AIOS_APPLESCRIPT'
+on joinRow(rowValues)
+    set oldDelimiters to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to tab
+    set rowText to rowValues as text
+    set AppleScript's text item delimiters to oldDelimiters
+    return rowText
+end joinRow
+
+on excelColumnName(columnNumber)
+    set letters to "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    set resultText to ""
+    set remaining to columnNumber
+    repeat while remaining > 0
+        set letterIndex to ((remaining - 1) mod 26) + 1
+        set resultText to character letterIndex of letters & resultText
+        set remaining to (remaining - letterIndex) div 26
+    end repeat
+    return resultText
+end excelColumnName
+
+on valuesMatch(actualValue, expectedValue)
+    try
+        set expectedNumber to expectedValue as number
+        return actualValue = expectedNumber
+    on error
+        return (actualValue as text) = expectedValue
+    end try
+end valuesMatch
+
 on run argv
-    set sourcePath to item 1 of argv
     set outputPath to item 2 of argv
     set outputFormat to item 3 of argv
+    set expectedContent to item 4 of argv
     set openedWorkbook to missing value
     tell application "Microsoft Excel"
         try
-            open workbook workbook file name sourcePath
-            set openedWorkbook to active workbook
+            set openedWorkbook to make new workbook
+            set oldDelimiters to AppleScript's text item delimiters
+            set AppleScript's text item delimiters to linefeed
+            set sourceRows to text items of expectedContent
+            repeat with rowIndex from 1 to count of sourceRows
+                set sourceRow to item rowIndex of sourceRows
+                set AppleScript's text item delimiters to tab
+                set rowValues to text items of sourceRow
+                repeat with columnIndex from 1 to count of rowValues
+                    set cellAddress to my excelColumnName(columnIndex) & rowIndex
+                    set value of range cellAddress of worksheet 1 of openedWorkbook to contents of item columnIndex of rowValues
+                end repeat
+            end repeat
+            set AppleScript's text item delimiters to oldDelimiters
             if outputFormat is "xlsx" then
                 save workbook as openedWorkbook filename outputPath file format Excel XML file format
             else
                 save workbook as openedWorkbook filename outputPath file format Excel98to2004 file format
             end if
+            try
+                close openedWorkbook saving no
+            end try
+            set openedWorkbook to missing value
+            open workbook workbook file name outputPath
+            repeat 20 times
+                repeat with workbookIndex from 1 to count of workbooks
+                    set candidateWorkbook to workbook workbookIndex
+                    set candidatePath to full name of candidateWorkbook
+                    if candidatePath is outputPath then
+                        set openedWorkbook to candidateWorkbook
+                        exit repeat
+                    end if
+                end repeat
+                if openedWorkbook is not missing value then exit repeat
+                delay 0.25
+            end repeat
+            if openedWorkbook is missing value then error "Excel did not reopen the generated workbook"
+            tell worksheet 1 of openedWorkbook
+                set usedValues to value of used range
+            end tell
+            if class of usedValues is not list then
+                set usedValues to {{usedValues}}
+            else if (count of usedValues) > 0 then
+                if class of item 1 of usedValues is not list then
+                    set usedValues to {{usedValues}}
+                end if
+            end if
+            set contentMatches to (count of usedValues) = (count of sourceRows)
+            repeat with rowIndex from 1 to count of sourceRows
+                if rowIndex > count of usedValues then
+                    set contentMatches to false
+                    exit repeat
+                end if
+                set AppleScript's text item delimiters to tab
+                set expectedRow to text items of item rowIndex of sourceRows
+                set actualRow to item rowIndex of usedValues
+                if class of actualRow is not list then set actualRow to {{actualRow}}
+                if (count of actualRow) is not (count of expectedRow) then set contentMatches to false
+                repeat with columnIndex from 1 to count of expectedRow
+                    if columnIndex > count of actualRow or not my valuesMatch(contents of item columnIndex of actualRow, contents of item columnIndex of expectedRow) then
+                        set contentMatches to false
+                        exit repeat
+                    end if
+                end repeat
+            end repeat
+            set AppleScript's text item delimiters to oldDelimiters
             close openedWorkbook saving no
-            return "AIOS_EXCEL_SAVED"
+            set openedWorkbook to missing value
+            if contentMatches then
+                return "AIOS_EXCEL_SAVED_VALIDATED"
+            end if
+            return "AIOS_CONTENT_MISMATCH"
         on error
             if openedWorkbook is not missing value then
                 try
@@ -1527,7 +1619,7 @@ on run argv
     end tell
 end run
 AIOS_APPLESCRIPT
-); output="$tmpdir/output.{}"; if [ "$result" = "AIOS_EXCEL_SAVED" ] && [ -f "$output" ]; then /bin/mv -n "$output" "$target"; if [ ! -e "$output" ] && [ -f "$target" ]; then size=$(/usr/bin/stat -f %z -- "$target") || exit 1; /usr/bin/printf 'AIOS_SPREADSHEET_CREATED=%s\n' "$size"; elif [ -e "$target" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; else /usr/bin/printf 'AIOS_FAILED\n'; fi; else /usr/bin/printf 'AIOS_FAILED\n'; fi; fi"#,
+); output="$tmpdir/output.{}"; if [ "$result" = "AIOS_EXCEL_SAVED_VALIDATED" ] && [ -f "$output" ]; then /bin/mv -n "$output" "$target"; if [ ! -e "$output" ] && [ -f "$target" ]; then size=$(/usr/bin/stat -f %z -- "$target") || exit 1; /usr/bin/printf 'AIOS_SPREADSHEET_CREATED=%s\n' "$size"; elif [ -e "$target" ]; then /usr/bin/printf 'AIOS_EXISTS\n'; else /usr/bin/printf 'AIOS_FAILED\n'; fi; else /usr/bin/printf 'AIOS_FAILED\n'; fi; fi"#,
         shell_quote(path),
         shell_quote(content),
         extension,
@@ -1578,7 +1670,19 @@ on run argv
     tell application "Microsoft Excel"
         try
             open workbook workbook file name workbookPath
-            set openedWorkbook to active workbook
+            repeat 20 times
+                repeat with workbookIndex from 1 to count of workbooks
+                    set candidateWorkbook to workbook workbookIndex
+                    set candidatePath to full name of candidateWorkbook
+                    if candidatePath is workbookPath then
+                        set openedWorkbook to candidateWorkbook
+                        exit repeat
+                    end if
+                end repeat
+                if openedWorkbook is not missing value then exit repeat
+                delay 0.25
+            end repeat
+            if openedWorkbook is missing value then error "Excel did not open the workbook"
             tell worksheet 1 of openedWorkbook
                 set sheetName to name
                 set usedValues to value of used range
