@@ -192,6 +192,136 @@ fn local_application_availability() -> LocalApplicationAvailabilityReport {
     )
 }
 
+const IWORK_AUTHORIZATION_MARKER: &str = "iwork-authorization-verified";
+
+fn installed_iwork_count(applications: &[LocalApplicationAvailability]) -> usize {
+    applications
+        .iter()
+        .filter(|application| {
+            matches!(
+                application.application_id.as_str(),
+                "pages" | "numbers" | "keynote"
+            )
+        })
+        .filter(|application| application.installed)
+        .count()
+}
+
+fn resolved_iwork_state(
+    installed_iwork: usize,
+    previously_verified: bool,
+    authorization_probe_succeeded: bool,
+) -> UnifiedConnectionState {
+    if installed_iwork == 0 {
+        UnifiedConnectionState::AppNotInstalled
+    } else if previously_verified && authorization_probe_succeeded {
+        UnifiedConnectionState::Connected
+    } else {
+        UnifiedConnectionState::AuthorizationRequired
+    }
+}
+
+fn iwork_bundle_id(application_id: &str) -> Option<&'static str> {
+    match application_id {
+        "pages" => Some("com.apple.Pages"),
+        "numbers" => Some("com.apple.Numbers"),
+        "keynote" => Some("com.apple.Keynote"),
+        _ => None,
+    }
+}
+
+fn probe_iwork_authorization(applications: &[LocalApplicationAvailability]) -> Result<(), String> {
+    for application in applications.iter().filter(|application| {
+        application.installed && iwork_bundle_id(&application.application_id).is_some()
+    }) {
+        let bundle_id = iwork_bundle_id(&application.application_id)
+            .ok_or_else(|| "Unknown iWork application".to_owned())?;
+
+        let script = format!("tell application id \"{bundle_id}\" to get version");
+
+        let output = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|error| {
+                format!(
+                    "Could not verify {} Automation permission: {error}",
+                    application.display_name
+                )
+            })?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "{} Automation permission is not currently available: {}",
+                application.display_name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn iwork_authorization_marker_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join(IWORK_AUTHORIZATION_MARKER))
+        .map_err(|_| "iWork authorization metadata storage is unavailable".to_owned())
+}
+
+fn iwork_was_previously_verified(app: &tauri::AppHandle) -> bool {
+    iwork_authorization_marker_path(app)
+        .map(|path| path.is_file())
+        .unwrap_or(false)
+}
+
+fn save_iwork_verified_marker(app: &tauri::AppHandle) -> Result<(), String> {
+    let path = iwork_authorization_marker_path(app)?;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| "iWork authorization metadata storage is unavailable".to_owned())?;
+
+    std::fs::create_dir_all(parent)
+        .map_err(|_| "iWork authorization metadata directory could not be created".to_owned())?;
+
+    std::fs::write(path, b"verified\n")
+        .map_err(|_| "iWork authorization metadata could not be saved".to_owned())
+}
+
+fn remove_iwork_verified_marker(app: &tauri::AppHandle) -> Result<(), String> {
+    let path = iwork_authorization_marker_path(app)?;
+
+    if path.exists() {
+        std::fs::remove_file(path)
+            .map_err(|_| "iWork authorization metadata could not be removed".to_owned())?;
+    }
+
+    Ok(())
+}
+
+fn local_application_availability_for_app(
+    app: &tauri::AppHandle,
+) -> LocalApplicationAvailabilityReport {
+    let mut availability = local_application_availability();
+
+    let installed = installed_iwork_count(&availability.applications);
+
+    if installed == 0 {
+        availability.iwork_state = UnifiedConnectionState::AppNotInstalled;
+        return availability;
+    }
+
+    let previously_verified = iwork_was_previously_verified(app);
+
+    let probe_succeeded =
+        previously_verified && probe_iwork_authorization(&availability.applications).is_ok();
+
+    availability.iwork_state =
+        resolved_iwork_state(installed, previously_verified, probe_succeeded);
+
+    availability
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct BrowserLoginSession {
@@ -378,43 +508,27 @@ pub(crate) fn list_connection_capabilities() -> Vec<ConnectionCapability> {
 }
 
 #[tauri::command]
-pub(crate) fn rescan_local_application_availability() -> LocalApplicationAvailabilityReport {
-    local_application_availability()
+pub(crate) fn rescan_local_application_availability(
+    app: tauri::AppHandle,
+) -> LocalApplicationAvailabilityReport {
+    local_application_availability_for_app(&app)
 }
 
 #[tauri::command]
-pub(crate) fn connect_apple_iwork() -> Result<LocalApplicationAvailabilityReport, String> {
-    let availability = local_application_availability();
-    let bundle_ids = [
-        ("pages", "com.apple.Pages"),
-        ("numbers", "com.apple.Numbers"),
-        ("keynote", "com.apple.Keynote"),
-    ];
-    for application in availability.applications.iter().filter(|app| app.installed) {
-        let Some((_, bundle_id)) = bundle_ids
-            .iter()
-            .find(|(application_id, _)| *application_id == application.application_id)
-        else {
-            continue;
-        };
-        let script = format!("tell application id \"{bundle_id}\" to get version");
-        let output = std::process::Command::new("/usr/bin/osascript")
-            .args(["-e", &script])
-            .output()
-            .map_err(|error| {
-                format!(
-                    "Could not request {application} permission: {error}",
-                    application = application.display_name
-                )
-            })?;
-        if !output.status.success() {
-            return Err(format!(
-                "{} authorization was not granted: {}",
-                application.display_name,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
+pub(crate) fn connect_apple_iwork(
+    app: tauri::AppHandle,
+) -> Result<LocalApplicationAvailabilityReport, String> {
+    let mut availability = local_application_availability();
+
+    if installed_iwork_count(&availability.applications) == 0 {
+        return Err("Apple iWork is not installed".to_owned());
     }
+
+    probe_iwork_authorization(&availability.applications)?;
+    save_iwork_verified_marker(&app)?;
+
+    availability.iwork_state = UnifiedConnectionState::Connected;
+
     Ok(availability)
 }
 
@@ -459,6 +573,11 @@ pub(crate) fn disconnect_connection_provider(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<bool, String> {
+    if provider_id == ConnectionProvider::AppleIwork.id() {
+        remove_iwork_verified_marker(&app)?;
+        return Ok(true);
+    }
+
     let capability = capabilities()
         .into_iter()
         .find(|item| item.provider_id == provider_id)
@@ -521,6 +640,37 @@ impl ConnectAllOnboarding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iwork_connection_requires_prior_verification_and_live_probe() {
+        assert_eq!(
+            resolved_iwork_state(0, false, false),
+            UnifiedConnectionState::AppNotInstalled
+        );
+
+        assert_eq!(
+            resolved_iwork_state(3, false, false),
+            UnifiedConnectionState::AuthorizationRequired
+        );
+
+        assert_eq!(
+            resolved_iwork_state(3, true, false),
+            UnifiedConnectionState::AuthorizationRequired
+        );
+
+        assert_eq!(
+            resolved_iwork_state(3, true, true),
+            UnifiedConnectionState::Connected
+        );
+    }
+
+    #[test]
+    fn iwork_bundle_mapping_is_explicit() {
+        assert_eq!(iwork_bundle_id("pages"), Some("com.apple.Pages"));
+        assert_eq!(iwork_bundle_id("numbers"), Some("com.apple.Numbers"));
+        assert_eq!(iwork_bundle_id("keynote"), Some("com.apple.Keynote"));
+        assert_eq!(iwork_bundle_id("wps-office"), None);
+    }
 
     #[test]
     fn connect_all_order_skip_and_failure_preserve_success() {

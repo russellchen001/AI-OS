@@ -1571,3 +1571,12 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - 2026-08-27 20:46  完成 P15-2 Document Convert
 - 2026-08-27 21:52  完成 P15-3 Spreadsheet Read
 - 2026-08-28 00:44  完成 P15-3 Spreadsheet Create 并修复 AC-EXEC 验收
+
+### P15 Apple iWork connection-state fix — 2026-08-29
+
+- Apple iWork connection state is no longer inferred from installation alone.
+- Explicit Connect performs real read-only `osascript` Automation probes against installed Pages, Numbers, and Keynote applications.
+- After successful verification, AI-OS stores only a non-sensitive local verification marker.
+- Later Connections refresh/restart checks that marker and performs a fresh macOS Automation probe. Probe success restores `CONNECTED`; probe failure returns `AUTHORIZATION_REQUIRED`.
+- Disconnect removes only the AI-OS verification marker and does not modify or bypass macOS TCC permissions.
+- Technical decision: macOS remains the source of truth for live Automation authorization; AI-OS must not persist a blind `CONNECTED` state.
