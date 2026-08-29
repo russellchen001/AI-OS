@@ -1580,3 +1580,463 @@ Do not move provider-specific cloud-drive logic into the AI-OS Runtime and do no
 - Later Connections refresh/restart checks that marker and performs a fresh macOS Automation probe. Probe success restores `CONNECTED`; probe failure returns `AUTHORIZATION_REQUIRED`.
 - Disconnect removes only the AI-OS verification marker and does not modify or bypass macOS TCC permissions.
 - Technical decision: macOS remains the source of truth for live Automation authorization; AI-OS must not persist a blind `CONNECTED` state.
+
+---
+
+## Claude Code Handoff — P15 Connections / Authenticated Browser — 2026-08-29
+
+> This section supersedes older P15 Connections / browser status notes where they conflict with the status below.
+
+### Current branch / known baseline
+
+- Active branch: `feature/p15-core-skills`.
+- Google Workspace real E2E is completed and committed:
+  - `8c2920a feat: complete google workspace real e2e`
+- Google real E2E verified:
+  - secure OAuth authorization
+  - identity
+  - Drive list
+  - Docs create/readback/delete
+  - Sheets create/write/readback/delete
+  - Slides create/readback/delete
+  - temporary resource cleanup
+  - Evidence boundary
+- Google OAuth desktop callback must keep the verified root loopback callback behavior. Do not revert it without another real OAuth E2E.
+- Google OAuth client secret is stored only in macOS Keychain under the existing AI-OS OAuth client-secret path; never move the secret into source, frontend state, HANDOFF, Planner, Evidence, or Memory.
+
+### Apple iWork — real bug fixed and real-UI validated
+
+The previous iWork Connections bug was confirmed:
+
+- installation detection always resolved installed Pages / Numbers / Keynote to `AUTHORIZATION_REQUIRED`;
+- `connect_apple_iwork` could temporarily set the frontend to `CONNECTED`;
+- the next Connections refresh recomputed state from installation only and lost the connected state.
+
+The implemented fix uses:
+
+- real read-only `osascript` Automation probes against installed Pages / Numbers / Keynote;
+- a non-sensitive local AI-OS verified marker;
+- refresh/restart re-probing of macOS Automation authorization;
+- `CONNECTED` only when previous verification exists and the live probe succeeds;
+- `AUTHORIZATION_REQUIRED` when the live probe fails;
+- `APP_NOT_INSTALLED` when no iWork component is installed;
+- Disconnect removes only the AI-OS verification marker and does not alter/bypass macOS TCC.
+
+Automated validation completed:
+
+- `connections::tests` — 7 passed, 0 failed.
+- `verify/verify_p15_connections_onboarding.sh` — PASS after removing the obsolete hard-coded "5 passed" gate and checking required named behaviors instead.
+- `npm run build` — PASS.
+- `cargo check --manifest-path src-tauri/Cargo.toml` — PASS with existing warnings.
+- `git diff --check` — PASS.
+
+Real UI validation completed:
+
+1. Apple iWork Connect -> `Connected`.
+2. Rescan Apps -> remained `Connected`.
+3. Quit AI-OS.
+4. Restart AI-OS.
+5. Apple iWork automatically remained `Connected`.
+
+Before continuing, Claude Code must inspect `git status` and `git log`. If this iWork fix is still uncommitted, keep its scope to:
+
+- `HANDOFF.md`
+- `src-tauri/src/connections.rs`
+- `verify/verify_p15_connections_onboarding.sh`
+
+and commit it as:
+
+`fix: persist and reverify iwork connection state`
+
+Do not mix later authenticated-browser work into that commit.
+
+### Authenticated Browser — confirmed root cause
+
+Amazon / Taobao currently remain `WAITING_FOR_USER` even when the user is visibly logged in in their normal browser.
+
+This is a confirmed architecture gap, not user error.
+
+Current behavior:
+
+- `begin_browser_login` creates/saves `BrowserLoginSession` metadata.
+- frontend `ConnectionsCenter.tsx` calls `openUrl(capability.loginUrl)`, which opens the system/default browser.
+- that browser session is not proven to be owned, inspected, or reusable by AI-OS.
+- `verify_browser_login` currently intentionally calls `session.apply_verification(false)`.
+- therefore browser-backed providers can never become `CONNECTED` through the current implementation.
+
+Do NOT "fix" this by changing `apply_verification(false)` to `true`.
+
+Opening a login page is never sufficient evidence of authentication.
+
+### Existing MCP Browser is not a persistent authenticated-browser runtime
+
+`src-tauri/src/mcp_runtime.rs` has been inspected completely (111 lines).
+
+Its behavior is:
+
+- each `tools/list` / `tools/call` creates a new stdio child process;
+- `send_json_rpc` spawns the MCP server per call;
+- stdin is written once and closed;
+- there is no persistent browser process/context/session ownership in this layer.
+
+`src-tauri/src/browser/registry.rs` currently exposes only `"mcp-browser"` and passes arbitrary `command` / `args` through to `call_mcp_tool`.
+
+No repository configuration was found that binds `"mcp-browser"` to a concrete persistent Chrome/Chromium/DevTools browser context.
+
+Technical decision:
+
+- keep the generic MCP Runtime stateless;
+- do not turn `mcp_runtime.rs` into the authenticated-session owner;
+- ordinary `browser.search` / `browser.control` may continue to use the existing MCP abstraction;
+- authenticated websites require a separate Persistent Authenticated Browser runtime.
+
+### Persistent Authenticated Browser architecture decision
+
+Required target architecture:
+
+`Connections / Browser Skill`
+→ `Persistent Authenticated Browser Runtime`
+→ AI-OS-owned persistent browser profile/context
+→ real provider-specific account-state verification
+→ safe verification metadata
+→ `CONNECTED`
+
+The authenticated-browser runtime must:
+
+- own its browser process/context/profile;
+- persist the browser profile outside the repository under application data;
+- never reuse the user's normal Chrome/Safari profile as if AI-OS owned it;
+- never terminate unrelated user browser processes;
+- preserve website login sessions inside the managed browser profile;
+- expose only safe metadata outside the runtime:
+  - opaque profile/session ref
+  - provider ID
+  - browser kind
+  - running state
+  - verified origin
+  - non-secret account marker if required
+  - timestamps
+- never expose/store in frontend, Planner, Evidence, Memory, or HANDOFF:
+  - passwords
+  - raw cookies
+  - session cookies
+  - bearer tokens
+  - authentication headers
+- remain fail-closed:
+  - browser opened != authenticated
+  - browser running != authenticated
+  - login page closed != authenticated
+  - `CONNECTED` requires a real account verifier.
+
+Preferred provider priority remains:
+
+Official API/OAuth
+→ Native Structured Interface
+→ Authenticated Session
+→ Deterministic Automation
+→ Computer Use
+
+Authenticated Browser is the Authenticated Session layer, not a replacement for official APIs.
+
+### Amazon region handling
+
+Do NOT hardcode Amazon Australia.
+
+The current capability/login design that assumes one fixed Amazon country must be replaced by region-aware behavior.
+
+Required behavior:
+
+- user may use Amazon US, Australia, Japan, UK, Germany, or another supported regional site;
+- authenticated browser should observe the real browser origin;
+- after real account verification, persist a safe `verifiedOrigin`;
+- later account-bound operations should reuse the actual verified regional origin;
+- never infer that every AI-OS user belongs to `amazon.com.au`.
+
+Example valid verified origins include:
+
+- `https://www.amazon.com`
+- `https://www.amazon.com.au`
+- `https://www.amazon.co.jp`
+- `https://www.amazon.co.uk`
+
+The provider verifier must still validate that the observed origin genuinely belongs to the expected provider.
+
+### Browser providers in scope
+
+The Persistent Authenticated Browser foundation should initially support:
+
+- Amazon
+- Taobao
+- JD
+- Pinduoduo
+
+Do not build four unrelated browser architectures.
+
+Build one reusable authenticated-browser runtime with provider-specific verifier adapters.
+
+### Existing reusable browser model
+
+`src-tauri/src/browser/provider.rs` already contains concepts worth reusing:
+
+- `BrowserSessionMetadata`
+- `BrowserAuthenticationState`
+- `BrowserAccountVerification`
+- `BrowserSessionMetadata::verified(...)`
+- `BrowserSessionMetadata::expire(...)`
+
+`BrowserSessionMetadata::verified(...)` already models:
+
+- non-empty account marker
+- HTTPS verified origin
+- opaque `AuthorizationRef`
+- authenticated state
+- verification timestamp
+
+Prefer integrating/reusing this model instead of creating another parallel browser-authentication state machine unless there is a concrete architectural reason not to.
+
+### Recommended implementation sequence
+
+Do this serially.
+
+#### BROWSER-A — persistent managed browser foundation
+
+Implement:
+
+- dedicated authenticated-browser runtime under `src-tauri/src/browser/`;
+- deterministic supported Chromium-family browser discovery on macOS;
+- dedicated AI-OS browser profile under Tauri app data;
+- loopback-only browser control/debug channel;
+- browser process lifecycle owned by AI-OS;
+- readiness verification before reporting runtime ready;
+- safe opaque session metadata;
+- begin/open, inspect, and close operations;
+- process ownership rules;
+- restart/profile reuse behavior.
+
+Do not mark any commerce account `CONNECTED` in BROWSER-A.
+
+#### BROWSER-B — real account-state verification
+
+Implement provider-specific verification adapters.
+
+A verifier must produce:
+
+- real provider match;
+- real current/verified HTTPS origin;
+- non-secret account marker;
+- authenticated/not-authenticated result.
+
+Then integrate it with Connections:
+
+- `begin_browser_login` opens the AI-OS managed browser, not an unrelated default browser;
+- polling/verification inspects the same owned authenticated session;
+- successful verifier -> `CONNECTED`;
+- failed/not-yet-authenticated verifier -> `WAITING_FOR_USER`;
+- expired session -> `EXPIRED` / reconnect flow.
+
+Do not infer authentication from URL alone.
+
+#### BROWSER-C — real E2E
+
+At minimum perform real E2E with:
+
+- Amazon
+- Taobao
+
+Expected scenario:
+
+1. Connections -> Connect.
+2. AI-OS-managed browser opens.
+3. User logs in.
+4. AI-OS verifies actual account state.
+5. Connections -> `Connected`.
+6. AI-OS/browser/app restart.
+7. managed profile is reused.
+8. account state is reverified.
+9. Connections restores `Connected` when the website session remains valid.
+
+Then extend the same runtime to JD / Pinduoduo.
+
+### Browser acceptance requirements
+
+Behavior tests must cover at least:
+
+- opaque browser profile/session reference contains no credentials;
+- raw profile path is not exposed where an opaque ref is sufficient;
+- browser profile is beneath AI-OS app data, not the user's normal browser profile;
+- browser detection order is deterministic;
+- opening/running a browser never equals authenticated/Connected;
+- disconnect/close only targets AI-OS-owned processes;
+- browser account metadata contains no password/cookie/token;
+- provider/origin validation is fail-closed;
+- Amazon is not hardcoded to `.com.au`;
+- verified origin can represent different Amazon regional domains;
+- restart/profile reuse does not blindly restore Connected without live account verification.
+
+Do not use hard-coded expected total test counts in verifier scripts. Verify required named behaviors.
+
+### Microsoft Graph external E2E blocker
+
+The last full `./verify_all.sh` result before this handoff was:
+
+- Core Suite: PASS 80/80.
+- Google Workspace external real E2E: PASS.
+- Microsoft Graph external E2E: blocked/failing because:
+  `AI_OS_GRAPH_E2E_DRIVE_ID is required to select a non-destructive workbook range`.
+- WPS: SKIP when broker unavailable.
+- iWork: previous external automation coverage was limited, but the Connections/iWork issue above has since been real-UI validated.
+- Presentation: still not complete.
+- commerce external providers may SKIP where real credentials/session/provider access is unavailable.
+
+Do not weaken the global gate merely to hide the Microsoft fixture requirement. Handle that separately after Connections/authenticated-browser work unless product priority changes.
+
+### P15 status boundary
+
+Do not inflate P15 completion.
+
+Known P15 status before this handoff:
+
+- Real-World Task Closure architecture implemented.
+- File management complete.
+- Local Model complete.
+- Google Workspace real E2E complete.
+- Apple iWork Connections persistence bug fixed and real-UI validated.
+- Persistent Authenticated Browser: architecture decided, implementation still pending unless the repository itself shows newer code.
+- Amazon/Taobao/JD/Pinduoduo account verification: not complete.
+- Microsoft Graph real external spreadsheet E2E still has the fixture blocker described above.
+- Presentation remains In Progress.
+- Overall P15 is not complete.
+
+### Important note about the abandoned BROWSER-A1 draft
+
+A BROWSER-A1 implementation was discussed immediately before this handoff, including a proposed `authenticated_runtime.rs`, but the user stopped that work and asked Claude Code to take over.
+
+Do NOT assume that proposed code was executed or is present.
+
+Claude Code must inspect the actual repository first:
+
+- `git status --short`
+- `git log --oneline -5`
+- `src-tauri/src/browser/`
+- `src-tauri/src/connections.rs`
+- `src/components/ConnectionsCenter.tsx`
+
+The repository is the source of truth for whether any BROWSER-A files exist.
+
+### First action for Claude Code
+
+1. Read this HANDOFF section.
+2. Inspect git status and latest commits.
+3. Ensure the validated iWork changes are committed separately.
+4. Do not regress Google Workspace.
+5. Implement BROWSER-A using the architecture above.
+6. Run focused tests before proceeding to BROWSER-B.
+7. Keep HANDOFF current after every accepted milestone.
+
+---
+
+## BROWSER-A — persistent managed browser foundation — 2026-08-29
+
+**Status: implemented. Not yet validated on macOS by a real `cargo` run. BROWSER-B not started.**
+
+### Repository state confirmed before this work
+
+- Active branch `feature/p15-core-skills`.
+- `0c3faab fix: persist and reverify iwork connection state` was already committed
+  with the required scope (`HANDOFF.md`, `src-tauri/src/connections.rs`,
+  `verify/verify_p15_connections_onboarding.sh`). No separate iWork commit was needed.
+- The abandoned BROWSER-A1 draft was confirmed absent. `src-tauri/src/browser/`
+  contained only `mod.rs`, `provider.rs`, `registry.rs`, `runtime.rs`.
+
+### What was implemented
+
+New file `src-tauri/src/browser/authenticated_runtime.rs`.
+
+- deterministic macOS Chromium-family discovery order:
+  Google Chrome → Chromium → Microsoft Edge → Brave Browser;
+- dedicated AI-OS browser profile at
+  `<app data>/authenticated-browser/profiles/<provider id>`;
+- provider ids restricted to ASCII alphanumerics and `-`, so a provider id can
+  never escape the managed profile root;
+- `profile_is_ai_os_owned` — the user's own Chrome/Edge/Brave/Safari profile can
+  never satisfy AI-OS profile ownership;
+- loopback-only DevTools control channel: browser is launched with
+  `--remote-debugging-port=0 --remote-debugging-address=127.0.0.1`, the real port
+  is read back from the profile's `DevToolsActivePort`, and the endpoint is
+  re-checked with a fail-closed loopback test before use;
+- readiness is only reported after the loopback channel actually answers
+  `/json/version` with `webSocketDebuggerUrl`; a spawned process alone is not ready;
+- browser process lifecycle owned by AI-OS through a private registry keyed by
+  provider id; termination can only ever select a process this runtime spawned
+  and recorded, so unrelated user browser processes are unreachable;
+- restart/profile reuse: the profile directory persists under application data,
+  a live owned process is reused instead of relaunched, and a stale
+  `DevToolsActivePort` is cleared before each launch;
+- safe metadata only (`ManagedBrowserSession`): provider id, browser kind, opaque
+  `browser-profile:<provider id>` session ref, running, ready, profile reused,
+  `authenticated`, optional verified origin, optional account marker, timestamps.
+  The raw profile path and the control-channel port never leave the runtime;
+- region-aware fail-closed `origin_belongs_to_provider` covering Amazon
+  (`.com`, `.com.au`, `.co.jp`, `.co.uk`, `.de`, `.fr`, `.it`, `.ca`, `.in`),
+  Taobao, JD and Pinduoduo. Amazon is not pinned to `amazon.com.au`.
+  This is the validator BROWSER-B verifiers will consume.
+
+Operations exposed and registered in `src-tauri/src/lib.rs`:
+
+- `open_authenticated_browser`
+- `inspect_authenticated_browser`
+- `close_authenticated_browser`
+
+### Deliberate boundaries held
+
+- `connections.rs` was not modified. `verify_browser_login` still calls
+  `session.apply_verification(false)`; browser-backed providers stay
+  `WAITING_FOR_USER`.
+- `ConnectionsCenter.tsx` was not modified. `begin_browser_login` still opens the
+  system browser. Rewiring it to the managed browser is BROWSER-B.
+- `ManagedBrowserSession::authenticated` is hard-coded `false` in this layer and
+  `permits_connected_state()` cannot return true without a verified origin and an
+  account marker. BROWSER-A cannot mark any commerce account `CONNECTED`.
+- The generic MCP Runtime (`mcp_runtime.rs`) and `browser/registry.rs` were left
+  stateless and untouched.
+
+### Verification
+
+New verifier: `verify/verify_p15_browser_managed_runtime.sh`.
+
+It checks required named behaviors rather than a hard-coded test count, and also
+statically asserts that the runtime decides no connection state, that
+`apply_verification(true)` does not appear in `connections.rs`, and that Amazon
+is not a single-region constant.
+
+Behavior tests in `browser::authenticated_runtime::tests`:
+
+- `browser_discovery_order_is_deterministic`
+- `managed_profile_lives_under_app_data_and_never_in_the_user_browser_profile`
+- `session_reference_is_opaque_and_carries_no_credentials_or_raw_path`
+- `running_or_reused_managed_browser_is_never_authenticated`
+- `control_channel_is_loopback_only_and_readiness_requires_a_real_answer`
+- `launch_arguments_pin_the_managed_profile_and_a_loopback_debug_channel`
+- `only_ai_os_owned_processes_are_ever_selected_for_termination`
+- `amazon_is_region_aware_and_origin_validation_is_fail_closed`
+
+All 8 passed and the whole module compiled clean in an isolated harness that
+reproduced the module with stubs for `AuthorizationRef` and the Tauri app handle.
+
+**Still required on the macOS development machine before BROWSER-A is accepted:**
+
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml browser::authenticated_runtime::tests`
+- `bash verify/verify_p15_browser_managed_runtime.sh`
+- `bash verify/verify_p15_connections_onboarding.sh` (no regression)
+- `npm run build`
+- `./verify_all.sh` — note the core suite total rises by one script.
+
+Real Chrome launch, readiness and profile reuse have not been exercised on the
+real machine yet. Until that is done, treat BROWSER-A as implemented but unproven.
+
+### Next step
+
+BROWSER-B — provider-specific account-state verifiers, then integrate
+`begin_browser_login` / `verify_browser_login` with this runtime. P15 remains
+incomplete; nothing in this milestone changes the P15 status boundary above.
