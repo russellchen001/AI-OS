@@ -77,6 +77,7 @@ async fn request(
             code => format!("Google Workspace request failed (HTTP {code})"),
         });
     }
+
     response
         .json()
         .await
@@ -156,7 +157,7 @@ pub(crate) async fn read_google_spreadsheet(
 ) -> Result<GoogleWorkspaceResult, String> {
     let range = input.resource.range.as_deref().unwrap_or("A:ZZ");
     let url = format!(
-        "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}",
+        "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}?valueRenderOption=UNFORMATTED_VALUE",
         input.resource.file_id, range
     );
     let value = request(reqwest::Method::GET, url, None).await?;
@@ -178,14 +179,36 @@ pub(crate) async fn create_google_spreadsheet(
         .and_then(Value::as_str)
         .ok_or_else(|| "Google Sheets create returned no spreadsheet id".to_owned())?
         .to_owned();
-    let resource = GoogleResourceRef {
+    let mut resource = GoogleResourceRef {
         file_id: id,
         range: Some("Sheet1!A1".to_owned()),
     };
+
     if let Some(values) = input.values {
+        resource.range = Some(spreadsheet_write_range(&values));
         return write_google_spreadsheet(GoogleWriteInput { resource, values }).await;
     }
     Ok(result(resource, created, EvidenceState::Completed))
+}
+
+fn spreadsheet_column_name(mut column: usize) -> String {
+    let mut name = String::new();
+
+    while column > 0 {
+        column -= 1;
+        name.insert(0, (b'A' + (column % 26) as u8) as char);
+        column /= 26;
+    }
+
+    name
+}
+
+fn spreadsheet_write_range(values: &[Vec<Value>]) -> String {
+    let row_count = values.len().max(1);
+    let column_count = values.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    let end_column = spreadsheet_column_name(column_count);
+
+    format!("Sheet1!A1:{end_column}{row_count}")
 }
 
 fn numeric_equal(left: &Value, right: &Value) -> bool {
@@ -315,5 +338,127 @@ mod tests {
     #[test]
     fn sheets_validation_allows_numeric_equivalence() {
         assert!(numeric_equal(&Value::from(42), &Value::from(42.0)));
+    }
+
+    #[test]
+    fn sheets_write_range_matches_value_dimensions() {
+        assert_eq!(
+            spreadsheet_write_range(&[
+                vec![Value::from("a"), Value::from("b"), Value::from("c")],
+                vec![Value::from(1), Value::from(2), Value::from(3)],
+            ]),
+            "Sheet1!A1:C2"
+        );
+
+        assert_eq!(
+            spreadsheet_write_range(&[vec![Value::from(1); 28]]),
+            "Sheet1!A1:AB1"
+        );
+    }
+
+    async fn delete_google_e2e_file(file_id: &str) -> Result<(), String> {
+        let token = crate::providers::provider_access_token(INSTANCE_ID).await?;
+        let response = client()?
+            .delete(format!(
+                "https://www.googleapis.com/drive/v3/files/{file_id}"
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| "Google Workspace E2E cleanup request failed".to_owned())?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Google Workspace E2E cleanup failed (HTTP {})",
+                response.status().as_u16()
+            ))
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires authorized Google Workspace account"]
+    async fn google_workspace_real_e2e() {
+        let identity = get_google_workspace_identity()
+            .await
+            .expect("real Google identity");
+
+        assert!(
+            identity
+                .get("sub")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty()),
+            "Google identity did not contain sub"
+        );
+
+        let files = list_google_workspace_files()
+            .await
+            .expect("real Google Drive list");
+
+        assert!(
+            files.get("files").and_then(Value::as_array).is_some(),
+            "Google Drive list did not contain files"
+        );
+
+        let run_id = uuid::Uuid::new_v4().simple().to_string();
+
+        let document = create_google_document(GoogleCreateInput {
+            title: format!("AI-OS E2E Document {run_id}"),
+            values: None,
+        })
+        .await
+        .expect("real Google Docs create/read-back");
+
+        assert_eq!(document.evidence, EvidenceState::Completed);
+        assert!(document
+            .values
+            .get("documentId")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()));
+
+        delete_google_e2e_file(&document.resource.file_id)
+            .await
+            .expect("Google Docs E2E cleanup");
+
+        let sheet_values = vec![
+            vec![
+                Value::from("AI-OS"),
+                Value::from("Google Workspace"),
+                Value::from("real-e2e"),
+            ],
+            vec![Value::from(42), Value::from(42.5), Value::from(true)],
+        ];
+
+        let spreadsheet = create_google_spreadsheet(GoogleCreateInput {
+            title: format!("AI-OS E2E Spreadsheet {run_id}"),
+            values: Some(sheet_values),
+        })
+        .await
+        .expect("real Google Sheets create/write/read-back");
+
+        assert_eq!(spreadsheet.evidence, EvidenceState::Completed);
+
+        delete_google_e2e_file(&spreadsheet.resource.file_id)
+            .await
+            .expect("Google Sheets E2E cleanup");
+
+        let presentation = create_google_presentation(GoogleCreateInput {
+            title: format!("AI-OS E2E Presentation {run_id}"),
+            values: None,
+        })
+        .await
+        .expect("real Google Slides create/read-back");
+
+        assert_eq!(presentation.evidence, EvidenceState::Completed);
+        assert!(presentation
+            .values
+            .get("slides")
+            .and_then(Value::as_array)
+            .is_some());
+
+        delete_google_e2e_file(&presentation.resource.file_id)
+            .await
+            .expect("Google Slides E2E cleanup");
     }
 }

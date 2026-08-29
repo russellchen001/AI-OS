@@ -355,7 +355,7 @@ Deterministic Automation → Computer Use
 - Provider Selection & Authorization Foundation: **Completed**.
 - Microsoft Graph code: **Implemented; Entra App Registration status is NotConfigured.** The remaining external step is creating the user-owned public-client registration and completing Microsoft login/consent. Configure the public client id with `VITE_AI_OS_MICROSOFT_OAUTH_CLIENT_ID` or the collapsed Advanced developer settings; optional tenant strategy is `VITE_AI_OS_MICROSOFT_OAUTH_TENANT` (`common` by default). No client secret is used.
 - Microsoft Graph executable scope: `/me`, drive discovery, XLSX discovery, workbook session creation, used-range/range read, explicit-range write, and mandatory Graph read-back validation. Graph resources use only drive/item/worksheet/range references; local XLS/XLSX never route to Graph.
-- Google Workspace code is **Implemented; real E2E requires Google account login/OAuth consent and any developer-project verification requested by Google.** It uses the existing OAuth/PKCE/Keychain path with a separate `google-workspace-default` authorization, least-privilege app-file access, and official Drive, Docs, Sheets, and Slides endpoints. Document and presentation create require API read-back; Sheets write requires value read-back with numeric equivalence.
+- Google Workspace Official API/OAuth integration is **Implemented; real E2E PASS on 2026-08-29.** The verified path covers OAuth/PKCE, macOS Keychain authorization, real Google identity, Drive listing, Docs create/read-back, Sheets create/write/read-back, Slides create/read-back, and automatic deletion of dedicated E2E resources. Sheets reads use `UNFORMATTED_VALUE` so numeric and boolean values retain structured API types.
 - WPS is **Backend Broker Required**, not Connected or Completed. A confidential WPS APPKEY must remain server-side; it is forbidden in the desktop binary, Planner, Memory, Evidence, logs, or frontend storage. No browser fallback may be labelled WPS Official API.
 - Apple iWork was **App Not Installed** on the 2026-08-29 acceptance machine. Connections now rescans Pages, Numbers, and Keynote independently at runtime and reports partial installation accurately; Native real E2E remains SKIP until an application is installed. Native sessions remain externally owned and AI-OS must never quit a user-owned app.
 - Disconnect is local: My AI removes the Keychain credential and local authorization mapping. AI-OS does not claim a remote Microsoft revoke when the public-client flow provides none.
@@ -371,13 +371,13 @@ Deterministic Automation → Computer Use
 | Provider | Document | Spreadsheet | Presentation | Real E2E / boundary |
 |---|---|---|---|---|
 | Microsoft Graph | Implemented, OAuth | Implemented, OAuth | Unsupported in current adapter | SKIP — user app registration/consent |
-| Google Workspace | Implemented, OAuth | Implemented, OAuth | Implemented, OAuth | SKIP — user login/consent |
+| Google Workspace | Implemented, OAuth | Implemented, OAuth | Implemented, OAuth | **PASS — real identity + Drive + Docs + Sheets + Slides E2E, 2026-08-29** |
 | WPS | Backend-broker contract | Backend-broker contract | Backend-broker contract | SKIP — server APPKEY provisioning |
 | Apple iWork | Native Pages provider declared | Native Numbers provider declared | Native Keynote provider declared | SKIP — apps not installed |
 | Local Structured | Implemented | Implemented foundation | Unsupported | Foundation/local fallback |
 | Native Microsoft Office | Implemented | Implemented, real E2E | Provider declared; read/create unfinished | Excel E2E PASS; Presentation incomplete |
 
-Presentation remains **In progress**. Google Slides read/create code exists, but Google real E2E has not run; Keynote cannot run because the app is not installed, and the provider-neutral Presentation runtime acceptance is not complete.
+Presentation remains **In progress**. Google Slides read/create and real Google external OAuth E2E now pass; Keynote cannot run because the app is not installed, and the provider-neutral Presentation runtime acceptance is not complete.
 
 ### P15 Unified Connections & Account Onboarding — decided 2026-08-29
 
@@ -402,6 +402,7 @@ Presentation remains **In progress**. Google Slides read/create code exists, but
 - Runtime local-application availability is owned by the Connections backend command, not frontend persistence. Page entry and Rescan Apps share the same fresh detector across `/Applications` and the current user's `Applications` folder. It identifies Pages, Numbers, Keynote, WPS Office, and Microsoft Excel by bundle ID, with standard bundle paths as fallback, so renamed app bundles are detected. Installing or removing an app changes the next result without recompiling; iWork aggregation is recalculated from the latest component results. Manual rescans show progress/success beside the button and surface failures explicitly.
 - Apple iWork `Authorization Required` is actionable: Connect invokes the registered native command and requests Automation access from each installed iWork application by bundle ID. The UI becomes Connected only after every installed iWork authorization probe succeeds; denial or command failure is shown as Error rather than silently treated as connected.
 - Technical decision: Microsoft desktop OAuth uses PKCE with a dynamic loopback port and the stable registered redirect `http://localhost/oauth/callback`; OAuth, SystemPermission, AuthenticatedSession, and UserConfirmation remain separate, and no client secret is accepted or stored.
+- Technical decision: Google Workspace desktop OAuth retains the dynamic `127.0.0.1` loopback root callback used by the successful real OAuth/E2E path. The Google OAuth client secret required by the token endpoint is stored only in macOS Keychain through the OAuth-client service and must never enter frontend persistence, Planner, Evidence, Memory, logs, or the repository.
 - eBay capability approval is per capability. Production checkout/order remain Developer Approval Required when the Broker reports missing Buy API approval; Browse can remain available. AI-OS does not route ordinary consumer checkout through seller APIs.
 
 ## P15 progress
@@ -655,7 +656,7 @@ Acceptance:
 - `verify/verify_p15_spreadsheet_create.sh`
 - `verify/fixtures/p15-spreadsheet-read.xlsx`
 
-Presentation is in progress: Google Slides read/create and read-back validation code is implemented, but external OAuth E2E and provider-neutral runtime acceptance remain outstanding; Apple Keynote is not installed on the acceptance machine.
+Presentation is in progress: Google Slides read/create, read-back validation, OAuth authorization, and real external Google E2E pass; provider-neutral Presentation runtime acceptance remains outstanding, and Apple Keynote is not installed on the acceptance machine.
 
 ## P15-1 Email and calendar — historical architecture decision, implementation completed
 
@@ -750,11 +751,11 @@ Calendar has no equivalent question: EventKit is the correct supported interface
 
 | | |
 |---|---|
-| Branch | `feature/p13-ai-center` |
-| HEAD | P15 Local Model complete — Ollama runtime and My AI UI verified 2026-08-16 |
+| Branch | `feature/p15-core-skills` |
+| HEAD | P15 Provider/Office integration active — Google Workspace real E2E verified 2026-08-29 |
 | Latest tag | `p13-m5-complete` |
 | Baseline state | Working tree was clean at the stable baseline before this handoff update |
-| Active phase | P15 Core Skills — File Management, Local Model Management, and Download Skill complete; remaining capability areas continue in P15. |
+| Active phase | P15 Core Skills — 5 of 11 complete; Office remains in progress. Google Workspace real E2E is complete; provider-neutral Presentation acceptance remains pending. |
 
 ---
 

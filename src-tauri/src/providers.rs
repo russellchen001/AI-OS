@@ -2638,12 +2638,16 @@ async fn discover_models(
         .json::<Value>()
         .await
         .map_err(|_| "Provider returned an unreadable model list".to_owned())?;
-    if spec.id == "microsoft-graph" || spec.id == "google-workspace" {
+    if spec.id == "microsoft-graph" {
         if body.get("id").and_then(Value::as_str).is_none() {
-            return Err(format!(
-                "{} did not identify the connected account",
-                spec.id
-            ));
+            return Err("microsoft-graph did not identify the connected account".to_owned());
+        }
+        return Ok(Vec::new());
+    }
+
+    if spec.id == "google-workspace" {
+        if body.get("sub").and_then(Value::as_str).is_none() {
+            return Err("google-workspace did not identify the connected account".to_owned());
         }
         return Ok(Vec::new());
     }
@@ -2760,7 +2764,10 @@ fn parse_oauth_loopback_request(request: &str, expected_state: &str) -> Result<S
     let callback_url = url::Url::parse(&format!("http://127.0.0.1{target}"))
         .map_err(|_| "OAuth callback URL is invalid".to_owned())?;
 
-    if !matches!(callback_url.path(), OAUTH_LOOPBACK_PATH | "/auth/callback") {
+    if !matches!(
+        callback_url.path(),
+        "/" | OAUTH_LOOPBACK_PATH | "/auth/callback"
+    ) {
         return Err("OAuth callback path is invalid".to_owned());
     }
 
@@ -2848,7 +2855,10 @@ async fn complete_oauth_exchange(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let payload = response.json::<Value>().await.ok();
-        return Err(oauth_token_rejection(status, payload.as_ref()));
+
+        let rejection = oauth_token_rejection(status, payload.as_ref());
+
+        return Err(rejection);
     }
 
     let mut token: Value = response
@@ -3118,11 +3128,16 @@ pub(crate) async fn begin_provider_oauth(
     validate_https_url(&input.token_url, "OAuth token URL")?;
 
     let callback_port = input.callback_port.unwrap_or(0);
-    let callback_path = input
-        .callback_path
-        .as_deref()
-        .unwrap_or(OAUTH_LOOPBACK_PATH)
-        .trim();
+    let callback_path = if provider_id == "google-workspace" {
+        "/"
+    } else {
+        input
+            .callback_path
+            .as_deref()
+            .unwrap_or(OAUTH_LOOPBACK_PATH)
+            .trim()
+    };
+
     if !callback_path.starts_with('/')
         || callback_path.len() > 128
         || callback_path.contains(['?', '#'])
@@ -5347,6 +5362,17 @@ Host: 127.0.0.1\r\n\r\n";
         assert_eq!(
             parse_oauth_loopback_request(request, "expected").unwrap(),
             "abc123"
+        );
+    }
+
+    #[test]
+    fn oauth_loopback_parser_accepts_google_root_callback() {
+        let request = "GET /?code=google-code&state=expected HTTP/1.1\r\n\
+Host: 127.0.0.1\r\n\r\n";
+
+        assert_eq!(
+            parse_oauth_loopback_request(request, "expected").unwrap(),
+            "google-code"
         );
     }
 
