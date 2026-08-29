@@ -1845,6 +1845,252 @@ a {
   font-size: 11px;
 }
 
+.connections-center {
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid var(--card-border);
+  border-radius: 15px;
+  background: var(--card);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
+}
+
+.connections-center .provider-section-heading {
+  align-items: center;
+  margin: 0 0 14px;
+}
+
+.connections-center .provider-section-heading div {
+  display: grid;
+  gap: 4px;
+}
+
+.connections-list {
+  display: grid;
+  gap: 8px;
+}
+
+.connection-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, auto) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 11px;
+}
+
+.connection-row > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.connection-row small,
+.connections-message {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.connection-development-config {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end;
+  gap: 8px 12px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 11px;
+  background: var(--surface-muted, #f5f6f7);
+}
+
+.connection-development-settings {
+  margin-top: 12px;
+}
+
+.connection-development-settings > summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.connection-development-config p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.connection-development-config label {
+  display: grid;
+  gap: 6px;
+}
+
+.connection-development-config input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.connection-development-config small {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.connections-message {
+  margin: 12px 0 0;
+}
+
+.custom-connections {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--card-border);
+}
+
+.custom-provider-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 11px;
+  background: var(--surface-muted, #f5f6f7);
+}
+
+.custom-provider-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.custom-provider-form input,
+.custom-provider-form select,
+.custom-provider-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-primary);
+}
+
+.custom-provider-form textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.custom-provider-form > small,
+.custom-provider-form > .provider-actions {
+  grid-column: 1 / -1;
+}
+
+.custom-provider-form > .provider-actions {
+  justify-content: flex-end;
+}
+
+.danger-button {
+  color: var(--danger, #b42318);
+}
+
+.ebay-connector-row {
+  grid-template-columns: minmax(260px, 1fr) minmax(150px, auto) minmax(220px, auto);
+  position: relative;
+}
+
+.ebay-connector-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.connector-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(90px, 1fr));
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.connector-capability-grid span {
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--card-border);
+  border-radius: 7px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ebay-configuration-details {
+  position: relative;
+}
+
+.ebay-configuration-details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.ebay-configuration-panel {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  top: calc(100% + 8px);
+  display: grid;
+  width: min(430px, calc(100vw - 48px));
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 11px;
+  background: var(--card);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+}
+
+.ebay-configuration-panel label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ebay-configuration-panel input,
+.ebay-configuration-panel select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-primary);
+}
+
+.ebay-connector-message {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .custom-provider-form {
+    grid-template-columns: 1fr;
+  }
+
+  .ebay-connector-row,
+  .connector-capability-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .connection-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .provider-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

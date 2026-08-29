@@ -331,6 +331,79 @@ Spreadsheet Read and Create real Excel E2E passed on 2026-08-29. Create now
 saves the workbook, reopens the generated workbook, reads the first worksheet
 used range, and requires TSV read-back equality before reporting success.
 
+## P15 Provider Selection & Authorization Policy — decided 2026-08-29
+
+Default provider priority is:
+
+Official API / OAuth → Native Structured Interface → Authenticated Session →
+Deterministic Automation → Computer Use
+
+- Capability support, resource compatibility/locality, availability, authorization state, interface priority, and explicit user preference govern selection.
+- Resource locality can override generic interface priority. Local files are never uploaded merely to use Microsoft Graph.
+- OAuth authorization and per-action User Confirmation are separate contracts.
+- Secrets, raw tokens, passwords, and cookies never enter Planner input/output, Memory, or Evidence. Providers receive only opaque authorization references.
+- An unavailable or incomplete Official API may fall back only when policy allows it. Providers must never hide internal fallback.
+- Microsoft Graph is the Official API/OAuth provider for Microsoft 365, OneDrive, and SharePoint resources. Authorization Code + PKCE uses the existing single-use ephemeral loopback callback and Keychain token store; startup and post-connect state require a real `/me` identity request.
+- Local Structured File is the preferred foundation for supported local resources. Native Excel remains the deterministic local provider for Excel-specific behavior.
+- Native Excel sessions are externally owned by default; AI-OS must not close a user-owned Excel application session.
+- macOS SystemPermission state distinguishes not determined, granted, and denied; granted permission is detected and reused.
+- Authenticated Browser session is a fallback provider, not an Official API, and stores only an opaque profile/session reference.
+- Commerce capabilities add platform-specific Official API providers when supported without changing the Skill contract.
+
+### P15 Official Provider real integration status — 2026-08-29
+
+- Provider Selection & Authorization Foundation: **Completed**.
+- Microsoft Graph code: **Implemented; Entra App Registration status is NotConfigured.** The remaining external step is creating the user-owned public-client registration and completing Microsoft login/consent. Configure the public client id with `VITE_AI_OS_MICROSOFT_OAUTH_CLIENT_ID` or the collapsed Advanced developer settings; optional tenant strategy is `VITE_AI_OS_MICROSOFT_OAUTH_TENANT` (`common` by default). No client secret is used.
+- Microsoft Graph executable scope: `/me`, drive discovery, XLSX discovery, workbook session creation, used-range/range read, explicit-range write, and mandatory Graph read-back validation. Graph resources use only drive/item/worksheet/range references; local XLS/XLSX never route to Graph.
+- Google Workspace code is **Implemented; real E2E requires Google account login/OAuth consent and any developer-project verification requested by Google.** It uses the existing OAuth/PKCE/Keychain path with a separate `google-workspace-default` authorization, least-privilege app-file access, and official Drive, Docs, Sheets, and Slides endpoints. Document and presentation create require API read-back; Sheets write requires value read-back with numeric equivalence.
+- WPS is **Backend Broker Required**, not Connected or Completed. A confidential WPS APPKEY must remain server-side; it is forbidden in the desktop binary, Planner, Memory, Evidence, logs, or frontend storage. No browser fallback may be labelled WPS Official API.
+- Apple iWork was **App Not Installed** on the 2026-08-29 acceptance machine. Connections now rescans Pages, Numbers, and Keynote independently at runtime and reports partial installation accurately; Native real E2E remains SKIP until an application is installed. Native sessions remain externally owned and AI-OS must never quit a user-owned app.
+- Disconnect is local: My AI removes the Keychain credential and local authorization mapping. AI-OS does not claim a remote Microsoft revoke when the public-client flow provides none.
+- Browser authenticated sessions: lifecycle/evidence contract and persistent opaque profile metadata are implemented. Profile metadata is stored atomically in the app-data directory and contains no cookies, passwords, or bearer tokens. Authentication still requires a verified account marker on an HTTPS platform origin; a public page is never authenticated. No browser runtime with a safely callable account-state detector is currently connected, so real session E2E remains SKIP on user login/profile handoff rather than fabricating Connected.
+- eBay is the first built-in External Connector instance. Its main Connections row uses the reviewed `ebay-buy` manifest and shared Broker contract; it is no longer a fixed Developer Approval Required placeholder and cannot be added a second time through Add Other Provider. Browse can be available while Cart/Checkout/Order remain approval-gated. Real external integration remains blocked on a deployed Broker, eBay developer application/real account, and any required Production Buy API approval.
+- Amazon Consumer: Product Advertising API is limited to product advertising; no official ordinary-buyer account/cart/checkout/order API is registered. Authenticated Browser is required for those consumer actions. Selling Partner API must not be used as a buyer API.
+- Taobao / JD / Pinduoduo Consumer: their open platforms are merchant/service-provider oriented or approval-limited; AI-OS has no approved ordinary-consumer cart/checkout/order API credential. Authenticated Browser is the declared fallback and must verify the signed-in account before authenticated evidence.
+- Commerce capability facts were reviewed against official platform documentation on 2026-08-29. Unsupported official consumer APIs are an accurate boundary, not a failed E2E.
+- P15 progress remains **5 of 11 complete** because Presentation and the complete Office capability area remain unfinished.
+
+### P15 Office Provider matrix — 2026-08-29
+
+| Provider | Document | Spreadsheet | Presentation | Real E2E / boundary |
+|---|---|---|---|---|
+| Microsoft Graph | Implemented, OAuth | Implemented, OAuth | Unsupported in current adapter | SKIP — user app registration/consent |
+| Google Workspace | Implemented, OAuth | Implemented, OAuth | Implemented, OAuth | SKIP — user login/consent |
+| WPS | Backend-broker contract | Backend-broker contract | Backend-broker contract | SKIP — server APPKEY provisioning |
+| Apple iWork | Native Pages provider declared | Native Numbers provider declared | Native Keynote provider declared | SKIP — apps not installed |
+| Local Structured | Implemented | Implemented foundation | Unsupported | Foundation/local fallback |
+| Native Microsoft Office | Implemented | Implemented, real E2E | Provider declared; read/create unfinished | Excel E2E PASS; Presentation incomplete |
+
+Presentation remains **In progress**. Google Slides read/create code exists, but Google real E2E has not run; Keynote cannot run because the app is not installed, and the provider-neutral Presentation runtime acceptance is not complete.
+
+### P15 Unified Connections & Account Onboarding — decided 2026-08-29
+
+- External Connector Framework is the shared connection architecture for reviewed website/API integrations. Built-in and Custom Provider instances use the same manifest validation, capability state, Broker safety, authorization-reference isolation, disconnect, and removal contracts; adding a future site requires a reviewed manifest, capability mapping, and behavior tests rather than another OAuth/Broker state machine.
+- `Add Other Provider` supports Local Application, Website Login, trusted External API Connector, and Unsupported Provider Request. Ordinary users select a type and enter only public application configuration. Arbitrary URLs plus arbitrary JSON are never executable Connectors; unknown or untrusted Providers receive no high-risk capability.
+- Provider Definition and Provider Instance identities are separate. Custom Providers persist atomically and survive restart; malformed persisted configuration fails closed. Built-in definitions may be disconnected but not removed. Custom Providers may be disconnected and then removed after confirmation.
+- Backend Broker is the only owner of client secrets, certificates, raw tokens, private keys, and authorization codes. Desktop storage is limited to public configuration, Broker URL, opaque environment-scoped authorization reference, capability state, and non-sensitive evidence reference. Production Broker URLs require HTTPS; HTTP is limited to localhost development.
+- `Disconnect Account` performs remote Broker revoke/delete before clearing the local opaque reference and capability authorization state. A remote failure retains local tracking and is not reported as fully disconnected. `Remove Provider` is a separate custom-only action that first requires successful disconnect, then atomically deletes its definition, instance, public configuration, session/reference, and non-sensitive cached state.
+- eBay Buy is the first reviewed Connector manifest and built-in Provider instance. The single main eBay row provides Configure → Save and Validate → Test → Connect → OAuth status verification → Connected/Partially Available → Disconnect Account. Browse, Cart, Checkout, and Order capabilities have independent authorization/approval state; `ebay.checkout.confirm` always requires User Confirmation. Production Buy API remains SKIP/WAITING_FOR_USER until the developer application and approval are real.
+- eBay supports Managed by AI-OS and Self-hosted / Bring Your Own App Broker modes. Managed Broker status is **Not Provisioned** until `AI_OS_MANAGED_EBAY_BROKER_URL` points to a real deployment; no fake address is supplied. Self-hosted desktop configuration contains only Environment, public App ID, RuName, and Broker URL. The administrator configures `EBAY_CLIENT_SECRET`/Cert ID and `BROKER_ENCRYPTION_KEY` only on the independent Broker service.
+- The deployable Broker lives at `services/external-connector-broker`. It implements health, reviewed manifest discovery, configuration validation, authorization begin/status/callback, encrypted token storage and refresh, capability availability/execute, and token deletion on disconnect. eBay exposes no general remote token revoke endpoint in this flow, so Disconnect truthfully reports remote revoke unsupported while deleting the Broker token and desktop opaque reference.
+- Broker unit tests and local mock eBay HTTP tests are local behavior evidence only; they are not a real eBay account or Production Buy API E2E PASS.
+- Rescan Apps and Apple iWork Connect are pre-existing behavior and remain on their original runtime/Tauri paths; this framework only carries regression coverage for them.
+- Connections in My AI is the single onboarding surface for Microsoft 365, Google Workspace, WPS, eBay, Amazon, Taobao, JD, Pinduoduo, and Apple iWork. It extends the existing Provider and Keychain systems; it is not a second Provider registry or credential store.
+- `Connect All` advances in the fixed order Microsoft → Google Workspace → WPS → eBay → Amazon → Taobao → JD → Pinduoduo → Apple iWork. Already connected providers are skipped, configuration/approval/app blockers are retained in the summary, and Skip or a later failure never removes earlier successful connections.
+- AI-OS owns provider detection, official authorization URL construction, ephemeral callback port, PKCE/state, callback processing, secure token storage, opaque browser profile reference, connection verification, reuse, and reconnect.
+- The user enters credentials only on the platform's official page and personally completes 2FA, CAPTCHA, OAuth consent, developer terms, identity verification, or administrator approval. AI-OS never reads or stores a third-party password.
+- OAuth, Backend Broker, Native Application, and Authenticated Browser share one status surface. It includes Not Configured, Disconnected, Connecting, Waiting for User, Connected, Expired, Login Required, Authorization Required, Developer Approval Required, Backend Broker Required, App Not Installed, and Error; their authorization mechanisms remain distinct.
+- Connected is evidence-gated. OAuth requires a successful identity API request. Browser login requires a provider-specific account marker or authenticated endpoint from the persistent profile; opening a login page is only Waiting for User.
+- The current MCP Browser bridge does not expose a safe persistent-profile account verifier. Amazon, Taobao, JD, and Pinduoduo onboarding therefore opens only the official login page and remains Waiting for User rather than fabricating Connected. Completing real Browser E2E requires a browser provider that can return a safe account marker without exposing password fields, raw cookies, or bearer tokens.
+- Microsoft application identity is application-level configuration. The public Client ID input is inside Advanced developer settings, which is collapsed by default; the ordinary Connections surface contains only provider status and connection controls. Development builds show Configuration Required until `VITE_AI_OS_MICROSOFT_OAUTH_CLIENT_ID` exists or the public application id is entered there. End users must not be required to create their own Entra application in a production distribution. The public client id is not a credential and no client secret is accepted.
+- Runtime local-application availability is owned by the Connections backend command, not frontend persistence. Page entry and Rescan Apps share the same fresh detector across `/Applications` and the current user's `Applications` folder. It identifies Pages, Numbers, Keynote, WPS Office, and Microsoft Excel by bundle ID, with standard bundle paths as fallback, so renamed app bundles are detected. Installing or removing an app changes the next result without recompiling; iWork aggregation is recalculated from the latest component results. Manual rescans show progress/success beside the button and surface failures explicitly.
+- Apple iWork `Authorization Required` is actionable: Connect invokes the registered native command and requests Automation access from each installed iWork application by bundle ID. The UI becomes Connected only after every installed iWork authorization probe succeeds; denial or command failure is shown as Error rather than silently treated as connected.
+- Technical decision: Microsoft desktop OAuth uses PKCE with a dynamic loopback port and the stable registered redirect `http://localhost/oauth/callback`; OAuth, SystemPermission, AuthenticatedSession, and UserConfirmation remain separate, and no client secret is accepted or stored.
+- eBay capability approval is per capability. Production checkout/order remain Developer Approval Required when the Broker reports missing Buy API approval; Browse can remain available. AI-OS does not route ordinary consumer checkout through seller APIs.
+
 ## P15 progress
 
 This table is the single answer to "how far along is the current P15
@@ -582,7 +655,7 @@ Acceptance:
 - `verify/verify_p15_spreadsheet_create.sh`
 - `verify/fixtures/p15-spreadsheet-read.xlsx`
 
-Presentation work has not started.
+Presentation is in progress: Google Slides read/create and read-back validation code is implemented, but external OAuth E2E and provider-neutral runtime acceptance remain outstanding; Apple Keynote is not installed on the acceptance machine.
 
 ## P15-1 Email and calendar — historical architecture decision, implementation completed
 

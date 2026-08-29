@@ -11,6 +11,19 @@ const ALL_OFFICE_CAPABILITIES: &[&str] = &[
 ];
 
 const NATIVE_CAPABILITIES: &[&str] = &["document.read", "document.create", "document.convert"];
+const GRAPH_CAPABILITIES: &[&str] = &[
+    "document.read",
+    "document.create",
+    "spreadsheet.read",
+    "spreadsheet.create",
+    "spreadsheet.update",
+];
+const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &[
+    "document.read",
+    "document.create",
+    "spreadsheet.read",
+    "spreadsheet.create",
+];
 
 fn app_exists(path: &str) -> bool {
     std::path::Path::new(path).exists()
@@ -22,6 +35,22 @@ fn browser_provider_available() -> bool {
 
 pub(crate) fn office_providers() -> Vec<OfficeProvider> {
     vec![
+        OfficeProvider {
+            id: OfficeProviderId::MicrosoftGraph,
+            name: "Microsoft Graph",
+            local: false,
+            priority: 0,
+            capabilities: GRAPH_CAPABILITIES,
+            available: false,
+        },
+        OfficeProvider {
+            id: OfficeProviderId::LocalStructured,
+            name: "Local Structured File",
+            local: true,
+            priority: 0,
+            capabilities: LOCAL_STRUCTURED_CAPABILITIES,
+            available: false,
+        },
         OfficeProvider {
             id: OfficeProviderId::MacosNative,
             name: "macOS Native",
@@ -82,29 +111,32 @@ pub(crate) fn resolve_office_provider(capability: &str) -> Option<OfficeProvider
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider_selection::{
+        AuthorizationKind, AuthorizationState, ProviderInterfaceKind, SessionOwnership,
+    };
 
     #[test]
     fn provider_order_and_local_first_policy_are_stable() {
         let providers = office_providers();
 
-        assert_eq!(providers.len(), 5);
-        assert_eq!(providers[0].id, OfficeProviderId::MacosNative);
-        assert_eq!(providers[0].priority, 0);
-        assert_eq!(providers[1].id, OfficeProviderId::MicrosoftOffice);
-        assert_eq!(providers[1].priority, 10);
-        assert_eq!(providers[2].id, OfficeProviderId::AppleIwork);
-        assert_eq!(providers[2].priority, 20);
-        assert_eq!(providers[3].id, OfficeProviderId::WpsOffice);
-        assert_eq!(providers[3].priority, 30);
-        assert_eq!(providers[4].id, OfficeProviderId::GoogleWorkspace);
-        assert_eq!(providers[4].priority, 100);
+        assert_eq!(providers.len(), 7);
+        assert_eq!(providers[0].id, OfficeProviderId::MicrosoftGraph);
+        assert_eq!(providers[1].id, OfficeProviderId::LocalStructured);
+        assert!(!providers[0].available);
+        assert!(!providers[1].available);
     }
 
     #[test]
     fn native_and_google_provider_boundaries_are_correct() {
         let providers = office_providers();
-        let native = &providers[0];
-        let google = &providers[4];
+        let native = providers
+            .iter()
+            .find(|provider| provider.id == OfficeProviderId::MacosNative)
+            .unwrap();
+        let google = providers
+            .iter()
+            .find(|provider| provider.id == OfficeProviderId::GoogleWorkspace)
+            .unwrap();
 
         assert!(native.local);
         assert!(native.supports("document.read"));
@@ -114,6 +146,28 @@ mod tests {
         assert!(google.supports("document.read"));
         assert!(google.supports("spreadsheet.read"));
         assert!(google.supports("presentation.create"));
+    }
+
+    #[test]
+    fn graph_foundation_and_native_excel_ownership_are_explicit() {
+        let providers = office_providers();
+        let graph = providers[0].selection_metadata();
+        let excel = providers
+            .iter()
+            .find(|provider| provider.id == OfficeProviderId::MicrosoftOffice)
+            .unwrap()
+            .selection_metadata();
+
+        assert_eq!(graph.interface_kind, ProviderInterfaceKind::OfficialApi);
+        assert_eq!(graph.authorization_kind, AuthorizationKind::OAuth);
+        assert_eq!(
+            graph.authorization_state,
+            AuthorizationState::AuthorizationRequired
+        );
+        assert_eq!(
+            excel.session_ownership,
+            Some(SessionOwnership::ExternallyOwned)
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import { useDialog } from "../components/DialogProvider";
+import ConnectionsCenter from "../components/ConnectionsCenter";
 import type { OllamaModel } from "../types/index";
 import type { RuntimeStatus } from "../types/runtime";
 import type {
@@ -73,6 +74,14 @@ type CloudProviderCard = {
 };
 
 const cloudProviders: CloudProviderCard[] = [
+  {
+    id: "microsoft-graph",
+    mark: "M",
+    name: "Microsoft Graph",
+    description: "Microsoft 365, OneDrive, SharePoint and Excel",
+    models: ["Microsoft 365 account", "Excel workbooks"],
+    accountLabel: "Connect Microsoft",
+  },
   {
     id: "openai",
     mark: "O",
@@ -854,6 +863,37 @@ function MyAiPage({
         const verification = await adapter.testConnection(instanceId);
         if (cancelled) return;
         const models = verification.discoveredModels;
+        if (setup.providerId === "microsoft-graph") {
+          const identity = await invoke<{
+            displayName: string;
+            principalName?: string;
+          }>("get_microsoft_graph_identity");
+          const instance = createProviderInstance({
+            id: instanceId,
+            providerId: setup.providerId,
+            displayName: setup.provider,
+            credentialKind: "oauth",
+            models: [],
+            defaultModelId: "",
+            liveTested: true,
+            credentialExpiresAt: completed.expiresAt ?? undefined,
+            credentialRefreshable: completed.refreshable,
+          });
+          await saveProviderInstance(instance);
+          setProviderInstances(listProviderInstances());
+          setSetup({
+            ...setup,
+            phase: "manage",
+            models: [],
+            defaultModelId: "",
+            verificationMessage: `Connected as ${identity.displayName}${identity.principalName ? ` (${identity.principalName})` : ""}.`,
+            liveTested: true,
+            credentialExpiresAt: completed.expiresAt ?? undefined,
+            credentialRefreshable: completed.refreshable,
+          });
+          onConnect(setup.provider, setup.method);
+          return;
+        }
         setSetup({
           ...setup,
           phase: "models",
@@ -1001,6 +1041,8 @@ function MyAiPage({
           <p>Connect the AI accounts and local models you want AI‑OS to use.</p>
         </div>
       </header>
+
+      <ConnectionsCenter />
 
       <div className="provider-section-heading">
         <h2>Cloud AI</h2>

@@ -90,6 +90,8 @@ export type ProviderOAuthErrorEvent = {
 
 const PROVIDER_OAUTH_CONFIGURATION_REGISTRY: Record<string, string> = {
   google: "GOOGLE",
+  "google-workspace": "GOOGLE",
+  "microsoft-graph": "MICROSOFT",
 };
 
 const OPENAI_CODEX_OAUTH_CONFIGURATION = {
@@ -126,6 +128,63 @@ export function getProviderOAuthConfiguration(
   providerId: string,
   providerInstanceId: string,
 ): OAuthProviderConfiguration | undefined {
+  if (providerId === "microsoft-graph") {
+    const environment = import.meta.env as Record<string, unknown>;
+    const developmentClientId = typeof window === "undefined"
+      ? ""
+      : window.localStorage.getItem("ai-os.microsoft.client-id") ?? "";
+    const clientId =
+      String(environment.VITE_AI_OS_MICROSOFT_OAUTH_CLIENT_ID ?? "").trim() ||
+      developmentClientId.trim();
+    if (!clientId) return undefined;
+    const tenant = String(
+      environment.VITE_AI_OS_MICROSOFT_OAUTH_TENANT ?? "common",
+    ).trim();
+    if (!/^(common|organizations|consumers|[0-9a-f-]{36})$/i.test(tenant)) {
+      return undefined;
+    }
+    const authority = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0`;
+    return {
+      providerId,
+      providerInstanceId,
+      clientId,
+      authorizationUrl: `${authority}/authorize`,
+      tokenUrl: `${authority}/token`,
+      scopes: [
+        "offline_access",
+        "User.Read",
+        "Files.ReadWrite",
+      ],
+      authorizationParams: { prompt: "select_account" },
+    };
+  }
+
+  if (providerId === "google-workspace") {
+    const environment = import.meta.env as Record<string, unknown>;
+    const clientId = String(environment.VITE_AI_OS_GOOGLE_OAUTH_CLIENT_ID ?? "").trim();
+    if (!clientId) return undefined;
+    return {
+      providerId,
+      providerInstanceId,
+      clientId,
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      scopes: [
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations",
+      ],
+      authorizationParams: {
+        access_type: "offline",
+        include_granted_scopes: "true",
+        prompt: "consent select_account",
+      },
+    };
+  }
+
   if (providerId === "openai") {
     return {
       providerId,
@@ -331,6 +390,34 @@ Promise<ProviderInstance[]> {
           "list_provider_instances",
         )
       ).filter(isProviderInstance);
+
+      const microsoft = native.find(
+        (instance) => instance.id === "microsoft-graph-default",
+      );
+      if (microsoft?.credential.kind === "oauth") {
+        try {
+          await invoke("get_microsoft_graph_identity");
+          const verified = {
+            ...microsoft,
+            connectionState: "connected" as const,
+            lastTestedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          await invoke("save_provider_instance", { instance: verified });
+          native = native.map((item) => item.id === verified.id ? verified : item);
+        } catch (error) {
+          const message = String(error);
+          const failed = {
+            ...microsoft,
+            connectionState: message.includes("expired") || message.includes("reconnect")
+              ? "expired" as const
+              : "error" as const,
+            updatedAt: new Date().toISOString(),
+          };
+          await invoke("save_provider_instance", { instance: failed }).catch(() => undefined);
+          native = native.map((item) => item.id === failed.id ? failed : item);
+        }
+      }
 
       if (
         native.length === 0 &&

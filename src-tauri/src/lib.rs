@@ -1,11 +1,15 @@
 mod backup;
 mod browser;
 mod claude_code;
+mod commerce_provider;
+mod connections;
 mod conversations;
 mod document;
 mod download;
 mod email_calendar;
+mod external_connector;
 mod filesystem;
+mod google_workspace;
 mod health;
 mod logs;
 mod macos_permissions;
@@ -13,10 +17,12 @@ mod mcp;
 mod mcp_runtime;
 mod memory;
 mod memory_service;
+mod microsoft_graph;
 mod models;
 mod multillm;
 mod openclaw;
 pub mod planner;
+mod provider_selection;
 mod providers;
 mod runtime;
 mod task_execution;
@@ -136,6 +142,30 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            commerce_provider::list_commerce_provider_capabilities,
+            connections::list_connection_capabilities,
+            connections::begin_browser_login,
+            connections::verify_browser_login,
+            connections::disconnect_connection_provider,
+            external_connector::list_custom_connection_providers,
+            external_connector::get_builtin_ebay_connection,
+            external_connector::configure_builtin_ebay_connection,
+            external_connector::add_custom_connection_provider,
+            external_connector::connect_custom_connection_provider,
+            external_connector::test_custom_connection_provider,
+            external_connector::refresh_custom_connection_provider,
+            external_connector::execute_external_connector_capability,
+            external_connector::disconnect_custom_connection_provider,
+            external_connector::remove_custom_connection_provider,
+            google_workspace::get_google_workspace_identity,
+            google_workspace::list_google_workspace_files,
+            google_workspace::read_google_document,
+            google_workspace::create_google_document,
+            google_workspace::read_google_spreadsheet,
+            google_workspace::create_google_spreadsheet,
+            google_workspace::write_google_spreadsheet,
+            google_workspace::read_google_presentation,
+            google_workspace::create_google_presentation,
             document::list_document_capabilities,
             system_metrics,
             conversations::list_native_conversations,
@@ -152,6 +182,8 @@ pub fn run() {
             logs::get_logs,
             logs::clear_logs,
             macos_permissions::check_macos_mail_calendar_permissions,
+            connections::rescan_local_application_availability,
+            connections::connect_apple_iwork,
             email_calendar::list_native_mail,
             email_calendar::search_native_mail,
             email_calendar::list_native_calendar,
@@ -235,6 +267,11 @@ pub fn run() {
             providers::complete_provider_oauth,
             providers::cancel_provider_oauth,
             providers::refresh_provider_oauth,
+            microsoft_graph::get_microsoft_graph_identity,
+            microsoft_graph::list_microsoft_graph_drives,
+            microsoft_graph::list_microsoft_graph_workbooks,
+            microsoft_graph::read_microsoft_graph_spreadsheet,
+            microsoft_graph::write_microsoft_graph_spreadsheet,
             providers::generate_provider_response,
             providers::execute_ai_center,
             providers::execute_ai_center_stream,

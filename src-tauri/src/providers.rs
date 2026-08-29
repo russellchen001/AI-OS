@@ -1548,6 +1548,49 @@ fn provider_adapter(
 fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
     let mut registrations = vec![
         provider_adapter(
+            "microsoft-graph",
+            "Microsoft Graph",
+            ProviderAdapterKind::Native,
+            &[ProviderCredentialKind::OAuth],
+            &[
+                "identity",
+                "drive.read",
+                "spreadsheet.read",
+                "spreadsheet.write",
+            ],
+            false,
+            true,
+            Some(ProviderAdapterSpec {
+                id: "microsoft-graph",
+                models_url: "https://graph.microsoft.com/v1.0/me",
+                auth: AuthStyle::Bearer,
+            }),
+        ),
+        provider_adapter(
+            "google-workspace",
+            "Google Workspace",
+            ProviderAdapterKind::Native,
+            &[ProviderCredentialKind::OAuth],
+            &[
+                "identity",
+                "drive.read",
+                "document.read",
+                "document.create",
+                "spreadsheet.read",
+                "spreadsheet.create",
+                "spreadsheet.write",
+                "presentation.read",
+                "presentation.create",
+            ],
+            false,
+            true,
+            Some(ProviderAdapterSpec {
+                id: "google-workspace",
+                models_url: "https://www.googleapis.com/oauth2/v3/userinfo",
+                auth: AuthStyle::Bearer,
+            }),
+        ),
+        provider_adapter(
             "openai",
             "OpenAI",
             ProviderAdapterKind::Native,
@@ -2595,6 +2638,15 @@ async fn discover_models(
         .json::<Value>()
         .await
         .map_err(|_| "Provider returned an unreadable model list".to_owned())?;
+    if spec.id == "microsoft-graph" || spec.id == "google-workspace" {
+        if body.get("id").and_then(Value::as_str).is_none() {
+            return Err(format!(
+                "{} did not identify the connected account",
+                spec.id
+            ));
+        }
+        return Ok(Vec::new());
+    }
     let models = parse_models(spec.id, body)?;
     if models.is_empty() {
         return Err("Provider returned no usable models".to_owned());
@@ -2868,6 +2920,12 @@ async fn complete_oauth_exchange(
     })
 }
 
+pub(crate) async fn provider_access_token(instance_id: &str) -> Result<String, String> {
+    Ok(read_current_credential(validate_instance_id(instance_id)?)
+        .await?
+        .value)
+}
+
 fn chatgpt_account_id_from_jwt(token: &str) -> Option<String> {
     let payload = token.split('.').nth(1)?;
     let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
@@ -3080,7 +3138,7 @@ pub(crate) async fn begin_provider_oauth(
         .local_addr()
         .map_err(|_| "AI-OS could not determine the OAuth callback address".to_owned())?;
 
-    let callback_host = if provider_id == "openai" {
+    let callback_host = if matches!(provider_id, "openai" | "microsoft-graph") {
         "localhost"
     } else {
         "127.0.0.1"
@@ -4923,6 +4981,8 @@ mod tests {
                 .map(|adapter| adapter.provider_id.as_str())
                 .collect::<Vec<_>>(),
             vec![
+                "microsoft-graph",
+                "google-workspace",
                 "openai",
                 "anthropic",
                 "google",
