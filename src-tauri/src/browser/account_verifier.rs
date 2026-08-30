@@ -70,6 +70,10 @@ struct ProbeEvidence {
     /// challenge page.
     #[serde(default)]
     links: Option<u32>,
+    /// Page title, truncated. On these sites it is the page's own name and is
+    /// what distinguishes an account page from a login page.
+    #[serde(default)]
+    title: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -91,23 +95,24 @@ const AMAZON_PROBE: &str = r#"(function(){var q=function(s){try{return document.
 
 const TAOBAO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['nick','.site-nav-login-info-nick'],['user-nick','.site-nav-user .nick'],['user-nick-attr','[class*="userNick"]'],['nick-name','.nick-name']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('#login-form, .login-blocks, a[href*="login.taobao.com/member/login"]');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
 
-const JD_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['ttbar-nick','#ttbar-login .nickname'],['nickname','.nickname'],['nick-attr','[class*="nickname"]'],['ttbar','#ttbar-login']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('.login-form, #formlogin, #loginForm');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
+const JD_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var p=(location.pathname||'').toLowerCase();var onLogin=p.indexOf('login')>=0||p.indexOf('signin')>=0||/passport\./.test(location.host);var c=[['nick','.nickname'],['user-name','#user-name'],['user-name-attr','[class*="user-name"]'],['ttbar-nick','#ttbar-login .nickname']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}if(!v&&!onLogin){var d=(document.title||'').trim();if(d){k='title';v=d}}var l=q('.login-form, #formlogin, #loginForm, .login-wrap')||onLogin;return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length,title:(document.title||'').slice(0,30)}});})()"#;
 
-const PINDUODUO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['nick-attr','[class*="nickname"]'],['user-name','.user-name'],['user-name-attr','[class*="userName"]'],['personal','.personal-info .name'],['user-info','[class*="userInfo"]']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('[class*="login-btn"], [class*="loginBtn"], #login-container, .login-wrap');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
+const PINDUODUO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var p=(location.pathname||'').toLowerCase();var onLogin=p.indexOf('login')>=0||p.indexOf('signin')>=0;var c=[['nick-attr','[class*="nickname"]'],['user-name','.user-name'],['user-name-attr','[class*="userName"]'],['user-info','[class*="userInfo"]'],['personal','[class*="personal"] [class*="name"]']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}if(!v&&!onLogin){var d=(document.title||'').trim();if(d){k='title';v=d}}var l=q('[class*="login-btn"], [class*="loginBtn"], #login-container, .login-wrap')||onLogin;return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length,title:(document.title||'').slice(0,30)}});})()"#;
 
 /// The page restart recovery should open to see whether the account is still
 /// signed in.
 ///
-/// Amazon signs in on its own regional storefront, so the verified origin is
-/// exactly right and stays region-aware. The others sign in on a passport or
-/// login host that shows no account state at all, so recovery has to look at
-/// the storefront the account actually belongs to.
+/// Amazon and Taobao show account state on their own storefront. JD's top bar
+/// does not render for recovery and Pinduoduo's mobile home has no account area
+/// at all, so those two go to a page only a signed-in account can reach:
+/// arriving there without being bounced to a login page is itself the evidence.
 pub(crate) fn account_home_url(provider_id: &str, verified_origin: Option<&str>) -> Option<String> {
     match provider_id {
+        // Region-aware: the account's own regional storefront.
         "amazon-consumer" => verified_origin.map(str::to_owned),
         "taobao-consumer" => Some("https://www.taobao.com".to_owned()),
-        "jd-consumer" => Some("https://www.jd.com".to_owned()),
-        "pinduoduo-consumer" => Some("https://mobile.yangkeduo.com".to_owned()),
+        "jd-consumer" => Some("https://home.jd.com/".to_owned()),
+        "pinduoduo-consumer" => Some("https://mobile.yangkeduo.com/personal.html".to_owned()),
         _ => verified_origin.map(str::to_owned),
     }
 }
@@ -319,7 +324,7 @@ pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerific
     diagnostics::record(
         "verifier",
         &format!(
-            "provider={provider_id} origin_valid={} signal_present={} matched={} login_present={} path={} ready={} links={} authenticated={}",
+            "provider={provider_id} origin_valid={} signal_present={} matched={} login_present={} path={} ready={} links={} title={} authenticated={}",
             probe
                 .as_ref()
                 .map(|value| origin_belongs_to_provider(provider_id, &value.origin))
@@ -339,6 +344,9 @@ pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerific
                 .and_then(|value| value.ready.as_deref())
                 .unwrap_or("?"),
             evidence.and_then(|value| value.links).unwrap_or(0),
+            evidence
+                .and_then(|value| value.title.as_deref())
+                .unwrap_or("?"),
             matches!(outcome, AccountVerification::Authenticated { .. })
         ),
     );
@@ -424,7 +432,7 @@ mod tests {
         // verified origin is the wrong place to look.
         assert_eq!(
             account_home_url("jd-consumer", Some("https://passport.jd.com")),
-            Some("https://www.jd.com".to_owned())
+            Some("https://home.jd.com/".to_owned())
         );
         assert_eq!(
             account_home_url("taobao-consumer", Some("https://login.taobao.com")),
@@ -432,7 +440,7 @@ mod tests {
         );
         assert_eq!(
             account_home_url("pinduoduo-consumer", None),
-            Some("https://mobile.yangkeduo.com".to_owned())
+            Some("https://mobile.yangkeduo.com/personal.html".to_owned())
         );
         // Whatever is chosen must still pass the provider origin check.
         for provider_id in ["taobao-consumer", "jd-consumer", "pinduoduo-consumer"] {

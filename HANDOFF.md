@@ -3440,3 +3440,32 @@ asserts.
 The logout-link invariant is now stated as what it actually protects: a sign-in
 selector must never match a login host generically, because on all three sites
 the logout link points at the login host.
+
+### The captures corrected two wrong assumptions — 2026-08-30
+
+Taobao works. The header captures showed JD and Pinduoduo were failing for
+reasons the selector evidence had pointed at wrongly.
+
+**Pinduoduo was never an empty page.** `links=0` was read as "nothing
+rendered". The capture shows a fully rendered mobile storefront, with the
+user's own previous search still in the box — the session was alive the whole
+time. Pinduoduo's mobile web uses `div` click handlers and has essentially no
+`<a>` elements, so a link count of zero is normal there. The real problem is
+that its mobile home has no account area at all.
+
+**JD's storefront home does not render its account bar.** The capture is a
+near-blank strip with only the logo: the top bar carrying "你好，请登录" or the
+nickname never appeared, which is why every selector, including the whole
+`#ttbar-login` fallback, found nothing on a "loaded" page.
+
+Both were the same mistake — looking at a page that cannot answer the question.
+Recovery now opens a page only a signed-in account can reach:
+`https://home.jd.com/` and `https://mobile.yangkeduo.com/personal.html`. Being
+there without having been bounced to a login page is itself live evidence, so
+the probes treat a login path, a login host or a login form as the negative and
+fall back to the page's own title as the positive. Signed out, both sites send
+the browser to a login page, whose path and title the sign-in-prompt rule
+already refuses.
+
+Evidence now also carries the page title, which is what distinguishes an
+account page from a login page.
