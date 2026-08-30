@@ -3532,3 +3532,160 @@ storage or text.
 - Removing a site removes its stored browser session too.
 
 Browser module: **38 tests pass**, `npx tsc --noEmit` passes.
+
+---
+
+# ===== HANDOFF TO NEXT AGENT — P15 Authenticated Browser — 2026-08-30 =====
+
+**Read this section first. It supersedes every earlier Browser section in this
+file where they conflict.** Everything above it is the chronological record of
+how these conclusions were reached; useful for *why*, not for *what is true now*.
+
+## 1. Do this before anything else
+
+The last commit has **never been compiled on macOS**. This session could not run
+`cargo` (the machine reaching the repo has no Rust toolchain and cannot build a
+macOS Tauri target). Everything was validated in an isolated harness against the
+real `tungstenite`, `sha2` and `base64` crates, plus `npx tsc --noEmit` — but the
+Tauri-coupled code in `connections.rs` and `lib.rs` has only been reviewed, not
+built.
+
+```bash
+cd ~/AI-OS/dashboard
+git status --short          # expect clean at 75e85a5
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test  --manifest-path src-tauri/Cargo.toml browser:: connections::
+npm run build
+bash verify/verify_p15_browser_managed_runtime.sh
+bash verify/verify_p15_browser_account_verification.sh
+bash verify/verify_p15_connections_onboarding.sh
+```
+
+If `cargo check` fails, it will be in `connections.rs` or `lib.rs`, most likely
+around the four new commands (`add_browser_site`, `remove_browser_site`,
+`confirm_browser_login`, `list_browser_sites`) or the `capabilities()` change.
+The `browser/` module itself compiled clean with **38 tests passing**.
+
+## 2. Status — accepted vs unproven
+
+| Area | Status |
+| --- | --- |
+| Managed browser lifecycle (ownership, reclaim, shutdown) | **Accepted**, real E2E |
+| Amazon: connect / disconnect / reconnect / restart recovery | **Accepted** by the user |
+| Taobao, JD, Pinduoduo: connect and restart recovery | **Accepted** by the user |
+| User-added arbitrary sites | **Implemented, never built or run** |
+| Microsoft Graph external E2E | Still blocked on `AI_OS_GRAPH_E2E_DRIVE_ID` |
+
+**P15 completion status is unchanged by all of this. Do not raise it.**
+
+## 3. The one bug that caused almost everything
+
+`std::process::Child` was treated as the browser. On macOS Chromium re-execs:
+the spawned process exits in ~200 ms while the real browser continues detached.
+That single wrong assumption produced the orphaned Chrome that held the profile
+`Singleton` lock, the verification that could never run (`control_port_for`
+demanded a live child), and a readiness fast-fail that broke every launch.
+
+**The rule now: the DevTools control channel is the authority on whether a
+browser exists, never the spawned child.** If you find yourself reaching for
+`child.try_wait()` to answer "is the browser alive", it is the wrong question.
+
+## 4. Invariants that must not be regressed
+
+The verifier scripts assert most of these. Breaking one silently is how this
+incident started.
+
+- Only processes in the private owned-process registry are terminated. **No
+  process scanning ever** — `pkill`, `killall`, `pgrep` are statically rejected.
+  The one exception is the profile reclaim, which acts on the single pid named
+  by the `SingletonLock` **inside AI-OS's own managed profile directory**, and
+  only after confirming that pid is still a supported browser.
+- A browser is asked to close (`Browser.close`) **before** it is killed. Only a
+  graceful exit releases the profile Singleton lock; a test asserts the ordering.
+- DevTools stays loopback-only, fail-closed.
+- `CONNECTED` requires live account evidence. A persisted profile, an opened
+  profile, a launched browser and previous Connected metadata are each, and
+  together, insufficient.
+- Restart recovery is headless; an explicit Connect/Reconnect is visible. A test
+  asserts a user login never gets `--headless=new`.
+- No credential, cookie, token, raw profile path or control port leaves the
+  runtime. Verifier probes never read `document.cookie`, `localStorage`,
+  `sessionStorage`; the generic site probe additionally never reads
+  `textContent`.
+- Amazon is region-aware. The verified origin is whatever regional site the user
+  actually signed in on, never assumed.
+- The launch never holds the registry lock across spawn/readiness, or one slow
+  launch freezes all of Connections.
+- `begin_browser_login`, `verify_browser_login`, `disconnect_connection_provider`
+  and `confirm_browser_login` are `async` + `spawn_blocking`. As synchronous
+  commands Tauri runs them on the main thread and the window freezes.
+
+## 5. How the pieces fit
+
+```text
+Connections
+  → begin_browser_login            visible managed browser at the login URL
+  → backend login watcher          verifies every 2s for 3 minutes
+  → RecoveredBrowserState          the single state authority
+  → list_connection_capabilities   reads that authority, launches nothing
+
+AI-OS start
+  → refresh_browser_site_registry  user sites must be known first
+  → begin_authenticated_browser_recovery
+      seeds Pending synchronously  → shown as "Connecting", never a wrong Expired
+      one thread per provider      → headless browser on the persisted profile
+      live verification            → Connected or Expired, browser closed
+      browser-connection://recovered
+```
+
+Files: `browser/authenticated_runtime.rs` (process/profile ownership),
+`browser/devtools.rs` (loopback transport), `browser/account_verifier.rs`
+(built-in provider evidence), `browser/site_registry.rs` (user-added sites),
+`browser/diagnostics.rs` (the on-disk record), `connections.rs` (state authority,
+recovery, commands).
+
+## 6. Diagnostics — use these instead of guessing
+
+This incident cost many rounds of blind selector guessing. It stopped the moment
+the code started reporting what it saw. All three are gitignored.
+
+- `browser-diagnostics.log` — every launch, close, reclaim, recovery and
+  verification outcome. The `[verifier]` line carries `matched=` (which candidate
+  selector hit), `login_present=`, `path=`, `ready=`, `links=`, `title=`.
+- `browser-launch-stderr.log` — the browser's own stderr, for a browser that
+  refuses to start.
+- `browser-page-<provider>.png` — the page header a failed recovery was looking
+  at, clipped to the top 220 px.
+
+**The captures corrected two conclusions that the text evidence had pointed at
+wrongly** (Pinduoduo's `links=0` was normal for a site with no `<a>` elements,
+not an empty page; JD's storefront simply never renders its account bar). If a
+provider fails, read the log and look at the capture before changing a selector.
+
+## 7. Known limits, stated honestly
+
+- **A force-killed AI-OS still orphans the browser.** Ctrl+C on a dev shell
+  cannot run shutdown. It is *recovered from* — the next launch reclaims the
+  profile — not prevented. Use a normal quit when testing shutdown.
+- **Provider selectors are DOM-shape dependent and will rot.** They fail closed,
+  so a stale selector shows `WAITING_FOR_USER` or `EXPIRED`, never a false
+  `CONNECTED`.
+- **Recovery costs ~15 s of headless browser work per connected provider** at
+  startup. Parallel across providers, off the UI thread, but not free.
+- **A user site verified structurally has no account identity.** AI-OS knows a
+  session on that site is valid, not whose it is. That is deliberate.
+- User sites are not in the Connect All ordering (`order` in
+  `ConnectionsCenter.tsx`, `ConnectAllOnboarding::new()`); they are connected
+  individually.
+- Adding a *built-in* provider still touches ~8 places across three files. If
+  more built-ins are planned, consolidate them into one table first — user sites
+  already avoid this entirely.
+
+## 8. Suggested next steps
+
+1. Build and run the checks in §1. Fix whatever `cargo check` finds.
+2. Exercise the user-added-site flow end to end on a real site. Prefer a site
+   with a "my account" page for the first test: that path needs no learning.
+3. If a site cannot be verified either way, the honest outcome is to tell the
+   user to name an account page — not to loosen the fail-closed rules.
+4. Then, separately, the Microsoft Graph fixture blocker.
