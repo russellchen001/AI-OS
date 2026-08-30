@@ -145,6 +145,22 @@ export default function ConnectionsCenter() {
     void refreshConnections();
   }, []);
 
+  // Restart recovery re-verifies persisted accounts in the background. The
+  // backend is the single authority, so a refresh landing later reads the same
+  // answer and cannot overwrite this with a stale Expired.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    void listen<{ providerId: string; state: ConnectionState }>(
+      "browser-connection://recovered",
+      ({ payload }) => {
+        setStates((current) => ({ ...current, [payload.providerId]: payload.state }));
+      },
+    ).then((stop) => {
+      unlisten = stop;
+    });
+    return () => unlisten?.();
+  }, []);
+
   const currentProvider = connectAllIndex === null ? undefined : order[connectAllIndex];
 
   useEffect(() => {

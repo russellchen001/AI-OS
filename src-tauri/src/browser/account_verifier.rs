@@ -20,7 +20,7 @@
 //! - anything unparsed, unexpected or unmatched resolves to not authenticated.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::authenticated_runtime::{control_port_for, origin_belongs_to_provider};
@@ -56,7 +56,13 @@ struct AccountProbePayload {
 ///
 /// The signal must come from a signed-in-only surface, never from the presence
 /// of a login form or from the URL.
-const AMAZON_PROBE: &str = r#"(function(){var l=document.querySelector('#nav-link-accountList-nav-line-1');var t=l?l.textContent.trim():'';var s=document.querySelector('#nav-item-signout, a[href*="/gp/flex/sign-out"]');var v=(t&&s)?t:null;return JSON.stringify({origin:location.origin,signal:v});})()"#;
+///
+/// Amazon's sign-out control lives in a flyout that is not always in the
+/// initial DOM, so requiring it made a signed-in account read as signed out.
+/// The evidence is instead the account greeting plus the absence of any
+/// sign-in affordance, which keeps the check fail-closed: no greeting, or any
+/// sign-in surface present, is never an authenticated account.
+const AMAZON_PROBE: &str = r#"(function(){var l=document.querySelector('#nav-link-accountList-nav-line-1');var t=l?l.textContent.trim():'';var signIn=document.querySelector('#nav-link-accountList[href*="/ap/signin"], #nav-signin-tooltip, form[action*="/ap/signin"], #ap_email, #ap_password');var v=(t&&!signIn)?t:null;return JSON.stringify({origin:location.origin,signal:v});})()"#;
 
 const TAOBAO_PROBE: &str = r#"(function(){var n=document.querySelector('.site-nav-login-info-nick, .site-nav-user .nick, #J_SiteNavLogin .site-nav-user');var t=n?n.textContent.trim():'';var o=document.querySelector('.site-nav-logout, a[href*="logout"]');var v=(t&&o)?t:null;return JSON.stringify({origin:location.origin,signal:v});})()"#;
 

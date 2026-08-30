@@ -3066,3 +3066,62 @@ always report back.
 
 This does not change BROWSER-B status. Restart recovery is still not
 implemented, and the lifecycle E2E in the section above is still the gate.
+
+---
+
+## BROWSER-B Restart Recovery — implemented 2026-08-30
+
+Goal: after an AI-OS restart, Amazon stays **Connected** without the user doing
+anything, and without a browser window appearing.
+
+### Flow
+
+```text
+AI-OS starts
+  -> Tauri setup seeds every previously verified provider as Pending
+  -> background thread opens a HEADLESS managed browser on the persisted
+     profile, at the origin the account was actually verified on
+  -> live provider verification, retried up to 12 times over ~18s
+  -> Connected or Expired written to the state authority
+  -> recovery browser closed
+  -> browser-connection://recovered emitted to the frontend
+```
+
+### One authoritative state path
+
+`RecoveredBrowserState` (Pending / WaitingForUser / Connected / Expired) is the
+single authority for browser-backed providers. Every path that learns something
+writes it: `begin_browser_login`, `verify_browser_login`, recovery, disconnect.
+
+`list_connection_capabilities` now only *reads* it. It launches no browser and
+speaks no DevTools, so it is fast and side-effect free, and a slow refresh can
+only read back the current answer. That removes the
+`Expired -> Connected -> stale Expired` regression by construction: there is no
+Expired until something decided one, and `Pending` surfaces as **Connecting**
+rather than a wrong Expired that a later event would have to correct.
+
+### Fail-closed guarantees kept
+
+- a persisted profile alone never produces Connected;
+- launching the recovery browser alone never produces Connected;
+- only live provider evidence does;
+- an account that never verified is not restorable at all;
+- a lost website session becomes Expired, never a preserved Connected;
+- recovery is headless; explicit Connect/Reconnect stays visible (asserted by
+  `only_recovery_runs_headless_and_a_user_login_never_does`);
+- the recovery browser is AI-OS-owned and closed after verification.
+
+### Amazon evidence change
+
+Requiring a sign-out control made a signed-in account read as signed out: that
+control lives in a flyout that is not always in the initial DOM, which is what
+produced `signal_present=false` during headless runs. The evidence is now the
+account greeting **plus the absence of any sign-in affordance**
+(`#nav-link-accountList[href*="/ap/signin"]`, `#nav-signin-tooltip`,
+`form[action*="/ap/signin"]`, `#ap_email`, `#ap_password`). Still fail-closed:
+no greeting, or any sign-in surface present, is never an authenticated account.
+
+### Verification
+
+Browser module **21 tests pass**; extracted connections logic **4 tests pass**;
+`npx tsc --noEmit` passes. Not yet built or run on macOS.

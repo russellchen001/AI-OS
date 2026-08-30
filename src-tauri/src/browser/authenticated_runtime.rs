@@ -71,6 +71,16 @@ impl ManagedBrowserKind {
     }
 }
 
+/// How a managed browser is put on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedBrowserLaunchMode {
+    /// Explicit Connect/Reconnect: the user has to see and use the login page.
+    Visible,
+    /// Restart recovery: re-verify the persisted account without putting a
+    /// window in front of the user.
+    Headless,
+}
+
 /// Discovery order is fixed and deterministic. It must not be reordered at
 /// runtime, so repeated runs on one machine always select the same browser.
 const MACOS_DISCOVERY_ORDER: [ManagedBrowserKind; 4] = [
@@ -157,7 +167,11 @@ fn control_endpoint(port: u16) -> String {
 
 /// Launch arguments always pin the managed profile and a loopback debugging
 /// address, and never point at a browser profile AI-OS does not own.
-fn launch_arguments(profile_directory: &Path, initial_url: Option<&str>) -> Vec<String> {
+fn launch_arguments(
+    profile_directory: &Path,
+    initial_url: Option<&str>,
+    mode: ManagedBrowserLaunchMode,
+) -> Vec<String> {
     let mut arguments = vec![
         format!("--user-data-dir={}", profile_directory.display()),
         "--remote-debugging-port=0".to_owned(),
@@ -165,7 +179,14 @@ fn launch_arguments(profile_directory: &Path, initial_url: Option<&str>) -> Vec<
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
     ];
-    // Only an https destination may be handed to the managed browser.
+    if mode == ManagedBrowserLaunchMode::Headless {
+        // Recovery re-verifies an account the user already signed in to. It
+        // must never steal focus with a window.
+        arguments.push("--headless=new".to_owned());
+        arguments.push("--window-size=1280,900".to_owned());
+    }
+    // Only an https destination may be handed to the managed browser, and it
+    // stays last so it is the page the browser opens.
     if let Some(url) = initial_url.filter(|url| url.starts_with("https://")) {
         arguments.push(url.to_owned());
     }
@@ -475,7 +496,7 @@ pub(crate) fn open_authenticated_browser(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<ManagedBrowserSession, String> {
-    open_managed_browser(&app, &provider_id, None)
+    open_managed_browser(&app, &provider_id, None, ManagedBrowserLaunchMode::Visible)
 }
 
 /// Internal entry point. `initial_url` is the provider login destination the
@@ -485,6 +506,7 @@ pub(crate) fn open_managed_browser(
     app: &tauri::AppHandle,
     provider_id: &str,
     initial_url: Option<&str>,
+    mode: ManagedBrowserLaunchMode,
 ) -> Result<ManagedBrowserSession, String> {
     let provider_id = validate_provider_id(provider_id)?.to_owned();
     let app_data_dir = app_data_directory(app)?;
@@ -566,7 +588,7 @@ pub(crate) fn open_managed_browser(
         .ok_or_else(|| "No supported managed browser was found".to_owned())?;
 
     let child = Command::new(browser_kind.executable_path())
-        .args(launch_arguments(&profile_directory, initial_url))
+        .args(launch_arguments(&profile_directory, initial_url, mode))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -754,11 +776,6 @@ pub(crate) fn control_port_for(provider_id: &str) -> Option<u16> {
     Some(process.control_port).filter(|port| *port != 0)
 }
 
-/// True when AI-OS owns a live managed browser for this provider.
-pub(crate) fn managed_browser_is_running(provider_id: &str) -> bool {
-    control_port_for(provider_id).is_some()
-}
-
 /// Open a provider login destination in the browser AI-OS already owns.
 fn open_managed_tab(control_port: u16, url: &str) -> Result<(), String> {
     let browser_channel = devtools::browser_websocket_url(control_port)?;
@@ -922,7 +939,7 @@ mod tests {
     #[test]
     fn launch_arguments_pin_the_managed_profile_and_a_loopback_debug_channel() {
         let profile = managed_profile_directory(&app_data(), "jd-consumer").unwrap();
-        let arguments = launch_arguments(&profile, None);
+        let arguments = launch_arguments(&profile, None, ManagedBrowserLaunchMode::Visible);
 
         assert!(arguments
             .iter()
@@ -940,19 +957,61 @@ mod tests {
         }
 
         // A login destination is handed to the managed browser only over https.
-        let with_login = launch_arguments(&profile, Some("https://passport.jd.com/new/login.aspx"));
+        let with_login = launch_arguments(
+            &profile,
+            Some("https://passport.jd.com/new/login.aspx"),
+            ManagedBrowserLaunchMode::Visible,
+        );
         assert_eq!(
             with_login.last().map(String::as_str),
             Some("https://passport.jd.com/new/login.aspx")
         );
         assert_eq!(
-            launch_arguments(&profile, Some("http://passport.jd.com/new/login.aspx")),
+            launch_arguments(
+                &profile,
+                Some("http://passport.jd.com/new/login.aspx"),
+                ManagedBrowserLaunchMode::Visible
+            ),
             arguments
         );
         assert_eq!(
-            launch_arguments(&profile, Some("file:///etc/passwd")),
+            launch_arguments(&profile, Some("file:///etc/passwd"), ManagedBrowserLaunchMode::Visible),
             arguments
         );
+    }
+
+    #[test]
+    fn only_recovery_runs_headless_and_a_user_login_never_does() {
+        let profile = managed_profile_directory(&app_data(), "amazon-consumer").unwrap();
+
+        let visible = launch_arguments(
+            &profile,
+            Some("https://www.amazon.com/ap/signin"),
+            ManagedBrowserLaunchMode::Visible,
+        );
+        assert!(
+            !visible.iter().any(|argument| argument.contains("--headless")),
+            "the user has to be able to see the login page"
+        );
+
+        let recovery = launch_arguments(
+            &profile,
+            Some("https://www.amazon.co.jp"),
+            ManagedBrowserLaunchMode::Headless,
+        );
+        assert!(recovery.iter().any(|argument| argument == "--headless=new"));
+        // The destination stays last so it is the page the browser opens.
+        assert_eq!(
+            recovery.last().map(String::as_str),
+            Some("https://www.amazon.co.jp")
+        );
+        // Recovery still uses the AI-OS profile and the loopback channel.
+        assert!(recovery
+            .iter()
+            .any(|argument| argument == &format!("--user-data-dir={}", profile.display())));
+        assert!(recovery
+            .iter()
+            .any(|argument| argument == "--remote-debugging-address=127.0.0.1"));
     }
 
     #[test]

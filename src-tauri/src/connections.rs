@@ -1,11 +1,13 @@
 use crate::browser::account_verifier::{verify_managed_account, AccountVerification};
 use crate::browser::authenticated_runtime::{
-    close_managed_browser, managed_browser_is_running, open_managed_browser, remove_managed_profile,
+    close_managed_browser, open_managed_browser, remove_managed_profile, ManagedBrowserLaunchMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use tauri::Manager;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+use tauri::{Emitter, Manager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -449,18 +451,59 @@ impl BrowserLoginSession {
     }
 }
 
-/// Browser-backed connection state after a Connections refresh or an app
-/// restart. Fail-closed: a persisted profile is never enough on its own.
-fn restored_browser_state(
+/// What live evidence has decided about a browser-backed provider in this
+/// process. This is the single authority: every path that learns something new
+/// writes it here, so a slow Connections refresh can only ever read back the
+/// current answer instead of overwriting a newer one with a stale value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveredBrowserState {
+    /// Restart recovery is still checking this account.
+    Pending,
+    /// A login is open and the user has not finished yet.
+    WaitingForUser,
+    /// Live account evidence was observed.
+    Connected,
+    /// Live evidence was required and not found.
+    Expired,
+}
+
+fn recovery_cache() -> &'static Mutex<BTreeMap<String, RecoveredBrowserState>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, RecoveredBrowserState>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn set_recovered_state(provider_id: &str, state: RecoveredBrowserState) {
+    if let Ok(mut cache) = recovery_cache().lock() {
+        cache.insert(provider_id.to_owned(), state);
+    }
+}
+
+fn recovered_state(provider_id: &str) -> Option<RecoveredBrowserState> {
+    recovery_cache().lock().ok()?.get(provider_id).copied()
+}
+
+fn clear_recovered_state(provider_id: &str) {
+    if let Ok(mut cache) = recovery_cache().lock() {
+        cache.remove(provider_id);
+    }
+}
+
+/// Browser-backed connection state. Fail-closed: a persisted profile is never
+/// enough on its own, and `Connected` only ever comes from live evidence that
+/// something already recorded in the cache.
+fn resolved_browser_state(
+    recovered: Option<RecoveredBrowserState>,
     previously_verified: bool,
-    managed_browser_running: bool,
-    live_verified: bool,
 ) -> UnifiedConnectionState {
-    match (previously_verified, managed_browser_running, live_verified) {
-        (_, true, true) => UnifiedConnectionState::Connected,
-        (true, _, _) => UnifiedConnectionState::Expired,
-        (false, true, false) => UnifiedConnectionState::WaitingForUser,
-        (false, false, _) => UnifiedConnectionState::Disconnected,
+    match recovered {
+        Some(RecoveredBrowserState::Connected) => UnifiedConnectionState::Connected,
+        Some(RecoveredBrowserState::Pending) => UnifiedConnectionState::Connecting,
+        Some(RecoveredBrowserState::WaitingForUser) => UnifiedConnectionState::WaitingForUser,
+        Some(RecoveredBrowserState::Expired) => UnifiedConnectionState::Expired,
+        // Nothing has been decided this run. A previously verified account is
+        // reconnectable; one that never verified was never connected.
+        None if previously_verified => UnifiedConnectionState::Expired,
+        None => UnifiedConnectionState::Disconnected,
     }
 }
 
@@ -563,14 +606,12 @@ pub(crate) fn list_connection_capabilities(app: tauri::AppHandle) -> Vec<Connect
                 .get(&capability.provider_id)
                 .and_then(|session| session.last_verified_at.as_ref())
                 .is_some();
-            let running = managed_browser_is_running(&capability.provider_id);
-            // The live probe only runs against a browser AI-OS already owns.
-            let live_verified = running
-                && matches!(
-                    verify_managed_account(&capability.provider_id),
-                    Ok(AccountVerification::Authenticated { .. })
-                );
-            capability.state = restored_browser_state(previously_verified, running, live_verified);
+            // Listing never launches a browser or talks DevTools: it reports
+            // what live evidence has already decided.
+            capability.state = resolved_browser_state(
+                recovered_state(&capability.provider_id),
+                previously_verified,
+            );
             capability
         })
         .collect()
@@ -628,8 +669,10 @@ pub(crate) fn begin_browser_login(
         &app,
         &capability.provider_id,
         capability.login_url.as_deref(),
+        ManagedBrowserLaunchMode::Visible,
     )?;
 
+    set_recovered_state(&capability.provider_id, RecoveredBrowserState::WaitingForUser);
     save_browser_profile(&app, &session)?;
     Ok(session)
 }
@@ -643,8 +686,128 @@ pub(crate) fn verify_browser_login(
     // never sufficient, and a browser AI-OS does not own is never inspected.
     let verification = verify_managed_account(&session.provider_id)?;
     session.apply_account_verification(&verification);
+    record_session_state(&session);
     save_browser_profile(&app, &session)?;
     Ok(session)
+}
+
+/// Mirror a decided session into the state authority. A session still waiting
+/// for the user is not a decision, so it does not overwrite one.
+fn record_session_state(session: &BrowserLoginSession) {
+    match session.state {
+        UnifiedConnectionState::Connected => {
+            set_recovered_state(&session.provider_id, RecoveredBrowserState::Connected)
+        }
+        UnifiedConnectionState::Expired => {
+            set_recovered_state(&session.provider_id, RecoveredBrowserState::Expired)
+        }
+        _ => {}
+    }
+}
+
+const RECOVERY_ATTEMPTS: usize = 12;
+const RECOVERY_ATTEMPT_INTERVAL: Duration = Duration::from_millis(1500);
+
+/// Restore browser-backed connections after an AI-OS restart.
+///
+/// Called from Tauri setup. The seeding below happens synchronously so the very
+/// first capability listing already reports "checking" instead of a wrong
+/// Expired that a later event would have to correct.
+pub(crate) fn begin_authenticated_browser_recovery(app: tauri::AppHandle) {
+    let restorable: Vec<BrowserLoginSession> = load_browser_profiles(&app)
+        .unwrap_or_default()
+        .into_values()
+        // An account that never verified was never connected: there is nothing
+        // to restore, and a persisted profile alone must never imply Connected.
+        .filter(|session| session.last_verified_at.is_some())
+        .collect();
+
+    if restorable.is_empty() {
+        return;
+    }
+
+    for session in &restorable {
+        set_recovered_state(&session.provider_id, RecoveredBrowserState::Pending);
+    }
+
+    std::thread::spawn(move || {
+        for session in restorable {
+            let state = recover_browser_connection(&app, &session);
+            set_recovered_state(&session.provider_id, state);
+            let _ = app.emit(
+                "browser-connection://recovered",
+                serde_json::json!({
+                    "providerId": session.provider_id,
+                    "state": match state {
+                        RecoveredBrowserState::Connected => "CONNECTED",
+                        _ => "EXPIRED",
+                    },
+                }),
+            );
+        }
+    });
+}
+
+/// Re-verify one account against its persisted profile, without a window.
+///
+/// Opening the profile proves nothing on its own; only the live provider
+/// verifier can produce Connected. The recovery browser is closed either way.
+fn recover_browser_connection(
+    app: &tauri::AppHandle,
+    session: &BrowserLoginSession,
+) -> RecoveredBrowserState {
+    let Some(capability) = capabilities()
+        .into_iter()
+        .find(|item| item.provider_id == session.provider_id)
+    else {
+        return RecoveredBrowserState::Expired;
+    };
+
+    // Go back to the regional site the account was actually verified on, not to
+    // an assumed one.
+    let destination = session
+        .verified_origin
+        .clone()
+        .or_else(|| capability.login_url.clone());
+
+    if open_managed_browser(
+        app,
+        &session.provider_id,
+        destination.as_deref(),
+        ManagedBrowserLaunchMode::Headless,
+    )
+    .is_err()
+    {
+        return RecoveredBrowserState::Expired;
+    }
+
+    let mut verification = AccountVerification::NotAuthenticated;
+    for attempt in 0..RECOVERY_ATTEMPTS {
+        match verify_managed_account(&session.provider_id) {
+            Ok(found @ AccountVerification::Authenticated { .. }) => {
+                verification = found;
+                break;
+            }
+            Ok(other) => verification = other,
+            Err(_) => break,
+        }
+        if attempt + 1 < RECOVERY_ATTEMPTS {
+            std::thread::sleep(RECOVERY_ATTEMPT_INTERVAL);
+        }
+    }
+
+    let mut restored = session.clone();
+    restored.apply_account_verification(&verification);
+    let _ = save_browser_profile(app, &restored);
+
+    // The recovery browser exists only to answer this question.
+    let _ = close_managed_browser(&session.provider_id);
+
+    if matches!(restored.state, UnifiedConnectionState::Connected) {
+        RecoveredBrowserState::Connected
+    } else {
+        RecoveredBrowserState::Expired
+    }
 }
 
 #[tauri::command]
@@ -666,6 +829,7 @@ pub(crate) fn disconnect_connection_provider(
         // started, and the managed profile beneath application data.
         close_managed_browser(&capability.provider_id)?;
         remove_managed_profile(&app, &capability.provider_id)?;
+        clear_recovered_state(&capability.provider_id);
         return remove_browser_profile(&app, &capability.provider_id);
     }
     Ok(true)
@@ -919,34 +1083,89 @@ mod tests {
     }
 
     #[test]
-    fn restart_and_profile_reuse_never_blindly_restore_connected() {
-        // Previously verified, but AI-OS owns no live managed browser.
+    fn restart_recovery_reports_checking_and_never_invents_connected() {
+        // Nothing decided yet and never verified before: not connectable.
         assert_eq!(
-            restored_browser_state(true, false, false),
-            UnifiedConnectionState::Expired
-        );
-        // Managed browser is running but the account no longer verifies.
-        assert_eq!(
-            restored_browser_state(true, true, false),
-            UnifiedConnectionState::Expired
-        );
-        // Only a live account verification restores Connected.
-        assert_eq!(
-            restored_browser_state(true, true, true),
-            UnifiedConnectionState::Connected
-        );
-        assert_eq!(
-            restored_browser_state(false, true, true),
-            UnifiedConnectionState::Connected
-        );
-        assert_eq!(
-            restored_browser_state(false, true, false),
-            UnifiedConnectionState::WaitingForUser
-        );
-        assert_eq!(
-            restored_browser_state(false, false, false),
+            resolved_browser_state(None, false),
             UnifiedConnectionState::Disconnected
         );
+        // Previously verified, but nothing has re-verified it this run.
+        assert_eq!(
+            resolved_browser_state(None, true),
+            UnifiedConnectionState::Expired
+        );
+        // Recovery in flight is reported honestly, never as Connected and
+        // never as an Expired a later event would have to correct.
+        assert_eq!(
+            resolved_browser_state(Some(RecoveredBrowserState::Pending), true),
+            UnifiedConnectionState::Connecting
+        );
+        // Only live evidence produces Connected.
+        assert_eq!(
+            resolved_browser_state(Some(RecoveredBrowserState::Connected), true),
+            UnifiedConnectionState::Connected
+        );
+        assert_eq!(
+            resolved_browser_state(Some(RecoveredBrowserState::Expired), true),
+            UnifiedConnectionState::Expired
+        );
+        assert_eq!(
+            resolved_browser_state(Some(RecoveredBrowserState::WaitingForUser), false),
+            UnifiedConnectionState::WaitingForUser
+        );
+    }
+
+    #[test]
+    fn only_a_decided_session_writes_the_state_authority() {
+        let mut session =
+            BrowserLoginSession::waiting("pinduoduo-consumer", "browser-profile:pinduoduo-consumer")
+                .unwrap();
+
+        // Still waiting for the user is not a decision and must not overwrite.
+        set_recovered_state("pinduoduo-consumer", RecoveredBrowserState::Pending);
+        record_session_state(&session);
+        assert_eq!(
+            recovered_state("pinduoduo-consumer"),
+            Some(RecoveredBrowserState::Pending)
+        );
+
+        session.apply_account_verification(&AccountVerification::Authenticated {
+            verified_origin: "https://mobile.yangkeduo.com".to_owned(),
+            account_marker: "account-9f3c1a2b4d5e".to_owned(),
+        });
+        record_session_state(&session);
+        assert_eq!(
+            recovered_state("pinduoduo-consumer"),
+            Some(RecoveredBrowserState::Connected)
+        );
+
+        session.apply_account_verification(&AccountVerification::NotAuthenticated);
+        record_session_state(&session);
+        assert_eq!(
+            recovered_state("pinduoduo-consumer"),
+            Some(RecoveredBrowserState::Expired)
+        );
+
+        clear_recovered_state("pinduoduo-consumer");
+        assert_eq!(recovered_state("pinduoduo-consumer"), None);
+    }
+
+    #[test]
+    fn a_lost_account_expires_instead_of_staying_connected() {
+        let mut session =
+            BrowserLoginSession::waiting("amazon-consumer", "browser-profile:amazon-consumer")
+                .unwrap();
+        session.apply_account_verification(&AccountVerification::Authenticated {
+            verified_origin: "https://www.amazon.co.jp".to_owned(),
+            account_marker: "account-1a2b3c4d5e6f".to_owned(),
+        });
+        assert_eq!(session.state, UnifiedConnectionState::Connected);
+
+        // Recovery ran and the website session was gone.
+        session.apply_account_verification(&AccountVerification::NotAuthenticated);
+        assert_eq!(session.state, UnifiedConnectionState::Expired);
+        assert!(session.verified_origin.is_none());
+        assert!(session.account_marker.is_none());
     }
 
     #[test]
