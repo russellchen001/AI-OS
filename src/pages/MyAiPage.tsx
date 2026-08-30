@@ -307,6 +307,21 @@ function MyAiPage({
       setOmlxLoading(false);
     }
   }
+
+  async function refreshOmlxRuntime(startIfStopped = false) {
+    setOmlxLoading(true);
+    try {
+      let status = await invoke<OmlxRuntimeStatus>("get_omlx_runtime_status");
+      if (startIfStopped && status.supported && status.installed && !status.running) {
+        status = await invoke<OmlxRuntimeStatus>("start_omlx_runtime");
+      }
+      setOmlxRuntime(status);
+    } catch {
+      setOmlxRuntime((current) => current ? { ...current, running: false } : null);
+    } finally {
+      setOmlxLoading(false);
+    }
+  }
   const [setup, setSetup] = useState<{
     providerId: string;
     provider: string;
@@ -366,7 +381,7 @@ function MyAiPage({
   }, []);
 
   useEffect(() => {
-    if (omlxInstance) void refreshOmlx(true);
+    if (omlxInstance) void refreshOmlxRuntime(true);
   }, [Boolean(omlxInstance)]);
 
   useEffect(() => {

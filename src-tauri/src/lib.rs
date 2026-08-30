@@ -10,6 +10,7 @@ mod email_calendar;
 mod external_connector;
 mod filesystem;
 mod google_workspace;
+mod keychain_trace;
 mod health;
 mod logs;
 mod macos_permissions;

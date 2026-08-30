@@ -353,6 +353,12 @@ export function oauthConnectionState(
   instance: ProviderInstance,
   now = Date.now(),
 ): ProviderInstance["connectionState"] {
+  if (
+    instance.connectionState === "connected" &&
+    (instance.providerId === "microsoft-graph" || instance.providerId === "google-workspace")
+  ) {
+    return "connected";
+  }
   if (instance.credential.kind !== "oauth" || !instance.credential.expiresAt) {
     return instance.connectionState;
   }
@@ -390,34 +396,6 @@ Promise<ProviderInstance[]> {
           "list_provider_instances",
         )
       ).filter(isProviderInstance);
-
-      const microsoft = native.find(
-        (instance) => instance.id === "microsoft-graph-default",
-      );
-      if (microsoft?.credential.kind === "oauth") {
-        try {
-          await invoke("get_microsoft_graph_identity");
-          const verified = {
-            ...microsoft,
-            connectionState: "connected" as const,
-            lastTestedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
-          await invoke("save_provider_instance", { instance: verified });
-          native = native.map((item) => item.id === verified.id ? verified : item);
-        } catch (error) {
-          const message = String(error);
-          const failed = {
-            ...microsoft,
-            connectionState: message.includes("expired") || message.includes("reconnect")
-              ? "expired" as const
-              : "error" as const,
-            updatedAt: new Date().toISOString(),
-          };
-          await invoke("save_provider_instance", { instance: failed }).catch(() => undefined);
-          native = native.map((item) => item.id === failed.id ? failed : item);
-        }
-      }
 
       if (
         native.length === 0 &&

@@ -25,6 +25,56 @@ const OMLX_EXECUTION_MODEL: &str = "Qwen3.5-9B-4bit";
 
 const PROVIDER_INSTANCES_FILE: &str = "provider-instances.json";
 
+#[derive(Default)]
+struct ProviderCredentialCache {
+    secrets: Mutex<HashMap<String, Vec<u8>>>,
+}
+
+impl ProviderCredentialCache {
+    fn load(
+        &self,
+        account: &str,
+        caller: &str,
+        load_from_keychain: impl FnOnce() -> Result<Option<Vec<u8>>, String>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let mut secrets = self
+            .secrets
+            .lock()
+            .map_err(|_| "Provider credential cache is unavailable".to_owned())?;
+        if let Some(secret) = secrets.get(account) {
+            crate::keychain_trace::record("READ", caller, KEYCHAIN_SERVICE, account, "HIT");
+            return Ok(Some(secret.clone()));
+        }
+        crate::keychain_trace::record("READ", caller, KEYCHAIN_SERVICE, account, "MISS");
+        let secret = load_from_keychain()?;
+        if let Some(secret) = secret.as_ref() {
+            secrets.insert(account.to_owned(), secret.clone());
+        }
+        Ok(secret)
+    }
+
+    fn store(&self, account: &str, secret: &[u8]) -> Result<(), String> {
+        self.secrets
+            .lock()
+            .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+            .insert(account.to_owned(), secret.to_vec());
+        Ok(())
+    }
+
+    fn remove(&self, account: &str) -> Result<(), String> {
+        self.secrets
+            .lock()
+            .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+            .remove(account);
+        Ok(())
+    }
+}
+
+fn provider_credential_cache() -> &'static ProviderCredentialCache {
+    static CACHE: OnceLock<ProviderCredentialCache> = OnceLock::new();
+    CACHE.get_or_init(ProviderCredentialCache::default)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OmlxRuntimeStatus {
@@ -51,7 +101,7 @@ struct OmlxAdminModels {
 }
 
 async fn omlx_admin_session(client: &reqwest::Client) -> Result<String, String> {
-    let credential = read_current_credential("omlx-local").await?;
+    let credential = read_current_credential("omlx-local", "omlx_admin_session").await?;
     let response = client
         .post(format!("{OMLX_ADMIN_URL}/login"))
         .json(&serde_json::json!({ "api_key": credential.value, "remember": false }))
@@ -271,9 +321,7 @@ pub(crate) async fn start_omlx_runtime() -> Result<OmlxRuntimeStatus, String> {
 pub(crate) async fn auto_start_connected_omlx() {
     let connected = read_provider_instances().is_ok_and(|instances| has_connected_omlx(&instances));
     if connected && omlx_supported() && omlx_installed() {
-        if start_omlx_runtime().await.is_ok() {
-            let _ = configure_omlx_openclaw_execution();
-        }
+        let _ = start_omlx_runtime().await;
     }
 }
 
@@ -380,7 +428,10 @@ pub(crate) fn configure_omlx_openclaw_execution() -> Result<String, String> {
     let home = dirs::home_dir().ok_or_else(|| "Home directory is unavailable".to_owned())?;
     let openclaw_directory = home.join(".openclaw");
     let secret_path = openclaw_directory.join("ai-os-secrets/omlx-api-key");
-    write_private_file(&secret_path, &read_secret("omlx-local")?)?;
+    write_private_file(
+        &secret_path,
+        &read_secret("omlx-local", "openclaw_credential_export")?,
+    )?;
 
     let config_path = openclaw_directory.join("openclaw.json");
     let mut config: Value = serde_json::from_slice(
@@ -859,6 +910,13 @@ impl std::fmt::Debug for OAuthSession {
 
 #[cfg(target_os = "macos")]
 fn read_oauth_client_secret(provider_id: &str) -> Result<Option<String>, String> {
+    crate::keychain_trace::record(
+        "READ",
+        "oauth_client_secret",
+        OAUTH_CLIENT_KEYCHAIN_SERVICE,
+        provider_id,
+        "MISS",
+    );
     match security_framework::passwords::get_generic_password(
         OAUTH_CLIENT_KEYCHAIN_SERVICE,
         provider_id,
@@ -1869,33 +1927,58 @@ fn validate_instance_id(value: &str) -> Result<&str, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn store_secret(account: &str, secret: &[u8]) -> Result<(), String> {
+fn store_secret(account: &str, secret: &[u8], caller: &str) -> Result<(), String> {
+    crate::keychain_trace::record(
+        "WRITE_UPSERT",
+        caller,
+        KEYCHAIN_SERVICE,
+        account,
+        "UPDATE",
+    );
     security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, account, secret)
-        .map_err(|_| "macOS Keychain could not store the Provider credential".to_owned())
+        .map_err(|_| "macOS Keychain could not store the Provider credential".to_owned())?;
+    provider_credential_cache().store(account, secret)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn store_secret(_account: &str, _secret: &[u8]) -> Result<(), String> {
+fn store_secret(_account: &str, _secret: &[u8], _caller: &str) -> Result<(), String> {
     Err("secure Provider credentials are not supported on this platform".to_owned())
 }
 
 #[cfg(target_os = "macos")]
-fn secret_exists(account: &str) -> Result<bool, String> {
-    match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account) {
-        Ok(secret) => Ok(!secret.is_empty()),
-        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(false),
-        Err(_) => Err("macOS Keychain credential status is unavailable".to_owned()),
-    }
+fn secret_exists(account: &str, caller: &str) -> Result<bool, String> {
+    provider_credential_cache()
+        .load(
+            account,
+            caller,
+            || match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account)
+            {
+                Ok(secret) => Ok(Some(secret)),
+                Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
+                Err(_) => Err("macOS Keychain credential status is unavailable".to_owned()),
+            },
+        )
+        .map(|secret| secret.is_some_and(|secret| !secret.is_empty()))
 }
 
 #[cfg(target_os = "macos")]
-fn read_secret(account: &str) -> Result<Vec<u8>, String> {
-    security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account)
-        .map_err(|_| "Provider credential is missing from macOS Keychain".to_owned())
+fn read_secret(account: &str, caller: &str) -> Result<Vec<u8>, String> {
+    provider_credential_cache()
+        .load(
+            account,
+            caller,
+            || match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account)
+            {
+                Ok(secret) => Ok(Some(secret)),
+                Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
+                Err(_) => Err("Provider credential is missing from macOS Keychain".to_owned()),
+            },
+        )?
+        .ok_or_else(|| "Provider credential is missing from macOS Keychain".to_owned())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_secret(_account: &str) -> Result<Vec<u8>, String> {
+fn read_secret(_account: &str, _caller: &str) -> Result<Vec<u8>, String> {
     Err("secure Provider credentials are not supported on this platform".to_owned())
 }
 
@@ -1950,6 +2033,7 @@ async fn refresh_oauth_token(account: &str, token: &Value) -> Result<Value, Stri
         account,
         &serde_json::to_vec(&merged)
             .map_err(|_| "AI-OS could not secure the refreshed OAuth token".to_owned())?,
+        "oauth_auto_refresh",
     )?;
     Ok(merged)
 }
@@ -2008,7 +2092,7 @@ pub(crate) async fn refresh_provider_oauth(
     query: ProviderCredentialQuery,
 ) -> Result<RefreshOAuthResult, String> {
     let account = validate_instance_id(&query.provider_instance_id)?;
-    let secret = read_secret(account)?;
+    let secret = read_secret(account, "oauth_manual_refresh")?;
     let token = serde_json::from_slice::<Value>(&secret)
         .map_err(|_| "Provider credential is not an OAuth token".to_owned())?;
     let refreshed = refresh_oauth_token(account, &token).await?;
@@ -2166,6 +2250,7 @@ pub(crate) async fn complete_grok_device_auth(
                 &session.provider_instance_id,
                 &serde_json::to_vec(&token)
                     .map_err(|_| "AI-OS could not secure the Grok token".to_owned())?,
+                "grok_device_auth_completion",
             )?;
             grok_device_sessions()
                 .lock()
@@ -2341,6 +2426,7 @@ pub(crate) async fn complete_kimi_device_auth(
                 &session.provider_instance_id,
                 &serde_json::to_vec(&token)
                     .map_err(|_| "AI-OS could not secure the Kimi Code token".to_owned())?,
+                "kimi_device_auth_completion",
             )?;
             kimi_device_sessions()
                 .lock()
@@ -2393,8 +2479,11 @@ struct CurrentProviderCredential {
     account_id: Option<String>,
 }
 
-async fn read_current_credential(account: &str) -> Result<CurrentProviderCredential, String> {
-    let secret = read_secret(account)?;
+async fn read_current_credential(
+    account: &str,
+    caller: &str,
+) -> Result<CurrentProviderCredential, String> {
+    let secret = read_secret(account, caller)?;
     let Ok(mut token) = serde_json::from_slice::<Value>(&secret) else {
         return String::from_utf8(secret)
             .map(|value| CurrentProviderCredential {
@@ -2492,21 +2581,24 @@ fn authenticate_provider_request(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn secret_exists(_account: &str) -> Result<bool, String> {
+fn secret_exists(_account: &str, _caller: &str) -> Result<bool, String> {
     Err("secure Provider credentials are not supported on this platform".to_owned())
 }
 
 #[cfg(target_os = "macos")]
-fn remove_secret(account: &str) -> Result<(), String> {
+fn remove_secret(account: &str, caller: &str) -> Result<(), String> {
+    crate::keychain_trace::record("DELETE", caller, KEYCHAIN_SERVICE, account, "INVALIDATE");
     match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, account) {
-        Ok(()) => Ok(()),
-        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(()),
+        Ok(()) => provider_credential_cache().remove(account),
+        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => {
+            provider_credential_cache().remove(account)
+        }
         Err(_) => Err("macOS Keychain could not remove the Provider credential".to_owned()),
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn remove_secret(_account: &str) -> Result<(), String> {
+fn remove_secret(_account: &str, _caller: &str) -> Result<(), String> {
     Err("secure Provider credentials are not supported on this platform".to_owned())
 }
 
@@ -2519,7 +2611,7 @@ pub(crate) fn set_provider_credential(
         return Err("provider credential must not be empty".to_owned());
     }
 
-    store_secret(account, input.secret.as_bytes())?;
+    store_secret(account, input.secret.as_bytes(), "provider_credential_set")?;
     Ok(ProviderCredentialStatus {
         provider_instance_id: account.to_owned(),
         has_credential: true,
@@ -2533,7 +2625,7 @@ pub(crate) fn get_provider_credential_status(
     let account = validate_instance_id(&query.provider_instance_id)?;
     Ok(ProviderCredentialStatus {
         provider_instance_id: account.to_owned(),
-        has_credential: secret_exists(account)?,
+        has_credential: secret_exists(account, "provider_credential_status")?,
     })
 }
 
@@ -2542,7 +2634,7 @@ pub(crate) fn delete_provider_credential(
     query: ProviderCredentialQuery,
 ) -> Result<ProviderCredentialStatus, String> {
     let account = validate_instance_id(&query.provider_instance_id)?;
-    remove_secret(account)?;
+    remove_secret(account, "provider_credential_delete")?;
     Ok(ProviderCredentialStatus {
         provider_instance_id: account.to_owned(),
         has_credential: false,
@@ -2603,7 +2695,7 @@ async fn discover_models(
         .build()
         .map_err(|_| "AI-OS could not initialize the Provider connection".to_owned())?;
     let credential = if !matches!(spec.auth, AuthStyle::None) {
-        Some(read_current_credential(instance_id).await?)
+        Some(read_current_credential(instance_id, "provider_model_discovery").await?)
     } else {
         None
     };
@@ -2921,7 +3013,11 @@ async fn complete_oauth_exchange(
     let stored = serde_json::to_vec(&token)
         .map_err(|_| "AI-OS could not secure the OAuth token".to_owned())?;
 
-    store_secret(&session.provider_instance_id, &stored)?;
+    store_secret(
+        &session.provider_instance_id,
+        &stored,
+        "oauth_completion",
+    )?;
 
     Ok(CompleteOAuthResult {
         provider_instance_id: session.provider_instance_id,
@@ -2931,9 +3027,11 @@ async fn complete_oauth_exchange(
 }
 
 pub(crate) async fn provider_access_token(instance_id: &str) -> Result<String, String> {
-    Ok(read_current_credential(validate_instance_id(instance_id)?)
-        .await?
-        .value)
+    Ok(
+        read_current_credential(validate_instance_id(instance_id)?, "provider_access_token")
+            .await?
+            .value,
+    )
 }
 
 fn chatgpt_account_id_from_jwt(token: &str) -> Option<String> {
@@ -3360,7 +3458,7 @@ pub(crate) async fn generate_provider_response(
     let secret = if matches!(spec.auth, AuthStyle::None) {
         None
     } else {
-        Some(read_current_credential(instance_id).await?)
+        Some(read_current_credential(instance_id, "ai_center_generate").await?)
     };
     let uses_openai_codex = secret
         .as_ref()
@@ -3654,7 +3752,11 @@ async fn send_omlx_stream_request(
         .timeout(Duration::from_secs(600))
         .build()
         .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
-    let credential = read_current_credential(&candidate.provider_instance_id).await?;
+    let credential = read_current_credential(
+        &candidate.provider_instance_id,
+        "ai_center_omlx_stream",
+    )
+    .await?;
     let request = authenticate_provider_request(
         client.post("http://127.0.0.1:8000/v1/chat/completions"),
         AuthStyle::Bearer,
@@ -3973,7 +4075,7 @@ pub(crate) async fn start_provider_response_stream(
     let secret = if matches!(spec.auth, AuthStyle::None) {
         None
     } else {
-        Some(read_current_credential(instance_id).await?)
+        Some(read_current_credential(instance_id, "ai_center_provider_stream").await?)
     };
     let uses_openai_codex = secret
         .as_ref()
@@ -4225,6 +4327,188 @@ pub(crate) fn cancel_provider_response_stream(operation_id: String) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_keychain_namespace_stays_compatible_with_existing_items() {
+        assert_eq!(KEYCHAIN_SERVICE, "com.ai-os.provider");
+        assert_eq!(validate_instance_id("openai-default").unwrap(), "openai-default");
+        assert_eq!(validate_instance_id("google-default").unwrap(), "google-default");
+    }
+
+    #[test]
+    fn provider_credential_cache_reads_each_account_once_per_process() {
+        let cache = ProviderCredentialCache::default();
+        let reads = std::cell::Cell::new(0);
+
+        for _ in 0..3 {
+            let secret = cache
+                .load("openai-default", "test_poll", || {
+                    reads.set(reads.get() + 1);
+                    Ok(Some(b"test-credential".to_vec()))
+                })
+                .unwrap();
+            assert_eq!(secret.as_deref(), Some(b"test-credential".as_slice()));
+        }
+
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn lazy_provider_operations_read_only_accounts_that_are_used() {
+        let cache = ProviderCredentialCache::default();
+        let openai_reads = std::cell::Cell::new(0);
+        let anthropic_reads = std::cell::Cell::new(0);
+        let unused_reads = std::cell::Cell::new(0);
+
+        // Startup, My AI, Connections, and passive status rendering recover only
+        // non-secret metadata, so none of them calls the credential authority.
+        assert_eq!(openai_reads.get(), 0);
+        assert_eq!(anthropic_reads.get(), 0);
+        assert_eq!(unused_reads.get(), 0);
+
+        for _ in 0..11 {
+            let secret = cache
+                .load("openai-default", "provider_operation", || {
+                    openai_reads.set(openai_reads.get() + 1);
+                    Ok(Some(b"openai-test-credential".to_vec()))
+                })
+                .unwrap();
+            assert_eq!(secret, Some(b"openai-test-credential".to_vec()));
+        }
+        assert_eq!(openai_reads.get(), 1);
+
+        let secret = cache
+            .load("anthropic-default", "provider_operation", || {
+                anthropic_reads.set(anthropic_reads.get() + 1);
+                Ok(Some(b"anthropic-test-credential".to_vec()))
+            })
+            .unwrap();
+        assert_eq!(secret, Some(b"anthropic-test-credential".to_vec()));
+        assert_eq!(anthropic_reads.get(), 1);
+
+        assert_eq!(unused_reads.get(), 0);
+    }
+
+    #[test]
+    fn provider_commands_share_one_process_global_credential_authority() {
+        assert!(std::ptr::eq(
+            provider_credential_cache(),
+            provider_credential_cache()
+        ));
+    }
+
+    #[test]
+    fn recovery_status_and_connection_test_share_one_underlying_read() {
+        let cache = ProviderCredentialCache::default();
+        let reads = std::cell::Cell::new(0);
+        let callers = [
+            "provider_recovery",
+            "provider_credential_status",
+            "provider_connection_test",
+        ];
+
+        for index in 0..10 {
+            let value = cache
+                .load("shared-provider", callers[index % callers.len()], || {
+                    reads.set(reads.get() + 1);
+                    Ok(Some(b"shared-test-value".to_vec()))
+                })
+                .unwrap();
+            assert_eq!(value, Some(b"shared-test-value".to_vec()));
+        }
+
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn provider_credential_cache_keeps_provider_accounts_isolated() {
+        let cache = ProviderCredentialCache::default();
+        cache.store("openai-default", b"openai-test").unwrap();
+        cache.store("google-default", b"google-test").unwrap();
+
+        assert_eq!(
+            cache
+                .load("openai-default", "test_read", || unreachable!())
+                .unwrap(),
+            Some(b"openai-test".to_vec())
+        );
+        assert_eq!(
+            cache
+                .load("google-default", "test_read", || unreachable!())
+                .unwrap(),
+            Some(b"google-test".to_vec())
+        );
+    }
+
+    #[test]
+    fn provider_credential_cache_update_replaces_memory_without_reloading() {
+        let cache = ProviderCredentialCache::default();
+        cache.store("provider-default", b"old-test-value").unwrap();
+        cache.store("provider-default", b"new-test-value").unwrap();
+
+        assert_eq!(
+            cache
+                .load("provider-default", "test_read", || unreachable!())
+                .unwrap(),
+            Some(b"new-test-value".to_vec())
+        );
+    }
+
+    #[test]
+    fn provider_credential_cache_delete_is_the_only_explicit_invalidation() {
+        let cache = ProviderCredentialCache::default();
+        cache.store("provider-default", b"old-test-value").unwrap();
+        cache.remove("provider-default").unwrap();
+        let reads = std::cell::Cell::new(0);
+
+        let value = cache
+            .load("provider-default", "test_after_delete", || {
+                reads.set(reads.get() + 1);
+                Ok(Some(b"replacement-test-value".to_vec()))
+            })
+            .unwrap();
+
+        assert_eq!(value, Some(b"replacement-test-value".to_vec()));
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn missing_provider_credential_is_not_cached() {
+        let cache = ProviderCredentialCache::default();
+        assert_eq!(
+            cache.load("missing", "test_missing", || Ok(None)).unwrap(),
+            None
+        );
+        assert_eq!(
+            cache
+                .load("missing", "test_retry", || {
+                    Ok(Some(b"later-test-value".to_vec()))
+                })
+                .unwrap(),
+            Some(b"later-test-value".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_new_process_cache_loads_an_existing_keychain_value_once() {
+        let first_process = ProviderCredentialCache::default();
+        first_process
+            .store("existing-provider", b"existing-test-value")
+            .unwrap();
+
+        let restarted_process = ProviderCredentialCache::default();
+        let reads = std::cell::Cell::new(0);
+        for _ in 0..2 {
+            let value = restarted_process
+                .load("existing-provider", "test_restart", || {
+                    reads.set(reads.get() + 1);
+                    Ok(Some(b"existing-test-value".to_vec()))
+                })
+                .unwrap();
+            assert_eq!(value, Some(b"existing-test-value".to_vec()));
+        }
+        assert_eq!(reads.get(), 1);
+    }
 
     #[test]
     fn provider_instance_ids_are_bounded_and_path_free() {

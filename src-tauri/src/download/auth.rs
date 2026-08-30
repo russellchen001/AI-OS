@@ -64,6 +64,13 @@ fn save_mode(mode: &ThunderAuthMode) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn managed_credential_exists() -> Result<bool, String> {
+    crate::keychain_trace::record(
+        "READ",
+        "thunder_credential_status",
+        THUNDER_KEYCHAIN_SERVICE,
+        THUNDER_KEYCHAIN_ACCOUNT,
+        "MISS",
+    );
     match security_framework::passwords::get_generic_password(
         THUNDER_KEYCHAIN_SERVICE,
         THUNDER_KEYCHAIN_ACCOUNT,
@@ -83,6 +90,13 @@ fn managed_credential_exists() -> Result<bool, String> {
 
 #[cfg(target_os = "macos")]
 fn store_managed_credential(secret: &str) -> Result<(), String> {
+    crate::keychain_trace::record(
+        "WRITE_UPSERT",
+        "thunder_credential_set",
+        THUNDER_KEYCHAIN_SERVICE,
+        THUNDER_KEYCHAIN_ACCOUNT,
+        "UPDATE",
+    );
     security_framework::passwords::set_generic_password(
         THUNDER_KEYCHAIN_SERVICE,
         THUNDER_KEYCHAIN_ACCOUNT,
@@ -98,6 +112,13 @@ fn store_managed_credential(_secret: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn remove_managed_credential() -> Result<(), String> {
+    crate::keychain_trace::record(
+        "DELETE",
+        "thunder_credential_delete",
+        THUNDER_KEYCHAIN_SERVICE,
+        THUNDER_KEYCHAIN_ACCOUNT,
+        "INVALIDATE",
+    );
     match security_framework::passwords::delete_generic_password(
         THUNDER_KEYCHAIN_SERVICE,
         THUNDER_KEYCHAIN_ACCOUNT,

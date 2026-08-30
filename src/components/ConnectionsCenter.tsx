@@ -117,8 +117,10 @@ export default function ConnectionsCenter() {
   const [rescanning, setRescanning] = useState(false);
   const [scanStatus, setScanStatus] = useState("");
   const running = useRef(new Set<string>());
+  const stateVersions = useRef(new Map<string, number>());
 
   async function refreshConnections(showMessage = false) {
+    const versionsAtStart = new Map(stateVersions.current);
     setRescanning(true);
     setScanStatus(showMessage ? "Checking installed apps…" : "");
     try {
@@ -131,7 +133,7 @@ export default function ConnectionsCenter() {
       setSites(addedSites);
       setLocalApplications(availability.applications);
       const instances = listProviderInstances();
-      setStates(Object.fromEntries(items.map((item) => {
+      const snapshot = Object.fromEntries(items.map((item) => {
         const instance = instances.find((candidate) => candidate.providerId === item.providerId);
         const state: ConnectionState = instance?.connectionState === "connected"
           ? "CONNECTED"
@@ -143,7 +145,13 @@ export default function ConnectionsCenter() {
               ? "NOT_CONFIGURED"
               : item.state;
         return [item.providerId, state];
-      })));
+      }));
+      setStates((current) => Object.fromEntries(items.map((item) => [
+        item.providerId,
+        stateVersions.current.get(item.providerId) !== versionsAtStart.get(item.providerId)
+          ? current[item.providerId]
+          : snapshot[item.providerId],
+      ])));
       if (showMessage) {
         setScanStatus("Installed app status updated.");
         setMessage("Local application availability was rescanned from this Mac.");
@@ -157,10 +165,6 @@ export default function ConnectionsCenter() {
     }
   }
 
-  useEffect(() => {
-    void refreshConnections();
-  }, []);
-
   // Restart recovery re-verifies persisted accounts in the background. The
   // backend is the single authority, so a refresh landing later reads the same
   // answer and cannot overwrite this with a stale Expired.
@@ -169,10 +173,15 @@ export default function ConnectionsCenter() {
     void listen<{ providerId: string; state: ConnectionState }>(
       "browser-connection://recovered",
       ({ payload }) => {
+        stateVersions.current.set(
+          payload.providerId,
+          (stateVersions.current.get(payload.providerId) ?? 0) + 1,
+        );
         setStates((current) => ({ ...current, [payload.providerId]: payload.state }));
       },
     ).then((stop) => {
       unlisten = stop;
+      void refreshConnections();
     });
     return () => unlisten?.();
   }, []);
