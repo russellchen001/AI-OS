@@ -299,18 +299,25 @@ export default function ConnectionsCenter() {
   }
 
   async function disconnect(providerId: string) {
-    if (providerId === "microsoft-graph" || providerId === "google-workspace") {
-      const instanceId = `${providerId}-default`;
-      await deleteProviderCredential(instanceId);
-      await removeProviderInstance(instanceId);
+    try {
+      if (providerId === "microsoft-graph" || providerId === "google-workspace") {
+        const instanceId = `${providerId}-default`;
+        await deleteProviderCredential(instanceId);
+        await removeProviderInstance(instanceId);
+      }
+      await invoke<boolean>("disconnect_connection_provider", { providerId });
+      setSessions((current) => {
+        const next = { ...current };
+        delete next[providerId];
+        return next;
+      });
+      setStates((current) => ({ ...current, [providerId]: "DISCONNECTED" }));
+      setMessage(`${providerId} disconnected. The stored browser session was removed.`);
+    } catch (error) {
+      // A failed disconnect must not look like a successful one.
+      setStates((current) => ({ ...current, [providerId]: "ERROR" }));
+      setMessage(String(error));
     }
-    await invoke<boolean>("disconnect_connection_provider", { providerId });
-    setSessions((current) => {
-      const next = { ...current };
-      delete next[providerId];
-      return next;
-    });
-    setStates((current) => ({ ...current, [providerId]: "DISCONNECTED" }));
   }
 
   function skipCurrent() {

@@ -40,6 +40,7 @@ const GRACEFUL_CLOSE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SINGLETON_LOCK_FILE: &str = "SingletonLock";
 const RECLAIM_TIMEOUT: Duration = Duration::from_secs(3);
 const RECLAIM_POLL_INTERVAL: Duration = Duration::from_millis(150);
+const PROFILE_REMOVAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Supported browsers and deterministic discovery
@@ -1059,9 +1060,36 @@ pub(crate) fn remove_managed_profile(
     if !profile_directory.exists() {
         return Ok(false);
     }
-    std::fs::remove_dir_all(&profile_directory)
-        .map_err(|_| "Managed browser profile could not be removed".to_owned())?;
-    Ok(true)
+
+    // Disconnect means the stored website session goes away, so the profile has
+    // to actually be released first. A browser that ignored the close request
+    // would otherwise keep files open and leave a half-deleted profile behind.
+    reclaim_profile_lock(&profile_directory);
+
+    // The browser may still be tearing down and writing to the directory.
+    // A disconnect should not fail on that race.
+    let deadline = Instant::now() + PROFILE_REMOVAL_TIMEOUT;
+    loop {
+        match std::fs::remove_dir_all(&profile_directory) {
+            Ok(()) => {
+                diagnostics::record(
+                    "disconnect",
+                    &format!("provider={provider_id} profile=removed"),
+                );
+                return Ok(true);
+            }
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(RECLAIM_POLL_INTERVAL);
+            }
+            Err(error) => {
+                diagnostics::record(
+                    "disconnect",
+                    &format!("provider={provider_id} profile_removal_failed detail={error}"),
+                );
+                return Err("Managed browser profile could not be removed".to_owned());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
