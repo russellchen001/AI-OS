@@ -3352,3 +3352,41 @@ Read the `[verifier]` lines after a real login: `matched=` names the selector
 that worked, `login_present=` says whether a sign-in affordance was seen. If
 `matched=none`, the candidate list is wrong for that site; if `login_present=true`
 while signed in, the sign-in selector is catching something it should not.
+
+### Why the three sat at Connecting, and why JD expired — 2026-08-30
+
+All three signed in and reached `Connected`. On restart they stayed
+`Connecting` for minutes and JD then went `Expired`. Two independent causes.
+
+**1. Every verification cost about six seconds.**
+
+`http_get` read until EOF, but Chromium keeps the DevTools HTTP connection open,
+so each call paid a full 3 s read timeout — twice per verification, plus the
+WebSocket round trip. With 12 recovery attempts per provider and providers
+recovered **one after another**, four providers took six to seven minutes, and
+everything after the first sat at `Connecting` the whole time.
+
+Fixed both ways: `http_get` now stops as soon as the declared `Content-Length`
+has arrived, and recovery runs one thread per provider. Each provider has its
+own profile and its own browser, so there was never a reason to serialise them.
+
+**2. Recovery was opening a page that cannot show an account.**
+
+```text
+[verifier] provider=jd-consumer origin_valid=true signal_present=false
+           matched=none login_present=false authenticated=false   (x12)
+```
+
+Neither an account element nor a sign-in affordance was found — the page had
+nothing on it. Recovery navigated to `session.verified_origin`, which for JD is
+`passport.jd.com`: the host the login happened on, which shows no account state.
+Amazon worked only because its verified origin *is* the storefront.
+
+`account_home_url` now decides where recovery looks: Amazon keeps its verified
+regional storefront, while Taobao, JD and Pinduoduo go to `www.taobao.com`,
+`www.jd.com` and `mobile.yangkeduo.com`. A test asserts each destination still
+passes that provider's own origin check.
+
+Probe evidence also now reports `path`, `ready` and `links`, so a future miss
+distinguishes a wrong selector from a blank, unloaded or challenge page. The
+path is AI-OS's own navigation target, not browsing history.

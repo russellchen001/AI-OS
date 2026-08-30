@@ -73,6 +73,14 @@ pub(crate) fn http_get(port: u16, path: &str) -> Result<String, String> {
     let mut buffer = [0_u8; 8192];
 
     loop {
+        // Chromium keeps the DevTools HTTP connection open, so waiting for EOF
+        // cost a full read timeout on every single call. The declared body
+        // length is the real end of the response.
+        if let Some(total) = complete_response_length(&response) {
+            if response.len() >= total {
+                break;
+            }
+        }
         match stream.read(&mut buffer) {
             Ok(0) => break,
             Ok(count) => response.extend_from_slice(&buffer[..count]),
@@ -99,6 +107,21 @@ pub(crate) fn http_get(port: u16, path: &str) -> Result<String, String> {
 
     String::from_utf8(response)
         .map_err(|_| "Managed browser control channel returned invalid text".to_owned())
+}
+
+/// Total byte length of a response whose headers declare a `Content-Length`.
+/// `None` while the headers are still incomplete or no length was declared.
+pub(crate) fn complete_response_length(response: &[u8]) -> Option<usize> {
+    let head_end = response.windows(4).position(|window| window == b"\r\n\r\n")? + 4;
+    // Headers are ASCII; the body may not be, so only the head is decoded.
+    let head = std::str::from_utf8(&response[..head_end]).ok()?;
+    let length = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())?
+    })?;
+    Some(head_end + length)
 }
 
 /// Extract the JSON document from a raw HTTP response without depending on a
@@ -283,6 +306,27 @@ mod tests {
 
         assert!(parse_targets("HTTP/1.1 500 Internal Server Error\r\n\r\n").is_err());
         assert!(parse_browser_websocket_url("HTTP/1.1 200 OK\r\n\r\n{}").is_err());
+    }
+
+    #[test]
+    fn a_declared_body_length_ends_the_read_without_waiting_for_a_timeout() {
+        let full = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+        assert_eq!(complete_response_length(full), Some(full.len()));
+
+        // Headers still arriving, and a body still short, both keep reading.
+        assert_eq!(complete_response_length(b"HTTP/1.1 200 OK\r\nContent-Len"), None);
+        let partial = b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n{}";
+        assert!(complete_response_length(partial).unwrap() > partial.len());
+
+        // No declared length falls back to reading until the peer stops.
+        assert_eq!(
+            complete_response_length(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{}"),
+            None
+        );
+        // The header name is case-insensitive, and an empty body ends exactly
+        // at the end of the headers.
+        let empty = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n";
+        assert_eq!(complete_response_length(empty), Some(empty.len()));
     }
 
     #[test]

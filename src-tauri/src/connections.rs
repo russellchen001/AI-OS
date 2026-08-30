@@ -1,4 +1,4 @@
-use crate::browser::account_verifier::{verify_managed_account, AccountVerification};
+use crate::browser::account_verifier::{account_home_url, verify_managed_account, AccountVerification};
 use crate::browser::diagnostics;
 use crate::browser::authenticated_runtime::{
     close_managed_browser, open_managed_browser, remove_managed_profile, ManagedBrowserLaunchMode,
@@ -855,8 +855,12 @@ pub(crate) fn begin_authenticated_browser_recovery(app: tauri::AppHandle) {
         set_recovered_state(&session.provider_id, RecoveredBrowserState::Pending);
     }
 
-    std::thread::spawn(move || {
-        for session in restorable {
+    // One thread per provider. Each has its own profile and its own browser,
+    // so recovering them in turn only meant every provider after the first sat
+    // at "Connecting" for minutes waiting behind the others.
+    for session in restorable {
+        let app = app.clone();
+        std::thread::spawn(move || {
             let state = recover_browser_connection(&app, &session);
             set_recovered_state(&session.provider_id, state);
             let _ = app.emit(
@@ -869,8 +873,8 @@ pub(crate) fn begin_authenticated_browser_recovery(app: tauri::AppHandle) {
                     },
                 }),
             );
-        }
-    });
+        });
+    }
 }
 
 /// Re-verify one account against its persisted profile, without a window.
@@ -888,11 +892,11 @@ fn recover_browser_connection(
         return RecoveredBrowserState::Expired;
     };
 
-    // Go back to the regional site the account was actually verified on, not to
-    // an assumed one.
-    let destination = session
-        .verified_origin
-        .clone()
+    // Open the page that actually shows whether this account is signed in.
+    // For Amazon that is the regional storefront it was verified on; for the
+    // others the verified origin is a passport host that shows no account
+    // state at all.
+    let destination = account_home_url(&session.provider_id, session.verified_origin.as_deref())
         .or_else(|| capability.login_url.clone());
 
     diagnostics::record(
