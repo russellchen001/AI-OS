@@ -3390,3 +3390,53 @@ passes that provider's own origin check.
 Probe evidence also now reports `path`, `ready` and `links`, so a future miss
 distinguishes a wrong selector from a blank, unloaded or challenge page. The
 path is AI-OS's own navigation target, not browsing history.
+
+### Three different faults, one per provider — 2026-08-30
+
+Recovery is now fast and parallel: all four launch together and Amazon finished
+in five seconds. Each remaining failure had its own cause, and the probe
+evidence named all three.
+
+**Taobao — the nickname was found and then vetoed.**
+
+```text
+matched=nick login_present=true path=/ ready=complete links=1717
+```
+
+`.site-nav-login-info-nick` matched, so the account *was* there. The sign-in
+veto fired anyway: `a[href*="login.taobao.com"]` matches Taobao's own header
+links on a signed-in page. The candidate `my-taobao`
+(`.site-nav-mytaobao .site-nav-menu-hd`, "我的淘宝") was also wrong — it is
+present whether or not anyone is signed in, so it was a false positive waiting
+to happen and is gone. The veto is now only the standalone login page
+(`#login-form`, `.login-blocks`) and a login URL specific enough that
+`/member/logout.htm` cannot satisfy it.
+
+**JD — no candidate matched a loaded page.**
+
+```text
+matched=none login_present=false path=/ ready=complete links=330
+```
+
+The page was fully loaded, so the selectors were simply wrong. JD now falls back
+to the whole `#ttbar-login` bar: signed out it reads "你好，请登录" and the
+sign-in-prompt rule refuses it; signed in it is the nickname. That is the same
+shape that works for Amazon.
+
+**Pinduoduo — an empty page.**
+
+```text
+links=0 ready=complete
+```
+
+Not a selector problem: nothing rendered at all. `--headless=new` advertises
+`HeadlessChrome` in its user agent and the site served it nothing. Recovery now
+launches with a desktop user agent built from the installed browser's own
+version (`--version`), so it presents the same browser the user signed in as. It
+claims nothing the user's own Chrome does not already claim, and only headless
+recovery does it — a visible login keeps the real user agent, which a test
+asserts.
+
+The logout-link invariant is now stated as what it actually protects: a sign-in
+selector must never match a login host generically, because on all three sites
+the logout link points at the login host.

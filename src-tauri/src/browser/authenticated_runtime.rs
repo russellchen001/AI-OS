@@ -86,6 +86,25 @@ pub(crate) enum ManagedBrowserLaunchMode {
     Headless,
 }
 
+/// The browser's own version string, e.g. "Google Chrome 140.0.7339.80".
+fn installed_browser_version(kind: ManagedBrowserKind) -> Option<String> {
+    let output = Command::new(kind.executable_path()).arg("--version").output().ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    let version = text.split_whitespace().last()?.trim().to_owned();
+    (!version.is_empty()).then_some(version)
+}
+
+/// A desktop user agent for the installed browser's major version.
+///
+/// Used only to strip "HeadlessChrome" from what recovery presents. It claims
+/// nothing the user's own browser does not already claim.
+fn desktop_user_agent(version: &str) -> String {
+    let major = version.split('.').next().unwrap_or("140");
+    format!(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+}
+
 /// Discovery order is fixed and deterministic. It must not be reordered at
 /// runtime, so repeated runs on one machine always select the same browser.
 const MACOS_DISCOVERY_ORDER: [ManagedBrowserKind; 4] = [
@@ -176,6 +195,7 @@ fn launch_arguments(
     profile_directory: &Path,
     initial_url: Option<&str>,
     mode: ManagedBrowserLaunchMode,
+    user_agent: Option<&str>,
 ) -> Vec<String> {
     let mut arguments = vec![
         format!("--user-data-dir={}", profile_directory.display()),
@@ -189,6 +209,12 @@ fn launch_arguments(
         // must never steal focus with a window.
         arguments.push("--headless=new".to_owned());
         arguments.push("--window-size=1280,900".to_owned());
+        // Headless Chrome advertises "HeadlessChrome" in its user agent, and
+        // sites serve it an empty page. Recovery is the same signed-in user on
+        // the same profile, so it presents the same browser it signed in as.
+        if let Some(user_agent) = user_agent {
+            arguments.push(format!("--user-agent={user_agent}"));
+        }
     }
     // Only an https destination may be handed to the managed browser, and it
     // stays last so it is the page the browser opens.
@@ -774,8 +800,17 @@ pub(crate) fn open_managed_browser(
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null());
 
+    let user_agent = (mode == ManagedBrowserLaunchMode::Headless)
+        .then(|| installed_browser_version(browser_kind).map(|version| desktop_user_agent(&version)))
+        .flatten();
+
     let child = Command::new(browser_kind.executable_path())
-        .args(launch_arguments(&profile_directory, initial_url, mode))
+        .args(launch_arguments(
+            &profile_directory,
+            initial_url,
+            mode,
+            user_agent.as_deref(),
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(stderr)
@@ -1234,7 +1269,7 @@ mod tests {
     #[test]
     fn launch_arguments_pin_the_managed_profile_and_a_loopback_debug_channel() {
         let profile = managed_profile_directory(&app_data(), "jd-consumer").unwrap();
-        let arguments = launch_arguments(&profile, None, ManagedBrowserLaunchMode::Visible);
+        let arguments = launch_arguments(&profile, None, ManagedBrowserLaunchMode::Visible, None);
 
         assert!(arguments
             .iter()
@@ -1256,6 +1291,7 @@ mod tests {
             &profile,
             Some("https://passport.jd.com/new/login.aspx"),
             ManagedBrowserLaunchMode::Visible,
+            None,
         );
         assert_eq!(
             with_login.last().map(String::as_str),
@@ -1265,12 +1301,13 @@ mod tests {
             launch_arguments(
                 &profile,
                 Some("http://passport.jd.com/new/login.aspx"),
-                ManagedBrowserLaunchMode::Visible
+                ManagedBrowserLaunchMode::Visible,
+                None
             ),
             arguments
         );
         assert_eq!(
-            launch_arguments(&profile, Some("file:///etc/passwd"), ManagedBrowserLaunchMode::Visible),
+            launch_arguments(&profile, Some("file:///etc/passwd"), ManagedBrowserLaunchMode::Visible, None),
             arguments
         );
     }
@@ -1283,6 +1320,7 @@ mod tests {
             &profile,
             Some("https://www.amazon.com/ap/signin"),
             ManagedBrowserLaunchMode::Visible,
+            None,
         );
         assert!(
             !visible.iter().any(|argument| argument.contains("--headless")),
@@ -1293,8 +1331,18 @@ mod tests {
             &profile,
             Some("https://www.amazon.co.jp"),
             ManagedBrowserLaunchMode::Headless,
+            Some(&desktop_user_agent("140.0.7339.80")),
         );
         assert!(recovery.iter().any(|argument| argument == "--headless=new"));
+        // Recovery must not announce itself as headless, or sites serve it an
+        // empty page.
+        let announced = recovery
+            .iter()
+            .find(|argument| argument.starts_with("--user-agent="))
+            .expect("recovery presents no user agent");
+        assert!(!announced.contains("Headless"));
+        assert!(announced.contains("Chrome/140."));
+        assert!(!visible.iter().any(|argument| argument.starts_with("--user-agent=")));
         // The destination stays last so it is the page the browser opens.
         assert_eq!(
             recovery.last().map(String::as_str),

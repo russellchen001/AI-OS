@@ -88,11 +88,11 @@ struct ProbeEvidence {
 /// sign-in surface present, is never an authenticated account.
 const AMAZON_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['greeting','#nav-link-accountList-nav-line-1'],['greeting-alt','#nav-link-accountList .nav-line-1']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('#nav-link-accountList[href*="/ap/signin"], #nav-signin-tooltip, form[action*="/ap/signin"], #ap_email, #ap_password');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
 
-const TAOBAO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['nick','.site-nav-login-info-nick'],['user-nick','.site-nav-user .nick'],['nav-user','#J_SiteNavLogin .site-nav-user'],['nick-name','.nick-name'],['user-nick-attr','[class*="userNick"]'],['my-taobao','.site-nav-mytaobao .site-nav-menu-hd']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('a[href*="login.taobao.com"]:not([href*="logout"]), .site-nav-signin-info, #login-form, .login-blocks');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
+const TAOBAO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['nick','.site-nav-login-info-nick'],['user-nick','.site-nav-user .nick'],['user-nick-attr','[class*="userNick"]'],['nick-name','.nick-name']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('#login-form, .login-blocks, a[href*="login.taobao.com/member/login"]');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
 
-const JD_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['ttbar-nick','#ttbar-login .nickname'],['nickname','.nickname'],['link-nick','#ttbar-login a.link-nickname'],['nick-attr','[class*="nickname"]'],['user-info','.user-info .name']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('a[href*="passport.jd.com/new/login"]:not([href*="logout"]), a[href*="passport.jd.com/uc/login"]:not([href*="logout"]), #ttbar-login .link-login, .login-form');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
+const JD_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['ttbar-nick','#ttbar-login .nickname'],['nickname','.nickname'],['nick-attr','[class*="nickname"]'],['ttbar','#ttbar-login']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('.login-form, #formlogin, #loginForm');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
 
-const PINDUODUO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['nickname','.user-info .nickname'],['nick-attr','[class*="nickname"]'],['user-name','.user-name'],['user-name-attr','[class*="userName"]'],['personal','.personal-info .name']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('a[href*="login"]:not([href*="logout"]), [class*="login-btn"], [class*="loginBtn"], #login-container');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
+const PINDUODUO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['nick-attr','[class*="nickname"]'],['user-name','.user-name'],['user-name-attr','[class*="userName"]'],['personal','.personal-info .name'],['user-info','[class*="userInfo"]']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('[class*="login-btn"], [class*="loginBtn"], #login-container, .login-wrap');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
 
 /// The page restart recovery should open to see whether the account is still
 /// signed in.
@@ -353,12 +353,17 @@ mod tests {
             assert!(expression.contains("key:k"), "{provider_id} names no matched selector");
             assert!(expression.contains("login:!!l"), "{provider_id} does not report the sign-in affordance");
 
-            // A logout link must never be mistaken for a sign-in affordance:
-            // on these sites it points at the login host.
-            if provider_id != "amazon-consumer" {
+            // On these sites the logout link points at the login host, so a
+            // sign-in selector must never match a login host generically —
+            // doing so makes a signed-in account read as signed out forever.
+            for generic in [
+                r#"href*="login.taobao.com"]"#,
+                r#"href*="passport.jd.com"]"#,
+                r#"href*="login"]"#,
+            ] {
                 assert!(
-                    expression.contains(":not([href*=\"logout\"])"),
-                    "{provider_id} would read its own logout link as a login link"
+                    !expression.contains(generic),
+                    "{provider_id} would read its own logout link as a sign-in link"
                 );
             }
 
