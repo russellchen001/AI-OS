@@ -22,6 +22,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::devtools;
+use super::diagnostics;
 use crate::provider_selection::AuthorizationRef;
 use tauri::Manager;
 
@@ -415,6 +416,9 @@ impl ManagedBrowserSession {
 struct OwnedBrowserProcess {
     child: Child,
     browser_kind: ManagedBrowserKind,
+    /// How this browser was launched. A recovery browser is headless and
+    /// invisible, so it can never stand in for a user asking to sign in.
+    mode: ManagedBrowserLaunchMode,
     /// Loopback DevTools port. Internal only — it never leaves this runtime
     /// through session metadata.
     control_port: u16,
@@ -530,6 +534,7 @@ pub(crate) fn open_managed_browser(
                     existing.ready,
                     existing.control_port,
                     existing.started_at.clone(),
+                    existing.mode,
                 )),
                 _ => None,
             },
@@ -542,19 +547,34 @@ pub(crate) fn open_managed_browser(
         observed
     };
 
-    if let Some((browser_kind, ready, control_port, started_at)) = still_running {
-        if let Some(url) = initial_url.filter(|url| url.starts_with("https://")) {
-            // Reuse the browser AI-OS already owns instead of launching another.
-            let _ = open_managed_tab(control_port, url);
+    if let Some((browser_kind, ready, control_port, started_at, owned_mode)) = still_running {
+        if owned_mode == mode {
+            if let Some(url) = initial_url.filter(|url| url.starts_with("https://")) {
+                // Reuse the browser AI-OS already owns instead of launching another.
+                let _ = open_managed_tab(control_port, url);
+            }
+            diagnostics::record(
+                "launch",
+                &format!("provider={provider_id} outcome=reused mode={mode:?}"),
+            );
+            return Ok(ManagedBrowserSession::managed(
+                &provider_id,
+                browser_kind,
+                true,
+                ready,
+                true,
+                started_at,
+            ));
         }
-        return Ok(ManagedBrowserSession::managed(
-            &provider_id,
-            browser_kind,
-            true,
-            ready,
-            true,
-            started_at,
-        ));
+
+        // A recovery browser is headless. Someone asking to sign in needs a
+        // real window, so the invisible one is closed and replaced rather than
+        // silently handed back.
+        diagnostics::record(
+            "launch",
+            &format!("provider={provider_id} replacing={owned_mode:?} with={mode:?}"),
+        );
+        let _ = close_managed_browser(&provider_id);
     }
 
     // Everything below can take tens of seconds. The registry lock is
@@ -574,6 +594,10 @@ pub(crate) fn open_managed_browser(
     // hand the URL to that instance and exit at once, which previously
     // surfaced only as a readiness timeout 25 seconds later.
     if profile_is_owned_by_live_browser(&profile_directory).is_some() {
+        diagnostics::record(
+            "launch",
+            &format!("provider={provider_id} outcome=refused reason=profile_owned_by_live_browser"),
+        );
         return Err(
             "A previous AI-OS managed browser is still using this profile. Quit that browser window, then reconnect."
                 .to_owned(),
@@ -593,12 +617,19 @@ pub(crate) fn open_managed_browser(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| "Managed browser could not be started".to_owned())?;
+        .map_err(|error| {
+            diagnostics::record(
+                "launch",
+                &format!("provider={provider_id} outcome=spawn_failed detail={error}"),
+            );
+            "Managed browser could not be started".to_owned()
+        })?;
 
     let started_at = now_rfc3339();
     let mut process = OwnedBrowserProcess {
         child,
         browser_kind,
+        mode,
         control_port: 0,
         started_at: started_at.clone(),
         ready: false,
@@ -611,10 +642,18 @@ pub(crate) fn open_managed_browser(
             process.ready = true;
         }
         Err(error) => {
+            diagnostics::record(
+                "launch",
+                &format!("provider={provider_id} outcome=not_ready detail={error}"),
+            );
             terminate_owned_process(&mut process);
             return Err(error);
         }
     }
+    diagnostics::record(
+        "launch",
+        &format!("provider={provider_id} outcome=ready mode={mode:?}"),
+    );
 
     // Short critical section: record the process AI-OS now owns.
     {
@@ -702,7 +741,10 @@ fn terminate_owned_process(process: &mut OwnedBrowserProcess) -> bool {
     let deadline = Instant::now() + GRACEFUL_CLOSE_TIMEOUT;
     while Instant::now() < deadline {
         match process.child.try_wait() {
-            Ok(Some(_)) => return true,
+            Ok(Some(_)) => {
+                diagnostics::record("close", "outcome=graceful");
+                return true;
+            }
             Ok(None) => std::thread::sleep(GRACEFUL_CLOSE_POLL_INTERVAL),
             Err(_) => break,
         }
@@ -710,6 +752,7 @@ fn terminate_owned_process(process: &mut OwnedBrowserProcess) -> bool {
 
     let _ = process.child.kill();
     let _ = process.child.wait();
+    diagnostics::record("close", "outcome=forced");
     false
 }
 

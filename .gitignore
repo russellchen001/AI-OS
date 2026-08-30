@@ -45,3 +45,4 @@ openclaw.log
 
 # Local agent tooling
 .agents/
+browser-diagnostics.log

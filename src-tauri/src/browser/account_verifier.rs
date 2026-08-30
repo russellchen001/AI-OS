@@ -24,6 +24,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::authenticated_runtime::{control_port_for, origin_belongs_to_provider};
+use super::diagnostics;
 use super::devtools::{list_targets, parse_evaluated_string, protocol_call, DevToolsTarget};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +194,10 @@ pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerific
     };
 
     let Some(target) = select_provider_target(provider_id, &targets) else {
+        diagnostics::record(
+            "verifier",
+            &format!("provider={provider_id} provider_target=none targets={}", targets.len()),
+        );
         return Ok(AccountVerification::NotAuthenticated);
     };
 
@@ -209,10 +214,35 @@ pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerific
 
     let payload = match result.and_then(|value| parse_evaluated_string(&value)) {
         Ok(payload) => payload,
-        Err(_) => return Ok(AccountVerification::NotAuthenticated),
+        Err(error) => {
+            diagnostics::record(
+                "verifier",
+                &format!("provider={provider_id} probe_failed detail={error}"),
+            );
+            return Ok(AccountVerification::NotAuthenticated);
+        }
     };
 
-    Ok(evaluate_account_probe(provider_id, &payload))
+    let outcome = evaluate_account_probe(provider_id, &payload);
+    // Shape only: whether the page was on a provider origin and whether any
+    // account signal was present. The signal itself is never recorded.
+    let probe: Option<AccountProbePayload> = serde_json::from_str(&payload).ok();
+    diagnostics::record(
+        "verifier",
+        &format!(
+            "provider={provider_id} origin_valid={} signal_present={} authenticated={}",
+            probe
+                .as_ref()
+                .map(|value| origin_belongs_to_provider(provider_id, &value.origin))
+                .unwrap_or(false),
+            probe
+                .as_ref()
+                .map(|value| value.signal.is_some())
+                .unwrap_or(false),
+            matches!(outcome, AccountVerification::Authenticated { .. })
+        ),
+    );
+    Ok(outcome)
 }
 
 #[cfg(test)]

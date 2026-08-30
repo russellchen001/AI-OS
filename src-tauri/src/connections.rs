@@ -1,4 +1,5 @@
 use crate::browser::account_verifier::{verify_managed_account, AccountVerification};
+use crate::browser::diagnostics;
 use crate::browser::authenticated_runtime::{
     close_managed_browser, open_managed_browser, remove_managed_profile, ManagedBrowserLaunchMode,
 };
@@ -722,6 +723,11 @@ pub(crate) fn begin_authenticated_browser_recovery(app: tauri::AppHandle) {
         .filter(|session| session.last_verified_at.is_some())
         .collect();
 
+    diagnostics::record(
+        "recovery",
+        &format!("startup restorable={}", restorable.len()),
+    );
+
     if restorable.is_empty() {
         return;
     }
@@ -770,14 +776,25 @@ fn recover_browser_connection(
         .clone()
         .or_else(|| capability.login_url.clone());
 
-    if open_managed_browser(
+    diagnostics::record(
+        "recovery",
+        &format!(
+            "provider={} stage=launch has_verified_origin={}",
+            session.provider_id,
+            session.verified_origin.is_some()
+        ),
+    );
+
+    if let Err(error) = open_managed_browser(
         app,
         &session.provider_id,
         destination.as_deref(),
         ManagedBrowserLaunchMode::Headless,
-    )
-    .is_err()
-    {
+    ) {
+        diagnostics::record(
+            "recovery",
+            &format!("provider={} stage=launch_failed detail={error}", session.provider_id),
+        );
         return RecoveredBrowserState::Expired;
     }
 
@@ -786,10 +803,36 @@ fn recover_browser_connection(
         match verify_managed_account(&session.provider_id) {
             Ok(found @ AccountVerification::Authenticated { .. }) => {
                 verification = found;
+                diagnostics::record(
+                    "recovery",
+                    &format!(
+                        "provider={} attempt={attempt} outcome=authenticated",
+                        session.provider_id
+                    ),
+                );
                 break;
             }
-            Ok(other) => verification = other,
-            Err(_) => break,
+            Ok(other) => {
+                diagnostics::record(
+                    "recovery",
+                    &format!(
+                        "provider={} attempt={attempt} outcome={}",
+                        session.provider_id,
+                        match other {
+                            AccountVerification::NoManagedSession => "no_managed_session",
+                            _ => "not_authenticated",
+                        }
+                    ),
+                );
+                verification = other;
+            }
+            Err(error) => {
+                diagnostics::record(
+                    "recovery",
+                    &format!("provider={} attempt={attempt} error={error}", session.provider_id),
+                );
+                break;
+            }
         }
         if attempt + 1 < RECOVERY_ATTEMPTS {
             std::thread::sleep(RECOVERY_ATTEMPT_INTERVAL);
@@ -803,11 +846,16 @@ fn recover_browser_connection(
     // The recovery browser exists only to answer this question.
     let _ = close_managed_browser(&session.provider_id);
 
-    if matches!(restored.state, UnifiedConnectionState::Connected) {
+    let outcome = if matches!(restored.state, UnifiedConnectionState::Connected) {
         RecoveredBrowserState::Connected
     } else {
         RecoveredBrowserState::Expired
-    }
+    };
+    diagnostics::record(
+        "recovery",
+        &format!("provider={} completed={outcome:?}", session.provider_id),
+    );
+    outcome
 }
 
 #[tauri::command]
