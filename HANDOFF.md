@@ -3307,3 +3307,48 @@ Accepted behaviours:
 BROWSER-C: real E2E with Taobao, then JD and Pinduoduo, against the same
 runtime. Do not assume their selectors work; check the `[verifier]` lines for
 `signal_present` before changing anything.
+
+## BROWSER-C — Taobao, JD, Pinduoduo — 2026-08-30
+
+The runtime is already shared with Amazon and needs no further work: profile
+reclaim, headless restart recovery, the backend login watcher, graceful
+shutdown and the state authority are all provider-independent. The only
+unproven part was the page evidence, and its selectors could not be authored
+blind.
+
+All four probes now share one shape and **report their own evidence**:
+
+```json
+{"origin": "...", "signal": "...|null",
+ "evidence": {"key": "which candidate selector matched|null", "login": true|false}}
+```
+
+so a failed verification says *which* selector matched and whether a sign-in
+affordance was on the page, instead of only that it failed. The matched text is
+never recorded — `key` is a selector name, not a nickname.
+
+Each provider tries several candidate selectors in order:
+
+- **Taobao** — `.site-nav-login-info-nick`, `.site-nav-user .nick`,
+  `#J_SiteNavLogin .site-nav-user`, `.nick-name`, `[class*="userNick"]`,
+  `.site-nav-mytaobao .site-nav-menu-hd`
+- **JD** — `#ttbar-login .nickname`, `.nickname`, `#ttbar-login a.link-nickname`,
+  `[class*="nickname"]`, `.user-info .name`
+- **Pinduoduo** — `.user-info .nickname`, `[class*="nickname"]`, `.user-name`,
+  `[class*="userName"]`, `.personal-info .name`
+
+One trap this avoids: on all three sites the **logout** link points at the login
+host (`login.taobao.com/member/logout.htm`, `passport.jd.com/uc/login?...logout`).
+Treating that as a sign-in affordance would make a signed-in account read as
+signed out forever, so every sign-in selector excludes `[href*="logout"]`. A
+test enforces it.
+
+Host lists widened: Taobao now covers Tmall (shared account), JD covers
+`home.jd.com` and `my.jd.com`, Pinduoduo covers the bare `yangkeduo.com` and
+`mobile.pinduoduo.com`.
+
+**Status: not accepted.** Nothing here has run against a real signed-in page.
+Read the `[verifier]` lines after a real login: `matched=` names the selector
+that worked, `login_present=` says whether a sign-in affordance was seen. If
+`matched=none`, the candidate list is wrong for that site; if `login_present=true`
+while signed in, the sign-in selector is catching something it should not.

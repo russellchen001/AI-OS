@@ -46,6 +46,19 @@ struct AccountProbePayload {
     origin: String,
     #[serde(default)]
     signal: Option<String>,
+    #[serde(default)]
+    evidence: Option<ProbeEvidence>,
+}
+
+/// What the page probe saw, in a shape that carries no personal detail: which
+/// candidate selector matched, and whether a sign-in affordance was present.
+/// The matched text itself never appears here.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ProbeEvidence {
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    login: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,13 +76,13 @@ struct AccountProbePayload {
 /// The evidence is instead the account greeting plus the absence of any
 /// sign-in affordance, which keeps the check fail-closed: no greeting, or any
 /// sign-in surface present, is never an authenticated account.
-const AMAZON_PROBE: &str = r#"(function(){var l=document.querySelector('#nav-link-accountList-nav-line-1');var t=l?l.textContent.trim():'';var signIn=document.querySelector('#nav-link-accountList[href*="/ap/signin"], #nav-signin-tooltip, form[action*="/ap/signin"], #ap_email, #ap_password');var v=(t&&!signIn)?t:null;return JSON.stringify({origin:location.origin,signal:v});})()"#;
+const AMAZON_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['greeting','#nav-link-accountList-nav-line-1'],['greeting-alt','#nav-link-accountList .nav-line-1']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('#nav-link-accountList[href*="/ap/signin"], #nav-signin-tooltip, form[action*="/ap/signin"], #ap_email, #ap_password');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l}});})()"#;
 
-const TAOBAO_PROBE: &str = r#"(function(){var n=document.querySelector('.site-nav-login-info-nick, .site-nav-user .nick, #J_SiteNavLogin .site-nav-user');var t=n?n.textContent.trim():'';var o=document.querySelector('.site-nav-logout, a[href*="logout"]');var v=(t&&o)?t:null;return JSON.stringify({origin:location.origin,signal:v});})()"#;
+const TAOBAO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['nick','.site-nav-login-info-nick'],['user-nick','.site-nav-user .nick'],['nav-user','#J_SiteNavLogin .site-nav-user'],['nick-name','.nick-name'],['user-nick-attr','[class*="userNick"]'],['my-taobao','.site-nav-mytaobao .site-nav-menu-hd']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('a[href*="login.taobao.com"]:not([href*="logout"]), .site-nav-signin-info, #login-form, .login-blocks');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l}});})()"#;
 
-const JD_PROBE: &str = r#"(function(){var n=document.querySelector('#ttbar-login .nickname, .nickname');var t=n?n.textContent.trim():'';var o=document.querySelector('a[href*="logout"], #ttbar-login .loginout');var v=(t&&o)?t:null;return JSON.stringify({origin:location.origin,signal:v});})()"#;
+const JD_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['ttbar-nick','#ttbar-login .nickname'],['nickname','.nickname'],['link-nick','#ttbar-login a.link-nickname'],['nick-attr','[class*="nickname"]'],['user-info','.user-info .name']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('a[href*="passport.jd.com/new/login"]:not([href*="logout"]), a[href*="passport.jd.com/uc/login"]:not([href*="logout"]), #ttbar-login .link-login, .login-form');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l}});})()"#;
 
-const PINDUODUO_PROBE: &str = r#"(function(){var n=document.querySelector('.user-info .nickname, ._2rMuHFmp, .personal-info .nickname');var t=n?n.textContent.trim():'';var o=document.querySelector('a[href*="logout"], .logout');var v=(t&&o)?t:null;return JSON.stringify({origin:location.origin,signal:v});})()"#;
+const PINDUODUO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var c=[['nickname','.user-info .nickname'],['nick-attr','[class*="nickname"]'],['user-name','.user-name'],['user-name-attr','[class*="userName"]'],['personal','.personal-info .name']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}var l=q('a[href*="login"]:not([href*="logout"]), [class*="login-btn"], [class*="loginBtn"], #login-container');return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l}});})()"#;
 
 fn account_probe_expression(provider_id: &str) -> Option<&'static str> {
     match provider_id {
@@ -234,13 +247,15 @@ pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerific
     };
 
     let outcome = evaluate_account_probe(provider_id, &payload);
-    // Shape only: whether the page was on a provider origin and whether any
-    // account signal was present. The signal itself is never recorded.
+    // Shape only: whether the page was on a provider origin, whether any
+    // account signal was present, which candidate selector matched and whether
+    // a sign-in affordance was on the page. No matched text is ever recorded.
     let probe: Option<AccountProbePayload> = serde_json::from_str(&payload).ok();
+    let evidence = probe.as_ref().and_then(|value| value.evidence.as_ref());
     diagnostics::record(
         "verifier",
         &format!(
-            "provider={provider_id} origin_valid={} signal_present={} authenticated={}",
+            "provider={provider_id} origin_valid={} signal_present={} matched={} login_present={} authenticated={}",
             probe
                 .as_ref()
                 .map(|value| origin_belongs_to_provider(provider_id, &value.origin))
@@ -249,6 +264,10 @@ pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerific
                 .as_ref()
                 .map(|value| value.signal.is_some())
                 .unwrap_or(false),
+            evidence
+                .and_then(|value| value.key.as_deref())
+                .unwrap_or("none"),
+            evidence.map(|value| value.login).unwrap_or(false),
             matches!(outcome, AccountVerification::Authenticated { .. })
         ),
     );
@@ -282,6 +301,69 @@ mod tests {
             assert!(expression.contains("signal"));
         }
         assert!(account_probe_expression("google-workspace").is_none());
+    }
+
+    #[test]
+    fn every_probe_reports_evidence_and_reads_nothing_it_should_not() {
+        for provider_id in [
+            "amazon-consumer",
+            "taobao-consumer",
+            "jd-consumer",
+            "pinduoduo-consumer",
+        ] {
+            let expression = account_probe_expression(provider_id).unwrap();
+
+            // Every probe returns the same shape, so a failure says which
+            // candidate selector matched instead of only that it failed.
+            assert!(expression.contains("evidence"), "{provider_id} reports no evidence");
+            assert!(expression.contains("key:k"), "{provider_id} names no matched selector");
+            assert!(expression.contains("login:!!l"), "{provider_id} does not report the sign-in affordance");
+
+            // A logout link must never be mistaken for a sign-in affordance:
+            // on these sites it points at the login host.
+            if provider_id != "amazon-consumer" {
+                assert!(
+                    expression.contains(":not([href*=\"logout\"])"),
+                    "{provider_id} would read its own logout link as a login link"
+                );
+            }
+
+            for forbidden in ["document.cookie", "localStorage", "sessionStorage"] {
+                assert!(
+                    !expression.contains(forbidden),
+                    "{provider_id} must never read {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_probe_without_evidence_still_decides_correctly() {
+        // Evidence is diagnostic only; a payload without it is still judged.
+        assert_eq!(
+            evaluate_account_probe(
+                "taobao-consumer",
+                r#"{"origin":"https://www.taobao.com","signal":null}"#
+            ),
+            AccountVerification::NotAuthenticated
+        );
+        match evaluate_account_probe(
+            "jd-consumer",
+            r#"{"origin":"https://www.jd.com","signal":"shopper","evidence":{"key":"nickname","login":false}}"#,
+        ) {
+            AccountVerification::Authenticated { verified_origin, .. } => {
+                assert_eq!(verified_origin, "https://www.jd.com")
+            }
+            other => panic!("expected an authenticated account, got {other:?}"),
+        }
+        // A sign-in prompt as the matched text is still refused.
+        assert_eq!(
+            evaluate_account_probe(
+                "taobao-consumer",
+                r#"{"origin":"https://www.taobao.com","signal":"请登录","evidence":{"key":"nick","login":false}}"#
+            ),
+            AccountVerification::NotAuthenticated
+        );
     }
 
     #[test]

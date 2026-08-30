@@ -418,19 +418,31 @@ const AMAZON_HOSTS: [&str; 9] = [
     "www.amazon.in",
 ];
 
-const TAOBAO_HOSTS: [&str; 4] = [
+/// Taobao and Tmall share one account, so a session verified on either is the
+/// same signed-in user.
+const TAOBAO_HOSTS: [&str; 6] = [
     "www.taobao.com",
     "login.taobao.com",
     "i.taobao.com",
     "world.taobao.com",
+    "www.tmall.com",
+    "login.tmall.com",
 ];
 
-const JD_HOSTS: [&str; 3] = ["www.jd.com", "passport.jd.com", "order.jd.com"];
+const JD_HOSTS: [&str; 5] = [
+    "www.jd.com",
+    "passport.jd.com",
+    "order.jd.com",
+    "home.jd.com",
+    "my.jd.com",
+];
 
-const PINDUODUO_HOSTS: [&str; 3] = [
+const PINDUODUO_HOSTS: [&str; 5] = [
     "mobile.yangkeduo.com",
     "www.yangkeduo.com",
+    "yangkeduo.com",
     "www.pinduoduo.com",
+    "mobile.pinduoduo.com",
 ];
 
 fn provider_hosts(provider_id: &str) -> Option<&'static [&'static str]> {
