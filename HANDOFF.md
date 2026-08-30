@@ -3175,3 +3175,42 @@ The ownership boundary is unchanged: no scanning, no adoption, no killing
 anything AI-OS did not launch into its own profile.
 
 Browser module: **21 tests pass**. Not yet run on macOS.
+
+### Why no browser ever appeared, and why AI-OS froze — 2026-08-30
+
+Second diagnostics pass. Two independent faults, both now fixed.
+
+**1. A browser from a previous AI-OS run still owned the profile.**
+
+```text
+08:32:15.117 [recovery] stage=launch
+08:32:15.322 [launch]   spawned_process_exited=true waiting_for_control_channel
+08:33:04.842 [launch]   outcome=not_ready detail=exited without publishing a control channel
+```
+
+The spawned process died in ~200 ms and no DevTools endpoint ever appeared —
+the signature of Chromium handing a launch off to whatever already owns the
+profile. The earlier stale-owner guard could not see it, because that holder no
+longer answers DevTools (its port file had been deleted by a previous launch),
+so every launch, recovery and manual alike, failed the same way.
+
+AI-OS now reclaims its own profile before launching: politely over DevTools
+while the holder still answers, otherwise through the pid named by the
+`SingletonLock` **inside AI-OS's own managed profile directory**. That pid is
+verified to still be one of the supported browsers before any signal is sent, so
+a recycled pid cannot be hit. Nothing is scanned, searched for or adopted — the
+evidence comes from AI-OS's own directory, and only a browser AI-OS launched
+into that profile can have written it.
+
+**2. The 10–20 second freeze.**
+
+`begin_browser_login`, `verify_browser_login` and `disconnect_connection_provider`
+were synchronous Tauri commands, and Tauri runs those on the main thread. Each
+waited up to 25 s on a real browser, freezing the window. They are now `async`
+and do their work on `spawn_blocking`.
+
+Also added: the chosen browser is recorded, and the managed browser's own stderr
+is captured to `browser-launch-stderr.log`, so a browser that refuses to start
+can say why in its own words instead of being guessed at.
+
+Browser module: **22 tests pass**.

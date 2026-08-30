@@ -37,6 +37,9 @@ const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Only a graceful exit lets Chromium release the profile's Singleton lock.
 const GRACEFUL_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 const GRACEFUL_CLOSE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SINGLETON_LOCK_FILE: &str = "SingletonLock";
+const RECLAIM_TIMEOUT: Duration = Duration::from_secs(3);
+const RECLAIM_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 // ---------------------------------------------------------------------------
 // Supported browsers and deterministic discovery
@@ -247,6 +250,96 @@ fn readiness_progress(answered_port: Option<u16>, owned_process_exited: bool) ->
         (None, true) => ReadinessProgress::OwnerExited,
         (None, false) => ReadinessProgress::KeepWaiting,
     }
+}
+
+/// Process id currently holding this profile's Chromium `Singleton` lock.
+///
+/// The lock lives inside AI-OS's own managed profile directory and is a symlink
+/// whose target ends in `-<pid>`. Nothing but a browser AI-OS launched into
+/// that profile can have written it, so reading it is not process scanning:
+/// AI-OS is reading its own directory.
+fn profile_lock_holder(profile_directory: &Path) -> Option<u32> {
+    let target = std::fs::read_link(profile_directory.join(SINGLETON_LOCK_FILE)).ok()?;
+    parse_singleton_lock_pid(target.to_str()?)
+}
+
+/// `<hostname>-<pid>`; the hostname itself may contain dashes.
+fn parse_singleton_lock_pid(target: &str) -> Option<u32> {
+    target.rsplit_once('-')?.1.trim().parse::<u32>().ok()
+}
+
+/// Whether one specific pid is a supported browser right now.
+///
+/// Exactly the pid the profile lock names is inspected — nothing is searched
+/// for — and it must really be one of the supported browsers, so a recycled pid
+/// can never be signalled by mistake.
+fn pid_is_supported_browser(pid: u32) -> bool {
+    let Ok(output) = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("comm=")
+        .output()
+    else {
+        return false;
+    };
+    let Ok(command) = String::from_utf8(output.stdout) else {
+        return false;
+    };
+    let command = command.trim();
+    MACOS_DISCOVERY_ORDER
+        .into_iter()
+        .any(|kind| command == kind.executable_path())
+}
+
+fn clear_singleton_files(profile_directory: &Path) {
+    for name in [SINGLETON_LOCK_FILE, "SingletonSocket", "SingletonCookie"] {
+        let _ = std::fs::remove_file(profile_directory.join(name));
+    }
+}
+
+/// Reclaim a managed profile still held by a browser from a previous AI-OS run.
+///
+/// This is the failure the diagnostics exposed: Chromium hands a launch off to
+/// whatever already owns the profile and exits at once, so every launch failed
+/// and no window ever appeared. The holder is named by AI-OS's own profile
+/// lock and is verified to still be a browser before anything is signalled.
+fn reclaim_profile_lock(profile_directory: &Path) -> bool {
+    let Some(pid) = profile_lock_holder(profile_directory) else {
+        return true;
+    };
+
+    if !pid_is_supported_browser(pid) {
+        // The holder is gone; only the lock files were left behind.
+        clear_singleton_files(profile_directory);
+        diagnostics::record("reclaim", "outcome=cleared_stale_lock");
+        return true;
+    }
+
+    diagnostics::record("reclaim", "profile_held_by_previous_browser=true");
+
+    for signal in ["-TERM", "-KILL"] {
+        let _ = Command::new("/bin/kill")
+            .arg(signal)
+            .arg(pid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        let deadline = Instant::now() + RECLAIM_TIMEOUT;
+        while Instant::now() < deadline {
+            if !pid_is_supported_browser(pid) {
+                clear_singleton_files(profile_directory);
+                diagnostics::record("reclaim", &format!("outcome=released signal={signal}"));
+                return true;
+            }
+            std::thread::sleep(RECLAIM_POLL_INTERVAL);
+        }
+    }
+
+    diagnostics::record("reclaim", "outcome=still_held");
+    false
 }
 
 /// The port this profile's DevTools endpoint is answering on, if a browser is
@@ -620,13 +713,26 @@ pub(crate) fn open_managed_browser(
     // neither AI-OS's to terminate nor to adopt. Launching regardless would
     // hand the URL to that instance and exit at once, which previously
     // surfaced only as a readiness timeout 25 seconds later.
-    if profile_is_owned_by_live_browser(&profile_directory).is_some() {
+    // Anything still holding this profile is a browser from a previous AI-OS
+    // run: nothing else writes into AI-OS's managed profile directory. Chromium
+    // would hand this launch off to it and exit, so the profile is reclaimed
+    // first — politely over DevTools while it still answers, otherwise through
+    // the pid its own lock names.
+    if let Some(port) = profile_is_owned_by_live_browser(&profile_directory) {
+        if let Ok(channel) = devtools::browser_websocket_url(port) {
+            let _ = devtools::protocol_call(&channel, 1, "Browser.close", serde_json::json!({}));
+        }
+        diagnostics::record("reclaim", "previous_browser_asked_to_close=true");
+        std::thread::sleep(RECLAIM_POLL_INTERVAL);
+    }
+
+    if !reclaim_profile_lock(&profile_directory) {
         diagnostics::record(
             "launch",
-            &format!("provider={provider_id} outcome=refused reason=profile_owned_by_live_browser"),
+            &format!("provider={provider_id} outcome=refused reason=profile_still_held"),
         );
         return Err(
-            "A previous AI-OS managed browser is still using this profile. Quit that browser window, then reconnect."
+            "A browser from a previous AI-OS run is still holding this profile and would not close."
                 .to_owned(),
         );
     }
@@ -638,11 +744,28 @@ pub(crate) fn open_managed_browser(
     let browser_kind = discover_supported_browser()
         .ok_or_else(|| "No supported managed browser was found".to_owned())?;
 
+    diagnostics::record(
+        "launch",
+        &format!(
+            "provider={provider_id} browser={} mode={mode:?}",
+            browser_kind.id()
+        ),
+    );
+
+    // Capture the browser's own stderr: a browser that refuses to start is the
+    // only thing that can say why.
+    let stderr = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(diagnostics::browser_stderr_path())
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null());
+
     let child = Command::new(browser_kind.executable_path())
         .args(launch_arguments(&profile_directory, initial_url, mode))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .spawn()
         .map_err(|error| {
             diagnostics::record(
@@ -1251,6 +1374,18 @@ mod tests {
         // re-execs and the browser usually outlives the process AI-OS spawned.
         assert_eq!(readiness_progress(None, true), ReadinessProgress::OwnerExited);
         assert_eq!(readiness_progress(None, false), ReadinessProgress::KeepWaiting);
+    }
+
+    #[test]
+    fn the_profile_lock_names_the_browser_holding_it() {
+        assert_eq!(
+            parse_singleton_lock_pid("Russells-MacBook-Pro.local-73063"),
+            Some(73063)
+        );
+        assert_eq!(parse_singleton_lock_pid("host-1"), Some(1));
+        assert_eq!(parse_singleton_lock_pid("no-pid-here"), None);
+        assert_eq!(parse_singleton_lock_pid("73063"), None);
+        assert_eq!(parse_singleton_lock_pid(""), None);
     }
 
     #[test]

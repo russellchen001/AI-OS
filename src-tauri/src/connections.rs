@@ -643,8 +643,51 @@ pub(crate) fn connect_apple_iwork(
     Ok(availability)
 }
 
+
+/// Opening, verifying and disconnecting a managed browser all wait on a real
+/// browser. Run them off the main thread so the window never freezes.
 #[tauri::command]
-pub(crate) fn begin_browser_login(
+pub(crate) async fn begin_browser_login(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<BrowserLoginSession, String> {
+    match tauri::async_runtime::spawn_blocking(move || begin_browser_login_blocking(app, provider_id))
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("Browser login could not be started".to_owned()),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn verify_browser_login(
+    app: tauri::AppHandle,
+    session: BrowserLoginSession,
+) -> Result<BrowserLoginSession, String> {
+    match tauri::async_runtime::spawn_blocking(move || verify_browser_login_blocking(app, session))
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("Browser account verification could not be run".to_owned()),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn disconnect_connection_provider(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<bool, String> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        disconnect_connection_provider_blocking(app, provider_id)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("Disconnect could not be completed".to_owned()),
+    }
+}
+
+fn begin_browser_login_blocking(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<BrowserLoginSession, String> {
@@ -678,8 +721,7 @@ pub(crate) fn begin_browser_login(
     Ok(session)
 }
 
-#[tauri::command]
-pub(crate) fn verify_browser_login(
+fn verify_browser_login_blocking(
     app: tauri::AppHandle,
     mut session: BrowserLoginSession,
 ) -> Result<BrowserLoginSession, String> {
@@ -858,8 +900,7 @@ fn recover_browser_connection(
     outcome
 }
 
-#[tauri::command]
-pub(crate) fn disconnect_connection_provider(
+fn disconnect_connection_provider_blocking(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<bool, String> {

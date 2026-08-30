@@ -22,6 +22,15 @@ fn log_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("browser-diagnostics.log"))
 }
 
+/// Where the managed browser's own stderr is captured, so a browser that
+/// refuses to start can say why in its own words.
+pub(crate) fn browser_stderr_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|root| root.join("browser-launch-stderr.log"))
+        .unwrap_or_else(|| PathBuf::from("browser-launch-stderr.log"))
+}
+
 pub(crate) fn record(stage: &str, detail: &str) {
     let line = format!(
         "{} [{stage}] {detail}\n",
