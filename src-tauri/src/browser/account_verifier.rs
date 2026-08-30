@@ -26,6 +26,9 @@ use sha2::{Digest, Sha256};
 
 use super::authenticated_runtime::{control_port_for, origin_belongs_to_provider};
 use super::diagnostics;
+use super::site_registry::{
+    self, site_is_signed_in, GenericPageSample, SiteDefinition,
+};
 use super::devtools::{list_targets, parse_evaluated_string, protocol_call, DevToolsTarget};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +116,17 @@ pub(crate) fn account_home_url(provider_id: &str, verified_origin: Option<&str>)
         "taobao-consumer" => Some("https://www.taobao.com".to_owned()),
         "jd-consumer" => Some("https://home.jd.com/".to_owned()),
         "pinduoduo-consumer" => Some("https://mobile.yangkeduo.com/personal.html".to_owned()),
-        _ => verified_origin.map(str::to_owned),
+        _ => site_registry::site(provider_id)
+            .and_then(|site| {
+                // The page the user named, if they named one; otherwise wherever
+                // the account was last verified, and the login page as a last
+                // resort.
+                site.account_url
+                    .clone()
+                    .or_else(|| verified_origin.map(str::to_owned))
+                    .or(Some(site.login_url.clone()))
+            })
+            .or_else(|| verified_origin.map(str::to_owned)),
     }
 }
 
@@ -260,7 +273,114 @@ pub(crate) fn capture_provider_page(
     std::fs::write(path, bytes).map_err(|_| "Diagnostic image could not be saved".to_owned())
 }
 
+/// Take a generic page sample from the managed browser.
+///
+/// Used both to verify a user-added site and, at sign-in, to learn what
+/// distinguishes signed in from signed out on it.
+pub(crate) fn sample_provider_page(provider_id: &str) -> Result<GenericPageSample, String> {
+    let port = control_port_for(provider_id)
+        .ok_or_else(|| "No managed browser to sample".to_owned())?;
+    let targets = list_targets(port)?;
+    let target = select_provider_target(provider_id, &targets)
+        .ok_or_else(|| "No page for this site".to_owned())?;
+
+    let result = protocol_call(
+        &target.web_socket_debugger_url,
+        1,
+        "Runtime.evaluate",
+        json!({
+            "expression": site_registry::generic_probe_expression(),
+            "returnByValue": true,
+            "awaitPromise": false,
+        }),
+    )?;
+    let payload = parse_evaluated_string(&result)?;
+    serde_json::from_str::<GenericPageSample>(&payload)
+        .map_err(|_| "Page sample could not be read".to_owned())
+}
+
+/// A user-added site is verified structurally, so AI-OS never reads who the
+/// account belongs to. The marker records that a session on this site was
+/// verified, and nothing about its owner.
+fn user_site_marker(provider_id: &str, origin: &str) -> String {
+    account_marker(provider_id, origin)
+}
+
+fn verify_user_site(site: &SiteDefinition) -> Result<AccountVerification, String> {
+    if control_port_for(&site.provider_id).is_none() {
+        diagnostics::record(
+            "verifier",
+            &format!("provider={} kind=user-site outcome=no_control_channel", site.provider_id),
+        );
+        return Ok(AccountVerification::NoManagedSession);
+    }
+
+    let sample = match sample_provider_page(&site.provider_id) {
+        Ok(sample) => sample,
+        Err(error) => {
+            diagnostics::record(
+                "verifier",
+                &format!("provider={} kind=user-site sample_failed detail={error}", site.provider_id),
+            );
+            return Ok(AccountVerification::NotAuthenticated);
+        }
+    };
+
+    let signed_in = site_is_signed_in(site, &sample);
+    diagnostics::record(
+        "verifier",
+        &format!(
+            "provider={} kind=user-site path={} ready={} keys=[{}] has_account_page={} has_evidence={} authenticated={signed_in}",
+            site.provider_id,
+            sample.path,
+            sample.ready,
+            sample.keys.join("|"),
+            site.account_url.is_some(),
+            site.evidence.is_some(),
+        ),
+    );
+
+    if !signed_in {
+        return Ok(AccountVerification::NotAuthenticated);
+    }
+
+    Ok(AccountVerification::Authenticated {
+        account_marker: user_site_marker(&site.provider_id, &sample.origin),
+        verified_origin: sample.origin,
+    })
+}
+
+/// Send the managed browser's own page to a URL.
+///
+/// Used to visit a site's account page after a sign-in, which is what lets a
+/// site be verified without AI-OS knowing anything about its markup.
+pub(crate) fn navigate_provider_page(provider_id: &str, url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("A managed browser is only ever sent to an https page".to_owned());
+    }
+    let port = control_port_for(provider_id)
+        .ok_or_else(|| "No managed browser to navigate".to_owned())?;
+    let targets = list_targets(port)?;
+    let target = targets
+        .iter()
+        .find(|target| target.target_type == "page" && !target.web_socket_debugger_url.is_empty())
+        .ok_or_else(|| "No page to navigate".to_owned())?;
+    protocol_call(
+        &target.web_socket_debugger_url,
+        1,
+        "Page.navigate",
+        json!({ "url": url }),
+    )
+    .map(|_| ())
+}
+
 pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerification, String> {
+    // A site the user added has no hand-written page knowledge, so it is
+    // verified from its account page or from evidence learned at sign-in.
+    if let Some(site) = site_registry::site(provider_id) {
+        return verify_user_site(&site);
+    }
+
     let Some(expression) = account_probe_expression(provider_id) else {
         return Err("This Provider has no authenticated browser verifier".to_owned());
     };

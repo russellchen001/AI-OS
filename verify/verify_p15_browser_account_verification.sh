@@ -50,6 +50,53 @@ for forbidden in "document.cookie" "localStorage" "sessionStorage" "Authorizatio
   fi
 done
 
+# --- user-added sites ----------------------------------------------------
+
+test -f src-tauri/src/browser/site_registry.rs \
+  || fail "there is no registry for sites the user adds"
+
+for command_name in add_browser_site remove_browser_site confirm_browser_login list_browser_sites; do
+  grep -q "$command_name" src-tauri/src/lib.rs \
+    || fail "user site command is not registered: $command_name"
+done
+
+# A site with no account page and nothing learned must never reach Connected.
+grep -q "fn site_is_signed_in" src-tauri/src/browser/site_registry.rs \
+  || fail "user sites have no verification rule"
+
+# The generic probe must read structure, never content or credentials. Only the
+# code is checked: the test module names these strings to assert their absence.
+site_code="$(awk '/^#\[cfg\(test\)\]/{exit} {print}' src-tauri/src/browser/site_registry.rs)"
+for forbidden in "document.cookie" "localStorage" "sessionStorage" "textContent"; do
+  if printf '%s\n' "$site_code" | grep -q "$forbidden"; then
+    fail "the generic site probe must never read $forbidden"
+  fi
+done
+
+sites="$(cargo test --manifest-path src-tauri/Cargo.toml browser::site_registry::tests -- --nocapture 2>&1)"
+if [[ $? -ne 0 ]]; then
+  echo "FAIL $name: user site behavior tests failed"
+  echo "$sites" | tail -30
+  exit 1
+fi
+
+required_site_tests=(
+  "a_site_with_no_account_page_and_no_learned_evidence_can_never_connect"
+  "a_site_is_only_ever_verified_on_its_own_hosts"
+  "a_login_surface_is_never_learned_as_proof_of_an_account"
+  "learning_keeps_only_what_signing_in_changed"
+  "learning_refuses_when_nothing_distinguishable_appeared"
+  "an_account_page_answers_only_while_the_site_keeps_us_there"
+  "provider_ids_are_derived_safely_and_never_collide_with_built_ins"
+  "the_generic_probe_is_built_from_the_battery_and_reads_nothing_personal"
+)
+for test_name in "${required_site_tests[@]}"; do
+  if [[ "$sites" != *"$test_name ... ok"* ]]; then
+    echo "FAIL $name: required user site behavior test did not pass: $test_name"
+    exit 1
+  fi
+done
+
 output="$(cargo test --manifest-path src-tauri/Cargo.toml browser::account_verifier::tests browser::devtools::tests -- --nocapture 2>&1)"
 status=$?
 if [[ $status -ne 0 ]]; then
@@ -114,5 +161,10 @@ echo "✓ Amazon verification is region aware and records the observed origin"
 echo "✓ protocol errors and page exceptions are never treated as verification"
 echo "✓ a lost website account expires and enters reconnect"
 echo "✓ restart and profile reuse never blindly restore Connected"
+echo "✓ users can add their own sites, verified through the same managed browser"
+echo "✓ a site with no account page and nothing learned can never be Connected"
+echo "✓ a site is only ever verified on its own hosts"
+echo "✓ a login surface is never learned as proof of an account"
+echo "✓ the generic site probe reads structure only, never content or credentials"
 echo "PASS $name"
 echo "SKIP $name real account E2E: BROWSER-C real login required"

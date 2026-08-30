@@ -484,9 +484,6 @@ fn provider_hosts(provider_id: &str) -> Option<&'static [&'static str]> {
 /// Fail-closed origin check consumed by the provider account verifiers.
 /// HTTPS is required and the host must belong to the expected provider.
 pub(crate) fn origin_belongs_to_provider(provider_id: &str, origin: &str) -> bool {
-    let Some(hosts) = provider_hosts(provider_id) else {
-        return false;
-    };
     let Some(remainder) = origin.strip_prefix("https://") else {
         return false;
     };
@@ -498,7 +495,17 @@ pub(crate) fn origin_belongs_to_provider(provider_id: &str, origin: &str) -> boo
         .rsplit_once(':')
         .map(|(host, _)| host)
         .unwrap_or(authority);
-    hosts.contains(&host)
+
+    if let Some(hosts) = provider_hosts(provider_id) {
+        return hosts.contains(&host);
+    }
+
+    // A site the user added carries its own host list. It is deliberately
+    // exact: widening it to a parent domain would need a public suffix list to
+    // be safe, and guessing one wrongly widens what counts as this site.
+    super::site_registry::site(provider_id)
+        .map(|site| site.hosts.iter().any(|allowed| allowed == host))
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,11 @@
 use crate::browser::account_verifier::{
-    account_home_url, capture_provider_page, verify_managed_account, AccountVerification,
+    account_home_url, capture_provider_page, navigate_provider_page, sample_provider_page,
+    verify_managed_account, AccountVerification,
 };
 use crate::browser::diagnostics;
+use crate::browser::site_registry::{
+    self, derive_provider_id, learn_evidence, url_host, SiteDefinition,
+};
 use crate::browser::authenticated_runtime::{
     close_managed_browser, open_managed_browser, remove_managed_profile, ManagedBrowserLaunchMode,
 };
@@ -510,8 +514,156 @@ fn resolved_browser_state(
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Sites the user added themselves
+// ---------------------------------------------------------------------------
+
+fn browser_sites_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("browser-sites.json"))
+        .map_err(|_| "Site storage is unavailable".to_owned())
+}
+
+fn load_browser_sites(app: &tauri::AppHandle) -> Vec<SiteDefinition> {
+    let Ok(path) = browser_sites_path(app) else {
+        return Vec::new();
+    };
+    if !path.exists() {
+        return Vec::new();
+    }
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<SiteDefinition>>(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_browser_sites(app: &tauri::AppHandle, sites: &[SiteDefinition]) -> Result<(), String> {
+    let path = browser_sites_path(app)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Site storage is unavailable".to_owned())?;
+    fs::create_dir_all(parent).map_err(|_| "Site storage could not be created".to_owned())?;
+    let temporary = path.with_extension("json.tmp");
+    let bytes =
+        serde_json::to_vec_pretty(sites).map_err(|_| "Sites could not be encoded".to_owned())?;
+    fs::write(&temporary, bytes).map_err(|_| "Sites could not be saved".to_owned())?;
+    fs::rename(temporary, path).map_err(|_| "Sites could not be committed".to_owned())?;
+    site_registry::set_sites(sites.to_vec());
+    Ok(())
+}
+
+/// Make this process's view of user sites match what is on disk.
+pub(crate) fn refresh_browser_site_registry(app: &tauri::AppHandle) {
+    site_registry::set_sites(load_browser_sites(app));
+}
+
+#[tauri::command]
+pub(crate) fn list_browser_sites(app: tauri::AppHandle) -> Vec<SiteDefinition> {
+    load_browser_sites(&app)
+}
+
+/// Add a site the user wants AI-OS to stay signed in to.
+///
+/// The account page is optional. With one, the site answers for itself; without
+/// one, AI-OS learns what changes when the user signs in. Until one of those
+/// exists the site can be opened and signed in to, but never reports connected.
+#[tauri::command]
+pub(crate) fn add_browser_site(
+    app: tauri::AppHandle,
+    display_name: String,
+    login_url: String,
+    account_url: Option<String>,
+) -> Result<SiteDefinition, String> {
+    let display_name = display_name.trim().to_owned();
+    let login_url = login_url.trim().to_owned();
+    let account_url = account_url
+        .map(|url| url.trim().to_owned())
+        .filter(|url| !url.is_empty());
+
+    if display_name.is_empty() {
+        return Err("Give the site a name".to_owned());
+    }
+    let Some(login_host) = url_host(&login_url) else {
+        return Err("The sign-in address must be a full https:// address".to_owned());
+    };
+    if let Some(account_url) = account_url.as_deref() {
+        if url_host(account_url).is_none() {
+            return Err("The account page must be a full https:// address".to_owned());
+        }
+    }
+
+    let provider_id = derive_provider_id(&login_url, &display_name)
+        .ok_or_else(|| "That address cannot be used as a site".to_owned())?;
+
+    let mut sites = load_browser_sites(&app);
+    if sites.iter().any(|site| site.provider_id == provider_id) {
+        return Err("That site has already been added".to_owned());
+    }
+
+    // Exactly the hosts the user's own addresses use. More are added only when
+    // a sign-in is actually verified somewhere else on the same site.
+    let mut hosts = vec![login_host];
+    if let Some(host) = account_url.as_deref().and_then(url_host) {
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+
+    let site = SiteDefinition {
+        provider_id,
+        display_name,
+        login_url,
+        account_url,
+        hosts,
+        evidence: None,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    sites.push(site.clone());
+    save_browser_sites(&app, &sites)?;
+    diagnostics::record("site", &format!("provider={} added", site.provider_id));
+    Ok(site)
+}
+
+#[tauri::command]
+pub(crate) async fn remove_browser_site(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<bool, String> {
+    match tauri::async_runtime::spawn_blocking(move || remove_browser_site_blocking(app, provider_id))
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("The site could not be removed".to_owned()),
+    }
+}
+
+fn remove_browser_site_blocking(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<bool, String> {
+    let mut sites = load_browser_sites(&app);
+    let before = sites.len();
+    sites.retain(|site| site.provider_id != provider_id);
+    if sites.len() == before {
+        return Ok(false);
+    }
+
+    // Removing a site removes its stored session too, the same as Disconnect.
+    close_managed_browser(&provider_id)?;
+    remove_managed_profile(&app, &provider_id)?;
+    clear_recovered_state(&provider_id);
+    let _ = remove_browser_profile(&app, &provider_id);
+
+    save_browser_sites(&app, &sites)?;
+    diagnostics::record("site", &format!("provider={provider_id} removed"));
+    Ok(true)
+}
+
 fn capabilities() -> Vec<ConnectionCapability> {
-    vec![
+    let mut items = vec![
         ConnectionCapability {
             provider_id: ConnectionProvider::Microsoft.id().to_owned(),
             display_name: "Microsoft".to_owned(),
@@ -577,7 +729,23 @@ fn capabilities() -> Vec<ConnectionCapability> {
             "Pinduoduo",
             "https://mobile.yangkeduo.com/login.html",
         ),
-    ]
+    ];
+
+    // Sites the user added themselves sit alongside the built-in providers and
+    // go through exactly the same managed browser.
+    items.extend(site_registry::all_sites().into_iter().map(|site| {
+        ConnectionCapability {
+            provider_id: site.provider_id.clone(),
+            display_name: site.display_name,
+            method: ConnectionMethod::AuthenticatedBrowser,
+            state: UnifiedConnectionState::Disconnected,
+            login_url: Some(site.login_url),
+            profile_ref: Some(format!("browser-profile:{}", site.provider_id)),
+            developer_approval_required: false,
+        }
+    }));
+
+    items
 }
 
 fn browser_capability(
@@ -756,6 +924,114 @@ fn record_session_state(session: &BrowserLoginSession) {
 }
 
 /// A signed-in account is watched for, not polled for by the frontend.
+/// The page as it looked before the user signed in, per site being enrolled.
+/// Diffing it against the page afterwards is what teaches AI-OS the difference.
+fn enrollment_samples() -> &'static Mutex<BTreeMap<String, Vec<String>>> {
+    static SAMPLES: OnceLock<Mutex<BTreeMap<String, Vec<String>>>> = OnceLock::new();
+    SAMPLES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn remember_signed_out_sample(provider_id: &str, keys: Vec<String>) {
+    if let Ok(mut samples) = enrollment_samples().lock() {
+        samples.entry(provider_id.to_owned()).or_insert(keys);
+    }
+}
+
+fn signed_out_sample(provider_id: &str) -> Option<Vec<String>> {
+    enrollment_samples().lock().ok()?.get(provider_id).cloned()
+}
+
+/// Confirm that the user has finished signing in to a site they added.
+///
+/// This is the moment AI-OS can learn: it has the page from before the sign-in
+/// and the page now, and the difference is the discriminator. If the site has
+/// an account page it is visited too, because a site that keeps you on its own
+/// account page has answered the question by itself.
+#[tauri::command]
+pub(crate) async fn confirm_browser_login(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<BrowserLoginSession, String> {
+    match tauri::async_runtime::spawn_blocking(move || confirm_browser_login_blocking(app, provider_id))
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("The sign-in could not be confirmed".to_owned()),
+    }
+}
+
+fn confirm_browser_login_blocking(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<BrowserLoginSession, String> {
+    let mut sites = load_browser_sites(&app);
+    let index = sites
+        .iter()
+        .position(|site| site.provider_id == provider_id)
+        .ok_or_else(|| "That site is not one you added".to_owned())?;
+
+    // If the site has an account page, go there: staying on it is evidence in
+    // its own right, and it is also where a signed-in page differs most.
+    if let Some(account_url) = sites[index].account_url.clone() {
+        let _ = navigate_provider_page(&provider_id, &account_url);
+        std::thread::sleep(CONFIRM_SETTLE);
+    }
+
+    let after = sample_provider_page(&provider_id)
+        .map_err(|_| "AI-OS could not read the page. Is the managed browser still open?".to_owned())?;
+
+    // A host the sign-in actually landed on belongs to this site.
+    if let Some(host) = url_host(&after.origin) {
+        if !sites[index].hosts.contains(&host) {
+            sites[index].hosts.push(host);
+        }
+    }
+
+    if let Some(before) = signed_out_sample(&provider_id) {
+        if let Some(evidence) = learn_evidence(
+            &before,
+            &after.keys,
+            &after.origin,
+            &chrono::Utc::now().to_rfc3339(),
+        ) {
+            diagnostics::record(
+                "site",
+                &format!(
+                    "provider={provider_id} learned signed_in=[{}] signed_out=[{}]",
+                    evidence.signed_in_keys.join("|"),
+                    evidence.signed_out_keys.join("|")
+                ),
+            );
+            sites[index].evidence = Some(evidence);
+        }
+    }
+
+    save_browser_sites(&app, &sites)?;
+
+    let verification = verify_managed_account(&provider_id)?;
+    let mut session = load_browser_profiles(&app)
+        .unwrap_or_default()
+        .remove(&provider_id)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            BrowserLoginSession::waiting(&provider_id, &format!("browser-profile:{provider_id}"))
+        })?;
+    session.apply_account_verification(&verification);
+    record_session_state(&session);
+    save_browser_profile(&app, &session)?;
+
+    if !matches!(session.state, UnifiedConnectionState::Connected) {
+        return Err(
+            "AI-OS could not tell that this site is signed in. If it has a \"my account\" page, add that address to the site and try again."
+                .to_owned(),
+        );
+    }
+
+    diagnostics::record("site", &format!("provider={provider_id} confirmed=connected"));
+    Ok(session)
+}
+
+const CONFIRM_SETTLE: Duration = Duration::from_secs(3);
 const LOGIN_WATCH_ATTEMPTS: usize = 90;
 const LOGIN_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 /// Consecutive misses tolerated before deciding the browser is really gone.
@@ -772,6 +1048,14 @@ fn watch_browser_login(app: tauri::AppHandle, session: BrowserLoginSession) {
 
         for attempt in 0..LOGIN_WATCH_ATTEMPTS {
             std::thread::sleep(LOGIN_WATCH_INTERVAL);
+
+            // For a site the user added, the first look is the "before"
+            // picture that later teaches AI-OS what signing in changed.
+            if attempt == 0 && site_registry::site(&session.provider_id).is_some() {
+                if let Ok(sample) = sample_provider_page(&session.provider_id) {
+                    remember_signed_out_sample(&session.provider_id, sample.keys);
+                }
+            }
 
             match verify_managed_account(&session.provider_id) {
                 Ok(found @ AccountVerification::Authenticated { .. }) => {

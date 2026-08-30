@@ -137,6 +137,8 @@ pub fn run() {
             tauri::async_runtime::spawn(providers::auto_start_connected_omlx());
             // Restore browser-backed connections against their persisted
             // profiles. Seeds state synchronously, verifies in the background.
+            // User-added sites must be known before anything is restored.
+            connections::refresh_browser_site_registry(&app.handle().clone());
             connections::begin_authenticated_browser_recovery(app.handle().clone());
             Ok(())
         })
@@ -150,6 +152,10 @@ pub fn run() {
             connections::begin_browser_login,
             connections::verify_browser_login,
             connections::disconnect_connection_provider,
+            connections::list_browser_sites,
+            connections::add_browser_site,
+            connections::remove_browser_site,
+            connections::confirm_browser_login,
             browser::authenticated_runtime::open_authenticated_browser,
             browser::authenticated_runtime::inspect_authenticated_browser,
             browser::authenticated_runtime::close_authenticated_browser,

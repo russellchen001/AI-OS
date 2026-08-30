@@ -3469,3 +3469,66 @@ already refuses.
 
 Evidence now also carries the page title, which is what distinguishes an
 account page from a login page.
+
+---
+
+## User-added authenticated browser sites — 2026-08-30
+
+**Status: implemented, not yet run on macOS. The four built-ins are unchanged
+and still work; this is additive.**
+
+Users can now add any site themselves instead of choosing from a fixed four.
+The whole managed-browser runtime is reused unchanged — profile ownership,
+reclaim, headless restart recovery, the login watcher, graceful shutdown, the
+state authority, diagnostics. Only the account evidence had to be solved
+generically, because AI-OS cannot ship selectors for a site it has never seen.
+
+### Two mechanisms, either of which suffices
+
+**An account page.** If the user names a page only a signed-in account can
+reach, staying on it is the evidence and being sent to a login page is the
+refusal. This needs nothing about the site's markup and is tried first.
+
+**Evidence learned at sign-in.** The managed browser samples a generic battery
+of 14 structural selectors — logout affordances, account/nickname/avatar
+markers, login forms, password fields, QR logins, captchas — before the user
+signs in, and again when they press **I've signed in**. What appeared, and what
+disappeared, is the discriminator, and it is stored.
+
+Both are fail-closed. A site with neither an account page nor learned evidence
+can be opened and signed in to, but can never report Connected.
+
+### What is deliberately refused
+
+- A key present both before and after sign-in is discarded: keeping it would
+  make a signed-out page pass later.
+- A login surface appearing (password field, login form, QR login, captcha) can
+  never be learned as proof of an account, whatever the diff says.
+- If nothing distinguishable appeared, no evidence is stored at all and the user
+  is told to name an account page instead. Storing evidence that always passes
+  would be worse than storing none.
+- Host lists are exact, never a derived parent domain: getting eTLD+1 right
+  needs a public suffix list, and guessing widens what counts as the site. Hosts
+  grow only when a sign-in is actually verified somewhere on the same site.
+- https only, everywhere, and any URL with credentials in it is rejected.
+- Derived provider ids are prefixed `site-`, so a user site can never collide
+  with or impersonate a built-in provider.
+
+### Privacy
+
+The generic probe reports **which selector keys matched** and nothing else — no
+page text, no account name, no `textContent` at all. A user site is therefore
+verified structurally, and AI-OS never learns whose account it is; its stored
+marker records that a session on that site was verified, not who owns it. A
+test and the verifier script both enforce that the probe reads no cookie,
+storage or text.
+
+### Surface
+
+- `add_browser_site` / `remove_browser_site` / `list_browser_sites` /
+  `confirm_browser_login`, stored in `browser-sites.json` under app data.
+- User sites appear in the Connections list alongside the built-ins, with
+  **I've signed in** and **Remove** buttons and an **Add a site** form.
+- Removing a site removes its stored browser session too.
+
+Browser module: **38 tests pass**, `npx tsc --noEmit` passes.

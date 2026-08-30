@@ -54,6 +54,18 @@ type BrowserLoginSession = {
   accountMarker?: string;
 };
 
+type BrowserSite = {
+  providerId: string;
+  displayName: string;
+  loginUrl: string;
+  accountUrl?: string;
+  hosts: string[];
+  evidence?: { signedInKeys: string[]; signedOutKeys: string[]; verifiedOrigin: string; learnedAt: string };
+  createdAt: string;
+};
+
+const emptySite = { displayName: "", loginUrl: "", accountUrl: "" };
+
 type LocalApplicationAvailability = {
   applicationId: string;
   displayName: string;
@@ -100,6 +112,9 @@ export default function ConnectionsCenter() {
   const [message, setMessage] = useState("");
   const [microsoftClientId, setMicrosoftClientId] = useState("");
   const [localApplications, setLocalApplications] = useState<LocalApplicationAvailability[]>([]);
+  const [sites, setSites] = useState<BrowserSite[]>([]);
+  const [siteForm, setSiteForm] = useState(emptySite);
+  const [showSiteForm, setShowSiteForm] = useState(false);
   const [rescanning, setRescanning] = useState(false);
   const [scanStatus, setScanStatus] = useState("");
   const running = useRef(new Set<string>());
@@ -108,11 +123,13 @@ export default function ConnectionsCenter() {
     setRescanning(true);
     setScanStatus(showMessage ? "Checking installed apps…" : "");
     try {
-      const [items, availability] = await Promise.all([
+      const [items, availability, addedSites] = await Promise.all([
         invoke<ConnectionCapability[]>("list_connection_capabilities"),
         invoke<LocalApplicationAvailabilityReport>("rescan_local_application_availability"),
+        invoke<BrowserSite[]>("list_browser_sites"),
       ]);
       setCapabilities(items);
+      setSites(addedSites);
       setLocalApplications(availability.applications);
       const instances = listProviderInstances();
       setStates(Object.fromEntries(items.map((item) => {
@@ -298,6 +315,48 @@ export default function ConnectionsCenter() {
     }
   }
 
+  const addedSite = (providerId: string) => sites.find((site) => site.providerId === providerId);
+
+  async function addSite() {
+    try {
+      await invoke<BrowserSite>("add_browser_site", {
+        displayName: siteForm.displayName,
+        loginUrl: siteForm.loginUrl,
+        accountUrl: siteForm.accountUrl.trim() === "" ? null : siteForm.accountUrl,
+      });
+      setSiteForm(emptySite);
+      setShowSiteForm(false);
+      await refreshConnections();
+      setMessage(`${siteForm.displayName} added. Connect it to sign in.`);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  async function removeSite(providerId: string) {
+    try {
+      await invoke<boolean>("remove_browser_site", { providerId });
+      await refreshConnections();
+      setMessage("Site removed, along with its stored browser session.");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  // A site AI-OS has never seen cannot be checked from its markup, so the user
+  // says when they are signed in and AI-OS learns the difference from the page.
+  async function confirmSignedIn(providerId: string) {
+    setMessage("Checking the page…");
+    try {
+      const checked = await invoke<BrowserLoginSession>("confirm_browser_login", { providerId });
+      setSessions((current) => ({ ...current, [providerId]: checked }));
+      setStates((current) => ({ ...current, [providerId]: checked.state }));
+      setMessage(`${providerId} verified on ${checked.verifiedOrigin ?? "the signed-in page"}.`);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
   async function disconnect(providerId: string) {
     try {
       if (providerId === "microsoft-graph" || providerId === "google-workspace") {
@@ -382,6 +441,14 @@ export default function ConnectionsCenter() {
                     {state === "EXPIRED" || state === "LOGIN_REQUIRED" || state === "ERROR" ? "Reconnect" : "Connect"}
                   </button>
                 )}
+                {addedSite(capability.providerId) && state !== "CONNECTED" && (
+                  <button type="button" className="provider-secondary" onClick={() => void confirmSignedIn(capability.providerId)}>
+                    I&apos;ve signed in
+                  </button>
+                )}
+                {addedSite(capability.providerId) && (
+                  <button type="button" className="provider-secondary" onClick={() => void removeSite(capability.providerId)}>Remove</button>
+                )}
                 {active && <button type="button" className="provider-secondary" onClick={skipCurrent}>Skip</button>}
               </div>
             </article>
@@ -407,6 +474,34 @@ export default function ConnectionsCenter() {
           <button type="button" className="provider-secondary" onClick={saveMicrosoftDevelopmentConfig}>Save configuration</button>
         </div>
       </details>
+      <div className="connections-add-site">
+        {showSiteForm ? (
+          <>
+            <input
+              type="text"
+              placeholder="Site name, e.g. My Shop"
+              value={siteForm.displayName}
+              onChange={(event) => setSiteForm({ ...siteForm, displayName: event.target.value })}
+            />
+            <input
+              type="url"
+              placeholder="Sign-in address, e.g. https://example.com/login"
+              value={siteForm.loginUrl}
+              onChange={(event) => setSiteForm({ ...siteForm, loginUrl: event.target.value })}
+            />
+            <input
+              type="url"
+              placeholder="Optional: your account page, e.g. https://example.com/my"
+              value={siteForm.accountUrl}
+              onChange={(event) => setSiteForm({ ...siteForm, accountUrl: event.target.value })}
+            />
+            <button type="button" className="provider-primary" onClick={() => void addSite()}>Add site</button>
+            <button type="button" className="provider-secondary" onClick={() => { setShowSiteForm(false); setSiteForm(emptySite); }}>Cancel</button>
+          </>
+        ) : (
+          <button type="button" className="provider-secondary" onClick={() => setShowSiteForm(true)}>Add a site</button>
+        )}
+      </div>
       {message && <p className="connections-message" role="status">{message}</p>}
       <p className="connections-message">Enter credentials only on the official login page. AI-OS never asks for an account password.</p>
       {complete && <p className="connections-message">Connection onboarding finished. Items requiring application configuration or developer approval remain clearly marked.</p>}
