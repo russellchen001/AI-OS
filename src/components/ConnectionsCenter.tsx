@@ -17,7 +17,6 @@ import {
 } from "../services/providers";
 import { getProviderAdapter } from "../services/providerAdapters";
 import AddConnectionProvider from "./AddConnectionProvider";
-import ExternalConnectorConfiguration from "./ExternalConnectorConfiguration";
 
 type ConnectionMethod = "OFFICIAL_OAUTH" | "AUTHENTICATED_BROWSER" | "BACKEND_BROKER" | "NATIVE_APPLICATION";
 type ConnectionState =
@@ -420,7 +419,6 @@ export default function ConnectionsCenter() {
       </div>
       <div className="connections-list">
         {capabilities.map((capability) => {
-          if (capability.providerId === "ebay") return <ExternalConnectorConfiguration key="ebay" />;
           const state = states[capability.providerId] ?? capability.state;
           const active = currentProvider === capability.providerId;
           return (
@@ -441,7 +439,7 @@ export default function ConnectionsCenter() {
                     {state === "EXPIRED" || state === "LOGIN_REQUIRED" || state === "ERROR" ? "Reconnect" : "Connect"}
                   </button>
                 )}
-                {addedSite(capability.providerId) && state !== "CONNECTED" && (
+                {(addedSite(capability.providerId) || capability.providerId === "ebay") && state === "WAITING_FOR_USER" && (
                   <button type="button" className="provider-secondary" onClick={() => void confirmSignedIn(capability.providerId)}>
                     I&apos;ve signed in
                   </button>

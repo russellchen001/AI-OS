@@ -2,10 +2,11 @@ use chrono::{Duration, Utc};
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{
     config::BrokerConfig,
-    contract::{CapabilityState, Environment},
+    contract::{CapabilityState, Environment, EBAY_BASE_SCOPE, EBAY_IDENTITY_SCOPE},
     storage::TokenRecord,
 };
 
@@ -15,6 +16,22 @@ struct TokenResponse {
     #[serde(default)]
     refresh_token: Option<String>,
     expires_in: i64,
+    #[serde(default)]
+    refresh_token_expires_in: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityResponse {
+    user_id: String,
+}
+
+pub fn approved_scopes() -> [&'static str; 2] {
+    [EBAY_BASE_SCOPE, EBAY_IDENTITY_SCOPE]
+}
+
+fn approved_scope_string() -> String {
+    approved_scopes().join(" ")
 }
 
 pub fn authorization_url(config: &BrokerConfig, state: &str) -> Result<String, String> {
@@ -23,7 +40,7 @@ pub fn authorization_url(config: &BrokerConfig, state: &str) -> Result<String, S
         .append_pair("client_id", &config.client_id)
         .append_pair("redirect_uri", &config.ru_name)
         .append_pair("response_type", "code")
-        .append_pair("scope", "https://api.ebay.com/oauth/api_scope/buy.item.bulk https://api.ebay.com/oauth/api_scope/buy.order")
+        .append_pair("scope", &approved_scope_string())
         .append_pair("state", state);
     Ok(url.to_string())
 }
@@ -53,13 +70,17 @@ pub async fn exchange_authorization_code(
         .json()
         .await
         .map_err(|_| "EBAY_TOKEN_RESPONSE_INVALID".to_owned())?;
-    let identity_validated = validate_identity(config, &token.access_token).await?;
+    let account_marker = validate_identity(config, &token.access_token).await?;
     Ok(TokenRecord {
         access_token: token.access_token,
         refresh_token: token.refresh_token,
         expires_at: Utc::now() + Duration::seconds(token.expires_in.max(60)),
-        granted_scopes: vec!["buy.api".to_owned()],
-        identity_validated,
+        refresh_expires_at: token
+            .refresh_token_expires_in
+            .map(|seconds| Utc::now() + Duration::seconds(seconds.max(60))),
+        granted_scopes: approved_scopes().into_iter().map(str::to_owned).collect(),
+        identity_validated: true,
+        account_marker,
     })
 }
 
@@ -67,31 +88,54 @@ pub async fn refresh_if_needed(
     config: &BrokerConfig,
     mut record: TokenRecord,
 ) -> Result<TokenRecord, String> {
-    if record.expires_at > Utc::now() + Duration::minutes(2) {
-        return Ok(record);
+    if record.expires_at <= Utc::now() + Duration::minutes(2) {
+        let refresh = record
+            .refresh_token
+            .clone()
+            .ok_or_else(|| "EBAY_LOGIN_REQUIRED".to_owned())?;
+        if record
+            .refresh_expires_at
+            .is_some_and(|expiry| expiry <= Utc::now())
+        {
+            return Err("EBAY_LOGIN_REQUIRED".to_owned());
+        }
+        let scope = approved_scope_string();
+        let response = reqwest::Client::new()
+            .post(config.ebay_token_url.clone())
+            .basic_auth(&config.client_id, Some(&config.client_secret))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh.as_str()),
+                ("scope", scope.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|_| "EBAY_TOKEN_ENDPOINT_UNREACHABLE".to_owned())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "EBAY_TOKEN_REFRESH_HTTP_{}",
+                response.status().as_u16()
+            ));
+        }
+        let token: TokenResponse = response
+            .json()
+            .await
+            .map_err(|_| "EBAY_TOKEN_RESPONSE_INVALID".to_owned())?;
+        record.access_token = token.access_token;
+        record.expires_at = Utc::now() + Duration::seconds(token.expires_in.max(60));
+        if let Some(refresh_token) = token.refresh_token {
+            record.refresh_token = Some(refresh_token);
+        }
+        if let Some(seconds) = token.refresh_token_expires_in {
+            record.refresh_expires_at = Some(Utc::now() + Duration::seconds(seconds.max(60)));
+        }
     }
-    let refresh = record
-        .refresh_token
-        .clone()
-        .ok_or_else(|| "EBAY_LOGIN_REQUIRED".to_owned())?;
-    let response = reqwest::Client::new().post(config.ebay_token_url.clone()).basic_auth(&config.client_id, Some(&config.client_secret)).form(&[("grant_type", "refresh_token"), ("refresh_token", refresh.as_str()), ("scope", "https://api.ebay.com/oauth/api_scope/buy.item.bulk https://api.ebay.com/oauth/api_scope/buy.order")]).send().await.map_err(|_| "EBAY_TOKEN_ENDPOINT_UNREACHABLE".to_owned())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "EBAY_TOKEN_REFRESH_HTTP_{}",
-            response.status().as_u16()
-        ));
-    }
-    let token: TokenResponse = response
-        .json()
-        .await
-        .map_err(|_| "EBAY_TOKEN_RESPONSE_INVALID".to_owned())?;
-    record.access_token = token.access_token;
-    record.expires_at = Utc::now() + Duration::seconds(token.expires_in.max(60));
-    record.identity_validated = validate_identity(config, &record.access_token).await?;
+    record.account_marker = validate_identity(config, &record.access_token).await?;
+    record.identity_validated = true;
     Ok(record)
 }
 
-async fn validate_identity(config: &BrokerConfig, token: &str) -> Result<bool, String> {
+async fn validate_identity(config: &BrokerConfig, token: &str) -> Result<String, String> {
     let url = config
         .ebay_api_base_url
         .join("commerce/identity/v1/user/")
@@ -102,10 +146,52 @@ async fn validate_identity(config: &BrokerConfig, token: &str) -> Result<bool, S
         .send()
         .await
         .map_err(|_| "EBAY_IDENTITY_UNREACHABLE".to_owned())?;
+    if !response.status().is_success() {
+        return Err(format!("EBAY_IDENTITY_HTTP_{}", response.status().as_u16()));
+    }
+    let identity: IdentityResponse = response
+        .json()
+        .await
+        .map_err(|_| "EBAY_IDENTITY_RESPONSE_INVALID".to_owned())?;
+    if identity.user_id.trim().is_empty() {
+        return Err("EBAY_IDENTITY_RESPONSE_INVALID".to_owned());
+    }
+    Ok(account_marker(config, &identity.user_id))
+}
+
+fn account_marker(config: &BrokerConfig, user_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"ai-os:ebay-account-marker:v1\0");
+    digest.update(config.client_secret.as_bytes());
+    digest.update(b"\0");
+    digest.update(user_id.as_bytes());
+    format!("ebay-account:{:x}", digest.finalize())
+}
+
+pub async fn revoke(config: &BrokerConfig, record: &TokenRecord) -> Result<(), String> {
+    let (token, token_type_hint) = record
+        .refresh_token
+        .as_deref()
+        .map(|token| (token, "refresh_token"))
+        .unwrap_or((&record.access_token, "access_token"));
+    let endpoint = format!(
+        "{}/revoke",
+        config.ebay_token_url.as_str().trim_end_matches('/')
+    );
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .basic_auth(&config.client_id, Some(&config.client_secret))
+        .form(&[("token", token), ("token_type_hint", token_type_hint)])
+        .send()
+        .await
+        .map_err(|_| "EBAY_TOKEN_REVOKE_UNREACHABLE".to_owned())?;
     if response.status().is_success() {
-        Ok(true)
+        Ok(())
     } else {
-        Err(format!("EBAY_IDENTITY_HTTP_{}", response.status().as_u16()))
+        Err(format!(
+            "EBAY_TOKEN_REVOKE_HTTP_{}",
+            response.status().as_u16()
+        ))
     }
 }
 
@@ -254,6 +340,11 @@ pub async fn execute_capability(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        http::StatusCode,
+        routing::{get, post},
+        Json, Router,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -275,6 +366,190 @@ mod tests {
         assert!(!checkout.available);
         assert_eq!(checkout.approval_state, "REQUIRED");
         assert!(checkout.confirmation_required);
+    }
+
+    #[test]
+    fn authorization_uses_only_approved_identity_scopes_and_runame() {
+        let config = test_config();
+        let url = url::Url::parse(&authorization_url(&config, "opaque-state").unwrap()).unwrap();
+        let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        let scopes = approved_scope_string();
+        assert_eq!(query.get("redirect_uri"), Some(&config.ru_name));
+        assert_eq!(query.get("state").map(String::as_str), Some("opaque-state"));
+        assert_eq!(
+            query.get("scope").map(String::as_str),
+            Some(scopes.as_str())
+        );
+        assert!(!query.get("scope").unwrap().contains("buy.order"));
+    }
+
+    #[test]
+    fn account_marker_is_stable_and_does_not_expose_raw_identity() {
+        let config = test_config();
+        let first = account_marker(&config, "raw-ebay-user-id");
+        let second = account_marker(&config, "raw-ebay-user-id");
+        assert_eq!(first, second);
+        assert!(!first.contains("raw-ebay-user-id"));
+        assert_eq!(first.len(), "ebay-account:".len() + 64);
+    }
+
+    #[tokio::test]
+    async fn token_exchange_requires_identity_api_before_authorized_record() {
+        let app = Router::new()
+            .route(
+                "/token",
+                post(|| async {
+                    Json(serde_json::json!({
+                        "access_token": "mock-access",
+                        "refresh_token": "mock-refresh",
+                        "expires_in": 7200,
+                        "refresh_token_expires_in": 86400
+                    }))
+                }),
+            )
+            .route(
+                "/commerce/identity/v1/user/",
+                get(|| async { Json(serde_json::json!({ "userId": "raw-user-id" })) }),
+            );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = test_config();
+        config.ebay_token_url = url::Url::parse(&format!("http://{address}/token")).unwrap();
+        config.ebay_api_base_url = url::Url::parse(&format!("http://{address}/")).unwrap();
+        let record = exchange_authorization_code(&config, "single-use-code")
+            .await
+            .unwrap();
+        assert!(record.identity_validated);
+        assert!(!record.account_marker.contains("raw-user-id"));
+        assert_eq!(record.granted_scopes, approved_scopes());
+        assert!(record.refresh_token.is_some());
+        assert!(record.refresh_expires_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn identity_failure_cannot_create_connected_token_record() {
+        let app = Router::new()
+            .route(
+                "/token",
+                post(|| async {
+                    Json(serde_json::json!({
+                        "access_token": "mock-access",
+                        "refresh_token": "mock-refresh",
+                        "expires_in": 7200
+                    }))
+                }),
+            )
+            .route(
+                "/commerce/identity/v1/user/",
+                get(|| async { StatusCode::UNAUTHORIZED }),
+            );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = test_config();
+        config.ebay_token_url = url::Url::parse(&format!("http://{address}/token")).unwrap();
+        config.ebay_api_base_url = url::Url::parse(&format!("http://{address}/")).unwrap();
+        assert_eq!(
+            exchange_authorization_code(&config, "single-use-code")
+                .await
+                .unwrap_err(),
+            "EBAY_IDENTITY_HTTP_401"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_reverification_does_not_blindly_trust_saved_marker() {
+        let app = Router::new().route(
+            "/commerce/identity/v1/user/",
+            get(|| async { StatusCode::UNAUTHORIZED }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = test_config();
+        config.ebay_api_base_url = url::Url::parse(&format!("http://{address}/")).unwrap();
+        let record = TokenRecord {
+            access_token: "saved-access".to_owned(),
+            refresh_token: Some("saved-refresh".to_owned()),
+            expires_at: Utc::now() + Duration::hours(1),
+            refresh_expires_at: Some(Utc::now() + Duration::days(30)),
+            granted_scopes: approved_scopes().into_iter().map(str::to_owned).collect(),
+            identity_validated: true,
+            account_marker: "saved-marker".to_owned(),
+        };
+        assert_eq!(
+            refresh_if_needed(&config, record).await.unwrap_err(),
+            "EBAY_IDENTITY_HTTP_401"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_access_token_refreshes_then_reverifies_identity() {
+        let app = Router::new()
+            .route(
+                "/token",
+                post(|| async {
+                    Json(serde_json::json!({
+                        "access_token": "refreshed-access",
+                        "expires_in": 7200
+                    }))
+                }),
+            )
+            .route(
+                "/commerce/identity/v1/user/",
+                get(|| async { Json(serde_json::json!({ "userId": "raw-user-id" })) }),
+            );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = test_config();
+        config.ebay_token_url = url::Url::parse(&format!("http://{address}/token")).unwrap();
+        config.ebay_api_base_url = url::Url::parse(&format!("http://{address}/")).unwrap();
+        let record = TokenRecord {
+            access_token: "expired-access".to_owned(),
+            refresh_token: Some("saved-refresh".to_owned()),
+            expires_at: Utc::now() - Duration::seconds(1),
+            refresh_expires_at: Some(Utc::now() + Duration::days(30)),
+            granted_scopes: approved_scopes().into_iter().map(str::to_owned).collect(),
+            identity_validated: true,
+            account_marker: "old-marker".to_owned(),
+        };
+        let refreshed = refresh_if_needed(&config, record).await.unwrap();
+        assert_eq!(refreshed.access_token, "refreshed-access");
+        assert_eq!(refreshed.refresh_token.as_deref(), Some("saved-refresh"));
+        assert!(refreshed.identity_validated);
+        assert_ne!(refreshed.account_marker, "old-marker");
+    }
+
+    #[tokio::test]
+    async fn disconnect_uses_official_refresh_token_revoke_endpoint() {
+        let app = Router::new().route("/token/revoke", post(|| async { StatusCode::OK }));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = test_config();
+        config.ebay_token_url = url::Url::parse(&format!("http://{address}/token")).unwrap();
+        let record = TokenRecord {
+            access_token: "access".to_owned(),
+            refresh_token: Some("refresh".to_owned()),
+            expires_at: Utc::now() + Duration::hours(1),
+            refresh_expires_at: Some(Utc::now() + Duration::days(30)),
+            granted_scopes: approved_scopes().into_iter().map(str::to_owned).collect(),
+            identity_validated: true,
+            account_marker: "marker".to_owned(),
+        };
+        revoke(&config, &record).await.unwrap();
     }
 
     #[tokio::test]
@@ -302,8 +577,10 @@ mod tests {
             access_token: "fake-access".to_owned(),
             refresh_token: None,
             expires_at: Utc::now() + Duration::hours(1),
-            granted_scopes: vec!["buy.api".to_owned()],
+            refresh_expires_at: None,
+            granted_scopes: approved_scopes().into_iter().map(str::to_owned).collect(),
             identity_validated: true,
+            account_marker: "marker".to_owned(),
         };
         execute_capability(
             &config,
@@ -331,6 +608,7 @@ mod tests {
             )
             .unwrap(),
             ebay_token_url: url::Url::parse("http://localhost:1/token").unwrap(),
+            token_store_path: std::path::PathBuf::from("unused-test-token-store.json"),
         }
     }
 }

@@ -691,15 +691,11 @@ fn capabilities() -> Vec<ConnectionCapability> {
             profile_ref: None,
             developer_approval_required: false,
         },
-        ConnectionCapability {
-            provider_id: ConnectionProvider::Ebay.id().to_owned(),
-            display_name: "eBay".to_owned(),
-            method: ConnectionMethod::BackendBroker,
-            state: UnifiedConnectionState::NotConfigured,
-            login_url: None,
-            profile_ref: None,
-            developer_approval_required: false,
-        },
+        browser_capability(
+            ConnectionProvider::Ebay,
+            "eBay",
+            "https://signin.ebay.com/signin/",
+        ),
         browser_capability(
             ConnectionProvider::Amazon,
             "Amazon",
@@ -964,6 +960,10 @@ fn confirm_browser_login_blocking(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<BrowserLoginSession, String> {
+    if provider_id == ConnectionProvider::Ebay.id() {
+        return confirm_builtin_ebay_login(app);
+    }
+
     let mut sites = load_browser_sites(&app);
     let index = sites
         .iter()
@@ -1028,6 +1028,33 @@ fn confirm_browser_login_blocking(
     }
 
     diagnostics::record("site", &format!("provider={provider_id} confirmed=connected"));
+    Ok(session)
+}
+
+fn confirm_builtin_ebay_login(app: tauri::AppHandle) -> Result<BrowserLoginSession, String> {
+    let account_url = account_home_url(ConnectionProvider::Ebay.id(), None)
+        .ok_or_else(|| "The eBay account page is unavailable".to_owned())?;
+    navigate_provider_page(ConnectionProvider::Ebay.id(), &account_url)?;
+    std::thread::sleep(CONFIRM_SETTLE);
+
+    let verification = verify_managed_account(ConnectionProvider::Ebay.id())?;
+    let mut session = load_browser_profiles(&app)
+        .unwrap_or_default()
+        .remove(ConnectionProvider::Ebay.id())
+        .map(Ok)
+        .unwrap_or_else(|| {
+            BrowserLoginSession::waiting(
+                ConnectionProvider::Ebay.id(),
+                "browser-profile:ebay",
+            )
+        })?;
+    session.apply_account_verification(&verification);
+    record_session_state(&session);
+    save_browser_profile(&app, &session)?;
+
+    if session.state != UnifiedConnectionState::Connected {
+        return Err("eBay is not signed in in the AI-OS managed browser".to_owned());
+    }
     Ok(session)
 }
 
@@ -1406,6 +1433,19 @@ mod tests {
                 .unwrap();
         assert_eq!(session.state, UnifiedConnectionState::WaitingForUser);
         assert_ne!(session.state, UnifiedConnectionState::Connected);
+    }
+
+    #[test]
+    fn consumer_ebay_uses_the_existing_authenticated_browser_runtime() {
+        let ebay = capabilities()
+            .into_iter()
+            .find(|capability| capability.provider_id == "ebay")
+            .expect("eBay consumer provider");
+        assert_eq!(ebay.method, ConnectionMethod::AuthenticatedBrowser);
+        assert_eq!(ebay.state, UnifiedConnectionState::Disconnected);
+        assert_eq!(ebay.login_url.as_deref(), Some("https://signin.ebay.com/signin/"));
+        assert_eq!(ebay.profile_ref.as_deref(), Some("browser-profile:ebay"));
+        assert!(!ebay.developer_approval_required);
     }
 
     #[test]

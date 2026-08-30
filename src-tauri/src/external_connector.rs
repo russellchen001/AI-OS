@@ -373,10 +373,21 @@ fn capability_may_execute(
     Ok(())
 }
 
+fn state_for_broker_authorization_error(error: &str) -> ConnectorState {
+    if error.contains("EBAY_LOGIN_REQUIRED")
+        || error.contains("EBAY_TOKEN_REFRESH_HTTP_400")
+        || error.contains("EBAY_TOKEN_REFRESH_HTTP_401")
+    {
+        ConnectorState::LoginRequired
+    } else {
+        ConnectorState::Error
+    }
+}
+
 fn ebay_manifest() -> ConnectorManifest {
     let capability = |id: &str, approval: bool, confirmation: bool| ConnectorCapabilityDefinition {
         capability_id: id.to_owned(),
-        required_scopes: vec!["buy.api".to_owned()],
+        required_scopes: vec!["https://api.ebay.com/oauth/api_scope".to_owned()],
         confirmation_required: confirmation,
         approval_required: approval,
     };
@@ -410,7 +421,7 @@ fn ebay_manifest() -> ConnectorManifest {
             },
         ],
         broker_contract_version: CONTRACT_VERSION.to_owned(),
-        authorization_kind: "OAUTH_VIA_BROKER".to_owned(),
+        authorization_kind: "OFFICIAL_OAUTH_VIA_BROKER".to_owned(),
         authorization_start_mode: "BROKER".to_owned(),
         official_authorization_hosts: vec![
             "auth.ebay.com".to_owned(),
@@ -429,7 +440,10 @@ fn ebay_manifest() -> ConnectorManifest {
             capability("ebay.order.list", true, false),
             capability("ebay.order.read", true, false),
         ],
-        required_scopes: vec!["buy.api".to_owned()],
+        required_scopes: vec![
+            "https://api.ebay.com/oauth/api_scope".to_owned(),
+            "https://api.ebay.com/oauth/api_scope/commerce.identity.readonly".to_owned(),
+        ],
         approval_requirements: vec!["Production Buy API approval".to_owned()],
         confirmation_policy: "MANIFEST_CAPABILITY".to_owned(),
         disconnect_policy: "BROKER_REVOKE_THEN_LOCAL".to_owned(),
@@ -599,12 +613,7 @@ async fn broker_call(
             "Backend Broker could not be reached".to_owned()
         }
     })?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Backend Broker request failed (HTTP {})",
-            response.status().as_u16()
-        ));
-    }
+    let status = response.status();
     let value: Value = response
         .json()
         .await
@@ -646,6 +655,13 @@ async fn broker_call(
             );
         }
     }
+    if !status.is_success() {
+        return Err(format!(
+            "Backend Broker request failed (HTTP {}; {})",
+            status.as_u16(),
+            envelope.error_code.as_deref().unwrap_or("BROKER_ERROR")
+        ));
+    }
     Ok(envelope)
 }
 
@@ -677,7 +693,7 @@ fn new_builtin_ebay() -> CustomConnectionProvider {
         environment: ConnectorEnvironment::Sandbox,
         configuration_state: ConnectorState::NotConfigured,
         connection_state: ConnectorState::NotConfigured,
-        authorization_kind: "OAUTH_VIA_BROKER".to_owned(),
+        authorization_kind: "OFFICIAL_OAUTH_VIA_BROKER".to_owned(),
         opaque_authorization_reference: None,
         pending_authorization_url: None,
         browser_profile_reference: None,
@@ -1135,7 +1151,19 @@ pub(crate) async fn refresh_custom_connection_provider(
         }
         ProviderKind::ExternalApiConnector => {
             let authorization =
-                broker_call(&providers[index], "authorization/status", None).await?;
+                match broker_call(&providers[index], "authorization/status", None).await {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        providers[index].connection_state =
+                            state_for_broker_authorization_error(&error);
+                        let now = chrono::Utc::now().to_rfc3339();
+                        providers[index].last_checked_at = Some(now.clone());
+                        providers[index].updated_at = now;
+                        let result = providers[index].clone();
+                        write_at(&path, &providers)?;
+                        return Ok(result);
+                    }
+                };
             let envelope = broker_call(&providers[index], "capabilities", None).await?;
             providers[index].capabilities = envelope.capabilities;
             providers[index].connection_state =
@@ -1225,7 +1253,7 @@ pub(crate) async fn disconnect_custom_connection_provider(
     let mut remote_revoke_complete = true;
     if remote_required {
         let envelope = broker_call(&providers[index], "authorization/revoke", Some(serde_json::json!({ "authorizationReference": providers[index].opaque_authorization_reference }))).await?;
-        if envelope.error_code.as_deref() == Some("REMOTE_REVOKE_UNSUPPORTED_TOKEN_DELETED") {
+        if envelope.error_code.as_deref() == Some("REMOTE_REVOKE_FAILED_LOCAL_TOKEN_DELETED") {
             remote_revoke_complete = false;
         } else if envelope.error_code.is_some() || envelope.authorization_reference.is_some() {
             return Ok(DisconnectResult {
@@ -1255,7 +1283,7 @@ pub(crate) async fn disconnect_custom_connection_provider(
         message: if remote_revoke_complete {
             "Account disconnected and local authorization references removed".to_owned()
         } else {
-            "Broker token and desktop authorization reference were deleted; eBay provides no remote token revoke endpoint".to_owned()
+            "Local Broker token and desktop authorization reference were deleted; eBay remote revoke did not complete, so the remote grant may still exist".to_owned()
         },
     })
 }
@@ -1481,7 +1509,37 @@ mod tests {
         assert_eq!(ebay.provider_instance_id, "builtin-ebay-default");
         assert_eq!(ebay.configuration_state, ConnectorState::NotConfigured);
         assert_eq!(ebay.connection_state, ConnectorState::NotConfigured);
-        assert_eq!(ebay.manifest.unwrap().interface_kind, "BACKEND_BROKER");
+        assert_eq!(ebay.authorization_kind, "OFFICIAL_OAUTH_VIA_BROKER");
+        assert_ne!(ebay.authorization_kind, "AUTHENTICATED_BROWSER");
+        let manifest = ebay.manifest.unwrap();
+        assert_eq!(manifest.interface_kind, "BACKEND_BROKER");
+        assert_eq!(
+            manifest.required_scopes,
+            vec![
+                "https://api.ebay.com/oauth/api_scope",
+                "https://api.ebay.com/oauth/api_scope/commerce.identity.readonly",
+            ]
+        );
+    }
+
+    #[test]
+    fn ebay_refresh_failure_requires_reconnect_and_never_restores_connected() {
+        assert_eq!(
+            state_for_broker_authorization_error(
+                "Backend Broker request failed (HTTP 401; EBAY_LOGIN_REQUIRED)"
+            ),
+            ConnectorState::LoginRequired
+        );
+        assert_eq!(
+            state_for_broker_authorization_error(
+                "Backend Broker request failed (HTTP 502; EBAY_IDENTITY_UNREACHABLE)"
+            ),
+            ConnectorState::Error
+        );
+        assert_ne!(
+            state_for_broker_authorization_error("EBAY_TOKEN_REFRESH_HTTP_400"),
+            ConnectorState::Connected
+        );
     }
 
     #[test]

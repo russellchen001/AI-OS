@@ -471,8 +471,15 @@ const PINDUODUO_HOSTS: [&str; 5] = [
     "mobile.pinduoduo.com",
 ];
 
+const EBAY_HOSTS: [&str; 3] = [
+    "www.ebay.com",
+    "signin.ebay.com",
+    "accountsettings.ebay.com",
+];
+
 fn provider_hosts(provider_id: &str) -> Option<&'static [&'static str]> {
     match provider_id {
+        "ebay" => Some(&EBAY_HOSTS),
         "amazon-consumer" => Some(&AMAZON_HOSTS),
         "taobao-consumer" => Some(&TAOBAO_HOSTS),
         "jd-consumer" => Some(&JD_HOSTS),
@@ -1431,6 +1438,26 @@ mod tests {
             "pinduoduo-consumer",
             "https://mobile.yangkeduo.com"
         ));
+    }
+
+    #[test]
+    fn ebay_origins_are_exact_and_malicious_lookalikes_are_rejected() {
+        for origin in [
+            "https://www.ebay.com",
+            "https://signin.ebay.com",
+            "https://accountsettings.ebay.com",
+        ] {
+            assert!(origin_belongs_to_provider("ebay", origin));
+        }
+        for origin in [
+            "http://www.ebay.com",
+            "https://ebay.com.evil.test",
+            "https://accountsettings.ebay.com.evil.test",
+            "https://www.ebay.com@evil.test",
+            "https://evil.test",
+        ] {
+            assert!(!origin_belongs_to_provider("ebay", origin));
+        }
     }
 
     #[test]

@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 
 pub const CONNECTOR_ID: &str = "ebay-buy";
 pub const CONTRACT_VERSION: &str = "1";
+pub const EBAY_BASE_SCOPE: &str = "https://api.ebay.com/oauth/api_scope";
+pub const EBAY_IDENTITY_SCOPE: &str =
+    "https://api.ebay.com/oauth/api_scope/commerce.identity.readonly";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -135,7 +138,7 @@ pub struct ExecuteRequest {
 pub fn ebay_manifest() -> ConnectorManifest {
     let capability = |id: &str, approval: bool, confirmation: bool| CapabilityDefinition {
         capability_id: id.to_owned(),
-        required_scopes: vec!["buy.api".to_owned()],
+        required_scopes: vec![EBAY_BASE_SCOPE.to_owned()],
         confirmation_required: confirmation,
         approval_required: approval,
     };
@@ -166,7 +169,7 @@ pub fn ebay_manifest() -> ConnectorManifest {
             },
         ],
         broker_contract_version: CONTRACT_VERSION.to_owned(),
-        authorization_kind: "OAUTH_VIA_BROKER".to_owned(),
+        authorization_kind: "OFFICIAL_OAUTH_VIA_BROKER".to_owned(),
         authorization_start_mode: "BROKER".to_owned(),
         official_authorization_hosts: vec![
             "auth.ebay.com".to_owned(),
@@ -185,7 +188,7 @@ pub fn ebay_manifest() -> ConnectorManifest {
             capability("ebay.order.list", true, false),
             capability("ebay.order.read", true, false),
         ],
-        required_scopes: vec!["buy.api".to_owned()],
+        required_scopes: vec![EBAY_BASE_SCOPE.to_owned(), EBAY_IDENTITY_SCOPE.to_owned()],
         approval_requirements: vec!["Production Buy API approval".to_owned()],
         confirmation_policy: "MANIFEST_CAPABILITY".to_owned(),
         disconnect_policy: "BROKER_REVOKE_THEN_LOCAL".to_owned(),

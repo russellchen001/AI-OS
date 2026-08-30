@@ -38,9 +38,20 @@ async fn main() {
         std::process::exit(2)
     });
     let address = config.bind_address;
-    let storage = Arc::new(MemorySecureStorage::new(TokenCipher::new(
-        config.encryption_key,
-    )));
+    config.oauth_callback_url().unwrap_or_else(|error| {
+        eprintln!("Broker callback configuration error: {error}");
+        std::process::exit(2)
+    });
+    let storage = Arc::new(
+        MemorySecureStorage::persistent(
+            TokenCipher::new(config.encryption_key),
+            config.token_store_path.clone(),
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("Broker secure storage error: {error}");
+            std::process::exit(2)
+        }),
+    );
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .unwrap_or_else(|_| {
@@ -257,13 +268,28 @@ async fn revoke_authorization(
 ) -> ApiResult<BrokerEnvelope> {
     validate_authorization_reference(&input.authorization_reference, &state.config.environment)
         .map_err(|code| api_error(&state, StatusCode::BAD_REQUEST, &code))?;
+    let tokens = state
+        .storage
+        .load_tokens(&input.authorization_reference)
+        .map_err(|code| api_error(&state, StatusCode::INTERNAL_SERVER_ERROR, &code))?;
+    let remote_revoke_complete = match tokens.as_ref() {
+        Some(tokens) => ebay::revoke(&state.config, tokens).await.is_ok(),
+        None => true,
+    };
     state
         .storage
         .delete_tokens(&input.authorization_reference)
         .map_err(|code| api_error(&state, StatusCode::INTERNAL_SERVER_ERROR, &code))?;
     let mut envelope = BrokerEnvelope::empty(state.config.environment.clone());
-    envelope.approval_status = "REMOTE_REVOKE_UNSUPPORTED_TOKEN_DELETED".to_owned();
-    envelope.error_code = Some("REMOTE_REVOKE_UNSUPPORTED_TOKEN_DELETED".to_owned());
+    envelope.approval_status = if remote_revoke_complete {
+        "REMOTE_REVOKED_LOCAL_TOKEN_DELETED"
+    } else {
+        "REMOTE_REVOKE_FAILED_LOCAL_TOKEN_DELETED"
+    }
+    .to_owned();
+    if !remote_revoke_complete {
+        envelope.error_code = Some("REMOTE_REVOKE_FAILED_LOCAL_TOKEN_DELETED".to_owned());
+    }
     Ok(Json(envelope))
 }
 
@@ -372,6 +398,37 @@ mod tests {
         let text = String::from_utf8_lossy(&body);
         assert!(!text.contains("accessToken"));
         assert!(!text.contains("refreshToken"));
+
+        let state = test_state();
+        state
+            .storage
+            .create_state(
+                "single-use-state".to_owned(),
+                MemorySecureStorage::pending(
+                    "ebay-buy:sandbox:reference".to_owned(),
+                    Environment::Sandbox,
+                ),
+            )
+            .unwrap();
+        let app = router(state);
+        let callback = || {
+            Request::builder()
+                .method("POST")
+                .uri("/connectors/ebay-buy/authorization/callback")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"state":"single-use-state","code":"one-time-code"}"#,
+                ))
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(callback()).await.unwrap().status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            app.oneshot(callback()).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
     }
 
     fn test_state() -> AppState {
@@ -390,6 +447,7 @@ mod tests {
             )
             .unwrap(),
             ebay_token_url: url::Url::parse("http://localhost:1/token").unwrap(),
+            token_store_path: std::path::PathBuf::from("unused-test-token-store.json"),
         };
         AppState {
             storage: Arc::new(MemorySecureStorage::new(TokenCipher::new(

@@ -23,6 +23,7 @@ const stateLabel: Record<string, string> = {
   CONNECTING: "Connecting",
   WAITING_FOR_USER: "Waiting for you",
   CONNECTED: "Connected",
+  EXPIRED: "Expired",
   LOGIN_REQUIRED: "Login Required",
   BACKEND_BROKER_REQUIRED: "Managed Broker Not Provisioned",
   CAPABILITY_PARTIALLY_AVAILABLE: "Partially Available",
@@ -112,6 +113,12 @@ export default function ExternalConnectorConfiguration() {
         if (polling.current) window.clearInterval(polling.current);
         polling.current = undefined;
         setMessage("eBay authorization and identity were verified by the Broker.");
+      } else if (["LOGIN_REQUIRED", "EXPIRED", "ERROR"].includes(updated.connectionState)) {
+        if (polling.current) window.clearInterval(polling.current);
+        polling.current = undefined;
+        setMessage(updated.connectionState === "ERROR"
+          ? "eBay verification failed. Review the Broker configuration and try again."
+          : "eBay authorization must be renewed. Select Reconnect to sign in again.");
       }
     } catch (error) {
       setMessage(`Authorization status check failed: ${String(error)}`);

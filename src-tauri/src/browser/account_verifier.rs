@@ -102,6 +102,11 @@ const JD_PROBE: &str = r#"(function(){var q=function(s){try{return document.quer
 
 const PINDUODUO_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var t=function(e){return e&&e.textContent?e.textContent.trim():''};var p=(location.pathname||'').toLowerCase();var onLogin=p.indexOf('login')>=0||p.indexOf('signin')>=0;var c=[['nick-attr','[class*="nickname"]'],['user-name','.user-name'],['user-name-attr','[class*="userName"]'],['user-info','[class*="userInfo"]'],['personal','[class*="personal"] [class*="name"]']];var k=null,v=null;for(var i=0;i<c.length;i++){var x=t(q(c[i][1]));if(x){k=c[i][0];v=x;break}}if(!v&&!onLogin){var d=(document.title||'').trim();if(d){k='title';v=d}}var l=q('[class*="login-btn"], [class*="loginBtn"], #login-container, .login-wrap')||onLogin;return JSON.stringify({origin:location.origin,signal:(v&&!l)?v:null,evidence:{key:k,login:!!l,path:location.pathname,ready:document.readyState,links:document.querySelectorAll('a').length,title:(document.title||'').slice(0,30)}});})()"#;
 
+/// eBay uses a signed-in-only account settings page. A signed-out visitor is
+/// redirected to signin.ebay.com, so remaining on /uas without a login form is
+/// structural account evidence. No page text or personal value is read.
+const EBAY_PROBE: &str = r#"(function(){var q=function(s){try{return document.querySelector(s)}catch(e){return null}};var p=location.pathname||'';var account=location.hostname==='accountsettings.ebay.com'&&(p==='/uas'||p.indexOf('/uas/')===0);var l=q('input[type="password"], form[action*="SignIn"], form[action*="signin"], form[action*="login"]');var k=account?'account-page':null;return JSON.stringify({origin:location.origin,signal:(account&&!l)?'account-page-present':null,evidence:{key:k,login:!!l,path:p,ready:document.readyState,links:document.querySelectorAll('a').length}});})()"#;
+
 /// The page restart recovery should open to see whether the account is still
 /// signed in.
 ///
@@ -111,9 +116,10 @@ const PINDUODUO_PROBE: &str = r#"(function(){var q=function(s){try{return docume
 /// arriving there without being bounced to a login page is itself the evidence.
 pub(crate) fn account_home_url(provider_id: &str, verified_origin: Option<&str>) -> Option<String> {
     match provider_id {
+        "ebay" => Some("https://accountsettings.ebay.com/uas".to_owned()),
         // Region-aware: the account's own regional storefront.
         "amazon-consumer" => verified_origin.map(str::to_owned),
-        "taobao-consumer" => Some("https://www.taobao.com".to_owned()),
+        "taobao-consumer" => Some("https://i.taobao.com/my_taobao.htm".to_owned()),
         "jd-consumer" => Some("https://home.jd.com/".to_owned()),
         "pinduoduo-consumer" => Some("https://mobile.yangkeduo.com/personal.html".to_owned()),
         _ => site_registry::site(provider_id)
@@ -132,6 +138,7 @@ pub(crate) fn account_home_url(provider_id: &str, verified_origin: Option<&str>)
 
 fn account_probe_expression(provider_id: &str) -> Option<&'static str> {
     match provider_id {
+        "ebay" => Some(EBAY_PROBE),
         "amazon-consumer" => Some(AMAZON_PROBE),
         "taobao-consumer" => Some(TAOBAO_PROBE),
         "jd-consumer" => Some(JD_PROBE),
@@ -194,6 +201,24 @@ pub(crate) fn evaluate_account_probe(provider_id: &str, payload: &str) -> Accoun
     // Provider match uses the origin observed inside the live page.
     if !origin_belongs_to_provider(provider_id, &probe.origin) {
         return AccountVerification::NotAuthenticated;
+    }
+
+    if provider_id == "ebay" {
+        let Some(evidence) = probe.evidence.as_ref() else {
+            return AccountVerification::NotAuthenticated;
+        };
+        let account_path = evidence
+            .path
+            .as_deref()
+            .map(|path| path == "/uas" || path.starts_with("/uas/"))
+            .unwrap_or(false);
+        if probe.origin != "https://accountsettings.ebay.com"
+            || evidence.key.as_deref() != Some("account-page")
+            || evidence.login
+            || !account_path
+        {
+            return AccountVerification::NotAuthenticated;
+        }
     }
 
     let Some(signal) = probe.signal.as_deref() else {
@@ -489,6 +514,7 @@ mod tests {
     #[test]
     fn every_in_scope_browser_provider_has_a_verifier() {
         for provider_id in [
+            "ebay",
             "amazon-consumer",
             "taobao-consumer",
             "jd-consumer",
@@ -539,10 +565,25 @@ mod tests {
                 );
             }
         }
+
+        let ebay = account_probe_expression("ebay").unwrap();
+        for forbidden in [
+            "textContent",
+            "document.cookie",
+            "localStorage",
+            "sessionStorage",
+            "Authorization",
+        ] {
+            assert!(!ebay.contains(forbidden), "eBay probe must not read {forbidden}");
+        }
     }
 
     #[test]
     fn recovery_looks_at_a_page_that_actually_shows_the_account() {
+        assert_eq!(
+            account_home_url("ebay", Some("https://signin.ebay.com")),
+            Some("https://accountsettings.ebay.com/uas".to_owned())
+        );
         // Amazon stays region-aware: the account's own storefront.
         assert_eq!(
             account_home_url("amazon-consumer", Some("https://www.amazon.co.jp")),
@@ -556,7 +597,7 @@ mod tests {
         );
         assert_eq!(
             account_home_url("taobao-consumer", Some("https://login.taobao.com")),
-            Some("https://www.taobao.com".to_owned())
+            Some("https://i.taobao.com/my_taobao.htm".to_owned())
         );
         assert_eq!(
             account_home_url("pinduoduo-consumer", None),
@@ -570,6 +611,43 @@ mod tests {
                 "{provider_id} recovery destination is not a provider origin"
             );
         }
+    }
+
+    #[test]
+    fn ebay_account_page_is_fail_closed_and_uses_only_structural_evidence() {
+        let authenticated = evaluate_account_probe(
+            "ebay",
+            r#"{"origin":"https://accountsettings.ebay.com","signal":"account-page-present","evidence":{"key":"account-page","login":false,"path":"/uas","ready":"complete","links":12}}"#,
+        );
+        let marker = match authenticated {
+            AccountVerification::Authenticated { account_marker, .. } => account_marker,
+            other => panic!("expected eBay account evidence, got {other:?}"),
+        };
+        assert!(marker.starts_with("account-"));
+        assert!(!marker.contains("ebay"));
+
+        for payload in [
+            r#"{"origin":"https://signin.ebay.com","signal":null}"#,
+            r#"{"origin":"https://accountsettings.ebay.com","signal":null}"#,
+            r#"{"origin":"https://www.ebay.com","signal":"account-page-present","evidence":{"key":"account-page","login":false,"path":"/uas"}}"#,
+            r#"{"origin":"https://accountsettings.ebay.com","signal":"account-page-present","evidence":{"key":"account-page","login":false,"path":"/other"}}"#,
+            r#"{"origin":"https://accountsettings.ebay.com","signal":"account-page-present","evidence":{"key":"account-page","login":true,"path":"/uas"}}"#,
+            r#"{"origin":"https://accountsettings.ebay.com.evil.test","signal":"account-page-present"}"#,
+            r#"{"origin":"http://accountsettings.ebay.com","signal":"account-page-present"}"#,
+        ] {
+            assert_eq!(
+                evaluate_account_probe("ebay", payload),
+                AccountVerification::NotAuthenticated
+            );
+        }
+    }
+
+    #[test]
+    fn ebay_without_a_managed_control_channel_is_not_a_session() {
+        assert_eq!(
+            verify_managed_account("ebay").unwrap(),
+            AccountVerification::NoManagedSession
+        );
     }
 
     #[test]

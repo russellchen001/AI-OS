@@ -123,6 +123,8 @@ required_tests=(
   "account_marker_is_irreversible_stable_and_carries_no_personal_detail"
   "only_real_provider_pages_are_ever_probed"
   "amazon_verification_is_region_aware"
+  "ebay_account_page_is_fail_closed_and_uses_only_structural_evidence"
+  "ebay_without_a_managed_control_channel_is_not_a_session"
   "only_loopback_control_channels_are_accepted"
   "devtools_documents_are_parsed_out_of_raw_http_responses"
   "protocol_errors_and_exceptions_are_never_treated_as_results"
@@ -143,6 +145,7 @@ required_connections_tests=(
   "browser_opening_never_means_connected"
   "browser_session_serialization_contains_no_credentials"
   "expired_provider_can_enter_waiting_reconnect"
+  "consumer_ebay_uses_the_existing_authenticated_browser_runtime"
 )
 
 for test_name in "${required_connections_tests[@]}"; do
@@ -162,6 +165,7 @@ echo "✓ a sign-in prompt is never an authenticated account"
 echo "✓ the account marker is irreversible and carries no personal detail"
 echo "✓ no cookie, storage or authorization header is ever read"
 echo "✓ Amazon verification is region aware and records the observed origin"
+echo "✓ eBay account settings verification is structural and fail-closed"
 echo "✓ protocol errors and page exceptions are never treated as verification"
 echo "✓ a lost website account expires and enters reconnect"
 echo "✓ restart and profile reuse never blindly restore Connected"

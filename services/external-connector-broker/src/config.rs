@@ -1,5 +1,5 @@
 use base64::Engine;
-use std::{env, net::SocketAddr};
+use std::{env, net::SocketAddr, path::PathBuf};
 use url::Url;
 
 use crate::contract::Environment;
@@ -17,6 +17,7 @@ pub struct BrokerConfig {
     pub ebay_api_base_url: Url,
     pub ebay_authorization_url: Url,
     pub ebay_token_url: Url,
+    pub token_store_path: PathBuf,
 }
 
 impl BrokerConfig {
@@ -66,7 +67,14 @@ impl BrokerConfig {
             ebay_api_base_url: Url::parse(api).unwrap(),
             ebay_authorization_url: Url::parse(authorize).unwrap(),
             ebay_token_url: Url::parse(token).unwrap(),
+            token_store_path: PathBuf::from(required("BROKER_TOKEN_STORE_PATH")?),
         })
+    }
+
+    pub fn oauth_callback_url(&self) -> Result<Url, String> {
+        self.public_base_url
+            .join("connectors/ebay-buy/authorization/callback")
+            .map_err(|_| "PUBLIC_BROKER_BASE_URL cannot form the eBay callback URL".to_owned())
     }
 }
 
