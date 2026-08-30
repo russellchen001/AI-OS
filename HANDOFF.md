@@ -3252,3 +3252,58 @@ probe failure cannot end the watch, and a browser the user closed does.
 
 Also closed the last two unlogged early returns in `verify_managed_account`, so
 every verification outcome is now on the record.
+
+---
+
+## BROWSER-B — accepted for Amazon — 2026-08-30
+
+**Status: accepted by the user for Amazon. BROWSER-C is not done.**
+**P15 completion status is unchanged by this work.**
+
+### What real E2E actually proved
+
+One continuous run, from the diagnostics record:
+
+```text
+08:52:12 [reclaim]  previous_browser_asked_to_close=true
+08:52:19 [launch]   outcome=ready mode=Visible          visible login window
+08:52:27 [login]    outcome=connected attempt=0         sign-in noticed by the backend
+08:53:10 [close]    outcome=graceful                    normal quit closed the browser
+08:53:55 [recovery] startup restorable=1
+08:54:08 [verifier] origin_valid=true signal_present=true authenticated=true
+08:54:11 [recovery] completed=Connected                 restored, no window
+```
+
+Accepted behaviours:
+
+- manual Connect opens a visible AI-OS-managed browser and reaches `Connected`
+  once the user actually signs in;
+- Disconnect closes the browser, removes the managed profile and the stored
+  website session, and the card returns to `DISCONNECTED`;
+- Connect after a Disconnect opens a fresh visible login, as expected, and
+  requires a new sign-in because the session really was removed;
+- AI-OS restart restores `Connected` on its own, headless, with no window;
+  observed on four separate starts (08:39, 08:40, 08:43, 08:54);
+- normal quit closes the owned browser gracefully.
+
+### Honest limits
+
+- **Only Amazon has been proven.** The Taobao, JD and Pinduoduo verifiers exist,
+  are unit-tested and are fail-closed, but none has been run against a real
+  signed-in page. Their selectors should be treated as unverified.
+- **A force-killed dev shell still orphans the browser.** Observed: the browser
+  from the 08:44 session survived until it was reclaimed at 08:52. A SIGKILLed
+  parent cannot run shutdown, so this is not fixable in-process. It is now
+  *recovered from* rather than fatal: the next launch reclaims the profile.
+- Restart recovery adds roughly 15 seconds of headless browser work at startup
+  per previously connected provider. It is off the UI thread, but it is not
+  free, and it scales with the number of connected browser providers.
+- `browser-diagnostics.log` and `browser-launch-stderr.log` are gitignored and
+  intentionally kept. They are what turned this from guesswork into diagnosis
+  and are worth keeping until BROWSER-C is finished.
+
+### Next
+
+BROWSER-C: real E2E with Taobao, then JD and Pinduoduo, against the same
+runtime. Do not assume their selectors work; check the `[verifier]` lines for
+`signal_present` before changing anything.
