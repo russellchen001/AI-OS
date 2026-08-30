@@ -31,9 +31,8 @@ if grep -n "UnifiedConnectionState::Connected" src-tauri/src/browser/authenticat
   fail "the managed browser runtime must not decide connection state"
 fi
 
-if grep -n "apply_verification(true)" src-tauri/src/connections.rs >/dev/null 2>&1; then
-  fail "browser login must not be verified without a real account verifier"
-fi
+grep -q "AccountVerification::Authenticated" src-tauri/src/connections.rs \
+  || fail "browser login must only become CONNECTED through a real account verifier"
 
 # Amazon must not be pinned to one regional site.
 grep -q "www.amazon.com\"" src-tauri/src/browser/authenticated_runtime.rs \

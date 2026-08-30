@@ -50,6 +50,8 @@ type BrowserLoginSession = {
   startedAt: string;
   lastVerifiedAt?: string;
   state: ConnectionState;
+  verifiedOrigin?: string;
+  accountMarker?: string;
 };
 
 type LocalApplicationAvailability = {
@@ -217,13 +219,15 @@ export default function ConnectionsCenter() {
 
   async function connectBrowser(capability: ConnectionCapability) {
     setStates((current) => ({ ...current, [capability.providerId]: "CONNECTING" }));
+    // begin_browser_login opens the AI-OS managed browser itself. The system
+    // default browser is deliberately not used: AI-OS can only verify an
+    // authenticated session it owns.
     const session = await invoke<BrowserLoginSession>("begin_browser_login", {
       providerId: capability.providerId,
     });
     setSessions((current) => ({ ...current, [capability.providerId]: session }));
     setStates((current) => ({ ...current, [capability.providerId]: "WAITING_FOR_USER" }));
-    if (capability.loginUrl) await openUrl(capability.loginUrl);
-    setMessage(`Complete ${capability.displayName} login on the official page. AI-OS will verify the account state automatically.`);
+    setMessage(`AI-OS opened its own browser window for ${capability.displayName}. Sign in there on your own regional site; AI-OS verifies the account state itself.`);
   }
 
   async function verifyBrowser(session: BrowserLoginSession) {
@@ -234,7 +238,10 @@ export default function ConnectionsCenter() {
       setSessions((current) => ({ ...current, [session.providerId]: checked }));
       setStates((current) => ({ ...current, [session.providerId]: checked.state }));
       if (checked.state === "CONNECTED") {
-        setMessage(`${session.providerId} account verified. Continuing onboarding.`);
+        setMessage(`${session.providerId} account verified on ${checked.verifiedOrigin ?? "the signed-in site"}. Continuing onboarding.`);
+      }
+      if (checked.state === "EXPIRED") {
+        setMessage(`${session.providerId} is no longer signed in. Reconnect to sign in again.`);
       }
     } finally {
       running.current.delete(`verify:${session.providerId}`);

@@ -16,13 +16,12 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use super::devtools;
 use crate::provider_selection::AuthorizationRef;
 use tauri::Manager;
 
@@ -33,7 +32,6 @@ const MANAGED_PROFILE_ROOT: &str = "profiles";
 const DEVTOOLS_ACTIVE_PORT_FILE: &str = "DevToolsActivePort";
 const READINESS_TIMEOUT: Duration = Duration::from_secs(25);
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
-const CONTROL_CHANNEL_TIMEOUT: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------
 // Supported browsers and deterministic discovery
@@ -61,16 +59,10 @@ impl ManagedBrowserKind {
     /// macOS executable path for the supported Chromium-family browser.
     fn executable_path(self) -> &'static str {
         match self {
-            Self::GoogleChrome => {
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-            }
+            Self::GoogleChrome => "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             Self::Chromium => "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            Self::MicrosoftEdge => {
-                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
-            }
-            Self::BraveBrowser => {
-                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
-            }
+            Self::MicrosoftEdge => "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            Self::BraveBrowser => "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
         }
     }
 }
@@ -115,10 +107,7 @@ fn validate_provider_id(provider_id: &str) -> Result<&str, String> {
 }
 
 /// `<app data>/authenticated-browser/profiles/<provider id>`.
-fn managed_profile_directory(
-    app_data_dir: &Path,
-    provider_id: &str,
-) -> Result<PathBuf, String> {
+fn managed_profile_directory(app_data_dir: &Path, provider_id: &str) -> Result<PathBuf, String> {
     let provider_id = validate_provider_id(provider_id)?;
     Ok(app_data_dir
         .join(MANAGED_BROWSER_ROOT)
@@ -151,7 +140,10 @@ fn is_loopback_control_endpoint(endpoint: &str) -> bool {
     if authority.contains('@') {
         return false;
     }
-    let host = authority.rsplit_once(':').map(|(host, _)| host).unwrap_or(authority);
+    let host = authority
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(authority);
     matches!(host, "127.0.0.1" | "localhost" | "[::1]")
 }
 
@@ -161,14 +153,19 @@ fn control_endpoint(port: u16) -> String {
 
 /// Launch arguments always pin the managed profile and a loopback debugging
 /// address, and never point at a browser profile AI-OS does not own.
-fn launch_arguments(profile_directory: &Path) -> Vec<String> {
-    vec![
+fn launch_arguments(profile_directory: &Path, initial_url: Option<&str>) -> Vec<String> {
+    let mut arguments = vec![
         format!("--user-data-dir={}", profile_directory.display()),
         "--remote-debugging-port=0".to_owned(),
         "--remote-debugging-address=127.0.0.1".to_owned(),
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
-    ]
+    ];
+    // Only an https destination may be handed to the managed browser.
+    if let Some(url) = initial_url.filter(|url| url.starts_with("https://")) {
+        arguments.push(url.to_owned());
+    }
+    arguments
 }
 
 fn parse_devtools_active_port(contents: &str) -> Option<u16> {
@@ -182,23 +179,23 @@ fn parse_devtools_active_port(contents: &str) -> Option<u16> {
 }
 
 fn devtools_response_is_ready(response: &str) -> bool {
-    response.starts_with("HTTP/1.1 200") && response.contains("webSocketDebuggerUrl")
+    let status_ok = response
+        .lines()
+        .next()
+        .is_some_and(|status| status.contains(" 200 "));
+
+    if !status_ok {
+        return false;
+    }
+
+    devtools::parse_browser_websocket_url(response)
+        .ok()
+        .and_then(|url| devtools::loopback_websocket_port(&url))
+        .is_some()
 }
 
 fn probe_control_channel(port: u16) -> Result<String, String> {
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&address, CONTROL_CHANNEL_TIMEOUT)
-        .map_err(|_| "Managed browser control channel is not reachable".to_owned())?;
-    let _ = stream.set_read_timeout(Some(CONTROL_CHANNEL_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(CONTROL_CHANNEL_TIMEOUT));
-    stream
-        .write_all(b"GET /json/version HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-        .map_err(|_| "Managed browser control channel refused the request".to_owned())?;
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|_| "Managed browser control channel returned no response".to_owned())?;
-    Ok(response)
+    devtools::http_get(port, "/json/version")
 }
 
 /// Readiness is only reported after the browser has published its DevTools
@@ -269,9 +266,8 @@ fn provider_hosts(provider_id: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// Fail-closed origin check consumed by the BROWSER-B provider verifiers.
+/// Fail-closed origin check consumed by the provider account verifiers.
 /// HTTPS is required and the host must belong to the expected provider.
-#[allow(dead_code)]
 pub(crate) fn origin_belongs_to_provider(provider_id: &str, origin: &str) -> bool {
     let Some(hosts) = provider_hosts(provider_id) else {
         return false;
@@ -354,6 +350,9 @@ impl ManagedBrowserSession {
 struct OwnedBrowserProcess {
     child: Child,
     browser_kind: ManagedBrowserKind,
+    /// Loopback DevTools port. Internal only — it never leaves this runtime
+    /// through session metadata.
+    control_port: u16,
     started_at: String,
     ready: bool,
 }
@@ -366,10 +365,7 @@ fn registry() -> &'static Mutex<BTreeMap<String, OwnedBrowserProcess>> {
 /// Termination only ever considers processes this runtime spawned and
 /// recorded. An unknown provider yields nothing, so no unrelated user browser
 /// process can be selected.
-fn take_owned_process<T>(
-    owned: &mut BTreeMap<String, T>,
-    provider_id: &str,
-) -> Option<T> {
+fn take_owned_process<T>(owned: &mut BTreeMap<String, T>, provider_id: &str) -> Option<T> {
     owned.remove(provider_id)
 }
 
@@ -395,8 +391,19 @@ pub(crate) fn open_authenticated_browser(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<ManagedBrowserSession, String> {
-    let provider_id = validate_provider_id(&provider_id)?.to_owned();
-    let app_data_dir = app_data_directory(&app)?;
+    open_managed_browser(&app, &provider_id, None)
+}
+
+/// Internal entry point. `initial_url` is the provider login destination the
+/// managed browser should show; it is only ever handed to the AI-OS owned
+/// browser, never to the user's default browser.
+pub(crate) fn open_managed_browser(
+    app: &tauri::AppHandle,
+    provider_id: &str,
+    initial_url: Option<&str>,
+) -> Result<ManagedBrowserSession, String> {
+    let provider_id = validate_provider_id(provider_id)?.to_owned();
+    let app_data_dir = app_data_directory(app)?;
     let profile_directory = managed_profile_directory(&app_data_dir, &provider_id)?;
 
     if !profile_is_ai_os_owned(&app_data_dir, &profile_directory) {
@@ -412,6 +419,7 @@ pub(crate) fn open_authenticated_browser(
             Ok(None) => Some((
                 existing.browser_kind,
                 existing.ready,
+                existing.control_port,
                 existing.started_at.clone(),
             )),
             _ => None,
@@ -419,7 +427,11 @@ pub(crate) fn open_authenticated_browser(
         None => None,
     };
 
-    if let Some((browser_kind, ready, started_at)) = still_running {
+    if let Some((browser_kind, ready, control_port, started_at)) = still_running {
+        if let Some(url) = initial_url.filter(|url| url.starts_with("https://")) {
+            // Reuse the browser AI-OS already owns instead of launching another.
+            let _ = open_managed_tab(control_port, url);
+        }
         return Ok(ManagedBrowserSession::managed(
             &provider_id,
             browser_kind,
@@ -443,7 +455,7 @@ pub(crate) fn open_authenticated_browser(
         .ok_or_else(|| "No supported managed browser was found".to_owned())?;
 
     let child = Command::new(browser_kind.executable_path())
-        .args(launch_arguments(&profile_directory))
+        .args(launch_arguments(&profile_directory, initial_url))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -454,12 +466,16 @@ pub(crate) fn open_authenticated_browser(
     let mut process = OwnedBrowserProcess {
         child,
         browser_kind,
+        control_port: 0,
         started_at: started_at.clone(),
         ready: false,
     };
 
     match wait_until_ready(&profile_directory) {
-        Ok(_) => process.ready = true,
+        Ok(port) => {
+            process.control_port = port;
+            process.ready = true;
+        }
         Err(error) => {
             let _ = process.child.kill();
             let _ = process.child.wait();
@@ -529,10 +545,12 @@ pub(crate) fn inspect_authenticated_browser(
 /// Close only the managed browser process AI-OS started for this provider.
 /// The persisted profile is kept so website sessions survive a restart.
 #[tauri::command]
-pub(crate) fn close_authenticated_browser(
-    provider_id: String,
-) -> Result<bool, String> {
-    let provider_id = validate_provider_id(&provider_id)?.to_owned();
+pub(crate) fn close_authenticated_browser(provider_id: String) -> Result<bool, String> {
+    close_managed_browser(&provider_id)
+}
+
+pub(crate) fn close_managed_browser(provider_id: &str) -> Result<bool, String> {
+    let provider_id = validate_provider_id(provider_id)?.to_owned();
     let mut owned = registry()
         .lock()
         .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
@@ -543,6 +561,57 @@ pub(crate) fn close_authenticated_browser(
 
     let _ = process.child.kill();
     let _ = process.child.wait();
+    Ok(true)
+}
+
+/// Loopback DevTools port of the running managed browser AI-OS owns for this
+/// provider. `None` when AI-OS owns no live browser, so account verification
+/// can never inspect a browser this runtime does not own.
+pub(crate) fn control_port_for(provider_id: &str) -> Option<u16> {
+    let provider_id = validate_provider_id(provider_id).ok()?;
+    let mut owned = registry().lock().ok()?;
+    let process = owned.get_mut(provider_id)?;
+    if !matches!(process.child.try_wait(), Ok(None)) || !process.ready {
+        return None;
+    }
+    Some(process.control_port).filter(|port| *port != 0)
+}
+
+/// True when AI-OS owns a live managed browser for this provider.
+pub(crate) fn managed_browser_is_running(provider_id: &str) -> bool {
+    control_port_for(provider_id).is_some()
+}
+
+/// Open a provider login destination in the browser AI-OS already owns.
+fn open_managed_tab(control_port: u16, url: &str) -> Result<(), String> {
+    let browser_channel = devtools::browser_websocket_url(control_port)?;
+    devtools::protocol_call(
+        &browser_channel,
+        1,
+        "Target.createTarget",
+        serde_json::json!({ "url": url }),
+    )
+    .map(|_| ())
+}
+
+/// Remove the AI-OS managed profile for this provider. Only AI-OS owned data
+/// beneath application data is ever removed.
+pub(crate) fn remove_managed_profile(
+    app: &tauri::AppHandle,
+    provider_id: &str,
+) -> Result<bool, String> {
+    let provider_id = validate_provider_id(provider_id)?.to_owned();
+    let app_data_dir = app_data_directory(app)?;
+    let profile_directory = managed_profile_directory(&app_data_dir, &provider_id)?;
+
+    if !profile_is_ai_os_owned(&app_data_dir, &profile_directory) {
+        return Err("Managed browser profile is outside AI-OS application data".to_owned());
+    }
+    if !profile_directory.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_dir_all(&profile_directory)
+        .map_err(|_| "Managed browser profile could not be removed".to_owned())?;
     Ok(true)
 }
 
@@ -574,8 +643,9 @@ mod tests {
             Some(ManagedBrowserKind::BraveBrowser)
         );
         assert_eq!(
-            discover_supported_browser_with(|path| path.contains("Microsoft Edge")
-                || path.contains("Brave Browser")),
+            discover_supported_browser_with(
+                |path| path.contains("Microsoft Edge") || path.contains("Brave Browser")
+            ),
             Some(ManagedBrowserKind::MicrosoftEdge)
         );
         assert_eq!(discover_supported_browser_with(|_| false), None);
@@ -646,27 +716,36 @@ mod tests {
     #[test]
     fn control_channel_is_loopback_only_and_readiness_requires_a_real_answer() {
         assert!(is_loopback_control_endpoint("http://127.0.0.1:51321"));
-        assert!(is_loopback_control_endpoint("http://localhost:51321/json/version"));
+        assert!(is_loopback_control_endpoint(
+            "http://localhost:51321/json/version"
+        ));
         assert!(!is_loopback_control_endpoint("http://10.0.0.4:51321"));
-        assert!(!is_loopback_control_endpoint("http://127.0.0.1@evil.example:80"));
+        assert!(!is_loopback_control_endpoint(
+            "http://127.0.0.1@evil.example:80"
+        ));
         assert!(!is_loopback_control_endpoint("https://example.com:51321"));
         assert!(is_loopback_control_endpoint(&control_endpoint(51321)));
 
-        assert_eq!(parse_devtools_active_port("51321\n/devtools/browser/x"), Some(51321));
+        assert_eq!(
+            parse_devtools_active_port("51321\n/devtools/browser/x"),
+            Some(51321)
+        );
         assert_eq!(parse_devtools_active_port("0\n"), None);
         assert_eq!(parse_devtools_active_port(""), None);
 
         assert!(devtools_response_is_ready(
             "HTTP/1.1 200 OK\r\n\r\n{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:51321/devtools/browser/x\"}"
         ));
-        assert!(!devtools_response_is_ready("HTTP/1.1 500 Internal Server Error\r\n\r\n"));
+        assert!(!devtools_response_is_ready(
+            "HTTP/1.1 500 Internal Server Error\r\n\r\n"
+        ));
         assert!(!devtools_response_is_ready("HTTP/1.1 200 OK\r\n\r\n{}"));
     }
 
     #[test]
     fn launch_arguments_pin_the_managed_profile_and_a_loopback_debug_channel() {
         let profile = managed_profile_directory(&app_data(), "jd-consumer").unwrap();
-        let arguments = launch_arguments(&profile);
+        let arguments = launch_arguments(&profile, None);
 
         assert!(arguments
             .iter()
@@ -682,6 +761,21 @@ mod tests {
             assert!(!argument.contains("BraveSoftware"));
             assert!(!argument.contains("Microsoft Edge/"));
         }
+
+        // A login destination is handed to the managed browser only over https.
+        let with_login = launch_arguments(&profile, Some("https://passport.jd.com/new/login.aspx"));
+        assert_eq!(
+            with_login.last().map(String::as_str),
+            Some("https://passport.jd.com/new/login.aspx")
+        );
+        assert_eq!(
+            launch_arguments(&profile, Some("http://passport.jd.com/new/login.aspx")),
+            arguments
+        );
+        assert_eq!(
+            launch_arguments(&profile, Some("file:///etc/passwd")),
+            arguments
+        );
     }
 
     #[test]
@@ -693,7 +787,10 @@ mod tests {
         assert_eq!(take_owned_process(&mut owned, "unknown-provider"), None);
         assert_eq!(owned.len(), 2);
 
-        assert_eq!(take_owned_process(&mut owned, "amazon-consumer"), Some(4242));
+        assert_eq!(
+            take_owned_process(&mut owned, "amazon-consumer"),
+            Some(4242)
+        );
         assert_eq!(owned.len(), 1);
         assert_eq!(owned.get("taobao-consumer"), Some(&4243));
 
@@ -715,7 +812,10 @@ mod tests {
             );
         }
 
-        assert!(!origin_belongs_to_provider("amazon-consumer", "http://www.amazon.com"));
+        assert!(!origin_belongs_to_provider(
+            "amazon-consumer",
+            "http://www.amazon.com"
+        ));
         assert!(!origin_belongs_to_provider(
             "amazon-consumer",
             "https://www.amazon.com.evil.example"
@@ -724,11 +824,23 @@ mod tests {
             "amazon-consumer",
             "https://www.amazon.com@evil.example"
         ));
-        assert!(!origin_belongs_to_provider("amazon-consumer", "https://www.taobao.com"));
-        assert!(!origin_belongs_to_provider("unknown-provider", "https://www.amazon.com"));
+        assert!(!origin_belongs_to_provider(
+            "amazon-consumer",
+            "https://www.taobao.com"
+        ));
+        assert!(!origin_belongs_to_provider(
+            "unknown-provider",
+            "https://www.amazon.com"
+        ));
 
-        assert!(origin_belongs_to_provider("taobao-consumer", "https://login.taobao.com"));
-        assert!(origin_belongs_to_provider("jd-consumer", "https://passport.jd.com"));
+        assert!(origin_belongs_to_provider(
+            "taobao-consumer",
+            "https://login.taobao.com"
+        ));
+        assert!(origin_belongs_to_provider(
+            "jd-consumer",
+            "https://passport.jd.com"
+        ));
         assert!(origin_belongs_to_provider(
             "pinduoduo-consumer",
             "https://mobile.yangkeduo.com"

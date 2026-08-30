@@ -2040,3 +2040,174 @@ real machine yet. Until that is done, treat BROWSER-A as implemented but unprove
 BROWSER-B — provider-specific account-state verifiers, then integrate
 `begin_browser_login` / `verify_browser_login` with this runtime. P15 remains
 incomplete; nothing in this milestone changes the P15 status boundary above.
+
+---
+
+## BROWSER-B — real account-state verification — 2026-08-29
+
+**Status: implemented. Not yet validated on macOS by a real `cargo` run, and no
+real login has been performed. BROWSER-C not started.**
+
+### What was implemented
+
+Two new files plus Connections integration.
+
+`src-tauri/src/browser/devtools.rs` — loopback DevTools transport.
+
+- raw HTTP GET against the managed browser's own DevTools endpoint, tolerating
+  Chromium holding the connection open after the response;
+- `/json/list` target parsing and `/json/version` browser-channel parsing that
+  do not depend on a particular transfer encoding;
+- one DevTools protocol call over a loopback WebSocket (`tungstenite`), with a
+  fail-closed `ws://<loopback>:<port>` guard, connect/read/write timeouts, a
+  bounded read loop, and id matching so protocol events are never mistaken for
+  the reply;
+- protocol errors and page exceptions are errors, never results.
+
+This module decides nothing about accounts or connection state.
+
+`src-tauri/src/browser/account_verifier.rs` — provider verifier adapters.
+
+A verification produces exactly what the handoff required:
+
+- real provider match — the origin is read from **inside** the live page with
+  `location.origin` and checked against `origin_belongs_to_provider`;
+- real verified HTTPS origin — recorded as observed, so the user's actual
+  regional Amazon site is what gets persisted;
+- non-secret account marker;
+- authenticated / not-authenticated / no-managed-session.
+
+Provider adapters exist for Amazon, Taobao, JD and Pinduoduo. Each returns the
+same `{origin, signal}` shape and takes its signal from a signed-in-only
+surface (an account name **and** a sign-out affordance), never from the presence
+of a login form and never from the URL.
+
+Three states, not two: `NoManagedSession` means AI-OS owns no running managed
+browser, which is not a verification failure.
+
+### Account marker decision
+
+The raw signed-in signal is a display name belonging to the user. It is reduced
+to `account-<12 hex>` — the first 6 bytes of `SHA-256(provider_id + ":" +
+normalized signal)` — before it can leave the runtime.
+
+- proves an account is present;
+- stable for the same account, so reconnects match;
+- distinct per account and per provider;
+- irreversible, so no name, email or address reaches Connections, Planner,
+  Evidence, Memory or the frontend.
+
+The verifier never reads `document.cookie`, `localStorage`, `sessionStorage` or
+any authorization header. The new verifier script asserts this statically.
+
+### Connections integration
+
+`src-tauri/src/connections.rs`:
+
+- `begin_browser_login` now calls `open_managed_browser` with the provider login
+  URL, so the login happens in the browser AI-OS owns and can inspect. The
+  system default browser is no longer used for browser-backed providers;
+- `verify_browser_login` calls `verify_managed_account` and applies the real
+  result. `apply_verification(bool)` is gone; `apply_account_verification`
+  takes an `AccountVerification` and is the only path to `CONNECTED`;
+- `BrowserLoginSession` gained `verified_origin` and `account_marker`, both
+  cleared whenever verification fails;
+- a previously verified account that stops verifying becomes `EXPIRED` and
+  enters the reconnect flow; one that was never verified stays
+  `WAITING_FOR_USER`;
+- `list_connection_capabilities` now takes the app handle and restores
+  browser-backed state through `restored_browser_state(previously_verified,
+  managed_browser_running, live_verified)`. The live probe only runs when AI-OS
+  already owns a running managed browser, so a refresh costs nothing otherwise;
+- `disconnect_connection_provider` closes only the AI-OS-owned browser process
+  and removes only the managed profile beneath application data.
+
+`src/components/ConnectionsCenter.tsx`:
+
+- no longer calls `openUrl(capability.loginUrl)`; the backend opens the managed
+  browser;
+- surfaces the verified origin on success and an explicit reconnect message on
+  expiry.
+
+### Restart / profile reuse semantics
+
+Deliberate and fail-closed:
+
+| previously verified | managed browser running | live verified | state |
+| --- | --- | --- | --- |
+| any | yes | yes | `CONNECTED` |
+| yes | yes | no | `EXPIRED` |
+| yes | no | — | `EXPIRED` |
+| no | yes | no | `WAITING_FOR_USER` |
+| no | no | — | `DISCONNECTED` |
+
+After an AI-OS restart the managed browser is not running, so a previously
+connected commerce account shows `EXPIRED` rather than a blindly restored
+`CONNECTED`. Reconnect reopens the managed browser, the persisted profile still
+holds the website session, and verification restores `CONNECTED` without the
+user re-entering credentials. This satisfies the BROWSER-C expectation while
+never restoring `CONNECTED` without live account verification.
+
+### Verification
+
+New verifier: `verify/verify_p15_browser_account_verification.sh`.
+Named-behavior checks only, no hard-coded test counts. It also statically
+asserts that Connections cannot reach `CONNECTED` without
+`AccountVerification::Authenticated`, that the managed browser is what gets
+opened, and that the verifier reads no cookie, storage or authorization header.
+
+`verify/verify_p15_browser_managed_runtime.sh` was updated: its now-vacuous
+`apply_verification(true)` grep was replaced with a check that a real verifier
+result is the only path to `CONNECTED`.
+
+Behavior tests added:
+
+- `browser::devtools::tests` — 3 tests
+- `browser::account_verifier::tests` — 6 tests
+- `connections::tests` — 3 new tests
+  (`browser_connected_requires_a_real_account_verification`,
+  `restart_and_profile_reuse_never_blindly_restore_connected`,
+  `verified_browser_session_carries_only_safe_evidence`)
+
+Validation performed off the macOS machine:
+
+- the whole `browser` module (BROWSER-A + BROWSER-B, 758 + 305 + 370 lines,
+  including the Tauri command bodies) compiled clean in an isolated harness
+  against the real `tungstenite 0.27` and `sha2 0.10`, with stubs only for
+  `AuthorizationRef` and the Tauri app handle — **17 tests passed**;
+- the new `connections.rs` logic was extracted and compiled the same way —
+  **3 tests passed**;
+- `npx tsc --noEmit` — **PASS** (TypeScript 5.8.3, no errors).
+
+**Still required on the macOS development machine before BROWSER-B is accepted:**
+
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml browser:: connections::`
+- `bash verify/verify_p15_browser_managed_runtime.sh`
+- `bash verify/verify_p15_browser_account_verification.sh`
+- `bash verify/verify_p15_connections_onboarding.sh`
+- `npm run build`
+- `./verify_all.sh` — the core suite total rises by two scripts relative to the
+  80/80 baseline.
+
+### Known limits to settle in BROWSER-C
+
+- The provider probe selectors are DOM-shape dependent and will rot when a site
+  changes its header. They fail closed (no signal -> not authenticated), so a
+  stale selector shows `WAITING_FOR_USER`, never a false `CONNECTED`. Real E2E
+  is what will confirm each selector.
+- Verification polling runs every 2.5s from `ConnectionsCenter` while a session
+  is `WAITING_FOR_USER`. Each poll is one loopback HTTP call plus one WebSocket
+  evaluate with 3s timeouts. Measure this during BROWSER-C and back off if the
+  UI feels heavy.
+- `Target.createTarget` is used to open the login page when the managed browser
+  is already running. Confirm against the installed Chrome build during E2E.
+- The Amazon capability still starts at `https://www.amazon.com/ap/signin`. That
+  is only a landing page, never the verified origin — the verified origin is
+  whatever regional site the user actually signs in to. Consider letting the
+  user pick their region at connect time.
+
+### Next step
+
+BROWSER-C — real E2E with Amazon and Taobao, then JD and Pinduoduo. P15 remains
+incomplete; nothing in this milestone changes the P15 status boundary above.

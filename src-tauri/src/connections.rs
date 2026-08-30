@@ -1,3 +1,7 @@
+use crate::browser::account_verifier::{verify_managed_account, AccountVerification};
+use crate::browser::authenticated_runtime::{
+    close_managed_browser, managed_browser_is_running, open_managed_browser, remove_managed_profile,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -330,6 +334,13 @@ pub(crate) struct BrowserLoginSession {
     started_at: String,
     last_verified_at: Option<String>,
     state: UnifiedConnectionState,
+    /// Regional origin the account was actually verified on. Region aware:
+    /// never assumed, always observed.
+    #[serde(default)]
+    verified_origin: Option<String>,
+    /// Irreversible non-secret account marker produced by the verifier.
+    #[serde(default)]
+    account_marker: Option<String>,
 }
 
 fn browser_profiles_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -403,16 +414,53 @@ impl BrowserLoginSession {
             started_at: chrono::Utc::now().to_rfc3339(),
             last_verified_at: None,
             state: UnifiedConnectionState::WaitingForUser,
+            verified_origin: None,
+            account_marker: None,
         })
     }
 
-    fn apply_verification(&mut self, verified: bool) {
-        if verified {
-            self.last_verified_at = Some(chrono::Utc::now().to_rfc3339());
-            self.state = UnifiedConnectionState::Connected;
-        } else {
-            self.state = UnifiedConnectionState::WaitingForUser;
+    /// The only path to `CONNECTED` for a browser-backed provider. It requires
+    /// a real account verification result; an opened login page, a running
+    /// managed browser and a reused profile are all insufficient on their own.
+    fn apply_account_verification(&mut self, verification: &AccountVerification) {
+        match verification {
+            AccountVerification::Authenticated {
+                verified_origin,
+                account_marker,
+            } => {
+                self.last_verified_at = Some(chrono::Utc::now().to_rfc3339());
+                self.verified_origin = Some(verified_origin.clone());
+                self.account_marker = Some(account_marker.clone());
+                self.state = UnifiedConnectionState::Connected;
+            }
+            AccountVerification::NotAuthenticated | AccountVerification::NoManagedSession => {
+                self.verified_origin = None;
+                self.account_marker = None;
+                // A previously verified account that no longer verifies is
+                // expired and enters the reconnect flow. One that was never
+                // verified is still simply waiting for the user.
+                self.state = if self.last_verified_at.is_some() {
+                    UnifiedConnectionState::Expired
+                } else {
+                    UnifiedConnectionState::WaitingForUser
+                };
+            }
         }
+    }
+}
+
+/// Browser-backed connection state after a Connections refresh or an app
+/// restart. Fail-closed: a persisted profile is never enough on its own.
+fn restored_browser_state(
+    previously_verified: bool,
+    managed_browser_running: bool,
+    live_verified: bool,
+) -> UnifiedConnectionState {
+    match (previously_verified, managed_browser_running, live_verified) {
+        (_, true, true) => UnifiedConnectionState::Connected,
+        (true, _, _) => UnifiedConnectionState::Expired,
+        (false, true, false) => UnifiedConnectionState::WaitingForUser,
+        (false, false, _) => UnifiedConnectionState::Disconnected,
     }
 }
 
@@ -503,8 +551,29 @@ fn browser_capability(
 }
 
 #[tauri::command]
-pub(crate) fn list_connection_capabilities() -> Vec<ConnectionCapability> {
+pub(crate) fn list_connection_capabilities(app: tauri::AppHandle) -> Vec<ConnectionCapability> {
+    let saved = load_browser_profiles(&app).unwrap_or_default();
     capabilities()
+        .into_iter()
+        .map(|mut capability| {
+            if capability.method != ConnectionMethod::AuthenticatedBrowser {
+                return capability;
+            }
+            let previously_verified = saved
+                .get(&capability.provider_id)
+                .and_then(|session| session.last_verified_at.as_ref())
+                .is_some();
+            let running = managed_browser_is_running(&capability.provider_id);
+            // The live probe only runs against a browser AI-OS already owns.
+            let live_verified = running
+                && matches!(
+                    verify_managed_account(&capability.provider_id),
+                    Ok(AccountVerification::Authenticated { .. })
+                );
+            capability.state = restored_browser_state(previously_verified, running, live_verified);
+            capability
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -551,6 +620,16 @@ pub(crate) fn begin_browser_login(
             .as_deref()
             .ok_or_else(|| "Browser profile is unavailable".to_owned())?,
     )?;
+
+    // The login page is opened in the AI-OS managed browser, never in the
+    // user's default browser, so the resulting session is one AI-OS owns and
+    // can actually inspect.
+    open_managed_browser(
+        &app,
+        &capability.provider_id,
+        capability.login_url.as_deref(),
+    )?;
+
     save_browser_profile(&app, &session)?;
     Ok(session)
 }
@@ -560,10 +639,10 @@ pub(crate) fn verify_browser_login(
     app: tauri::AppHandle,
     mut session: BrowserLoginSession,
 ) -> Result<BrowserLoginSession, String> {
-    // The current MCP Browser bridge has no safe account-state detector. Fail
-    // closed until a configured provider returns an account marker from an
-    // authenticated endpoint; opening a login URL is never sufficient.
-    session.apply_verification(false);
+    // Inspect the authenticated session AI-OS owns. Opening a login URL is
+    // never sufficient, and a browser AI-OS does not own is never inspected.
+    let verification = verify_managed_account(&session.provider_id)?;
+    session.apply_account_verification(&verification);
     save_browser_profile(&app, &session)?;
     Ok(session)
 }
@@ -583,6 +662,10 @@ pub(crate) fn disconnect_connection_provider(
         .find(|item| item.provider_id == provider_id)
         .ok_or_else(|| "Connection Provider is unknown".to_owned())?;
     if capability.method == ConnectionMethod::AuthenticatedBrowser {
+        // Only AI-OS-owned state is touched: the browser process this runtime
+        // started, and the managed profile beneath application data.
+        close_managed_browser(&capability.provider_id)?;
+        remove_managed_profile(&app, &capability.provider_id)?;
         return remove_browser_profile(&app, &capability.provider_id);
     }
     Ok(true)
@@ -799,5 +882,87 @@ mod tests {
                 .unwrap()
                 .installed
         );
+    }
+
+    #[test]
+    fn browser_connected_requires_a_real_account_verification() {
+        let mut session =
+            BrowserLoginSession::waiting("amazon-consumer", "browser-profile:amazon-consumer")
+                .unwrap();
+
+        // No managed browser, and a page that is not signed in, are both
+        // simply "still waiting", never connected.
+        session.apply_account_verification(&AccountVerification::NoManagedSession);
+        assert_eq!(session.state, UnifiedConnectionState::WaitingForUser);
+        session.apply_account_verification(&AccountVerification::NotAuthenticated);
+        assert_eq!(session.state, UnifiedConnectionState::WaitingForUser);
+        assert!(session.account_marker.is_none());
+        assert!(session.last_verified_at.is_none());
+
+        session.apply_account_verification(&AccountVerification::Authenticated {
+            verified_origin: "https://www.amazon.co.jp".to_owned(),
+            account_marker: "account-9f3c1a2b4d5e".to_owned(),
+        });
+        assert_eq!(session.state, UnifiedConnectionState::Connected);
+        assert_eq!(
+            session.verified_origin.as_deref(),
+            Some("https://www.amazon.co.jp")
+        );
+        assert!(session.last_verified_at.is_some());
+
+        // Losing the website account is expiry and a reconnect, never a
+        // silently preserved Connected.
+        session.apply_account_verification(&AccountVerification::NotAuthenticated);
+        assert_eq!(session.state, UnifiedConnectionState::Expired);
+        assert!(session.verified_origin.is_none());
+        assert!(session.account_marker.is_none());
+    }
+
+    #[test]
+    fn restart_and_profile_reuse_never_blindly_restore_connected() {
+        // Previously verified, but AI-OS owns no live managed browser.
+        assert_eq!(
+            restored_browser_state(true, false, false),
+            UnifiedConnectionState::Expired
+        );
+        // Managed browser is running but the account no longer verifies.
+        assert_eq!(
+            restored_browser_state(true, true, false),
+            UnifiedConnectionState::Expired
+        );
+        // Only a live account verification restores Connected.
+        assert_eq!(
+            restored_browser_state(true, true, true),
+            UnifiedConnectionState::Connected
+        );
+        assert_eq!(
+            restored_browser_state(false, true, true),
+            UnifiedConnectionState::Connected
+        );
+        assert_eq!(
+            restored_browser_state(false, true, false),
+            UnifiedConnectionState::WaitingForUser
+        );
+        assert_eq!(
+            restored_browser_state(false, false, false),
+            UnifiedConnectionState::Disconnected
+        );
+    }
+
+    #[test]
+    fn verified_browser_session_carries_only_safe_evidence() {
+        let mut session =
+            BrowserLoginSession::waiting("taobao-consumer", "browser-profile:taobao-consumer")
+                .unwrap();
+        session.apply_account_verification(&AccountVerification::Authenticated {
+            verified_origin: "https://www.taobao.com".to_owned(),
+            account_marker: "account-1a2b3c4d5e6f".to_owned(),
+        });
+        let encoded = serde_json::to_string(&session).unwrap().to_lowercase();
+        for forbidden in ["password", "cookie", "token", "bearer", "user-data-dir"] {
+            assert!(!encoded.contains(forbidden), "session leaked {forbidden}");
+        }
+        assert!(encoded.contains("https://www.taobao.com"));
+        assert!(encoded.contains("account-1a2b3c4d5e6f"));
     }
 }
