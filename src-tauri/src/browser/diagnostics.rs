@@ -31,6 +31,14 @@ pub(crate) fn browser_stderr_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("browser-launch-stderr.log"))
 }
 
+/// Where a diagnostic picture of a provider page is written.
+pub(crate) fn page_capture_path(provider_id: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|root| root.join(format!("browser-page-{provider_id}.png")))
+        .unwrap_or_else(|| PathBuf::from(format!("browser-page-{provider_id}.png")))
+}
+
 pub(crate) fn record(stage: &str, detail: &str) {
     let line = format!(
         "{} [{stage}] {detail}\n",

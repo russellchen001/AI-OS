@@ -1,4 +1,6 @@
-use crate::browser::account_verifier::{account_home_url, verify_managed_account, AccountVerification};
+use crate::browser::account_verifier::{
+    account_home_url, capture_provider_page, verify_managed_account, AccountVerification,
+};
 use crate::browser::diagnostics;
 use crate::browser::authenticated_runtime::{
     close_managed_browser, open_managed_browser, remove_managed_profile, ManagedBrowserLaunchMode,
@@ -960,6 +962,18 @@ fn recover_browser_connection(
         if attempt + 1 < RECOVERY_ATTEMPTS {
             std::thread::sleep(RECOVERY_ATTEMPT_INTERVAL);
         }
+    }
+
+    // A failed recovery cannot be explained by selector names alone, so keep a
+    // picture of the header the verifier was looking at before the browser goes.
+    if !matches!(verification, AccountVerification::Authenticated { .. }) {
+        let captured =
+            capture_provider_page(&session.provider_id, &diagnostics::page_capture_path(&session.provider_id))
+                .is_ok();
+        diagnostics::record(
+            "recovery",
+            &format!("provider={} page_captured={captured}", session.provider_id),
+        );
     }
 
     let mut restored = session.clone();

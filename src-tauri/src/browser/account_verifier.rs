@@ -20,7 +20,8 @@
 //! - anything unparsed, unexpected or unmatched resolves to not authenticated.
 
 use serde::Deserialize;
-use serde_json::json;
+use base64::Engine;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::authenticated_runtime::{control_port_for, origin_belongs_to_provider};
@@ -217,6 +218,42 @@ fn page_origin(url: &str) -> String {
 // ---------------------------------------------------------------------------
 // Verification against the owned managed browser
 // ---------------------------------------------------------------------------
+
+/// Save a picture of the top of the page a provider verifier just looked at.
+///
+/// Diagnostics only, written beside the repository and gitignored. Selector
+/// names alone cannot tell a signed-out page from a challenge page from one
+/// that never rendered. The capture is clipped to the header strip, which is
+/// where sign-in state lives, so it does not photograph the page's contents.
+pub(crate) fn capture_provider_page(
+    provider_id: &str,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let port = control_port_for(provider_id)
+        .ok_or_else(|| "No managed browser to capture".to_owned())?;
+    let targets = list_targets(port)?;
+    let target = select_provider_target(provider_id, &targets)
+        .ok_or_else(|| "No provider page to capture".to_owned())?;
+
+    let result = protocol_call(
+        &target.web_socket_debugger_url,
+        1,
+        "Page.captureScreenshot",
+        json!({
+            "format": "png",
+            "clip": { "x": 0, "y": 0, "width": 1280, "height": 220, "scale": 1 },
+        }),
+    )?;
+
+    let encoded = result
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Managed browser returned no image".to_owned())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| "Managed browser image could not be decoded".to_owned())?;
+    std::fs::write(path, bytes).map_err(|_| "Diagnostic image could not be saved".to_owned())
+}
 
 pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerification, String> {
     let Some(expression) = account_probe_expression(provider_id) else {
