@@ -3214,3 +3214,41 @@ is captured to `browser-launch-stderr.log`, so a browser that refuses to start
 can say why in its own words instead of being guessed at.
 
 Browser module: **22 tests pass**.
+
+### Restart recovery confirmed working; manual login watched by the backend — 2026-08-30
+
+Restart recovery is now real. Three consecutive AI-OS starts each restored the
+account without a window appearing:
+
+```text
+08:39:02 [launch]   outcome=ready mode=Headless
+08:39:08 [verifier] origin_valid=true signal_present=true authenticated=true
+08:39:11 [recovery] completed=Connected      (repeated at 08:40 and 08:43)
+```
+
+The reclaim also fired and worked on the first of those runs:
+`[reclaim] profile_held_by_previous_browser=true` → `outcome=released signal=-TERM`.
+
+**Remaining fault: a completed manual login was never noticed.**
+
+```text
+08:45:00 [launch]   outcome=ready mode=Visible
+08:45:09 [verifier] origin_valid=true signal_present=true authenticated=false
+                    (no further verification, ever)
+```
+
+The one verification that ran happened before the user finished signing in — the
+page still read "Hello, sign in", which the sign-in-prompt rule correctly
+refused. Nothing checked again afterwards, because verification only happened
+while the frontend's 2.5s poll was alive, and that poll is fragile: it is
+rebuilt from `sessions` state on every change and its handler has no `catch`.
+
+Fixed by moving it off the frontend entirely. `begin_browser_login` now starts a
+backend watcher that verifies every 2s for up to three minutes, and on success
+writes the state authority, saves the session and emits the same
+`browser-connection://recovered` event that restart recovery uses. It gives up
+early only after five consecutive "no managed browser" results, so a transient
+probe failure cannot end the watch, and a browser the user closed does.
+
+Also closed the last two unlogged early returns in `verify_managed_account`, so
+every verification outcome is now on the record.

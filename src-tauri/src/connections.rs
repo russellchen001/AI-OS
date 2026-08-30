@@ -718,6 +718,11 @@ fn begin_browser_login_blocking(
 
     set_recovered_state(&capability.provider_id, RecoveredBrowserState::WaitingForUser);
     save_browser_profile(&app, &session)?;
+
+    // Watch for the sign-in completing instead of relying on the frontend to
+    // keep asking.
+    watch_browser_login(app, session.clone());
+
     Ok(session)
 }
 
@@ -746,6 +751,78 @@ fn record_session_state(session: &BrowserLoginSession) {
         }
         _ => {}
     }
+}
+
+/// A signed-in account is watched for, not polled for by the frontend.
+const LOGIN_WATCH_ATTEMPTS: usize = 90;
+const LOGIN_WATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// Consecutive misses tolerated before deciding the browser is really gone.
+const LOGIN_WATCH_MISSES_ALLOWED: usize = 5;
+
+/// Watch an open login until the account is actually signed in.
+///
+/// Verification used to happen only while the frontend polled, so a login that
+/// completed a moment after the one poll that ran was simply never noticed.
+/// The backend now owns this end to end, the same way restart recovery does.
+fn watch_browser_login(app: tauri::AppHandle, session: BrowserLoginSession) {
+    std::thread::spawn(move || {
+        let mut consecutive_misses = 0usize;
+
+        for attempt in 0..LOGIN_WATCH_ATTEMPTS {
+            std::thread::sleep(LOGIN_WATCH_INTERVAL);
+
+            match verify_managed_account(&session.provider_id) {
+                Ok(found @ AccountVerification::Authenticated { .. }) => {
+                    let mut signed_in = session.clone();
+                    signed_in.apply_account_verification(&found);
+                    record_session_state(&signed_in);
+                    let _ = save_browser_profile(&app, &signed_in);
+                    diagnostics::record(
+                        "login",
+                        &format!(
+                            "provider={} outcome=connected attempt={attempt}",
+                            session.provider_id
+                        ),
+                    );
+                    let _ = app.emit(
+                        "browser-connection://recovered",
+                        serde_json::json!({
+                            "providerId": session.provider_id,
+                            "state": "CONNECTED",
+                        }),
+                    );
+                    return;
+                }
+                Ok(AccountVerification::NoManagedSession) => {
+                    consecutive_misses += 1;
+                    if consecutive_misses >= LOGIN_WATCH_MISSES_ALLOWED {
+                        // The user closed the managed browser: nothing to watch.
+                        diagnostics::record(
+                            "login",
+                            &format!(
+                                "provider={} outcome=browser_gone attempt={attempt}",
+                                session.provider_id
+                            ),
+                        );
+                        return;
+                    }
+                }
+                Ok(_) => consecutive_misses = 0,
+                Err(error) => {
+                    diagnostics::record(
+                        "login",
+                        &format!("provider={} outcome=error detail={error}", session.provider_id),
+                    );
+                    return;
+                }
+            }
+        }
+
+        diagnostics::record(
+            "login",
+            &format!("provider={} outcome=timed_out", session.provider_id),
+        );
+    });
 }
 
 const RECOVERY_ATTEMPTS: usize = 12;

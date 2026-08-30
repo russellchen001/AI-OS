@@ -184,13 +184,23 @@ pub(crate) fn verify_managed_account(provider_id: &str) -> Result<AccountVerific
     };
 
     let Some(port) = control_port_for(provider_id) else {
+        diagnostics::record(
+            "verifier",
+            &format!("provider={provider_id} outcome=no_control_channel"),
+        );
         return Ok(AccountVerification::NoManagedSession);
     };
 
     let targets = match list_targets(port) {
         Ok(targets) => targets,
         // A browser that cannot be inspected is not an authenticated account.
-        Err(_) => return Ok(AccountVerification::NoManagedSession),
+        Err(error) => {
+            diagnostics::record(
+                "verifier",
+                &format!("provider={provider_id} outcome=targets_unreadable detail={error}"),
+            );
+            return Ok(AccountVerification::NoManagedSession);
+        }
     };
 
     let Some(target) = select_provider_target(provider_id, &targets) else {
