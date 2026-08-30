@@ -361,6 +361,7 @@ Deterministic Automation → Computer Use
 - Disconnect is local: My AI removes the Keychain credential and local authorization mapping. AI-OS does not claim a remote Microsoft revoke when the public-client flow provides none.
 - Browser authenticated sessions: lifecycle/evidence contract and persistent opaque profile metadata are implemented. Profile metadata is stored atomically in the app-data directory and contains no cookies, passwords, or bearer tokens. Authentication still requires a verified account marker on an HTTPS platform origin; a public page is never authenticated. No browser runtime with a safely callable account-state detector is currently connected, so real session E2E remains SKIP on user login/profile handoff rather than fabricating Connected.
 - eBay is the first built-in External Connector instance. Its main Connections row uses the reviewed `ebay-buy` manifest and shared Broker contract; it is no longer a fixed Developer Approval Required placeholder and cannot be added a second time through Add Other Provider. Browse can be available while Cart/Checkout/Order remain approval-gated. Real external integration remains blocked on a deployed Broker, eBay developer application/real account, and any required Production Buy API approval.
+- eBay Production keyset is **Created** and the Marketplace Account Deletion exemption is **Granted**. Privacy Policy / RuName setup is **In progress**. The publishable policy source is `public/privacy/index.html`, its public contact is `aios.privacy@gmail.com`, and local build plus `/privacy/` HTTP acceptance pass. The GitHub Pages workflow is ready, but the page has not yet been published to its expected public URL, `https://russellchen001.github.io/AI-OS/privacy/`. Next: commit and publish GitHub Pages, then complete eBay Developers Display Title `AI-OS`, Privacy Policy URL, minimum approved OAuth scopes, and RuName.
 - Amazon Consumer: Product Advertising API is limited to product advertising; no official ordinary-buyer account/cart/checkout/order API is registered. Authenticated Browser is required for those consumer actions. Selling Partner API must not be used as a buyer API.
 - Taobao / JD / Pinduoduo Consumer: their open platforms are merchant/service-provider oriented or approval-limited; AI-OS has no approved ordinary-consumer cart/checkout/order API credential. Authenticated Browser is the declared fallback and must verify the signed-in account before authenticated evidence.
 - Commerce capability facts were reviewed against official platform documentation on 2026-08-29. Unsupported official consumer APIs are an accurate boundary, not a failed E2E.
@@ -897,6 +898,10 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 
 ## Technical decisions
 
+**Public privacy pages**
+
+- Public legal/integration pages use standalone static files under `public/` and the repository's GitHub Pages workflow. This keeps them independent from the Tauri application and avoids changing Authenticated Browser or runtime connection behavior.
+
 **AI Center**
 
 - Shared Multi-Model Invocation is the canonical execution layer
@@ -1120,6 +1125,8 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+
+- 2026-08-30  Privacy Policy page and GitHub Pages publication workflow prepared for eBay Production OAuth / RuName; public contact set to `aios.privacy@gmail.com`, local acceptance passed, and first HTTPS deployment remains pending.
 
 ## 变更日志
 - 2026-08-09 04:09  fix(myai): restore provider setup dialog styles lost in P13 migration
