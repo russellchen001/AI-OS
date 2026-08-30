@@ -72,6 +72,24 @@ for scan in "pkill" "killall" "pgrep"; do
   fi
 done
 
+# Launching must be single-flight per provider and must not hold the registry
+# lock, or one slow launch blocks capability listing and freezes Connections.
+grep -q "fn begin_launch" src-tauri/src/browser/authenticated_runtime.rs \
+  || fail "concurrent launches for one provider are not guarded"
+
+launch_body="$(awk '/pub\(crate\) fn open_managed_browser/,/^}/' src-tauri/src/browser/authenticated_runtime.rs)"
+if printf '%s\n' "$launch_body" | grep -q "wait_until_ready"; then
+  registry_locks="$(printf '%s\n' "$launch_body" | grep -c 'registry()')"
+  if [[ "$registry_locks" -lt 2 ]]; then
+    fail "the launch must take the registry lock in short sections, not hold it across readiness"
+  fi
+fi
+
+# A click must never look dead while a launch is in flight.
+awk '/async function connect\(providerId/,/^  }/' src/components/ConnectionsCenter.tsx \
+  | grep -q "setMessage" \
+  || fail "connect() can return without telling the user anything"
+
 # A profile another browser still owns is refused, never adopted or killed.
 grep -q "fn profile_is_owned_by_live_browser" src-tauri/src/browser/authenticated_runtime.rs \
   || fail "a profile still owned by a live browser is not detected before launch"
@@ -122,6 +140,9 @@ echo "✓ shutdown drains the owned registry and repeats safely"
 echo "✓ the runtime never scans for browser processes it does not own"
 echo "✓ a profile a live browser still owns is refused, never adopted"
 echo "✓ a handed-off launch fails fast instead of waiting out readiness"
+echo "✓ a slow launch never holds the registry lock or blocks Connections"
+echo "✓ concurrent launches for one provider are refused, not stacked"
+echo "✓ a click while a launch is in flight always reports back"
 echo "✓ Amazon is region aware and is not pinned to amazon.com.au"
 echo "✓ provider/origin validation is fail-closed"
 echo "PASS $name"

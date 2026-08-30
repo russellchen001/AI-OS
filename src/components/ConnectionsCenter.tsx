@@ -219,6 +219,7 @@ export default function ConnectionsCenter() {
 
   async function connectBrowser(capability: ConnectionCapability) {
     setStates((current) => ({ ...current, [capability.providerId]: "CONNECTING" }));
+    setMessage(`Opening the AI-OS managed browser for ${capability.displayName}…`);
     // begin_browser_login opens the AI-OS managed browser itself. The system
     // default browser is deliberately not used: AI-OS can only verify an
     // authenticated session it owns.
@@ -249,9 +250,17 @@ export default function ConnectionsCenter() {
   }
 
   async function connect(providerId: string) {
-    if (running.current.has(providerId)) return;
+    if (running.current.has(providerId)) {
+      // Opening a managed browser takes seconds. Say so, rather than letting
+      // the click look like it did nothing.
+      setMessage("Still finishing the previous attempt for this provider. Give it a moment.");
+      return;
+    }
     const capability = capabilities.find((item) => item.providerId === providerId);
-    if (!capability) return;
+    if (!capability) {
+      setMessage(`${providerId} is not available in this Connections list. Rescan and try again.`);
+      return;
+    }
     running.current.add(providerId);
     try {
       await refreshConnections();

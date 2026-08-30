@@ -3018,3 +3018,51 @@ Only after that loop passes three times: rebuild restart recovery per section
 6 of the incident handoff (headless recovery browser, live verification,
 `Connected`/`Expired`, one authoritative backend state path), then re-evaluate
 the Amazon account evidence.
+
+### Follow-up — Reconnect did nothing at all — 2026-08-30
+
+Reported right after the lifecycle repair: clicking **Reconnect** produced no
+browser window, **no message and no state change**.
+
+That symptom ruled out the new stale-profile guard. A refused launch returns
+`Err`, and `connect()` already catches it, sets `ERROR` and renders the text.
+Silence meant `connect()` returned before it ever reached the backend.
+
+**Frontend cause.** `connect()` opened with `if (running.current.has(providerId)) return;`
+— a bare early return with no feedback. The provider stays in that set for the
+whole duration of `begin_browser_login`, which can run for tens of seconds. So:
+first click starts a slow launch; some other refresh repaints the card as
+`EXPIRED`, which renders an enabled **Reconnect** button; every further click
+hits the latch and returns silently. The button looks dead while a launch is in
+fact still running.
+
+**Backend cause, and the reason the window is so wide.** `open_managed_browser`
+took the registry lock at the top and held it across profile checks, the spawn
+and the entire readiness wait — up to ~25 seconds, and longer with the new
+graceful-close and profile-owner probes. Every other registry caller queues
+behind it: `control_port_for`, `managed_browser_is_running`,
+`list_connection_capabilities`, `verify_browser_login`, and shutdown. One slow
+launch froze the whole Connections panel, which is what stretched the latch
+window from momentary to permanent-looking.
+
+**Repair.**
+
+- `open_managed_browser` now takes the registry lock only in two short critical
+  sections — the "do we already own a live browser" check, and recording the new
+  process — and holds nothing across the spawn and readiness wait;
+- single-flight is preserved without the lock by `begin_launch`, a per-provider
+  in-flight set with an RAII `LaunchGuard` that clears the marker however the
+  launch ends. A second concurrent launch for one provider is refused with a
+  message instead of spawning a browser that Chromium would immediately hand off
+  to the first one;
+- `connect()` now reports back on both early returns instead of returning
+  silently, and `connectBrowser` sets a message *before* the slow invoke so the
+  click has immediate feedback.
+
+Verified: browser module compiles clean, **20 tests pass**; `npx tsc --noEmit`
+passes. Verifier gained three invariants: the launch must not hold the registry
+lock across readiness, concurrent launches must be guarded, and `connect()` must
+always report back.
+
+This does not change BROWSER-B status. Restart recovery is still not
+implemented, and the lifecycle E2E in the section above is still the gate.

@@ -15,7 +15,7 @@
 //!   session reports `authenticated: false` and cannot become `CONNECTED`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -413,6 +413,38 @@ fn take_owned_process<T>(owned: &mut BTreeMap<String, T>, provider_id: &str) -> 
     owned.remove(provider_id)
 }
 
+/// Provider ids with a launch in flight.
+///
+/// Launching takes seconds, and it deliberately happens without the registry
+/// lock held. This set is what still makes a launch single-flight per provider:
+/// a second concurrent launch would spawn a browser that Chromium immediately
+/// hands off to the first one and then exits.
+fn launches_in_flight() -> &'static Mutex<BTreeSet<String>> {
+    static IN_FLIGHT: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+/// Clears its provider's in-flight marker however the launch ends.
+struct LaunchGuard(String);
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        if let Ok(mut in_flight) = launches_in_flight().lock() {
+            in_flight.remove(&self.0);
+        }
+    }
+}
+
+fn begin_launch(provider_id: &str) -> Result<LaunchGuard, String> {
+    let mut in_flight = launches_in_flight()
+        .lock()
+        .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
+    if !in_flight.insert(provider_id.to_owned()) {
+        return Err("This managed browser is already opening. Wait for it to finish.".to_owned());
+    }
+    Ok(LaunchGuard(provider_id.to_owned()))
+}
+
 /// Take every owned entry out of the registry in one pass.
 ///
 /// Draining first means termination happens without holding the registry lock,
@@ -462,21 +494,30 @@ pub(crate) fn open_managed_browser(
         return Err("Managed browser profile is outside AI-OS application data".to_owned());
     }
 
-    let mut owned = registry()
-        .lock()
-        .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
+    // Short critical section: decide whether AI-OS already owns a live browser
+    // for this provider, then release the registry immediately.
+    let still_running = {
+        let mut owned = registry()
+            .lock()
+            .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
 
-    let still_running = match owned.get_mut(&provider_id) {
-        Some(existing) => match existing.child.try_wait() {
-            Ok(None) => Some((
-                existing.browser_kind,
-                existing.ready,
-                existing.control_port,
-                existing.started_at.clone(),
-            )),
-            _ => None,
-        },
-        None => None,
+        let observed = match owned.get_mut(&provider_id) {
+            Some(existing) => match existing.child.try_wait() {
+                Ok(None) => Some((
+                    existing.browser_kind,
+                    existing.ready,
+                    existing.control_port,
+                    existing.started_at.clone(),
+                )),
+                _ => None,
+            },
+            None => None,
+        };
+
+        if observed.is_none() {
+            owned.remove(&provider_id);
+        }
+        observed
     };
 
     if let Some((browser_kind, ready, control_port, started_at)) = still_running {
@@ -493,7 +534,12 @@ pub(crate) fn open_managed_browser(
             started_at,
         ));
     }
-    owned.remove(&provider_id);
+
+    // Everything below can take tens of seconds. The registry lock is
+    // deliberately not held across it: capability listing, account
+    // verification and shutdown all take that lock, and holding it here froze
+    // the whole Connections panel behind one slow launch.
+    let _launch = begin_launch(&provider_id)?;
 
     let profile_reused = profile_directory.join("Default").exists();
 
@@ -548,7 +594,13 @@ pub(crate) fn open_managed_browser(
         }
     }
 
-    owned.insert(provider_id.clone(), process);
+    // Short critical section: record the process AI-OS now owns.
+    {
+        let mut owned = registry()
+            .lock()
+            .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
+        owned.insert(provider_id.clone(), process);
+    }
 
     Ok(ManagedBrowserSession::managed(
         &provider_id,
