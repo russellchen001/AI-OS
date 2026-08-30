@@ -3125,3 +3125,53 @@ no greeting, or any sign-in surface present, is never an authenticated account.
 
 Browser module **21 tests pass**; extracted connections logic **4 tests pass**;
 `npx tsc --noEmit` passes. Not yet built or run on macOS.
+
+---
+
+## BROWSER-B Root Cause — the spawned process is not the browser — 2026-08-30
+
+Diagnostics finally made this visible. Every launch, recovery and manual alike,
+failed identically and in **408 ms**:
+
+```text
+08:26:05.486 [recovery] provider=amazon-consumer stage=launch has_verified_origin=true
+08:26:05.894 [launch]   provider=amazon-consumer outcome=not_ready
+                        detail=The managed browser exited before it was ready.
+```
+
+### The mistake in the ownership model
+
+Chromium on macOS re-execs itself. The process AI-OS spawns exits within about
+a second while the real browser carries on, detached. The runtime assumed
+`std::process::Child` **was** the browser. It never was.
+
+That single wrong assumption produced every symptom in this incident:
+
+- `close_all_managed_browsers` killed an already-dead pid, so the real browser
+  survived AI-OS — the orphaned Chrome and its held Singleton lock;
+- `control_port_for` required `child.try_wait() == Ok(None)`, so it returned
+  `None` for a perfectly healthy browser — account verification could never run,
+  which is why Amazon never reached `Connected`;
+- the readiness fast-fail added in the lifecycle repair turned the normal
+  re-exec into an immediate hard failure, which is why launches that used to
+  work stopped working and Reconnect showed `ERROR`.
+
+### The fix: own the browser the browser identifies
+
+- readiness no longer treats the spawned process exiting as failure. It keeps
+  waiting on the DevTools endpoint, which is the authority on whether a browser
+  came up;
+- after readiness, AI-OS asks the browser for its own pid over the loopback
+  channel (`SystemInfo.getProcessInfo`) and records it. The id comes from the
+  browser running in AI-OS's own profile, over AI-OS's own control channel —
+  nothing is scanned, name-matched or guessed;
+- liveness everywhere (`control_port_for`, launch reuse, inspect) is now "the
+  control channel answers", not "the child is alive";
+- termination asks `Browser.close`, waits for the control channel to stop
+  answering, and only then falls back to the two handles AI-OS legitimately
+  holds: the spawned child and the browser-reported pid.
+
+The ownership boundary is unchanged: no scanning, no adoption, no killing
+anything AI-OS did not launch into its own profile.
+
+Browser module: **21 tests pass**. Not yet run on macOS.

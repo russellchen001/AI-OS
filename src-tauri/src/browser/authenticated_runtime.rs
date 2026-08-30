@@ -268,6 +268,7 @@ fn profile_is_owned_by_live_browser(profile_directory: &Path) -> Option<u16> {
 fn wait_until_ready(profile_directory: &Path, child: &mut Child) -> Result<u16, String> {
     let port_file = profile_directory.join(DEVTOOLS_ACTIVE_PORT_FILE);
     let deadline = Instant::now() + READINESS_TIMEOUT;
+    let mut spawned_process_exited = false;
     while Instant::now() < deadline {
         let answered_port =
             published_devtools_port(std::fs::read_to_string(&port_file).ok().as_deref())
@@ -281,12 +282,28 @@ fn wait_until_ready(profile_directory: &Path, child: &mut Child) -> Result<u16, 
         match readiness_progress(answered_port, matches!(child.try_wait(), Ok(Some(_)))) {
             ReadinessProgress::Ready(port) => return Ok(port),
             ReadinessProgress::OwnerExited => {
-                return Err("The managed browser exited before it was ready. Another browser instance is probably still using this profile.".to_owned())
+                // Chromium on macOS commonly re-execs itself: the process
+                // AI-OS spawned exits within a second while the real browser
+                // carries on detached. That is not a failure, and treating it
+                // as one is what broke every launch. The DevTools endpoint is
+                // the authority on whether a browser came up.
+                if !spawned_process_exited {
+                    spawned_process_exited = true;
+                    diagnostics::record(
+                        "launch",
+                        "spawned_process_exited=true waiting_for_control_channel",
+                    );
+                }
+                std::thread::sleep(READINESS_POLL_INTERVAL);
             }
             ReadinessProgress::KeepWaiting => std::thread::sleep(READINESS_POLL_INTERVAL),
         }
     }
-    Err("Managed browser did not become ready".to_owned())
+    Err(if spawned_process_exited {
+        "The managed browser exited without publishing a control channel".to_owned()
+    } else {
+        "Managed browser did not become ready".to_owned()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +431,12 @@ impl ManagedBrowserSession {
 // ---------------------------------------------------------------------------
 
 struct OwnedBrowserProcess {
+    /// The process AI-OS spawned. On macOS this often exits immediately while
+    /// the real browser continues, so it is not a reliable browser handle.
     child: Child,
+    /// The browser's own process id, as the browser reported it. This is the
+    /// handle that actually identifies the running browser.
+    browser_pid: Option<u32>,
     browser_kind: ManagedBrowserKind,
     /// How this browser was launched. A recovery browser is headless and
     /// invisible, so it can never stand in for a user asking to sign in.
@@ -527,19 +549,24 @@ pub(crate) fn open_managed_browser(
             .lock()
             .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
 
-        let observed = match owned.get_mut(&provider_id) {
-            Some(existing) => match existing.child.try_wait() {
-                Ok(None) => Some((
+        let observed = owned.get(&provider_id).and_then(|existing| {
+            // Liveness is the control channel answering, not the spawned
+            // process still being alive.
+            let alive = existing.ready
+                && existing.control_port != 0
+                && probe_control_channel(existing.control_port)
+                    .map(|response| devtools_response_is_ready(&response))
+                    .unwrap_or(false);
+            alive.then(|| {
+                (
                     existing.browser_kind,
                     existing.ready,
                     existing.control_port,
                     existing.started_at.clone(),
                     existing.mode,
-                )),
-                _ => None,
-            },
-            None => None,
-        };
+                )
+            })
+        });
 
         if observed.is_none() {
             owned.remove(&provider_id);
@@ -628,6 +655,7 @@ pub(crate) fn open_managed_browser(
     let started_at = now_rfc3339();
     let mut process = OwnedBrowserProcess {
         child,
+        browser_pid: None,
         browser_kind,
         mode,
         control_port: 0,
@@ -639,6 +667,7 @@ pub(crate) fn open_managed_browser(
     match readiness {
         Ok(port) => {
             process.control_port = port;
+            process.browser_pid = managed_browser_pid(port);
             process.ready = true;
         }
         Err(error) => {
@@ -688,9 +717,12 @@ pub(crate) fn inspect_authenticated_browser(
         .lock()
         .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
 
-    let observed = match owned.get_mut(&provider_id) {
+    let observed = match owned.get(&provider_id) {
         Some(process) => {
-            let running = matches!(process.child.try_wait(), Ok(None));
+            let running = process.control_port != 0
+                && probe_control_channel(process.control_port)
+                    .map(|response| devtools_response_is_ready(&response))
+                    .unwrap_or(false);
             (
                 process.browser_kind,
                 running,
@@ -720,6 +752,32 @@ pub(crate) fn inspect_authenticated_browser(
     Ok(Some(session))
 }
 
+/// The browser's own process id, reported by the browser over the loopback
+/// channel AI-OS opened for it.
+///
+/// Chromium on macOS re-execs, so the process AI-OS spawned is usually not the
+/// browser. Asking the browser itself is what keeps ownership accurate: the id
+/// comes from the browser running in AI-OS's own profile, over AI-OS's own
+/// control channel. Nothing is scanned, matched by name, or guessed.
+fn managed_browser_pid(control_port: u16) -> Option<u32> {
+    let channel = devtools::browser_websocket_url(control_port).ok()?;
+    let result = devtools::protocol_call(
+        &channel,
+        1,
+        "SystemInfo.getProcessInfo",
+        serde_json::json!({}),
+    )
+    .ok()?;
+    result
+        .get("processInfo")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("browser"))
+        .and_then(|entry| entry.get("id"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|id| id as u32)
+}
+
 /// Ask an owned managed browser to close itself, then wait for it to exit.
 ///
 /// The request goes over the loopback DevTools channel AI-OS already owns for
@@ -730,29 +788,46 @@ pub(crate) fn inspect_authenticated_browser(
 /// A kill remains the fallback so shutdown cannot hang. Returns true when the
 /// browser exited on request.
 fn terminate_owned_process(process: &mut OwnedBrowserProcess) -> bool {
-    if process.control_port != 0 {
-        if let Ok(channel) = devtools::browser_websocket_url(process.control_port) {
+    let port = process.control_port;
+
+    if port != 0 {
+        if let Ok(channel) = devtools::browser_websocket_url(port) {
             // Chromium may drop the socket before answering. The reply is not
-            // the evidence; the process exiting is.
+            // the evidence; the browser going away is.
             let _ = devtools::protocol_call(&channel, 1, "Browser.close", serde_json::json!({}));
         }
     }
 
+    // The spawned process may already be gone while the browser lives, so the
+    // control channel — not the child handle — decides when this is finished.
     let deadline = Instant::now() + GRACEFUL_CLOSE_TIMEOUT;
     while Instant::now() < deadline {
-        match process.child.try_wait() {
-            Ok(Some(_)) => {
-                diagnostics::record("close", "outcome=graceful");
-                return true;
-            }
-            Ok(None) => std::thread::sleep(GRACEFUL_CLOSE_POLL_INTERVAL),
-            Err(_) => break,
+        if port == 0 || probe_control_channel(port).is_err() {
+            let _ = process.child.try_wait();
+            diagnostics::record("close", "outcome=graceful");
+            return true;
         }
+        std::thread::sleep(GRACEFUL_CLOSE_POLL_INTERVAL);
     }
 
+    // Fall back to the two process handles AI-OS legitimately holds: the one it
+    // spawned, and the one the browser reported for itself. Nothing is scanned
+    // and no other process can be selected.
     let _ = process.child.kill();
     let _ = process.child.wait();
-    diagnostics::record("close", "outcome=forced");
+    if let Some(pid) = process.browser_pid {
+        let _ = Command::new("/bin/kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    diagnostics::record(
+        "close",
+        &format!("outcome=forced had_browser_pid={}", process.browser_pid.is_some()),
+    );
     false
 }
 
@@ -811,12 +886,26 @@ pub(crate) fn close_all_managed_browsers() -> Result<usize, String> {
 /// can never inspect a browser this runtime does not own.
 pub(crate) fn control_port_for(provider_id: &str) -> Option<u16> {
     let provider_id = validate_provider_id(provider_id).ok()?;
-    let mut owned = registry().lock().ok()?;
-    let process = owned.get_mut(provider_id)?;
-    if !matches!(process.child.try_wait(), Ok(None)) || !process.ready {
+
+    let port = {
+        let owned = registry().lock().ok()?;
+        let process = owned.get(provider_id)?;
+        if !process.ready {
+            return None;
+        }
+        process.control_port
+    };
+
+    if port == 0 {
         return None;
     }
-    Some(process.control_port).filter(|port| *port != 0)
+
+    // The spawned process exiting says nothing about the browser. Its control
+    // channel answering is what proves AI-OS still has a browser to inspect.
+    match probe_control_channel(port) {
+        Ok(response) if devtools_response_is_ready(&response) => Some(port),
+        _ => None,
+    }
 }
 
 /// Open a provider login destination in the browser AI-OS already owns.
@@ -1147,7 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn readiness_stops_as_soon_as_the_owned_browser_exits() {
+    fn readiness_reports_when_the_spawned_process_is_gone() {
         assert_eq!(
             readiness_progress(Some(51321), false),
             ReadinessProgress::Ready(51321)
@@ -1157,8 +1246,9 @@ mod tests {
             readiness_progress(Some(51321), true),
             ReadinessProgress::Ready(51321)
         );
-        // A launch handed off to an instance that already owns the profile
-        // exits at once and must not wait out the readiness timeout.
+        // The spawned process being gone is reported, not treated as ready.
+        // The caller keeps waiting on the control channel, because Chromium
+        // re-execs and the browser usually outlives the process AI-OS spawned.
         assert_eq!(readiness_progress(None, true), ReadinessProgress::OwnerExited);
         assert_eq!(readiness_progress(None, false), ReadinessProgress::KeepWaiting);
     }
