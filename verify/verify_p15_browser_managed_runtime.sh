@@ -113,7 +113,7 @@ required_tests=(
   "only_ai_os_owned_processes_are_ever_selected_for_termination"
   "amazon_is_region_aware_and_origin_validation_is_fail_closed"
   "shutdown_drains_the_owned_registry_and_repeats_safely"
-  "readiness_stops_as_soon_as_the_owned_browser_exits"
+  "readiness_reports_when_the_spawned_process_is_gone"
   "a_live_profile_owner_is_recognised_from_the_published_port"
 )
 

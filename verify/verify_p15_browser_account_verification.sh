@@ -44,8 +44,11 @@ grep -q "Runtime.evaluate" src-tauri/src/browser/account_verifier.rs \
   || fail "account state is not read from the live page"
 
 # Verified evidence must stay non-secret.
+# Inspect production verifier code only. The #[cfg(test)] module intentionally
+# names these forbidden APIs in tests that assert they are absent from probes.
+account_code="$(awk '/^#\[cfg\(test\)\]/{exit} {print}' src-tauri/src/browser/account_verifier.rs)"
 for forbidden in "document.cookie" "localStorage" "sessionStorage" "Authorization"; do
-  if grep -n "$forbidden" src-tauri/src/browser/account_verifier.rs >/dev/null 2>&1; then
+  if printf '%s\n' "$account_code" | grep -q "$forbidden"; then
     fail "the account verifier must never read $forbidden"
   fi
 done
@@ -97,7 +100,7 @@ for test_name in "${required_site_tests[@]}"; do
   fi
 done
 
-output="$(cargo test --manifest-path src-tauri/Cargo.toml browser::account_verifier::tests browser::devtools::tests -- --nocapture 2>&1)"
+output="$(cargo test --manifest-path src-tauri/Cargo.toml 'browser::' -- --nocapture 2>&1)"
 status=$?
 if [[ $status -ne 0 ]]; then
   echo "FAIL $name: account verification behavior tests failed"
@@ -134,7 +137,8 @@ done
 
 required_connections_tests=(
   "browser_connected_requires_a_real_account_verification"
-  "restart_and_profile_reuse_never_blindly_restore_connected"
+  "restart_recovery_reports_checking_and_never_invents_connected"
+  "only_a_decided_session_writes_the_state_authority"
   "verified_browser_session_carries_only_safe_evidence"
   "browser_opening_never_means_connected"
   "browser_session_serialization_contains_no_credentials"

@@ -3689,3 +3689,83 @@ provider fails, read the log and look at the capture before changing a selector.
 3. If a site cannot be verified either way, the honest outcome is to tell the
    user to name an account page — not to loosen the fail-closed rules.
 4. Then, separately, the Microsoft Graph fixture blocker.
+
+# ===== HANDOFF UPDATE — P15 Authenticated Browser User-Added Site E2E — 2026-08-30 =====
+
+This section supersedes the earlier user-added-site Browser status where it conflicts.
+
+## Acceptance completed
+
+Authenticated Browser deterministic acceptance passed on macOS:
+
+- `cargo check --manifest-path src-tauri/Cargo.toml` — PASS
+- Browser Rust tests — 41 passed, 0 failed
+- Connections Rust tests — 12 passed, 0 failed
+- Frontend production build — PASS
+- `verify_p15_browser_managed_runtime.sh` — PASS
+- `verify_p15_browser_account_verification.sh` — PASS
+- `verify_p15_connections_onboarding.sh` — PASS
+- `git diff --check` — PASS
+
+Verifier maintenance performed during acceptance:
+
+- updated the managed-runtime verifier from the obsolete spawned-process readiness test name to the current Chromium re-exec-aware readiness test;
+- limited the account verifier forbidden-API static scan to production code so its own safety tests may name forbidden APIs without producing a false failure;
+- replaced an invalid Cargo invocation containing two test filters with the valid `browser::` filter;
+- replaced the obsolete restart/profile-reuse connection test requirement with the current restart-recovery and state-authority tests.
+
+These changes update stale acceptance infrastructure to the current Browser architecture; they do not weaken Browser safety requirements.
+
+## User-added arbitrary site real macOS E2E
+
+Real E2E accepted using GitHub as a user-added site.
+
+Configuration:
+
+- sign-in page: `https://github.com/login`
+- account page: `https://github.com/settings/profile`
+
+Observed real flow:
+
+1. User-added GitHub was created in Connections.
+2. AI-OS launched its owned visible managed browser.
+3. The user signed in on GitHub's real login page.
+4. The user selected `I've signed in`.
+5. AI-OS verified the authenticated account page and changed the connection to `CONNECTED`.
+6. AI-OS was exited normally.
+7. AI-OS was restarted.
+8. GitHub automatically recovered as `CONNECTED` without requiring another manual sign-in.
+
+Therefore user-added arbitrary authenticated sites are now accepted on macOS for the account-page verification path.
+
+The fail-closed behavior was also observed in the same E2E work: a user-added site with neither a stored account page nor learned structural evidence did not become Connected.
+
+GitHub's generic structural-learning-only path was not used as the acceptance criterion because an explicit account page provides stronger deterministic evidence and is already the preferred supported path when available.
+
+## Google note
+
+Google rejected login from the managed Chromium environment with its own "browser or app may not be secure" policy. This is an external provider/browser-policy restriction and is not treated as a failure of the generic user-added-site implementation.
+
+## Current Browser status
+
+Authenticated Browser macOS scope now has real E2E acceptance for:
+
+- Amazon
+- Taobao
+- JD
+- Pinduoduo
+- user-added arbitrary sites through the account-page verification path
+
+User-added sites remain excluded from Connect All.
+
+The Browser safety invariants remain unchanged:
+
+- no adoption or termination of arbitrary user browser processes;
+- only AI-OS-owned managed profiles/processes are controlled;
+- DevTools control channel is the browser-liveness authority;
+- loopback-only DevTools access;
+- Connected requires live authentication evidence;
+- no cookie, storage, token, password, authorization header, account identity, raw profile path, or control port leaves the Browser runtime;
+- verification remains fail-closed.
+
+P15 completion count remains unchanged; Browser acceptance does not by itself increase the completed Core Skill count.
