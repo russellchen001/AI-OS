@@ -32,6 +32,10 @@ const MANAGED_PROFILE_ROOT: &str = "profiles";
 const DEVTOOLS_ACTIVE_PORT_FILE: &str = "DevToolsActivePort";
 const READINESS_TIMEOUT: Duration = Duration::from_secs(25);
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// How long a managed browser is given to close itself after being asked.
+/// Only a graceful exit lets Chromium release the profile's Singleton lock.
+const GRACEFUL_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+const GRACEFUL_CLOSE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 // ---------------------------------------------------------------------------
 // Supported browsers and deterministic discovery
@@ -198,27 +202,67 @@ fn probe_control_channel(port: u16) -> Result<String, String> {
     devtools::http_get(port, "/json/version")
 }
 
+/// Port a browser is currently publishing for a profile, if any.
+fn published_devtools_port(port_file_contents: Option<&str>) -> Option<u16> {
+    port_file_contents.and_then(parse_devtools_active_port)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadinessProgress {
+    Ready(u16),
+    OwnerExited,
+    KeepWaiting,
+}
+
+/// One readiness decision, kept pure so the launch race stays testable.
+///
+/// Chromium hands a launch off to an instance that already owns the profile
+/// and then exits immediately. Waiting out the full readiness timeout would
+/// report that as a generic timeout and hide the real cause.
+fn readiness_progress(answered_port: Option<u16>, owned_process_exited: bool) -> ReadinessProgress {
+    match (answered_port, owned_process_exited) {
+        (Some(port), _) => ReadinessProgress::Ready(port),
+        (None, true) => ReadinessProgress::OwnerExited,
+        (None, false) => ReadinessProgress::KeepWaiting,
+    }
+}
+
+/// The port this profile's DevTools endpoint is answering on, if a browser is
+/// live on it right now.
+fn profile_is_owned_by_live_browser(profile_directory: &Path) -> Option<u16> {
+    let contents = std::fs::read_to_string(profile_directory.join(DEVTOOLS_ACTIVE_PORT_FILE)).ok();
+    let port = published_devtools_port(contents.as_deref())?;
+    if !is_loopback_control_endpoint(&control_endpoint(port)) {
+        return None;
+    }
+    match probe_control_channel(port) {
+        Ok(response) if devtools_response_is_ready(&response) => Some(port),
+        _ => None,
+    }
+}
+
 /// Readiness is only reported after the browser has published its DevTools
 /// port and the loopback control channel actually answers.
-fn wait_until_ready(profile_directory: &Path) -> Result<u16, String> {
+fn wait_until_ready(profile_directory: &Path, child: &mut Child) -> Result<u16, String> {
     let port_file = profile_directory.join(DEVTOOLS_ACTIVE_PORT_FILE);
     let deadline = Instant::now() + READINESS_TIMEOUT;
     while Instant::now() < deadline {
-        if let Some(port) = std::fs::read_to_string(&port_file)
-            .ok()
-            .as_deref()
-            .and_then(parse_devtools_active_port)
-        {
-            let endpoint = control_endpoint(port);
-            if is_loopback_control_endpoint(&endpoint) {
-                if let Ok(response) = probe_control_channel(port) {
-                    if devtools_response_is_ready(&response) {
-                        return Ok(port);
-                    }
-                }
+        let answered_port =
+            published_devtools_port(std::fs::read_to_string(&port_file).ok().as_deref())
+                .filter(|port| is_loopback_control_endpoint(&control_endpoint(*port)))
+                .filter(|port| {
+                    probe_control_channel(*port)
+                        .map(|response| devtools_response_is_ready(&response))
+                        .unwrap_or(false)
+                });
+
+        match readiness_progress(answered_port, matches!(child.try_wait(), Ok(Some(_)))) {
+            ReadinessProgress::Ready(port) => return Ok(port),
+            ReadinessProgress::OwnerExited => {
+                return Err("The managed browser exited before it was ready. Another browser instance is probably still using this profile.".to_owned())
             }
+            ReadinessProgress::KeepWaiting => std::thread::sleep(READINESS_POLL_INTERVAL),
         }
-        std::thread::sleep(READINESS_POLL_INTERVAL);
     }
     Err("Managed browser did not become ready".to_owned())
 }
@@ -369,6 +413,14 @@ fn take_owned_process<T>(owned: &mut BTreeMap<String, T>, provider_id: &str) -> 
     owned.remove(provider_id)
 }
 
+/// Take every owned entry out of the registry in one pass.
+///
+/// Draining first means termination happens without holding the registry lock,
+/// and a second shutdown pass finds nothing left to terminate.
+fn drain_owned_processes<T>(owned: &mut BTreeMap<String, T>) -> Vec<(String, T)> {
+    std::mem::take(owned).into_iter().collect()
+}
+
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -443,12 +495,25 @@ pub(crate) fn open_managed_browser(
     }
     owned.remove(&provider_id);
 
-    let profile_reused = profile_directory.join(DEVTOOLS_ACTIVE_PORT_FILE).exists()
-        || profile_directory.join("Default").exists();
+    let profile_reused = profile_directory.join("Default").exists();
 
     std::fs::create_dir_all(&profile_directory)
         .map_err(|_| "Managed browser profile could not be created".to_owned())?;
-    // A stale port file would otherwise be read as this launch's port.
+
+    // A browser still answering on this profile's DevTools port holds the
+    // profile's Singleton lock. It is not in the owned registry, so it is
+    // neither AI-OS's to terminate nor to adopt. Launching regardless would
+    // hand the URL to that instance and exit at once, which previously
+    // surfaced only as a readiness timeout 25 seconds later.
+    if profile_is_owned_by_live_browser(&profile_directory).is_some() {
+        return Err(
+            "A previous AI-OS managed browser is still using this profile. Quit that browser window, then reconnect."
+                .to_owned(),
+        );
+    }
+
+    // Nothing answers, so the port file is stale and would otherwise be read
+    // as this launch's port.
     let _ = std::fs::remove_file(profile_directory.join(DEVTOOLS_ACTIVE_PORT_FILE));
 
     let browser_kind = discover_supported_browser()
@@ -471,14 +536,14 @@ pub(crate) fn open_managed_browser(
         ready: false,
     };
 
-    match wait_until_ready(&profile_directory) {
+    let readiness = wait_until_ready(&profile_directory, &mut process.child);
+    match readiness {
         Ok(port) => {
             process.control_port = port;
             process.ready = true;
         }
         Err(error) => {
-            let _ = process.child.kill();
-            let _ = process.child.wait();
+            terminate_owned_process(&mut process);
             return Err(error);
         }
     }
@@ -542,6 +607,38 @@ pub(crate) fn inspect_authenticated_browser(
     Ok(Some(session))
 }
 
+/// Ask an owned managed browser to close itself, then wait for it to exit.
+///
+/// The request goes over the loopback DevTools channel AI-OS already owns for
+/// that process. This matters beyond tidiness: a killed Chromium never releases
+/// its profile `Singleton` lock, and the next AI-OS launch is then handed off
+/// to the surviving instance instead of starting its own.
+///
+/// A kill remains the fallback so shutdown cannot hang. Returns true when the
+/// browser exited on request.
+fn terminate_owned_process(process: &mut OwnedBrowserProcess) -> bool {
+    if process.control_port != 0 {
+        if let Ok(channel) = devtools::browser_websocket_url(process.control_port) {
+            // Chromium may drop the socket before answering. The reply is not
+            // the evidence; the process exiting is.
+            let _ = devtools::protocol_call(&channel, 1, "Browser.close", serde_json::json!({}));
+        }
+    }
+
+    let deadline = Instant::now() + GRACEFUL_CLOSE_TIMEOUT;
+    while Instant::now() < deadline {
+        match process.child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => std::thread::sleep(GRACEFUL_CLOSE_POLL_INTERVAL),
+            Err(_) => break,
+        }
+    }
+
+    let _ = process.child.kill();
+    let _ = process.child.wait();
+    false
+}
+
 /// Close only the managed browser process AI-OS started for this provider.
 /// The persisted profile is kept so website sessions survive a restart.
 #[tauri::command]
@@ -551,17 +648,45 @@ pub(crate) fn close_authenticated_browser(provider_id: String) -> Result<bool, S
 
 pub(crate) fn close_managed_browser(provider_id: &str) -> Result<bool, String> {
     let provider_id = validate_provider_id(provider_id)?.to_owned();
-    let mut owned = registry()
-        .lock()
-        .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
 
-    let Some(mut process) = take_owned_process(&mut owned, &provider_id) else {
+    // Take the entry out under the lock, then release it: closing waits on the
+    // browser and must not block every other caller of the registry.
+    let taken = {
+        let mut owned = registry()
+            .lock()
+            .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
+        take_owned_process(&mut owned, &provider_id)
+    };
+
+    let Some(mut process) = taken else {
         return Ok(false);
     };
 
-    let _ = process.child.kill();
-    let _ = process.child.wait();
+    terminate_owned_process(&mut process);
     Ok(true)
+}
+
+/// Close every browser process owned by this AI-OS runtime.
+///
+/// Only processes recorded in the private owned-process registry are touched.
+/// User browser processes and unknown processes are never inspected or killed.
+/// Safe to call more than once: the first pass empties the registry, so a
+/// later shutdown event finds nothing left to close.
+pub(crate) fn close_all_managed_browsers() -> Result<usize, String> {
+    let drained = {
+        let mut owned = registry()
+            .lock()
+            .map_err(|_| "Managed browser runtime is unavailable".to_owned())?;
+        drain_owned_processes(&mut owned)
+    };
+
+    let mut closed = 0usize;
+    for (_provider_id, mut process) in drained {
+        terminate_owned_process(&mut process);
+        closed += 1;
+    }
+
+    Ok(closed)
 }
 
 /// Loopback DevTools port of the running managed browser AI-OS owns for this
@@ -845,5 +970,54 @@ mod tests {
             "pinduoduo-consumer",
             "https://mobile.yangkeduo.com"
         ));
+    }
+
+    #[test]
+    fn shutdown_drains_the_owned_registry_and_repeats_safely() {
+        let mut owned: BTreeMap<String, u32> = BTreeMap::new();
+        owned.insert("amazon-consumer".to_owned(), 4242);
+        owned.insert("taobao-consumer".to_owned(), 4243);
+
+        let drained = drain_owned_processes(&mut owned);
+        assert_eq!(drained.len(), 2);
+        assert!(
+            owned.is_empty(),
+            "the registry must not keep handles it no longer owns"
+        );
+        assert!(drained
+            .iter()
+            .any(|(provider_id, pid)| provider_id == "amazon-consumer" && *pid == 4242));
+
+        // A second shutdown event finds nothing left to terminate.
+        assert!(drain_owned_processes(&mut owned).is_empty());
+    }
+
+    #[test]
+    fn readiness_stops_as_soon_as_the_owned_browser_exits() {
+        assert_eq!(
+            readiness_progress(Some(51321), false),
+            ReadinessProgress::Ready(51321)
+        );
+        // Readiness still wins if the process is observed gone in the same tick.
+        assert_eq!(
+            readiness_progress(Some(51321), true),
+            ReadinessProgress::Ready(51321)
+        );
+        // A launch handed off to an instance that already owns the profile
+        // exits at once and must not wait out the readiness timeout.
+        assert_eq!(readiness_progress(None, true), ReadinessProgress::OwnerExited);
+        assert_eq!(readiness_progress(None, false), ReadinessProgress::KeepWaiting);
+    }
+
+    #[test]
+    fn a_live_profile_owner_is_recognised_from_the_published_port() {
+        assert_eq!(
+            published_devtools_port(Some("51321\n/devtools/browser/AB12")),
+            Some(51321)
+        );
+        assert_eq!(published_devtools_port(Some("0\n")), None);
+        assert_eq!(published_devtools_port(Some("not a port")), None);
+        assert_eq!(published_devtools_port(Some("")), None);
+        assert_eq!(published_devtools_port(None), None);
     }
 }

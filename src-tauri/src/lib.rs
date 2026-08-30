@@ -124,7 +124,7 @@ pub fn run() {
     let runtime_state = runtime::executor::RuntimeExecutionState::default();
     let task_runtime_state = runtime_state.clone();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(runtime_state)
         .setup(move |app| {
             let emitter = std::sync::Arc::new(runtime::executor::TauriEventEmitter::new(
@@ -288,8 +288,19 @@ pub fn run() {
             memory::list_memory,
             memory::delete_memory,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building Tauri application");
+
+    app.run(|_app_handle, event| match event {
+        // Both paths are wired on purpose. ExitRequested fires while the event
+        // loop can still run work; Exit fires on the way out and covers exits
+        // that never raise a request. close_all_managed_browsers drains its
+        // registry, so running on both is safe rather than double work.
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            let _ = browser::authenticated_runtime::close_all_managed_browsers();
+        }
+        _ => {}
+    });
 }
 
 pub mod task_engine;

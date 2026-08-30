@@ -64,7 +64,8 @@ pub(crate) fn http_get(port: u16, path: &str) -> Result<String, String> {
         .map_err(|_| "Managed browser control channel is not reachable".to_owned())?;
     let _ = stream.set_read_timeout(Some(CONTROL_CHANNEL_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONTROL_CHANNEL_TIMEOUT));
-    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     stream
         .write_all(request.as_bytes())
         .map_err(|_| "Managed browser control channel refused the request".to_owned())?;

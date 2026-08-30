@@ -2211,3 +2211,810 @@ Validation performed off the macOS machine:
 
 BROWSER-C — real E2E with Amazon and Taobao, then JD and Pinduoduo. P15 remains
 incomplete; nothing in this milestone changes the P15 status boundary above.
+
+---
+
+## BROWSER-B Recovery Incident Handoff — 2026-08-30
+
+### Status
+
+BROWSER-B restart recovery is NOT complete and NOT accepted.
+
+Do not mark Authenticated Browser restart recovery as complete.
+
+Do not increase the P15 completion count because of this work.
+
+The last real user-validated browser behavior before restart-recovery experiments was:
+
+- Amazon Authenticated Browser manual Connect/Reconnect opens an AI-OS-managed Chrome session.
+- Manual Amazon login can reach `Connected`.
+- The original managed-browser DevTools readiness false-negative was traced to an incorrect HTTP Host header.
+- `src-tauri/src/browser/devtools.rs` was corrected from `Host: 127.0.0.1` to `Host: 127.0.0.1:<dynamic DevTools port>`.
+- That DevTools Host-header change fixed a real observed failure and should be preserved unless contrary evidence is found.
+
+### Current unresolved problem
+
+After Amazon has successfully reached `Connected`, restarting AI-OS does not reliably restore Amazon as `Connected`.
+
+Multiple BROWSER-B restart-recovery experiments were attempted but were not accepted.
+
+The latest observed recovery could stall at:
+
+`[browser-recovery] provider=amazon-consumer stage=launch origin=https://www.amazon.com`
+
+Earlier clean runs also reached the verifier and produced:
+
+`[browser-verifier] provider=amazon-consumer provider_target=found origin=https://www.amazon.com`
+
+`[browser-verifier] provider=amazon-consumer probe=complete origin_valid=true signal_present=false signed_in=false`
+
+followed by repeated:
+
+`[browser-recovery] provider=amazon-consumer attempt=N result=not_authenticated`
+
+and eventually:
+
+`[browser-recovery] provider=amazon-consumer completed connected=false`
+
+These results must not be treated as proof that the Amazon login session itself is invalid because a separate browser lifecycle/profile ownership defect was also confirmed during debugging.
+
+### Confirmed managed-browser lifecycle defect
+
+A previous AI-OS-managed Chrome process remained alive after the previous AI-OS instance was gone.
+
+A real observed Chrome process used the AI-OS managed Amazon profile:
+
+`/Users/russellchen/Library/Application Support/com.russellchen.aios/authenticated-browser/profiles/amazon-consumer`
+
+and arguments including:
+
+`--remote-debugging-port=0`
+
+`--remote-debugging-address=127.0.0.1`
+
+`https://www.amazon.com/ap/signin`
+
+The stale managed Chrome example had PID 73063.
+
+The profile had active Chrome Singleton ownership state.
+
+After manually terminating PID 73063 and waiting, this command returned no managed Amazon Chrome processes:
+
+`ps aux | grep 'authenticated-browser/profiles/amazon-consumer' | grep -v grep`
+
+The profile directory also no longer showed active `Singleton*` entries or `DevToolsActivePort`.
+
+This confirms a real lifecycle problem:
+
+AI-OS does not yet reliably guarantee that every browser process it owns is terminated when AI-OS exits.
+
+This lifecycle defect must be resolved before restart recovery can be trusted.
+
+### Required browser ownership safety boundary
+
+Any lifecycle fix must preserve the existing ownership boundary.
+
+AI-OS may terminate ONLY browser processes present in AI-OS's private owned-process registry.
+
+AI-OS must NOT:
+
+- scan for arbitrary user Chrome processes and kill them;
+- terminate a process solely because its command line contains an AI-OS-looking profile path;
+- touch the user's normal Chrome profile;
+- adopt unknown browser processes into AI-OS ownership;
+- expose cookies, tokens, credentials, raw profile paths, account identity, or DevTools control ports to frontend state.
+
+DevTools must remain loopback-only.
+
+### Confirmed DevTools readiness bug and valid fix
+
+The original real behavior was:
+
+AI-OS opened the managed Chrome.
+
+Amazon login page opened correctly.
+
+Around 25 seconds later AI-OS killed the Chrome because readiness incorrectly timed out.
+
+Live diagnostics proved Chrome was actually serving DevTools successfully:
+
+- `DevToolsActivePort` existed.
+- `/json/version` returned HTTP 200 when queried correctly.
+- `/json/list` returned HTTP 200.
+
+Root cause:
+
+The raw HTTP request in `src-tauri/src/browser/devtools.rs` used:
+
+`Host: 127.0.0.1`
+
+instead of:
+
+`Host: 127.0.0.1:<dynamic port>`
+
+The captured valid change was equivalent to:
+
+```rust
+let request =
+    format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+```
+
+After that correction, real manual Amazon login successfully reached `Connected`.
+
+This change is considered a validated fix and should normally be retained.
+
+### BROWSER-A baseline
+
+Before restart-recovery experiments, focused BROWSER-A tests passed.
+
+Known architecture:
+
+- Managed browser discovery order:
+  - Chrome
+  - Chromium
+  - Edge
+  - Brave
+- Managed profiles live under:
+  - `<app data>/authenticated-browser/profiles/<provider id>`
+- Provider IDs are validated.
+- DevTools launch uses:
+  - `--remote-debugging-port=0`
+  - `--remote-debugging-address=127.0.0.1`
+- Readiness reads `DevToolsActivePort`.
+- Readiness verifies `/json/version`.
+- AI-OS maintains a private owned-process registry.
+- Persistent browser profiles are AI-OS-owned.
+- Session metadata exposed outside the runtime does not include raw filesystem path or control port.
+- Amazon origin validation is region-aware.
+- Browser termination must remain restricted to AI-OS-owned processes.
+
+Do not regress BROWSER-A while repairing BROWSER-B.
+
+### Recovery v2 experiment
+
+An experimental BROWSER-B recovery design was added.
+
+The design attempted to keep `list_connection_capabilities()` fast and side-effect-free.
+
+Recovery was moved into a background startup path.
+
+The experimental design included:
+
+saved browser metadata
+→ persistent managed profile
+→ headless managed Chrome
+→ live provider verification
+→ process-local recovery result
+→ frontend recovery event
+
+This implementation is NOT accepted.
+
+### Experimental authenticated_runtime.rs changes
+
+The captured experimental diff introduced launch modes equivalent to:
+
+```rust
+enum ManagedBrowserLaunchMode {
+    Visible,
+    Recovery,
+}
+```
+
+Recovery mode added:
+
+`--headless=new`
+
+Manual Connect/Reconnect remained visible.
+
+An experimental helper equivalent to this was added:
+
+`open_managed_browser_for_recovery(...)`
+
+A focused test verified that manual login did not use `--headless=new` while recovery did.
+
+That unit test does NOT mean restart recovery passed real E2E.
+
+### Real headless recovery observation
+
+After clearing the stale managed Chrome process, a recovery run successfully started a real headless Chrome.
+
+A real observed process contained:
+
+`--user-data-dir=/Users/russellchen/Library/Application Support/com.russellchen.aios/authenticated-browser/profiles/amazon-consumer`
+
+`--remote-debugging-port=0`
+
+`--remote-debugging-address=127.0.0.1`
+
+`--headless=new`
+
+`https://www.amazon.com`
+
+This proves the isolated headless launch shape can start.
+
+It does NOT prove the restart-recovery implementation is correct.
+
+### Amazon verifier observation
+
+During at least one clean headless recovery run, the verifier found a real Amazon page target.
+
+Observed:
+
+`provider_target=found`
+
+`origin=https://www.amazon.com`
+
+`origin_valid=true`
+
+but:
+
+`signal_present=false`
+
+`signed_in=false`
+
+The original Amazon probe required both an account title and a sign-out control before returning an authenticated account signal.
+
+The original selectors included:
+
+`#nav-link-accountList-nav-line-1`
+
+and sign-out evidence such as:
+
+`#nav-item-signout`
+
+or:
+
+`a[href*="/gp/flex/sign-out"]`
+
+The sign-out requirement may be brittle because Amazon sign-out UI may live in a menu/flyout that is not present in the initial DOM.
+
+### Experimental Amazon verifier changes
+
+During debugging, `src-tauri/src/browser/account_verifier.rs` was experimentally modified.
+
+Experiments included:
+
+- additional Amazon account-title selectors;
+- removal of mandatory sign-out evidence;
+- diagnostic booleans:
+  - `accountTitlePresent`
+  - `signInPresent`
+  - `signOutPresent`
+- `[browser-verifier]` diagnostic logging.
+
+Focused verifier unit tests passed:
+
+- every in-scope browser provider has a verifier;
+- only real provider pages are probed;
+- account marker remains irreversible/stable;
+- Amazon verification remains region-aware;
+- provider origin plus account signal are required;
+- sign-in prompts do not authenticate.
+
+Observed test result:
+
+`6 passed; 0 failed`
+
+These tests do NOT prove the experimental verifier is correct against the real Amazon headless DOM.
+
+Treat these verifier changes as unaccepted experiments until the new agent inspects real behavior.
+
+### Experimental connections.rs changes
+
+The captured experimental diff added a process-local recovery cache equivalent to:
+
+- `browser_recovery_cache()`
+- `set_browser_recovery_result()`
+- `browser_recovery_result()`
+- `clear_browser_recovery_result()`
+
+It also added a startup recovery routine equivalent to:
+
+`recover_authenticated_browser_connections(app)`
+
+The experimental routine:
+
+1. loaded saved browser profiles;
+2. skipped sessions that had never previously verified;
+3. used saved `verified_origin`;
+4. launched a recovery browser;
+5. retried live verification up to 20 times;
+6. stored a process-local Connected/Expired result;
+7. emitted `browser-connection://recovered`;
+8. closed the recovery browser after verification.
+
+This implementation is NOT accepted.
+
+### Experimental capability state
+
+The experimental `list_connection_capabilities()` was changed so it did not itself launch Chrome or perform CDP operations.
+
+Its browser state was derived from process-local recovery cache plus whether the saved session had previously verified.
+
+Conceptually:
+
+`Some(true) -> Connected`
+
+`Some(false) -> Expired`
+
+`no cache + previously verified -> Expired`
+
+`otherwise -> Disconnected`
+
+This was intended to keep capability listing side-effect-free.
+
+The final authoritative connection-state architecture is still unresolved.
+
+### Experimental frontend recovery event
+
+`src/components/ConnectionsCenter.tsx` was experimentally changed to listen for:
+
+`browser-connection://recovered`
+
+and update the provider state.
+
+A potential race was identified:
+
+initial capability list returns Expired
+→ background recovery emits Connected
+→ an older/slower Connections refresh finishes later
+→ stale Expired data can overwrite Connected
+
+Do not finalize frontend recovery propagation until backend state authority and event ordering are clear.
+
+### Experimental startup recovery
+
+`src-tauri/src/lib.rs` was experimentally modified inside Tauri setup to spawn:
+
+`connections::recover_authenticated_browser_connections(...)`
+
+on a background thread.
+
+This startup recovery thread is NOT accepted.
+
+### Shutdown lifecycle repair attempts
+
+After the stale managed Chrome/profile lock was identified, the next intended architecture was to add a lifecycle primitive equivalent to:
+
+`close_all_managed_browsers()`
+
+with this rule:
+
+AI-OS normal shutdown
+→ take only entries from AI-OS owned-process registry
+→ terminate each owned browser child
+→ wait/reap each child
+→ release Chrome profile ownership
+
+Attempts were then made to wire this into the Tauri application lifecycle.
+
+Those attempts were NOT successfully validated.
+
+Several generated patch scripts failed because their source anchors did not match the real `src-tauri/src/lib.rs`.
+
+A later structural modification was also reported as still not working.
+
+Therefore:
+
+- do not assume shutdown cleanup is correctly implemented;
+- do not assume `close_all_managed_browsers()` is correctly wired;
+- inspect the actual working tree before changing anything;
+- compile before making architectural assumptions.
+
+### Last real lib.rs ending supplied by user
+
+The real Tauri builder ending supplied during debugging was:
+
+```rust
+        memory::save_memory,
+        memory::list_memory,
+        memory::delete_memory,
+    ])
+    .run(tauri::generate_context!())
+    .expect("error while running Tauri application");
+}
+
+pub mod task_engine;
+```
+
+Any shutdown lifecycle solution must be implemented against the repository's actual current Tauri version and actual source.
+
+Do not guess the Tauri v2 RunEvent API.
+
+### Last captured browser-related working tree
+
+Before subsequent restore/shutdown attempts, the captured diff contained modifications in:
+
+- `src-tauri/src/browser/account_verifier.rs`
+- `src-tauri/src/browser/authenticated_runtime.rs`
+- `src-tauri/src/browser/devtools.rs`
+- `src-tauri/src/connections.rs`
+- `src-tauri/src/lib.rs`
+- `src/components/ConnectionsCenter.tsx`
+
+Subsequent restore/patch attempts may have partially changed this state.
+
+Therefore the CURRENT working tree must be treated as UNKNOWN until re-inspected.
+
+### Required first action for Claude Code
+
+Before modifying anything, run:
+
+```bash
+cd ~/AI-OS/dashboard
+git status --short
+git diff
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+Classify each Browser-related change as one of:
+
+- validated fix;
+- unaccepted experiment;
+- partial shutdown attempt;
+- unrelated existing work.
+
+Do NOT blindly restore all modified files because the dynamic DevTools Host-header correction is validated and must not be lost.
+
+### Required repair order
+
+Claude Code must NOT continue the previous pattern of adding one diagnostic or one selector at a time.
+
+Use this order.
+
+#### 1. Inspect current repository state
+
+Determine exactly what code is currently present.
+
+Do not trust the previous experimental patches without inspection.
+
+#### 2. Preserve the validated DevTools Host fix
+
+Retain:
+
+`Host: 127.0.0.1:<dynamic port>`
+
+unless current source/testing proves a better equivalent implementation is already present.
+
+#### 3. Re-establish stable BROWSER-A behavior
+
+Do not regress:
+
+- manual Amazon Connect;
+- owned profile isolation;
+- loopback DevTools;
+- owned-process-only termination;
+- safe metadata;
+- region-aware Amazon origin checks.
+
+#### 4. Solve managed-browser lifecycle first
+
+Implement a deterministic browser shutdown primitive.
+
+Required semantics for a function conceptually equivalent to `close_all_managed_browsers()`:
+
+- operate only on the private AI-OS owned-process registry;
+- safely remove/take owned process entries;
+- terminate each owned browser child;
+- wait/reap each child;
+- never scan for arbitrary Chrome processes;
+- never terminate unknown user browser processes.
+
+Wire this into the real Tauri v2 application lifecycle after inspecting the repository's actual Tauri version/API.
+
+Do NOT guess event variants.
+
+#### 5. Real lifecycle acceptance before restart recovery
+
+Required real E2E:
+
+1. Start AI-OS.
+2. Start an AI-OS-managed Amazon browser.
+3. Confirm managed Amazon Chrome processes exist.
+4. Quit AI-OS normally.
+5. Wait briefly.
+6. Confirm zero processes remain using `authenticated-browser/profiles/amazon-consumer`.
+7. Confirm no active Chrome Singleton ownership remains.
+8. Repeat at least three times.
+
+Do not use terminal Ctrl+C as the primary normal-shutdown acceptance path.
+
+A force-killed development shell is not equivalent to a normal Tauri application exit.
+
+#### 6. Rebuild restart recovery only after lifecycle acceptance
+
+Desired architecture:
+
+saved previously verified metadata
++
+AI-OS-owned persistent browser profile
+→ temporary AI-OS-owned recovery browser
+→ live provider verification
+→ Connected or Expired
+→ temporary recovery browser closes
+
+Requirements:
+
+- startup capability listing remains fast and side-effect-free;
+- persisted metadata alone never produces Connected;
+- profile existence alone never produces Connected;
+- browser launch alone never produces Connected;
+- live provider evidence is required;
+- normal restart recovery must not open a visible browser window;
+- explicit Connect/Reconnect remains visible;
+- only AI-OS-owned processes may be terminated;
+- recovery browser should close after verification unless execution explicitly needs an active session.
+
+#### 7. Re-evaluate Amazon account evidence only after runtime is deterministic
+
+Do not continue changing Amazon selectors while browser lifecycle/recovery launch remains unstable.
+
+Final Amazon verifier must remain fail-closed.
+
+Connected requires:
+
+valid Amazon HTTPS origin
++
+live signed-in-only account evidence
+
+The following alone must never be considered authentication:
+
+- profile exists;
+- browser launched;
+- Amazon URL opened;
+- previous Connected metadata exists;
+- cookie store exists.
+
+Do not expose actual account display names, cookies, credentials, or tokens in logs/frontend state.
+
+#### 8. Make backend connection state authoritative
+
+Resolve any race between:
+
+- startup capability list;
+- background recovery;
+- frontend refresh;
+- recovery event.
+
+Avoid this state regression:
+
+Expired
+→ recovery says Connected
+→ old refresh completes
+→ Expired again
+
+Choose one authoritative backend state path and test its ordering.
+
+### Required BROWSER-B acceptance criteria
+
+BROWSER-B must not be marked complete until all of the following pass real E2E.
+
+Manual Amazon Connect:
+
+visible AI-OS managed browser
+→ user logs in
+→ Connected
+
+Normal AI-OS shutdown:
+
+all AI-OS-owned browser processes terminate
+→ profile ownership released
+
+Restart AI-OS:
+
+no visible Amazon browser
+→ temporary managed recovery browser
+→ live Amazon verification
+→ Connected when the real session remains authenticated
+
+Logged-out/expired case:
+
+live verification fails closed
+→ Expired
+→ never fabricates Connected
+
+Disconnect:
+
+AI-OS-owned browser closes
+→ managed profile/connection state removed according to product semantics
+
+User normal Chrome:
+
+never killed
+never modified
+never adopted into AI-OS ownership
+
+### Scope reminder
+
+BROWSER-B remains incomplete.
+
+Do not increase P15 completion status because of this Browser Recovery work.
+
+Do not change unrelated P15 capability status while resolving this incident.
+
+### Handoff instruction
+
+Claude Code now owns diagnosis and repair of this BROWSER-B incident.
+
+Priority order:
+
+1. Inspect actual current diff.
+2. Preserve validated DevTools Host fix.
+3. Stabilize owned-browser shutdown lifecycle.
+4. Prove lifecycle with real E2E.
+5. Rebuild restart recovery cleanly.
+6. Verify Amazon live account evidence.
+7. Stabilize backend/frontend state propagation.
+8. Run full real E2E.
+9. Only then update BROWSER-B completion status.
+
+
+---
+
+## BROWSER-B Lifecycle Repair — 2026-08-30
+
+**Status: lifecycle defect diagnosed and repaired in code. NOT accepted.**
+**Restart recovery is still not implemented. BROWSER-B remains incomplete.**
+**Do not increase the P15 completion count because of this work.**
+
+### Working tree as actually found
+
+The incident handoff said to treat the tree as unknown. It was inspected first.
+It was much cleaner than feared — the unaccepted experiments had already been
+rolled back. `HEAD` was `a1ea005`, branch `feature/p15-core-skills`, and only
+four files were modified:
+
+| File | Classification |
+| --- | --- |
+| `src-tauri/src/browser/devtools.rs` | **validated fix** — the dynamic `Host: 127.0.0.1:{port}` header. Preserved unchanged. |
+| `src-tauri/src/browser/authenticated_runtime.rs` | partial shutdown attempt — `close_all_managed_browsers()` existed with correct registry-only ownership. |
+| `src-tauri/src/lib.rs` | partial shutdown attempt — `build()` + `app.run()` wired to `RunEvent::Exit` only. |
+| `HANDOFF.md` | the incident handoff itself. |
+
+Not modified, i.e. the unaccepted experiments were **already gone**:
+`account_verifier.rs`, `connections.rs`, `ConnectionsCenter.tsx`. There is no
+recovery cache, no startup recovery thread, no `browser-connection://recovered`
+event and no experimental Amazon selector change in the tree. Nothing had to be
+reverted.
+
+`src-tauri/target/debug/dashboard` was built at 06:17 from the current
+`lib.rs` (06:17:27), so the shutdown wiring **did compile**. The failure was
+behavioural, not a build error.
+
+### Root cause
+
+Four distinct defects, not one. The first two explain the orphaned Chrome; the
+last two explain the `stage=launch` stall that was misread as an Amazon session
+problem.
+
+**1. Termination was `SIGKILL` only.** `close_managed_browser` and
+`close_all_managed_browsers` went straight to `child.kill()`. A killed Chromium
+never runs its shutdown path, so it never releases the profile's `SingletonLock`
+/ `SingletonSocket` / `SingletonCookie`. This is exactly the "active Chrome
+Singleton ownership state" observed on the profile.
+
+**2. Only `RunEvent::Exit` was wired.** Confirmed against the real API for this
+repository's Tauri (`tauri 2.11.5`, `tauri-runtime 2.11.3`) rather than guessed:
+`RunEvent` is `#[non_exhaustive]`; `ExitRequested { code, api, .. }` is itself a
+non-exhaustive struct variant; `Exit` is a unit variant;
+`App::run<F: FnMut(&AppHandle<R>, RunEvent) + 'static>(self, callback: F)`.
+`Exit` alone does not cover every shutdown path.
+
+**3. The launch deleted its only evidence of an existing owner.**
+`open_managed_browser` removed `DevToolsActivePort` *before* spawning. If a
+previous managed Chrome still held the profile, that deleted the one file that
+proved it.
+
+**4. A handed-off launch was invisible.** With the profile still owned,
+Chromium hands the URL to the surviving instance and the spawned process exits
+within about a second. `wait_until_ready` never looked at the child, so it
+polled for a port file that nothing would ever write, blocked the full 25 second
+readiness timeout, and returned a generic "did not become ready". That is the
+`stage=launch` stall. The Amazon session was never the problem here.
+
+### Repair
+
+`authenticated_runtime.rs`:
+
+- `terminate_owned_process` — asks the browser to close over the loopback
+  DevTools channel AI-OS already owns for that process (`Browser.close`), waits
+  up to 5s for the owned child to exit, and only then falls back to
+  `kill()` + `wait()`. Graceful exit is what releases the Singleton lock;
+  the kill fallback keeps shutdown from hanging. Chromium often drops the socket
+  before answering, so the reply is not treated as evidence — the process
+  exiting is;
+- `close_managed_browser` and `close_all_managed_browsers` both route through
+  it, and both take entries out of the registry **before** releasing the lock
+  and terminating, so a close never blocks other registry callers;
+- `drain_owned_processes` empties the registry in one pass, making a second
+  shutdown event a no-op instead of double work;
+- `profile_is_owned_by_live_browser` — before launching, check whether the
+  profile's DevTools port still answers. If it does, a browser owns the profile
+  that is **not** in the owned registry. It is neither AI-OS's to terminate nor
+  to adopt, so the launch is refused with a message naming the real condition
+  instead of silently fighting it;
+- the stale `DevToolsActivePort` is now removed only after that check proves
+  nothing answers;
+- `wait_until_ready` takes the owned child and stops the moment it exits, via a
+  pure `readiness_progress(answered_port, owned_process_exited)` decision. A
+  handed-off launch now fails in about a second with a message that says another
+  browser instance is probably still using the profile;
+- `profile_reused` no longer keys off `DevToolsActivePort` (which the launch
+  path mutates); it keys off the profile's `Default` directory.
+
+`lib.rs` — shutdown now runs on `RunEvent::ExitRequested` **and**
+`RunEvent::Exit`, with the `_ => {}` arm the non-exhaustive enum requires.
+
+### Ownership boundary held
+
+Unchanged and now asserted by the verifier: only entries in the private
+owned-process registry are ever terminated; no process scanning of any kind
+(`pkill`/`killall`/`pgrep` are statically rejected); unknown browsers are never
+adopted; the user's normal Chrome profile is never touched; DevTools stays
+loopback-only; no credential, cookie, token, raw profile path or control port
+leaves the runtime.
+
+### Verification performed
+
+- Whole `browser` module compiled clean in an isolated harness against the real
+  `tungstenite 0.27` and `sha2 0.10` — **20 tests passed** (17 previous plus 3
+  new).
+- New behaviour tests: `shutdown_drains_the_owned_registry_and_repeats_safely`,
+  `readiness_stops_as_soon_as_the_owned_browser_exits`,
+  `a_live_profile_owner_is_recognised_from_the_published_port`.
+- `verify/verify_p15_browser_managed_runtime.sh` gained lifecycle invariants:
+  shutdown primitive exists; it is wired to both lifecycle events; the graceful
+  close provably precedes the kill inside `terminate_owned_process`; no process
+  scanning; the stale-owner guard exists. Its static half was run and passes.
+- The Tauri lifecycle API was read from the docs for the exact pinned version,
+  not guessed.
+
+### Not done, deliberately
+
+- **Restart recovery is still not implemented.** Per the incident handoff's own
+  repair order, lifecycle acceptance comes first. Nothing was rebuilt on top of
+  an unproven lifecycle.
+- **The Amazon verifier was not touched.** Step 7 of the repair order says not
+  to change selectors while the runtime is unstable. `account_verifier.rs` is
+  byte-identical to `a1ea005`.
+- **`SIGKILL` on AI-OS itself still orphans the browser.** Ctrl+C on a dev shell
+  sends a signal no process can trap into an already-dead parent; a force-killed
+  shell is not a normal exit. This is why the acceptance path below uses a real
+  application quit.
+
+### Required real E2E before this repair is accepted
+
+Run on the Mac, from `~/AI-OS/dashboard`:
+
+```bash
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml browser:: connections::
+bash verify/verify_p15_browser_managed_runtime.sh
+bash verify/verify_p15_browser_account_verification.sh
+bash verify/verify_p15_connections_onboarding.sh
+npm run build
+```
+
+Then the lifecycle acceptance loop, three times, using a **normal application
+quit** (Cmd+Q or closing the window), never Ctrl+C on the dev shell:
+
+1. Start AI-OS.
+2. Connect Amazon so a managed browser is running.
+3. `ps aux | grep 'authenticated-browser/profiles/amazon-consumer' | grep -v grep`
+   — expect the managed Chrome.
+4. Quit AI-OS normally, wait a few seconds.
+5. Same `ps` — expect **no** output.
+6. `ls ~/Library/Application\ Support/com.russellchen.aios/authenticated-browser/profiles/amazon-consumer/ | grep -i singleton`
+   — expect **no** active Singleton entries.
+7. Start AI-OS and Connect Amazon again — it must open, not stall.
+
+If step 5 or 6 still shows a survivor, capture the surviving PID's full command
+line before killing it; that distinguishes "our child outlived us" from "a
+helper process was re-parented", which need different fixes.
+
+### Next step
+
+Only after that loop passes three times: rebuild restart recovery per section
+6 of the incident handoff (headless recovery browser, live verification,
+`Connected`/`Expired`, one authoritative backend state path), then re-evaluate
+the Amazon account evidence.

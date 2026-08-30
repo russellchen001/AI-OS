@@ -40,6 +40,42 @@ grep -q "www.amazon.com\"" src-tauri/src/browser/authenticated_runtime.rs \
 grep -q "www.amazon.co.jp" src-tauri/src/browser/authenticated_runtime.rs \
   || fail "Amazon region handling must accept more than one regional origin"
 
+# --- managed browser shutdown lifecycle ---------------------------------
+
+grep -q "fn close_all_managed_browsers" src-tauri/src/browser/authenticated_runtime.rs \
+  || fail "there is no shutdown primitive for AI-OS-owned browsers"
+
+grep -q "close_all_managed_browsers" src-tauri/src/lib.rs \
+  || fail "managed browser shutdown is not wired into the application lifecycle"
+
+for lifecycle_event in "RunEvent::ExitRequested" "RunEvent::Exit"; do
+  grep -q "$lifecycle_event" src-tauri/src/lib.rs \
+    || fail "shutdown is not wired to $lifecycle_event"
+done
+
+# A killed Chromium never releases its profile Singleton lock, so the browser
+# must be asked to close before it is killed.
+terminate_body="$(awk '/fn terminate_owned_process/,/^}/' src-tauri/src/browser/authenticated_runtime.rs)"
+graceful_line="$(printf '%s\n' "$terminate_body" | grep -n 'Browser.close' | head -1 | cut -d: -f1)"
+kill_line="$(printf '%s\n' "$terminate_body" | grep -n 'child.kill()' | head -1 | cut -d: -f1)"
+if [[ -z "$graceful_line" || -z "$kill_line" ]]; then
+  fail "managed browser termination has no graceful close followed by a kill fallback"
+fi
+if [[ "$graceful_line" -ge "$kill_line" ]]; then
+  fail "the managed browser must be asked to close before it is killed"
+fi
+
+# Ownership boundary: AI-OS must never hunt for browser processes.
+for scan in "pkill" "killall" "pgrep"; do
+  if grep -n "$scan" src-tauri/src/browser/*.rs >/dev/null 2>&1; then
+    fail "the runtime must never scan for or kill processes it does not own: $scan"
+  fi
+done
+
+# A profile another browser still owns is refused, never adopted or killed.
+grep -q "fn profile_is_owned_by_live_browser" src-tauri/src/browser/authenticated_runtime.rs \
+  || fail "a profile still owned by a live browser is not detected before launch"
+
 output="$(cargo test --manifest-path src-tauri/Cargo.toml browser::authenticated_runtime::tests -- --nocapture 2>&1)"
 status=$?
 
@@ -58,6 +94,9 @@ required_tests=(
   "launch_arguments_pin_the_managed_profile_and_a_loopback_debug_channel"
   "only_ai_os_owned_processes_are_ever_selected_for_termination"
   "amazon_is_region_aware_and_origin_validation_is_fail_closed"
+  "shutdown_drains_the_owned_registry_and_repeats_safely"
+  "readiness_stops_as_soon_as_the_owned_browser_exits"
+  "a_live_profile_owner_is_recognised_from_the_published_port"
 )
 
 for test_name in "${required_tests[@]}"; do
@@ -77,6 +116,12 @@ echo "✓ readiness requires a real answer from the managed browser"
 echo "✓ launch arguments pin the managed profile and a loopback debug address"
 echo "✓ only AI-OS-owned browser processes can be terminated"
 echo "✓ opening, running or reusing a managed profile never equals authenticated"
+echo "✓ shutdown is wired to the real application lifecycle"
+echo "✓ an owned browser is asked to close before it is killed"
+echo "✓ shutdown drains the owned registry and repeats safely"
+echo "✓ the runtime never scans for browser processes it does not own"
+echo "✓ a profile a live browser still owns is refused, never adopted"
+echo "✓ a handed-off launch fails fast instead of waiting out readiness"
 echo "✓ Amazon is region aware and is not pinned to amazon.com.au"
 echo "✓ provider/origin validation is fail-closed"
 echo "PASS $name"
