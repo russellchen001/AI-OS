@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Privacy policy for the AI-OS eBay integration."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>AI-OS Privacy Policy</title>
+    <style>
+      :root {
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        color: #172033;
+        background: #f4f6fb;
+        line-height: 1.65;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        width: min(760px, calc(100% - 40px));
+        margin: 48px auto;
+        padding: clamp(28px, 6vw, 64px);
+        box-sizing: border-box;
+        border: 1px solid #dfe4ee;
+        border-radius: 20px;
+        background: #ffffff;
+        box-shadow: 0 18px 50px rgb(37 53 84 / 8%);
+      }
+
+      h1,
+      h2 {
+        color: #101828;
+        line-height: 1.25;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(2rem, 7vw, 3rem);
+        letter-spacing: -0.04em;
+      }
+
+      h2 {
+        margin: 36px 0 10px;
+        font-size: 1.2rem;
+      }
+
+      p,
+      ul {
+        margin: 10px 0;
+      }
+
+      .effective-date {
+        margin-bottom: 34px;
+        color: #526077;
+      }
+
+      .notice {
+        padding: 16px 18px;
+        border-left: 4px solid #356ae6;
+        border-radius: 8px;
+        background: #eef4ff;
+      }
+
+      a {
+        color: #2457c5;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color: #d5dbea;
+          background: #0d1320;
+        }
+
+        main {
+          border-color: #29344a;
+          background: #151d2d;
+          box-shadow: none;
+        }
+
+        h1,
+        h2 {
+          color: #f4f7ff;
+        }
+
+        .effective-date {
+          color: #a9b4ca;
+        }
+
+        .notice {
+          background: #182a50;
+        }
+
+        a {
+          color: #91b4ff;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>AI-OS Privacy Policy</h1>
+        <p class="effective-date"><strong>Effective date:</strong> August 30, 2026</p>
+      </header>
+
+      <p>
+        This policy describes how AI-OS handles information when a user chooses
+        to connect an eBay account. It applies to the current AI-OS eBay
+        integration.
+      </p>
+
+      <h2>What data AI-OS accesses</h2>
+      <p>
+        AI-OS uses eBay's official OAuth authorization flow and official APIs.
+        Depending on the capabilities and scopes approved by eBay and granted by
+        the user, AI-OS may request marketplace information needed for the
+        action the user initiates, such as item discovery or other approved Buy
+        API operations. AI-OS does not request access to unrelated eBay data.
+      </p>
+
+      <h2>How authentication works</h2>
+      <p>
+        Sign-in and authorization take place on eBay's official website. AI-OS
+        does not ask for, receive, or store the user's eBay password. eBay
+        returns OAuth access and refresh tokens after authorization. These tokens
+        are treated as sensitive credentials and are stored only in the secure,
+        encrypted credential storage used by the AI-OS connection service. They
+        must not be placed in source code, git history, ordinary logs, or public
+        pages.
+      </p>
+
+      <h2>Data storage and retention</h2>
+      <p>
+        The current integration calls eBay APIs as needed to complete a
+        user-requested action. AI-OS does not currently maintain a persistent,
+        long-term copy of eBay marketplace user data. OAuth credentials are kept
+        only as required to maintain the authorized connection and are handled
+        separately from marketplace data.
+      </p>
+
+      <h2>eBay data handling</h2>
+      <p>
+        Data returned by eBay is used only to provide the requested AI-OS
+        capability and is not sold. The current no-long-term-copy design is the
+        basis for AI-OS's Marketplace Account Deletion exemption. If AI-OS later
+        begins persistently storing eBay user, order, transaction, or other
+        marketplace data, this policy must be updated and the product must
+        reassess its obligations for eBay Marketplace Account Deletion
+        notifications before that change is released.
+      </p>
+
+      <h2>Revoking access</h2>
+      <p>
+        A user can disconnect eBay in AI-OS to delete the connection credentials
+        held by the AI-OS connection service. A user can also revoke AI-OS access
+        from the authorization settings in their eBay account. Revoking access
+        may prevent eBay-connected features from working until the account is
+        authorized again.
+      </p>
+
+      <h2>Changes to this policy</h2>
+      <p>
+        This policy may be updated when the AI-OS eBay integration or its data
+        practices change. The effective date at the top of this page will be
+        revised when an update is published.
+      </p>
+
+      <h2>Contact</h2>
+      <p class="notice">
+        Privacy questions about AI-OS and its eBay integration can be sent to
+        <a href="mailto:aios.privacy@gmail.com">aios.privacy@gmail.com</a>.
+      </p>
+    </main>
+  </body>
+</html>
