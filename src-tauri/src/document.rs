@@ -1,6 +1,7 @@
 pub(crate) mod keynote;
 pub(crate) mod provider;
 pub(crate) mod registry;
+pub(crate) mod resolver;
 
 use serde::{Deserialize, Serialize};
 

@@ -380,6 +380,10 @@ Deterministic Automation → Computer Use
 
 Office is **In Progress**. The 2026-08-31 closure validated capability categories but did not satisfy required provider coverage. Provider-neutral `presentation.read` and `presentation.create` currently route local `.key` files through deterministic Keynote automation and retain Google Workspace as the cloud presentation provider, but Word, PowerPoint, executable Pages/Numbers workflows, WPS automation coverage, common edit/export/chart operations, format-aware resolution, and realistic cross-provider workflows still require implementation and acceptance. OAuth, SystemPermission, AuthenticatedSession, and UserConfirmation remain separate.
 
+Current executable inventory (2026-09-01): generic macOS `textutil` provides bounded DOC/DOCX read/create/convert; Microsoft Excel provides real XLS/XLSX read/create; Apple Keynote provides real `.key` read/create; Google Workspace provides official API Docs/Sheets/Slides read/create plus Sheets write/read-back. Pages and Numbers currently have only installation/Automation probes, Word and PowerPoint have only Provider declarations, and WPS is not installed and has no accepted deterministic adapter. Registry declarations and availability probes are not executable evidence.
+
+Technical decision: the Office common capability layer resolves an `OfficeRouteRequest` by concrete application, capability, resource location, file format, installed/authorized state, executable-adapter state, Local First policy, native/import compatibility, and explicit user preference. Cloud resource identifiers can route only to Google Workspace; local paths can route only to local executable adapters. Native format compatibility outranks generic suite priority, and import routes return a fidelity warning. The legacy aggregate `OfficeProvider` description remains temporarily for compatibility but is not completion evidence.
+
 ### P15 Unified Connections & Account Onboarding — decided 2026-08-29
 
 #### Consumer Account Connection Friction Rule — decided 2026-08-31
