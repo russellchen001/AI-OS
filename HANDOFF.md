@@ -365,7 +365,7 @@ Deterministic Automation → Computer Use
 - Amazon Consumer: Product Advertising API is limited to product advertising; no official ordinary-buyer account/cart/checkout/order API is registered. Authenticated Browser is required for those consumer actions. Selling Partner API must not be used as a buyer API.
 - Taobao / JD / Pinduoduo Consumer: their open platforms are merchant/service-provider oriented or approval-limited; AI-OS has no approved ordinary-consumer cart/checkout/order API credential. Authenticated Browser is the declared fallback and must verify the signed-in account before authenticated evidence.
 - Commerce capability facts were reviewed against official platform documentation on 2026-08-29. Unsupported official consumer APIs are an accurate boundary, not a failed E2E.
-- P15 progress is **6 of 11 complete**. The combined Document, Spreadsheet, and Presentation capability area is complete.
+- P15 progress is **5 of 11 complete**. The combined Document, Spreadsheet, and Presentation capability area remains in progress under the corrected provider-coverage acceptance rule.
 
 ### P15 Office Provider matrix — 2026-08-29
 
@@ -378,7 +378,7 @@ Deterministic Automation → Computer Use
 | Local Structured | Implemented | Implemented foundation | Unsupported | Foundation/local fallback |
 | Native Microsoft Office | Implemented | Implemented, real E2E | Not expanded in this milestone | Excel E2E PASS; PowerPoint intentionally out of scope |
 
-Office is **Complete**. Provider-neutral `presentation.read` and `presentation.create` route local `.key` files through deterministic Keynote automation and retain Google Workspace as the cloud presentation provider. Keynote create performs mandatory read-back validation, refuses overwrite, compares resolved file aliases so `/var` and `/private/var` identify the same open document, closes only documents opened by AI-OS, and never quits Keynote. Google Slides read/create and real external OAuth E2E remain PASS. OAuth, SystemPermission, AuthenticatedSession, and UserConfirmation remain separate; presentation create requires one-time user confirmation. PowerPoint and WPS presentation expansion remain outside this completed milestone.
+Office is **In Progress**. The 2026-08-31 closure validated capability categories but did not satisfy required provider coverage. Provider-neutral `presentation.read` and `presentation.create` currently route local `.key` files through deterministic Keynote automation and retain Google Workspace as the cloud presentation provider, but Word, PowerPoint, executable Pages/Numbers workflows, WPS automation coverage, common edit/export/chart operations, format-aware resolution, and realistic cross-provider workflows still require implementation and acceptance. OAuth, SystemPermission, AuthenticatedSession, and UserConfirmation remain separate.
 
 ### P15 Unified Connections & Account Onboarding — decided 2026-08-29
 
@@ -435,7 +435,7 @@ HANDOFF, including deferred and replacement capabilities.
 | 10 | Local generative media | Not started | — |
 | 11 | Cognitive distillation foundation | Not started | — |
 
-**6 of 11 complete.**
+**5 of 11 complete.**
 
 ### Historical remaining P15 order — decided 2026-08-23, superseded 2026-08-28
 
@@ -765,7 +765,7 @@ Calendar has no equivalent question: EventKit is the correct supported interface
 | HEAD | P15 Office workflows complete — native iWork and Google Workspace real E2E verified |
 | Latest tag | `p13-m5-complete` |
 | Baseline state | Working tree was clean at the stable baseline before this handoff update |
-| Active phase | P15 Core Skills — 6 of 11 complete; Office is complete. Next: Computer Control v1, then Vehicle Control v1. |
+| Active phase | P15 Core Skills — 5 of 11 complete; Office provider-neutral coverage correction and implementation are active. |
 
 ---
 
@@ -1144,6 +1144,7 @@ Constraints carried into the migration:
 
 <!-- ./done.sh appends here automatically -->
 
+- 2026-09-01  Office acceptance correction: the previous closure validated capability categories but did not satisfy required provider coverage. Office is restored to In Progress and P15 to 5 of 11 until the common Document/Spreadsheet/Presentation layer, format-aware local/cloud resolver, Microsoft Word/Excel/PowerPoint adapters, executable Pages/Numbers/Keynote adapters, WPS automation investigation and deterministic coverage, Google Docs/Sheets/Slides fallback coverage, and realistic workflows meet the current completion rule. The 2026-08-31 implementation and E2E evidence remain valid historical evidence and are not deleted.
 - 2026-08-31  P15 Office workflows completed. Document read/create/convert and Spreadsheet read/create remain PASS; Pages, Numbers, and Keynote 15.3.1 real E2E PASS. Provider-neutral Presentation now routes local `.key` read/create through deterministic Keynote automation with one-time create confirmation, mandatory read-back validation, no-overwrite, resolved file-alias ownership checks, and no application quit; an already-open document remains user-owned. Google Workspace remains the cloud provider with real Slides E2E PASS. PowerPoint and WPS were not expanded. P15 is 6 of 11 complete; next is Computer Control v1, then Vehicle Control v1.
 - 2026-08-31  macOS Keychain prompt strategy corrected: the prior cache-only build failed real E2E with 4–5 prompts because startup eagerly touched several of six distinct Provider Keychain accounts under a rebuild-specific ad-hoc identity. Provider secrets are now lazy-loaded only for real operations, cached per account/process, and safely traceable behind `AI_OS_KEYCHAIN_TRACE=1`; normal startup/My AI/Connections/passive status use non-secret metadata and target zero reads. The unused local-signing experiment was removed. Stable Apple signing is a PRE-RELEASE REQUIREMENT, not a P15 dev prerequisite. Deterministic acceptance passed; one final real Mac E2E remains pending and no commit was made.
 - 2026-08-31  macOS Keychain lazy credential loading real E2E PASS: newly rebuilt startup, My AI, and Connections produced zero prompts; first real use of one new Provider produced one prompt; repeated use and restart without rebuild produced zero prompts. The first Microsoft/Google metadata regression fix restored both to Connected but incorrectly read both OAuth secure items at startup, causing two Keychain prompts; that OAuth recovery attempt therefore failed real UX acceptance. The same run observed Taobao fall to Reconnect after its earlier restart E2E PASS. Startup OAuth reads were removed, persisted Connected metadata is retained until real invalidation evidence, and Connections now establishes the Browser recovery listener before its first snapshot and prevents stale per-provider snapshots from overwriting newer backend recovery. Deterministic Provider, Connections, Microsoft, Google, Browser, frontend, Keychain, and External Connector acceptance passed; final combined real E2E is pending. No commit was made.
