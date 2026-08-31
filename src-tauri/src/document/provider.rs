@@ -49,7 +49,7 @@ impl OfficeProvider {
                     ResourceLocation::Local,
                     None,
                 ),
-                OfficeProviderId::MicrosoftOffice => (
+                OfficeProviderId::MicrosoftOffice | OfficeProviderId::AppleIwork => (
                     ProviderInterfaceKind::DeterministicAutomation,
                     AuthorizationKind::SystemPermission,
                     AuthorizationState::Connected,

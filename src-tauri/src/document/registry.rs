@@ -75,9 +75,9 @@ pub(crate) fn office_providers() -> Vec<OfficeProvider> {
             local: true,
             priority: 20,
             capabilities: ALL_OFFICE_CAPABILITIES,
-            available: app_exists("/Applications/Pages.app")
-                || app_exists("/Applications/Numbers.app")
-                || app_exists("/Applications/Keynote.app"),
+            available: crate::connections::local_application_installed("pages")
+                || crate::connections::local_application_installed("numbers")
+                || crate::connections::local_application_installed("keynote"),
         },
         OfficeProvider {
             id: OfficeProviderId::WpsOffice,
@@ -106,6 +106,32 @@ pub(crate) fn resolve_office_provider(capability: &str) -> Option<OfficeProvider
         .into_iter()
         .filter(|provider| provider.available && provider.supports(capability))
         .min_by_key(|provider| provider.priority)
+}
+
+pub(crate) fn resolve_local_presentation_provider(capability: &str) -> Option<OfficeProvider> {
+    if !matches!(capability, "presentation.read" | "presentation.create") {
+        return None;
+    }
+
+    office_providers().into_iter().find(|provider| {
+        provider.id == OfficeProviderId::AppleIwork
+            && provider.available
+            && provider.supports(capability)
+            && crate::connections::local_application_installed("keynote")
+    })
+}
+
+pub(crate) fn resolve_cloud_presentation_provider(capability: &str) -> Option<OfficeProvider> {
+    if !matches!(capability, "presentation.read" | "presentation.create") {
+        return None;
+    }
+
+    office_providers().into_iter().find(|provider| {
+        provider.id == OfficeProviderId::GoogleWorkspace
+            && provider.available
+            && provider.supports(capability)
+            && !provider.local
+    })
 }
 
 #[cfg(test)]
@@ -168,6 +194,63 @@ mod tests {
             excel.session_ownership,
             Some(SessionOwnership::ExternallyOwned)
         );
+    }
+
+    #[test]
+    fn apple_iwork_metadata_is_local_external_deterministic_automation() {
+        let metadata = office_providers()
+            .into_iter()
+            .find(|provider| provider.id == OfficeProviderId::AppleIwork)
+            .unwrap()
+            .selection_metadata();
+
+        assert_eq!(
+            metadata.interface_kind,
+            ProviderInterfaceKind::DeterministicAutomation
+        );
+        assert_eq!(
+            metadata.authorization_kind,
+            AuthorizationKind::SystemPermission
+        );
+        assert_eq!(metadata.authorization_state, AuthorizationState::Connected);
+        assert_eq!(
+            metadata.resource_location,
+            crate::provider_selection::ResourceLocation::Local
+        );
+        assert_eq!(
+            metadata.session_ownership,
+            Some(SessionOwnership::ExternallyOwned)
+        );
+    }
+
+    #[test]
+    fn presentation_resolvers_preserve_local_and_cloud_boundaries() {
+        let providers = office_providers();
+        let apple = providers
+            .iter()
+            .find(|provider| provider.id == OfficeProviderId::AppleIwork)
+            .unwrap();
+        let google = providers
+            .iter()
+            .find(|provider| provider.id == OfficeProviderId::GoogleWorkspace)
+            .unwrap();
+
+        assert!(apple.local);
+        assert!(!google.local);
+
+        if let Some(local) = resolve_local_presentation_provider("presentation.read") {
+            assert!(local.local);
+            assert_eq!(local.id, OfficeProviderId::AppleIwork);
+        }
+        if let Some(cloud) = resolve_cloud_presentation_provider("presentation.create") {
+            assert!(!cloud.local);
+            assert_eq!(cloud.id, OfficeProviderId::GoogleWorkspace);
+        }
+
+        assert!(resolve_local_presentation_provider("document.read").is_none());
+        assert!(resolve_cloud_presentation_provider("spreadsheet.read").is_none());
+        assert!(resolve_local_presentation_provider("unknown.capability").is_none());
+        assert!(resolve_cloud_presentation_provider("unknown.capability").is_none());
     }
 
     #[test]

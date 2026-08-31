@@ -357,7 +357,7 @@ Deterministic Automation → Computer Use
 - Microsoft Graph executable scope: `/me`, drive discovery, XLSX discovery, workbook session creation, used-range/range read, explicit-range write, and mandatory Graph read-back validation. Graph resources use only drive/item/worksheet/range references; local XLS/XLSX never route to Graph.
 - Google Workspace Official API/OAuth integration is **Implemented; real E2E PASS on 2026-08-29.** The verified path covers OAuth/PKCE, macOS Keychain authorization, real Google identity, Drive listing, Docs create/read-back, Sheets create/write/read-back, Slides create/read-back, and automatic deletion of dedicated E2E resources. Sheets reads use `UNFORMATTED_VALUE` so numeric and boolean values retain structured API types.
 - WPS is **Backend Broker Required**, not Connected or Completed. A confidential WPS APPKEY must remain server-side; it is forbidden in the desktop binary, Planner, Memory, Evidence, logs, or frontend storage. No browser fallback may be labelled WPS Official API.
-- Apple iWork was **App Not Installed** on the 2026-08-29 acceptance machine. Connections now rescans Pages, Numbers, and Keynote independently at runtime and reports partial installation accurately; Native real E2E remains SKIP until an application is installed. Native sessions remain externally owned and AI-OS must never quit a user-owned app.
+- Apple iWork native automation is **Implemented; real E2E PASS on 2026-08-31** for Pages, Numbers, and Keynote 15.3.1. Connections rescans each application independently at runtime and reports partial installation accurately. Native sessions remain externally owned; reads close only documents opened by AI-OS and never quit a user-owned application.
 - Disconnect is local: My AI removes the Keychain credential and local authorization mapping. AI-OS does not claim a remote Microsoft revoke when the public-client flow provides none.
 - Browser authenticated sessions: lifecycle/evidence contract and persistent opaque profile metadata are implemented. Profile metadata is stored atomically in the app-data directory and contains no cookies, passwords, or bearer tokens. Authentication still requires a verified account marker on an HTTPS platform origin; a public page is never authenticated. No browser runtime with a safely callable account-state detector is currently connected, so real session E2E remains SKIP on user login/profile handoff rather than fabricating Connected.
 - Consumer eBay is a built-in **Authenticated Browser** provider. Its main Connections row uses the same AI-OS-owned managed browser runtime as Amazon, Taobao, JD, and Pinduoduo; it does not expose eBay developer credentials, RuName, scopes, callback, or Broker configuration. The official OAuth/API connector remains an isolated deferred prototype for future structured seller/enterprise capabilities and is not the P15 consumer shopping connection path.
@@ -365,7 +365,7 @@ Deterministic Automation → Computer Use
 - Amazon Consumer: Product Advertising API is limited to product advertising; no official ordinary-buyer account/cart/checkout/order API is registered. Authenticated Browser is required for those consumer actions. Selling Partner API must not be used as a buyer API.
 - Taobao / JD / Pinduoduo Consumer: their open platforms are merchant/service-provider oriented or approval-limited; AI-OS has no approved ordinary-consumer cart/checkout/order API credential. Authenticated Browser is the declared fallback and must verify the signed-in account before authenticated evidence.
 - Commerce capability facts were reviewed against official platform documentation on 2026-08-29. Unsupported official consumer APIs are an accurate boundary, not a failed E2E.
-- P15 progress remains **5 of 11 complete** because Presentation and the complete Office capability area remain unfinished.
+- P15 progress is **6 of 11 complete**. The combined Document, Spreadsheet, and Presentation capability area is complete.
 
 ### P15 Office Provider matrix — 2026-08-29
 
@@ -374,11 +374,11 @@ Deterministic Automation → Computer Use
 | Microsoft Graph | Implemented, OAuth | Implemented, OAuth | Unsupported in current adapter | SKIP — user app registration/consent |
 | Google Workspace | Implemented, OAuth | Implemented, OAuth | Implemented, OAuth | **PASS — real identity + Drive + Docs + Sheets + Slides E2E, 2026-08-29** |
 | WPS | Backend-broker contract | Backend-broker contract | Backend-broker contract | SKIP — server APPKEY provisioning |
-| Apple iWork | Native Pages provider declared | Native Numbers provider declared | Native Keynote provider declared | SKIP — apps not installed |
+| Apple iWork | Native Pages implemented | Native Numbers implemented | Native Keynote read/create implemented | **PASS — Pages + Numbers + Keynote real E2E, 2026-08-31** |
 | Local Structured | Implemented | Implemented foundation | Unsupported | Foundation/local fallback |
-| Native Microsoft Office | Implemented | Implemented, real E2E | Provider declared; read/create unfinished | Excel E2E PASS; Presentation incomplete |
+| Native Microsoft Office | Implemented | Implemented, real E2E | Not expanded in this milestone | Excel E2E PASS; PowerPoint intentionally out of scope |
 
-Presentation remains **In progress**. Google Slides read/create and real Google external OAuth E2E now pass; Keynote cannot run because the app is not installed, and the provider-neutral Presentation runtime acceptance is not complete.
+Office is **Complete**. Provider-neutral `presentation.read` and `presentation.create` route local `.key` files through deterministic Keynote automation and retain Google Workspace as the cloud presentation provider. Keynote create performs mandatory read-back validation, refuses overwrite, compares resolved file aliases so `/var` and `/private/var` identify the same open document, closes only documents opened by AI-OS, and never quits Keynote. Google Slides read/create and real external OAuth E2E remain PASS. OAuth, SystemPermission, AuthenticatedSession, and UserConfirmation remain separate; presentation create requires one-time user confirmation. PowerPoint and WPS presentation expansion remain outside this completed milestone.
 
 ### P15 Unified Connections & Account Onboarding — decided 2026-08-29
 
@@ -429,13 +429,13 @@ HANDOFF, including deferred and replacement capabilities.
 | 4 | Local model management | Done | `verify_p15_local_model_*` |
 | 5 | Email and calendar | Done | `verify_p15_email_calendar_*` |
 | 6 | NAS management | Not started | — |
-| 7 | Document, spreadsheet, presentation | In progress | `verify_p15_document_*`, `verify_p15_spreadsheet_*`, `verify_p15_office_provider_registry` |
+| 7 | Document, spreadsheet, presentation | Done | `verify_p15_document_*`, `verify_p15_spreadsheet_*`, `verify_p15_office_provider_registry`, `verify_p15_iwork_real_e2e`, `verify_p15_presentation_real_e2e` |
 | 8 | Computer Control | Not started | — |
 | 9 | Vehicle Control | Not started | — |
 | 10 | Local generative media | Not started | — |
 | 11 | Cognitive distillation foundation | Not started | — |
 
-**5 of 11 complete.**
+**6 of 11 complete.**
 
 ### Historical remaining P15 order — decided 2026-08-23, superseded 2026-08-28
 
@@ -666,7 +666,7 @@ Acceptance:
 - `verify/verify_p15_spreadsheet_create.sh`
 - `verify/fixtures/p15-spreadsheet-read.xlsx`
 
-Presentation is in progress: Google Slides read/create, read-back validation, OAuth authorization, and real external Google E2E pass; provider-neutral Presentation runtime acceptance remains outstanding, and Apple Keynote is not installed on the acceptance machine.
+Presentation completed on 2026-08-31: Google Slides read/create, read-back validation, OAuth authorization, and real external Google E2E pass; native Keynote read/create, read-back validation, no-overwrite, and existing-document ownership real E2E also pass.
 
 ## P15-1 Email and calendar — historical architecture decision, implementation completed
 
@@ -762,10 +762,10 @@ Calendar has no equivalent question: EventKit is the correct supported interface
 | | |
 |---|---|
 | Branch | `feature/p15-core-skills` |
-| HEAD | P15 Provider/Office integration active — Google Workspace real E2E verified 2026-08-29 |
+| HEAD | P15 Office workflows complete — native iWork and Google Workspace real E2E verified |
 | Latest tag | `p13-m5-complete` |
 | Baseline state | Working tree was clean at the stable baseline before this handoff update |
-| Active phase | P15 Core Skills — 5 of 11 complete; Office remains in progress. Google Workspace real E2E is complete; provider-neutral Presentation acceptance remains pending. |
+| Active phase | P15 Core Skills — 6 of 11 complete; Office is complete. Next: Computer Control v1, then Vehicle Control v1. |
 
 ---
 
@@ -879,13 +879,11 @@ Download Skill architecture:
 - AI-OS verifies new files in the selected destination before reporting completed.
 
 Next capability order:
-4. Browser and Search Skill
-5. NAS Management Skill
-6. Document, Spreadsheet and Presentation Workflow Skill
-7. Email and Calendar Skill
-8. Smart Home and Device Control Skill
-9. Local Generative Media Skill
-10. Cognitive Distillation Foundation
+1. Computer Control v1
+2. Vehicle Control v1 — Tesla Provider
+3. Local Generative Media Skill
+4. Cognitive Distillation Foundation
+5. NAS Management foundation — hardware E2E remains blocked until storage is installed
 
 Do not begin P16 until P15 capability foundations are implemented or explicitly deferred.
 
@@ -1146,6 +1144,7 @@ Constraints carried into the migration:
 
 <!-- ./done.sh appends here automatically -->
 
+- 2026-08-31  P15 Office workflows completed. Document read/create/convert and Spreadsheet read/create remain PASS; Pages, Numbers, and Keynote 15.3.1 real E2E PASS. Provider-neutral Presentation now routes local `.key` read/create through deterministic Keynote automation with one-time create confirmation, mandatory read-back validation, no-overwrite, resolved file-alias ownership checks, and no application quit; an already-open document remains user-owned. Google Workspace remains the cloud provider with real Slides E2E PASS. PowerPoint and WPS were not expanded. P15 is 6 of 11 complete; next is Computer Control v1, then Vehicle Control v1.
 - 2026-08-31  macOS Keychain prompt strategy corrected: the prior cache-only build failed real E2E with 4–5 prompts because startup eagerly touched several of six distinct Provider Keychain accounts under a rebuild-specific ad-hoc identity. Provider secrets are now lazy-loaded only for real operations, cached per account/process, and safely traceable behind `AI_OS_KEYCHAIN_TRACE=1`; normal startup/My AI/Connections/passive status use non-secret metadata and target zero reads. The unused local-signing experiment was removed. Stable Apple signing is a PRE-RELEASE REQUIREMENT, not a P15 dev prerequisite. Deterministic acceptance passed; one final real Mac E2E remains pending and no commit was made.
 - 2026-08-31  macOS Keychain lazy credential loading real E2E PASS: newly rebuilt startup, My AI, and Connections produced zero prompts; first real use of one new Provider produced one prompt; repeated use and restart without rebuild produced zero prompts. The first Microsoft/Google metadata regression fix restored both to Connected but incorrectly read both OAuth secure items at startup, causing two Keychain prompts; that OAuth recovery attempt therefore failed real UX acceptance. The same run observed Taobao fall to Reconnect after its earlier restart E2E PASS. Startup OAuth reads were removed, persisted Connected metadata is retained until real invalidation evidence, and Connections now establishes the Browser recovery listener before its first snapshot and prevents stale per-provider snapshots from overwriting newer backend recovery. Deterministic Provider, Connections, Microsoft, Google, Browser, frontend, Keychain, and External Connector acceptance passed; final combined real E2E is pending. No commit was made.
 - 2026-08-30  Privacy Policy published at `https://russellchen001.github.io/AI-OS/privacy/`; public contact is `aios.privacy@gmail.com`. The page is retained for future official OAuth integrations even though consumer eBay now uses Authenticated Browser.
@@ -1923,7 +1922,7 @@ Do not weaken the global gate merely to hide the Microsoft fixture requirement. 
 
 Do not inflate P15 completion.
 
-Known P15 status before this handoff:
+Known P15 status before this handoff (historical; superseded by the 2026-08-31 Office completion record above):
 
 - Real-World Task Closure architecture implemented.
 - File management complete.

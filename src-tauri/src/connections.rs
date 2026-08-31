@@ -205,6 +205,14 @@ fn local_application_availability() -> LocalApplicationAvailabilityReport {
     )
 }
 
+pub(crate) fn local_application_installed(application_id: &str) -> bool {
+    local_application_availability()
+        .applications
+        .iter()
+        .find(|application| application.application_id == application_id)
+        .is_some_and(|application| application.installed)
+}
+
 const IWORK_AUTHORIZATION_MARKER: &str = "iwork-authorization-verified";
 
 fn installed_iwork_count(applications: &[LocalApplicationAvailability]) -> usize {

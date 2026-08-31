@@ -3,7 +3,7 @@ use super::openclaw_execution::{
     OpenClawExecutionProgress, OpenClawExecutionRequest, OpenClawExecutionResult,
 };
 use crate::document::provider::OfficeProviderId;
-use crate::document::registry::resolve_office_provider;
+use crate::document::registry::{resolve_local_presentation_provider, resolve_office_provider};
 use crate::download::strategy::{resolve_openclaw_download, DownloadExecutionRoute};
 use crate::openclaw::{
     invoke_active_gateway_method, ActiveGatewayFailureKind, ActiveGatewayMethodFailure,
@@ -19,6 +19,8 @@ const DOCUMENT_CREATE_ACTION: &str = "document.create";
 const DOCUMENT_CONVERT_ACTION: &str = "document.convert";
 const SPREADSHEET_READ_ACTION: &str = "spreadsheet.read";
 const SPREADSHEET_CREATE_ACTION: &str = "spreadsheet.create";
+const PRESENTATION_READ_ACTION: &str = "presentation.read";
+const PRESENTATION_CREATE_ACTION: &str = "presentation.create";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const DOWNLOAD_START_ACTION: &str = "download.start";
@@ -90,6 +92,13 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == SPREADSHEET_CREATE_ACTION {
         return execute_spreadsheet_create(invoker, request);
+    }
+
+    if request.action.as_str() == PRESENTATION_READ_ACTION {
+        return execute_presentation_read(invoker, request);
+    }
+    if request.action.as_str() == PRESENTATION_CREATE_ACTION {
+        return execute_presentation_create(invoker, request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -1313,6 +1322,84 @@ fn finish_spreadsheet_create(
         "OpenClaw spreadsheet create timed out.",
         true,
     ))
+}
+
+fn map_keynote_error(error: crate::document::keynote::KeynoteError) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
+fn execute_presentation_read(
+    _invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let provider =
+        resolve_local_presentation_provider(PRESENTATION_READ_ACTION).ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ExecutionFailed,
+                "No executable local Office Provider supports presentation.read.",
+                false,
+            )
+        })?;
+
+    if provider.id != OfficeProviderId::AppleIwork {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office Provider {} does not have a native presentation.read adapter.",
+                provider.name
+            ),
+            false,
+        ));
+    }
+
+    let output = crate::document::keynote::read_keynote_presentation(&request.input)
+        .map_err(map_keynote_error)?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some("AI-OS completed the Keynote presentation read.".to_owned()),
+    })
+}
+
+fn execute_presentation_create(
+    _invoker: &dyn GatewayMethodInvoker,
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let provider =
+        resolve_local_presentation_provider(PRESENTATION_CREATE_ACTION).ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ExecutionFailed,
+                "No executable local Office Provider supports presentation.create.",
+                false,
+            )
+        })?;
+
+    if provider.id != OfficeProviderId::AppleIwork {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office Provider {} does not have a native presentation.create adapter.",
+                provider.name
+            ),
+            false,
+        ));
+    }
+
+    let output = crate::document::keynote::create_keynote_presentation(&request.input)
+        .map_err(map_keynote_error)?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some("AI-OS created and validated the Keynote presentation.".to_owned()),
+    })
 }
 
 fn execute_spreadsheet_create(
