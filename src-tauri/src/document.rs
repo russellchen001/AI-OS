@@ -1,4 +1,5 @@
 pub(crate) mod keynote;
+pub(crate) mod powerpoint;
 pub(crate) mod provider;
 pub(crate) mod registry;
 pub(crate) mod resolver;

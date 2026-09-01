@@ -63,6 +63,8 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
                         | "spreadsheet.create"
                         | "presentation.read"
                         | "presentation.create"
+                        | "presentation.edit"
+                        | "presentation.export"
                         | "filesystem.write"
                         | "filesystem.move"
                         | "download.start"
@@ -658,6 +660,28 @@ mod tests {
                 .unwrap(),
             OpenClawPermissionDecision::Allowed
         );
+    }
+
+    #[test]
+    fn presentation_edit_and_export_require_one_time_user_confirmation() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        for action in ["presentation.edit", "presentation.export"] {
+            let request = OpenClawExecutionRequest::new(
+                format!("execution-{action}"),
+                action,
+                json!({"source":"/safe/input.pptx","destination":"/safe/output"}),
+            )
+            .unwrap();
+            assert_eq!(
+                gate.authorize(&request).unwrap(),
+                OpenClawPermissionDecision::Denied
+            );
+            assert_eq!(
+                gate.authorize(&request.with_user_confirmation(true))
+                    .unwrap(),
+                OpenClawPermissionDecision::Allowed
+            );
+        }
     }
 
     #[test]

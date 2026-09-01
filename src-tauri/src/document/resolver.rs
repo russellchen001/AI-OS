@@ -142,6 +142,12 @@ mod tests {
     use super::*;
 
     const READ: &[&str] = &["document.read"];
+    const PRESENTATION_COMMON: &[&str] = &[
+        "presentation.read",
+        "presentation.create",
+        "presentation.edit",
+        "presentation.export",
+    ];
 
     fn candidate(
         provider: OfficeProviderId,
@@ -195,6 +201,41 @@ mod tests {
 
         assert_eq!(route.application, OfficeApplication::ApplePages);
         assert!(route.fidelity_warning.is_some());
+    }
+
+    #[test]
+    fn local_pptx_routes_to_executable_powerpoint_not_declared_only_fallback() {
+        let mut powerpoint = candidate(
+            OfficeProviderId::MicrosoftOffice,
+            OfficeApplication::MicrosoftPowerPoint,
+            0,
+            &["ppt", "pptx"],
+            &[],
+        );
+        powerpoint.capabilities = PRESENTATION_COMMON;
+        let mut declared_only_keynote = candidate(
+            OfficeProviderId::AppleIwork,
+            OfficeApplication::AppleKeynote,
+            10,
+            &["key"],
+            &["pptx"],
+        );
+        declared_only_keynote.capabilities = PRESENTATION_COMMON;
+        declared_only_keynote.executable = false;
+
+        let route = resolve_office_route(
+            &OfficeRouteRequest {
+                capability: "presentation.edit",
+                location: OfficeResourceLocation::Local,
+                format: Some("pptx"),
+                preferred_application: None,
+            },
+            &[declared_only_keynote, powerpoint],
+        )
+        .unwrap();
+
+        assert_eq!(route.application, OfficeApplication::MicrosoftPowerPoint);
+        assert!(route.fidelity_warning.is_none());
     }
 
     #[test]
