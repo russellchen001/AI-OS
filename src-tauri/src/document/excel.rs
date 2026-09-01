@@ -62,6 +62,16 @@ enum EditOperation {
         row: u64,
         column: u64,
     },
+    AddWorksheet {
+        name: String,
+    },
+    RenameWorksheet {
+        sheet: String,
+        name: String,
+    },
+    DeleteWorksheet {
+        sheet: String,
+    },
 }
 
 fn workbook_path<'a>(
@@ -89,7 +99,7 @@ fn workbook_path<'a>(
         != "xlsx"
     {
         return Err(ExcelError::invalid(
-            "spreadsheet.edit Phase A requires XLSX input and output",
+            "spreadsheet.edit requires XLSX input and output",
         ));
     }
     if must_exist && !parsed.is_file() {
@@ -115,24 +125,32 @@ fn validate_text(value: &str, maximum: usize, label: &str) -> Result<(), ExcelEr
     Ok(())
 }
 
-fn sheet_name(operation: &Value) -> Result<String, ExcelError> {
-    let sheet = operation
-        .get("sheet")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or("");
-    if sheet.is_empty()
-        || sheet.chars().count() > 31
-        || sheet
+fn validate_worksheet_name(value: &str, label: &str) -> Result<String, ExcelError> {
+    let value = value.trim();
+
+    if value.is_empty()
+        || value.chars().count() > 31
+        || value
             .chars()
-            .any(|character| "[]:*?/\\".contains(character))
+            .any(|character| "[]:*?/\\\\".contains(character))
     {
-        return Err(ExcelError::invalid(
-            "operation requires a valid worksheet name",
-        ));
+        return Err(ExcelError::invalid(format!(
+            "{label} requires a valid worksheet name"
+        )));
     }
-    validate_text(sheet, 31, "worksheet name")?;
-    Ok(sheet.to_owned())
+
+    validate_text(value, 31, label)?;
+    Ok(value.to_owned())
+}
+
+fn worksheet_field(operation: &Value, field: &str) -> Result<String, ExcelError> {
+    let value = operation.get(field).and_then(Value::as_str).unwrap_or("");
+
+    validate_worksheet_name(value, field)
+}
+
+fn sheet_name(operation: &Value) -> Result<String, ExcelError> {
+    worksheet_field(operation, "sheet")
 }
 
 fn coordinate(operation: &Value) -> Result<(u64, u64), ExcelError> {
@@ -174,26 +192,36 @@ fn scalar(value: &Value) -> Result<CellScalar, ExcelError> {
 
 fn parse_operation(operation: &Value) -> Result<EditOperation, ExcelError> {
     let kind = operation.get("type").and_then(Value::as_str).unwrap_or("");
-    let sheet = sheet_name(operation)?;
-    let (row, column) = coordinate(operation)?;
+
     match kind {
-        "set_cell" => Ok(EditOperation::SetCell {
-            sheet,
-            row,
-            column,
-            value: scalar(operation.get("value").unwrap_or(&Value::Null))?,
-        }),
+        "set_cell" => {
+            let sheet = sheet_name(operation)?;
+            let (row, column) = coordinate(operation)?;
+
+            Ok(EditOperation::SetCell {
+                sheet,
+                row,
+                column,
+                value: scalar(operation.get("value").unwrap_or(&Value::Null))?,
+            })
+        }
         "set_formula" => {
+            let sheet = sheet_name(operation)?;
+            let (row, column) = coordinate(operation)?;
+
             let formula = operation
                 .get("formula")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+
             validate_text(formula, MAX_FORMULA_TEXT, "formula")?;
+
             if formula.len() < 2 || !formula.starts_with('=') {
                 return Err(ExcelError::invalid(
                     "formula must begin with = and contain an expression",
                 ));
             }
+
             Ok(EditOperation::SetFormula {
                 sheet,
                 row,
@@ -201,9 +229,32 @@ fn parse_operation(operation: &Value) -> Result<EditOperation, ExcelError> {
                 formula: formula.to_owned(),
             })
         }
-        "clear_cell" => Ok(EditOperation::ClearCell { sheet, row, column }),
+        "clear_cell" => {
+            let sheet = sheet_name(operation)?;
+            let (row, column) = coordinate(operation)?;
+
+            Ok(EditOperation::ClearCell { sheet, row, column })
+        }
+        "add_worksheet" => Ok(EditOperation::AddWorksheet {
+            name: worksheet_field(operation, "name")?,
+        }),
+        "rename_worksheet" => {
+            let sheet = sheet_name(operation)?;
+            let name = worksheet_field(operation, "name")?;
+
+            if sheet == name {
+                return Err(ExcelError::invalid(
+                    "rename_worksheet source and destination names must differ",
+                ));
+            }
+
+            Ok(EditOperation::RenameWorksheet { sheet, name })
+        }
+        "delete_worksheet" => Ok(EditOperation::DeleteWorksheet {
+            sheet: sheet_name(operation)?,
+        }),
         _ => Err(ExcelError::invalid(
-            "spreadsheet.edit Phase A supports set_cell, set_formula, and clear_cell",
+            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, and delete_worksheet",
         )),
     }
 }
@@ -248,6 +299,7 @@ fn encode_operations(operations: &[EditOperation]) -> String {
                         CellScalar::Float(value) => ("float", value.to_string()),
                         CellScalar::Boolean(value) => ("boolean", value.to_string()),
                     };
+
                     vec![
                         "set_cell".to_owned(),
                         sheet.clone(),
@@ -274,6 +326,7 @@ fn encode_operations(operations: &[EditOperation]) -> String {
                     } else {
                         column - 1
                     };
+
                     vec![
                         "clear_cell".to_owned(),
                         sheet.clone(),
@@ -282,7 +335,29 @@ fn encode_operations(operations: &[EditOperation]) -> String {
                         String::new(),
                     ]
                 }
+                EditOperation::AddWorksheet { name } => vec![
+                    "add_worksheet".to_owned(),
+                    name.clone(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ],
+                EditOperation::RenameWorksheet { sheet, name } => vec![
+                    "rename_worksheet".to_owned(),
+                    sheet.clone(),
+                    name.clone(),
+                    String::new(),
+                    String::new(),
+                ],
+                EditOperation::DeleteWorksheet { sheet } => vec![
+                    "delete_worksheet".to_owned(),
+                    sheet.clone(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ],
             };
+
             fields.join(&FIELD_SEPARATOR.to_string())
         })
         .collect::<Vec<_>>()
@@ -372,6 +447,39 @@ on safeText(valueToRender)
     return valueToRender as text
 end safeText
 
+on listContains(sourceList, targetText)
+    repeat with candidateValue in sourceList
+        if (contents of candidateValue as text) is targetText then return true
+    end repeat
+
+    return false
+end listContains
+
+on worksheetNames(targetWorkbook)
+    tell application "Microsoft Excel"
+        set resultList to {}
+
+        repeat with sheetIndex from 1 to count of worksheets of targetWorkbook
+            set candidateSheet to worksheet sheetIndex of targetWorkbook
+            set end of resultList to (name of candidateSheet as text)
+        end repeat
+
+        return resultList
+    end tell
+end worksheetNames
+
+on sameNameSet(leftNames, rightNames)
+    if (count of leftNames) is not (count of rightNames) then return false
+
+    repeat with candidateName in leftNames
+        if not my listContains(rightNames, contents of candidateName as text) then
+            return false
+        end if
+    end repeat
+
+    return true
+end sameNameSet
+
 on run argv
     set originalPath to item 1 of argv
     set stagedPath to item 2 of argv
@@ -380,42 +488,69 @@ on run argv
     set stagedName to item 5 of argv
     set outputName to item 6 of argv
     set operationRecords to my splitText(item 7 of argv, ASCII character 30)
+
     set beforeBooks to 0
     set beforeWindows to 0
     set duringBooks to 0
     set duringWindows to 0
+
     set ownsWorkbook to false
     set phaseName to "preflight"
+
     set clearSnapshots to {}
+    set finalWorksheetNames to {}
+
     tell application "Microsoft Excel"
         try
             set beforeBooks to count of workbooks
             set beforeWindows to count of windows
+
             set existingNames to name of every workbook
-            if originalName is in existingNames or stagedName is in existingNames or outputName is in existingNames then error "Workbook ownership conflict" number -2701
+
+            if originalName is in existingNames or stagedName is in existingNames or outputName is in existingNames then
+                error "Workbook ownership conflict" number -2701
+            end if
+
             set phaseName to "open"
+
             open workbook workbook file name stagedPath
+
             repeat 100 times
                 if (count of workbooks) is (beforeBooks + 1) then exit repeat
                 delay 0.1
             end repeat
+
             set duringBooks to count of workbooks
             set duringWindows to count of windows
-            if duringBooks is not (beforeBooks + 1) then error "Workbook count did not increase deterministically"
+
+            if duringBooks is not (beforeBooks + 1) then
+                error "Workbook count did not increase deterministically"
+            end if
+
             set freshWorkbook to active workbook
-            if (full name of freshWorkbook as text) is not stagedPath then error "Fresh active input identity mismatch"
+
+            if (full name of freshWorkbook as text) is not stagedPath then
+                error "Fresh active input identity mismatch"
+            end if
+
             set ownsWorkbook to true
             set phaseName to "edit"
+
             repeat with encodedRecord in operationRecords
                 set fields to my splitText(contents of encodedRecord, ASCII character 31)
                 set operationKind to item 1 of fields
-                set sheetName to item 2 of fields
-                set cellAddress to item 3 of fields
-                if not (exists worksheet sheetName of freshWorkbook) then error "Worksheet not found: " & sheetName number -2702
-                tell worksheet sheetName of freshWorkbook
-                    if operationKind is "set_cell" then
-                        set scalarKind to item 4 of fields
-                        set scalarText to item 5 of fields
+
+                if operationKind is "set_cell" then
+                    set sheetName to item 2 of fields
+                    set cellAddress to item 3 of fields
+                    set scalarKind to item 4 of fields
+                    set scalarText to item 5 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    tell worksheet sheetName of freshWorkbook
                         if scalarKind is "integer" then
                             set value of range cellAddress to scalarText as integer
                         else if scalarKind is "float" then
@@ -425,100 +560,304 @@ on run argv
                         else
                             set value of range cellAddress to scalarText
                         end if
-                    else if operationKind is "set_formula" then
+                    end tell
+
+                else if operationKind is "set_formula" then
+                    set sheetName to item 2 of fields
+                    set cellAddress to item 3 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    tell worksheet sheetName of freshWorkbook
                         set formula of range cellAddress to item 4 of fields
-                    else if operationKind is "clear_cell" then
-                        set neighborAddress to item 4 of fields
+                    end tell
+
+                else if operationKind is "clear_cell" then
+                    set sheetName to item 2 of fields
+                    set cellAddress to item 3 of fields
+                    set neighborAddress to item 4 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    tell worksheet sheetName of freshWorkbook
                         set end of clearSnapshots to my safeText(value of range neighborAddress)
                         clear contents range cellAddress
+                    end tell
+
+                else if operationKind is "add_worksheet" then
+                    set requestedName to item 2 of fields
+
+                    if exists worksheet requestedName of freshWorkbook then
+                        error "Duplicate worksheet: " & requestedName number -2703
                     end if
-                end tell
+
+                    set namesBefore to my worksheetNames(freshWorkbook)
+
+                    make new worksheet at freshWorkbook
+                    set freshWorkbook to active workbook
+
+                    set namesAfter to my worksheetNames(freshWorkbook)
+                    set discoveredNames to {}
+
+                    repeat with candidateName in namesAfter
+                        set candidateText to contents of candidateName as text
+
+                        if not my listContains(namesBefore, candidateText) then
+                            set end of discoveredNames to candidateText
+                        end if
+                    end repeat
+
+                    if (count of discoveredNames) is not 1 then
+                        error "Unable to identify exactly one newly added worksheet" number -2704
+                    end if
+
+                    set generatedName to item 1 of discoveredNames
+
+                    if not (exists worksheet generatedName of freshWorkbook) then
+                        error "New worksheet identity lookup failed" number -2705
+                    end if
+
+                    set name of worksheet generatedName of freshWorkbook to requestedName
+                    set freshWorkbook to active workbook
+
+                    if not (exists worksheet requestedName of freshWorkbook) then
+                        error "Added worksheet rename validation failed" number -2706
+                    end if
+
+                else if operationKind is "rename_worksheet" then
+                    set sourceName to item 2 of fields
+                    set requestedName to item 3 of fields
+
+                    if not (exists worksheet sourceName of freshWorkbook) then
+                        error "Worksheet not found: " & sourceName number -2702
+                    end if
+
+                    if exists worksheet requestedName of freshWorkbook then
+                        error "Duplicate worksheet: " & requestedName number -2703
+                    end if
+
+                    set name of worksheet sourceName of freshWorkbook to requestedName
+                    set freshWorkbook to active workbook
+
+                    if exists worksheet sourceName of freshWorkbook then
+                        error "Old worksheet name still exists after rename" number -2707
+                    end if
+
+                    if not (exists worksheet requestedName of freshWorkbook) then
+                        error "Renamed worksheet not found" number -2708
+                    end if
+
+                else if operationKind is "delete_worksheet" then
+                    set sourceName to item 2 of fields
+
+                    if not (exists worksheet sourceName of freshWorkbook) then
+                        error "Worksheet not found: " & sourceName number -2702
+                    end if
+
+                    if (count of worksheets of freshWorkbook) is 1 then
+                        error "Cannot delete the final worksheet" number -2709
+                    end if
+
+                    set namesBeforeDelete to my worksheetNames(freshWorkbook)
+
+                    delete worksheet sourceName of freshWorkbook
+                    set freshWorkbook to active workbook
+
+                    if exists worksheet sourceName of freshWorkbook then
+                        error "Deleted worksheet still exists" number -2710
+                    end if
+
+                    repeat with preservedName in namesBeforeDelete
+                        set preservedText to contents of preservedName as text
+
+                        if preservedText is not sourceName then
+                            if not (exists worksheet preservedText of freshWorkbook) then
+                                error "Delete affected another worksheet" number -2711
+                            end if
+                        end if
+                    end repeat
+                end if
             end repeat
+
+            set finalWorksheetNames to my worksheetNames(freshWorkbook)
+
             set phaseName to "save-copy"
+
             save workbook as freshWorkbook filename outputPath file format Excel XML file format
+
             repeat 100 times
                 try
                     if (full name of active workbook as text) is outputPath then exit repeat
                 end try
+
                 delay 0.1
             end repeat
+
             set phaseName to "fresh-post-save-ownership"
+
             set postSaveWorkbook to active workbook
-            if (full name of postSaveWorkbook as text) is not outputPath then error "Fresh post-save identity mismatch"
-            if (count of workbooks) is not (beforeBooks + 1) then error "Post-save workbook count changed"
+
+            if (full name of postSaveWorkbook as text) is not outputPath then
+                error "Fresh post-save identity mismatch"
+            end if
+
+            if (count of workbooks) is not (beforeBooks + 1) then
+                error "Post-save workbook count changed"
+            end if
+
             close postSaveWorkbook saving no
             set ownsWorkbook to false
+
             repeat 100 times
                 if (count of workbooks) is beforeBooks then exit repeat
                 delay 0.1
             end repeat
-            if (count of workbooks) is not beforeBooks then error "Workbook count not restored after save-copy close"
+
+            if (count of workbooks) is not beforeBooks then
+                error "Workbook count not restored after save-copy close"
+            end if
+
             set phaseName to "reopen-validation"
+
             open workbook workbook file name outputPath
+
             repeat 100 times
                 if (count of workbooks) is (beforeBooks + 1) then exit repeat
                 delay 0.1
             end repeat
-            if (count of workbooks) is not (beforeBooks + 1) then error "Output reopen count did not increase"
+
+            if (count of workbooks) is not (beforeBooks + 1) then
+                error "Output reopen count did not increase"
+            end if
+
             set validationWorkbook to active workbook
-            if (full name of validationWorkbook as text) is not outputPath then error "Output reopen identity mismatch"
+
+            if (full name of validationWorkbook as text) is not outputPath then
+                error "Output reopen identity mismatch"
+            end if
+
             set ownsWorkbook to true
-            set clearIndex to 1
             set validationText to ""
+
+            set reopenedWorksheetNames to my worksheetNames(validationWorkbook)
+
+            if not my sameNameSet(finalWorksheetNames, reopenedWorksheetNames) then
+                error "Final worksheet identity set mismatch after reopen" number -2712
+            end if
+
+            set validationText to validationText & "final_worksheets=validated" & (ASCII character 30)
+
             repeat with encodedRecord in operationRecords
                 set fields to my splitText(contents of encodedRecord, ASCII character 31)
                 set operationKind to item 1 of fields
-                set sheetName to item 2 of fields
-                set cellAddress to item 3 of fields
-                if not (exists worksheet sheetName of validationWorkbook) then error "Validation worksheet missing" number -2702
-                tell worksheet sheetName of validationWorkbook
-                    if operationKind is "set_cell" then
-                        set scalarKind to item 4 of fields
-                        set expectedText to item 5 of fields
-                        set actualValue to value of range cellAddress
-                        if scalarKind is "integer" or scalarKind is "float" then
-                            if (actualValue as real) is not (expectedText as real) then error "SetCell numeric validation mismatch"
-                        else if scalarKind is "boolean" then
-                            if actualValue is not (expectedText is "true") then error "SetCell boolean validation mismatch"
-                        else if (actualValue as text) is not expectedText then
-                            error "SetCell string validation mismatch"
-                        end if
-                        set validationText to validationText & "set_cell:" & sheetName & "!" & cellAddress & "=" & my safeText(actualValue) & (ASCII character 30)
-                    else if operationKind is "set_formula" then
-                        set expectedFormula to item 4 of fields
-                        set actualFormula to formula of range cellAddress as text
-                        if actualFormula is not expectedFormula then error "SetFormula validation mismatch"
-                        set calculatedValue to value of range cellAddress
-                        set validationText to validationText & "set_formula:" & sheetName & "!" & cellAddress & "=" & actualFormula & "|calculated=" & my safeText(calculatedValue) & (ASCII character 30)
-                    else if operationKind is "clear_cell" then
-                        set neighborAddress to item 4 of fields
-                        set clearedValue to my safeText(value of range cellAddress)
-                        set clearedFormula to my safeText(formula of range cellAddress)
-                        if clearedValue is not "" or clearedFormula is not "" then error "ClearCell validation mismatch"
-                        if my safeText(value of range neighborAddress) is not item clearIndex of clearSnapshots then error "ClearCell changed adjacent cell"
-                        set clearIndex to clearIndex + 1
-                        set validationText to validationText & "clear_cell:" & sheetName & "!" & cellAddress & "=empty" & (ASCII character 30)
+
+                if operationKind is "set_cell" then
+                    set sheetName to item 2 of fields
+                    set cellAddress to item 3 of fields
+                    set scalarKind to item 4 of fields
+                    set expectedText to item 5 of fields
+
+                    if exists worksheet sheetName of validationWorkbook then
+                        tell worksheet sheetName of validationWorkbook
+                            set actualValue to value of range cellAddress
+
+                            if scalarKind is "integer" or scalarKind is "float" then
+                                if (actualValue as real) is not (expectedText as real) then
+                                    error "SetCell numeric validation mismatch"
+                                end if
+                            else if scalarKind is "boolean" then
+                                if actualValue is not (expectedText is "true") then
+                                    error "SetCell boolean validation mismatch"
+                                end if
+                            else if (actualValue as text) is not expectedText then
+                                error "SetCell string validation mismatch"
+                            end if
+
+                            set validationText to validationText & "set_cell:" & sheetName & "!" & cellAddress & "=" & my safeText(actualValue) & (ASCII character 30)
+                        end tell
+                    else
+                        set validationText to validationText & "set_cell:" & sheetName & "=transient" & (ASCII character 30)
                     end if
-                end tell
+
+                else if operationKind is "set_formula" then
+                    set sheetName to item 2 of fields
+                    set cellAddress to item 3 of fields
+                    set expectedFormula to item 4 of fields
+
+                    if exists worksheet sheetName of validationWorkbook then
+                        tell worksheet sheetName of validationWorkbook
+                            set actualFormula to formula of range cellAddress as text
+
+                            if actualFormula is not expectedFormula then
+                                error "SetFormula validation mismatch"
+                            end if
+
+                            set calculatedValue to value of range cellAddress
+                            set validationText to validationText & "set_formula:" & sheetName & "!" & cellAddress & "=" & actualFormula & "|calculated=" & my safeText(calculatedValue) & (ASCII character 30)
+                        end tell
+                    else
+                        set validationText to validationText & "set_formula:" & sheetName & "=transient" & (ASCII character 30)
+                    end if
+
+                else if operationKind is "clear_cell" then
+                    set sheetName to item 2 of fields
+                    set cellAddress to item 3 of fields
+                    set neighborAddress to item 4 of fields
+
+                    if exists worksheet sheetName of validationWorkbook then
+                        tell worksheet sheetName of validationWorkbook
+                            set clearedValue to my safeText(value of range cellAddress)
+                            set clearedFormula to my safeText(formula of range cellAddress)
+
+                            if clearedValue is not "" or clearedFormula is not "" then
+                                error "ClearCell validation mismatch"
+                            end if
+
+                            set validationText to validationText & "clear_cell:" & sheetName & "!" & cellAddress & "=empty" & (ASCII character 30)
+                        end tell
+                    end if
+                end if
             end repeat
+
             close validationWorkbook saving no
             set ownsWorkbook to false
+
             repeat 100 times
                 if (count of workbooks) is beforeBooks then exit repeat
                 delay 0.1
             end repeat
+
             set afterBooks to count of workbooks
             set afterWindows to count of windows
-            if afterBooks is not beforeBooks then error "Final workbook count not restored"
-            if afterWindows is not beforeWindows then error "Final window count not restored"
-            return "AIOS_EXCEL_EDIT_PASS" & linefeed & "AIOS_COUNTS=" & beforeBooks & "/" & duringBooks & "/" & afterBooks & linefeed & "AIOS_WINDOWS=" & beforeWindows & "/" & duringWindows & "/" & afterWindows & linefeed & "AIOS_VALIDATION=" & validationText
+
+            if afterBooks is not beforeBooks then
+                error "Final workbook count not restored"
+            end if
+
+            if afterWindows is not beforeWindows then
+                error "Final window count not restored"
+            end if
+
+            return "AIOS_EXCEL_EDIT_PASS" & linefeed & ¬
+                "AIOS_COUNTS=" & beforeBooks & "/" & duringBooks & "/" & afterBooks & linefeed & ¬
+                "AIOS_WINDOWS=" & beforeWindows & "/" & duringWindows & "/" & afterWindows & linefeed & ¬
+                "AIOS_VALIDATION=" & validationText
+
         on error errorMessage number errorNumber
             if ownsWorkbook then
                 try
                     set activePath to full name of active workbook as text
-                    if activePath is stagedPath or activePath is outputPath then close active workbook saving no
+
+                    if activePath is stagedPath or activePath is outputPath then
+                        close active workbook saving no
+                    end if
                 end try
             end if
+
             error phaseName & ":" & errorNumber & ":" & errorMessage number errorNumber
         end try
     end tell
@@ -706,6 +1045,135 @@ mod tests {
             .invalid_request
         );
         assert!(edit_excel_workbook(&json!({"source":root.path().join("source.csv"),"destination":root.path().join("new.xlsx"),"operations":[operation]})).unwrap_err().invalid_request);
+    }
+
+    #[test]
+    fn phase_b_mutation_operations_validate_structured_inputs() {
+        assert!(
+            parse_operations(&request(json!({"type":"add_worksheet","name":"Summary"}))).is_ok()
+        );
+
+        assert!(parse_operations(&request(
+            json!({"type":"rename_worksheet","sheet":"Summary","name":"History"})
+        ))
+        .is_ok());
+
+        assert!(parse_operations(&request(
+            json!({"type":"delete_worksheet","sheet":"History"})
+        ))
+        .is_ok());
+
+        for operation in [
+            json!({"type":"add_worksheet","name":""}),
+            json!({"type":"add_worksheet","name":"Bad/Name"}),
+            json!({"type":"rename_worksheet","sheet":"Summary","name":"Summary"}),
+            json!({"type":"rename_worksheet","sheet":"Summary","name":"Bad:Name"}),
+            json!({"type":"delete_worksheet","sheet":""}),
+        ] {
+            assert!(parse_operations(&request(operation)).is_err());
+        }
+    }
+
+    #[test]
+    fn phase_b_mutation_encoding_preserves_explicit_identity() {
+        let operations = parse_operations(&json!({
+            "operations": [
+                {"type":"add_worksheet","name":"Summary"},
+                {"type":"rename_worksheet","sheet":"Summary","name":"History"},
+                {"type":"delete_worksheet","sheet":"History"}
+            ]
+        }))
+        .unwrap();
+
+        let encoded = encode_operations(&operations);
+
+        assert!(encoded.contains("add_worksheet"));
+        assert!(encoded.contains("Summary"));
+        assert!(encoded.contains("rename_worksheet"));
+        assert!(encoded.contains("History"));
+        assert!(encoded.contains("delete_worksheet"));
+    }
+
+    #[test]
+    #[ignore = "requires Microsoft Excel and AI_OS_EXCEL_EDIT_FIXTURE"]
+    fn excel_phase_b_mutation_real_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+        let root = tempdir().unwrap();
+        let output = root.path().join("phase-b-mutation-output.xlsx");
+
+        let result = edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": output,
+            "operations": [
+                {"type":"add_worksheet","name":"Summary"},
+                {"type":"set_cell","sheet":"Summary","row":1,"column":1,"value":"Metric"},
+                {"type":"set_cell","sheet":"Summary","row":2,"column":2,"value":100},
+                {"type":"set_formula","sheet":"Summary","row":3,"column":2,"formula":"=1+2"},
+
+                {"type":"add_worksheet","name":"Archive"},
+                {"type":"rename_worksheet","sheet":"Archive","name":"History"},
+                {"type":"set_cell","sheet":"History","row":1,"column":1,"value":"kept"},
+
+                {"type":"add_worksheet","name":"DeleteMe"},
+                {"type":"set_cell","sheet":"DeleteMe","row":1,"column":1,"value":"temporary"},
+                {"type":"delete_worksheet","sheet":"DeleteMe"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(result["operationResult"]["status"], "edited-copy");
+        assert_eq!(fs::read(&fixture).unwrap(), original);
+        assert!(output.metadata().unwrap().len() > 0);
+
+        let validation = result["validation"].as_array().unwrap();
+
+        assert!(validation
+            .iter()
+            .any(|value| value.as_str().unwrap() == "final_worksheets=validated"));
+
+        assert!(validation.iter().any(|value| {
+            value
+                .as_str()
+                .unwrap()
+                .contains("set_formula:Summary!B3==1+2")
+        }));
+
+        assert!(validation
+            .iter()
+            .any(|value| { value.as_str().unwrap().contains("set_cell:History!A1=kept") }));
+
+        assert!(validation.iter().any(|value| {
+            value
+                .as_str()
+                .unwrap()
+                .contains("set_cell:DeleteMe=transient")
+        }));
+    }
+
+    #[test]
+    #[ignore = "requires Microsoft Excel and AI_OS_EXCEL_EDIT_FIXTURE"]
+    fn excel_phase_b_delete_final_sheet_fails_closed() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+        let root = tempdir().unwrap();
+        let output = root.path().join("phase-b-invalid-delete.xlsx");
+
+        let error = edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": output,
+            "operations": [
+                {"type":"delete_worksheet","sheet":"Sheet1"}
+            ]
+        }))
+        .unwrap_err();
+
+        assert!(!error.invalid_request);
+        assert!(error.message.contains("Cannot delete the final worksheet"));
+        assert_eq!(fs::read(&fixture).unwrap(), original);
+        assert!(!output.exists());
     }
 
     #[test]
