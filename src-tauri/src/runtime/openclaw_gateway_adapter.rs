@@ -19,6 +19,7 @@ const DOCUMENT_CREATE_ACTION: &str = "document.create";
 const DOCUMENT_CONVERT_ACTION: &str = "document.convert";
 const SPREADSHEET_READ_ACTION: &str = "spreadsheet.read";
 const SPREADSHEET_CREATE_ACTION: &str = "spreadsheet.create";
+const SPREADSHEET_EDIT_ACTION: &str = "spreadsheet.edit";
 const PRESENTATION_READ_ACTION: &str = "presentation.read";
 const PRESENTATION_CREATE_ACTION: &str = "presentation.create";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
@@ -92,6 +93,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == SPREADSHEET_CREATE_ACTION {
         return execute_spreadsheet_create(invoker, request);
+    }
+    if request.action.as_str() == SPREADSHEET_EDIT_ACTION {
+        return execute_spreadsheet_edit(request);
     }
 
     if request.action.as_str() == PRESENTATION_READ_ACTION {
@@ -1408,6 +1412,43 @@ fn execute_spreadsheet_create(
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
     let (path, session_key, run_id) = start_spreadsheet_create(invoker, request)?;
     finish_spreadsheet_create(invoker, &path, &session_key, &run_id)
+}
+
+fn execute_spreadsheet_edit(
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    let provider = resolve_office_provider(SPREADSHEET_EDIT_ACTION).ok_or_else(|| {
+        OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            "No available Office Provider supports spreadsheet.edit.",
+            false,
+        )
+    })?;
+    if provider.id != OfficeProviderId::MicrosoftOffice {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office Provider {} does not have a spreadsheet.edit adapter.",
+                provider.name
+            ),
+            false,
+        ));
+    }
+    let output = crate::document::excel::edit_excel_workbook(&request.input).map_err(|error| {
+        OpenClawExecutionError::new(
+            if error.invalid_request {
+                OpenClawExecutionErrorKind::InvalidRequest
+            } else {
+                OpenClawExecutionErrorKind::ExecutionFailed
+            },
+            error.message,
+            false,
+        )
+    })?;
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some("AI-OS completed and validated the Excel spreadsheet edit copy.".to_owned()),
+    })
 }
 
 fn execute_spreadsheet_read(
@@ -3026,6 +3067,42 @@ mod tests {
         assert!(message.contains("close openedWorkbook saving no"));
         assert!(message.contains("/usr/bin/head -c 65536"));
         assert!(calls.iter().all(|call| call.0 != "spreadsheet.read"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft Excel and AI_OS_EXCEL_EDIT_FIXTURE"]
+    fn spreadsheet_edit_runtime_real_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("runtime-edit.xlsx");
+        let invoker = RecordingInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcome: Ok(json!({"unexpected": true})),
+        };
+
+        let result = execute_with_invoker(
+            &invoker,
+            &request(
+                "spreadsheet.edit",
+                json!({
+                    "source": fixture,
+                    "destination": destination,
+                    "operations": [
+                        {"type":"set_cell","sheet":"Sheet1","row":2,"column":4,"value":12345},
+                        {"type":"set_formula","sheet":"Sheet1","row":3,"column":4,"formula":"=1+2"},
+                        {"type":"clear_cell","sheet":"Sheet1","row":2,"column":1}
+                    ]
+                }),
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(result.output["capability"], "spreadsheet.edit");
+        assert_eq!(result.output["selectedProvider"], "MicrosoftOffice");
+        assert_eq!(result.output["operationResult"]["status"], "edited-copy");
+        assert!(invoker.calls.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -61,6 +61,7 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
                         | "document.convert"
                         | "spreadsheet.read"
                         | "spreadsheet.create"
+                        | "spreadsheet.edit"
                         | "presentation.read"
                         | "presentation.create"
                         | "presentation.edit"
@@ -601,6 +602,31 @@ mod tests {
             json!({
                 "path": "/safe/workbook.xlsx",
                 "content": "Name\tValue\nAlpha\t42"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gate.authorize(&request).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+        assert_eq!(
+            gate.authorize(&request.with_user_confirmation(true))
+                .unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn spreadsheet_edit_requires_and_accepts_one_time_user_confirmation() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let request = OpenClawExecutionRequest::new(
+            "execution-spreadsheet-edit",
+            "spreadsheet.edit",
+            json!({
+                "source": "/safe/workbook.xlsx",
+                "destination": "/safe/result.xlsx",
+                "operations": [{"type":"clear_cell","sheet":"Sheet1","row":2,"column":1}]
             }),
         )
         .unwrap();

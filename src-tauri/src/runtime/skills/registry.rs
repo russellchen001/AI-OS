@@ -46,6 +46,7 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
                 "document.convert",
                 "spreadsheet.read",
                 "spreadsheet.create",
+                "spreadsheet.edit",
                 "presentation.read",
                 "presentation.create",
             ],
@@ -213,7 +214,7 @@ mod tests {
 
     #[test]
     fn spreadsheet_capabilities_resolve_to_office_skill() {
-        for capability in ["spreadsheet.read", "spreadsheet.create"] {
+        for capability in ["spreadsheet.read", "spreadsheet.create", "spreadsheet.edit"] {
             let skill =
                 find_by_capability(capability).expect("spreadsheet capability should resolve");
 

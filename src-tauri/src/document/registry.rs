@@ -6,6 +6,7 @@ const ALL_OFFICE_CAPABILITIES: &[&str] = &[
     "document.convert",
     "spreadsheet.read",
     "spreadsheet.create",
+    "spreadsheet.edit",
     "presentation.read",
     "presentation.create",
 ];
@@ -291,6 +292,16 @@ mod tests {
         assert_eq!(resolved.id, expected.id);
         assert_eq!(resolved.priority, expected.priority);
         assert!(resolved.supports("spreadsheet.create"));
+    }
+
+    #[test]
+    fn spreadsheet_edit_uses_first_available_office_provider() {
+        let resolved =
+            resolve_office_provider("spreadsheet.edit").expect("spreadsheet.edit should resolve");
+
+        assert_eq!(resolved.id, OfficeProviderId::MicrosoftOffice);
+        assert!(resolved.local);
+        assert!(resolved.supports("spreadsheet.edit"));
     }
 
     #[cfg(target_os = "macos")]
