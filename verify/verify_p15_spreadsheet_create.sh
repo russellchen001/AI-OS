@@ -212,5 +212,17 @@ AFTER_HASH="$(shasum -a 256 "$TARGET" | cut -d' ' -f1)"
 [ "$BEFORE_HASH" = "$AFTER_HASH" ] || fail "Existing target was overwritten"
 
 echo "✓ Real XLSX create, read and no-overwrite"
+
+if [ "${KEEP_FIXTURE:-0}" = "1" ]; then
+  case "${KEEP_FIXTURE_PATH:-}" in
+    /*) ;;
+    *) fail "KEEP_FIXTURE_PATH must be an absolute path" ;;
+  esac
+  [ ! -e "$KEEP_FIXTURE_PATH" ] || fail "Preserved fixture target already exists"
+  cp "$TARGET" "$KEEP_FIXTURE_PATH" || fail "Preserved fixture copy"
+  [ -s "$KEEP_FIXTURE_PATH" ] || fail "Preserved fixture missing"
+  echo "✓ Preserved validated fixture: $KEEP_FIXTURE_PATH"
+fi
+
 echo "PASS $NAME"
 exit 0
