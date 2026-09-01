@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_DOCUMENT_TEXT: usize = 64 * 1024;
 const MAX_CREATE_TEXT: usize = 32 * 1024;
@@ -300,6 +300,7 @@ on run argv
     set tableRows to (item 9 of argv) as integer
     set tableColumns to (item 10 of argv) as integer
     set cellItems to my splitCells(item 11 of argv)
+    set imagePath to item 12 of argv
     set stagedAlias to POSIX file stagedPath as alias
     set beforeDocumentCount to 0
     set ownsActiveDocument to false
@@ -333,6 +334,12 @@ on run argv
                     set cellIndex to cellIndex + 1
                 end repeat
             end repeat
+            set imagesBefore to count of inline shapes of active document
+            set imageRange to collapse range (text object of active document) direction collapse end
+            insert paragraph at imageRange
+            set imageRange to collapse range (text object of active document) direction collapse end
+            make new inline picture at imageRange with properties {file name:imagePath, link to file:false, save with document:true}
+            if (count of inline shapes of active document) is not (imagesBefore + 1) then error "Word inline image count did not increase deterministically"
             save as active document file name outputPath file format format document default add to recent files false
             if (posix full name of active document as text) is not outputPath then error "Word edit output identity did not match save-copy path"
             close active document saving no
@@ -348,6 +355,46 @@ on run argv
                 try
                     set activePath to posix full name of active document as text
                     if activePath is stagedPath or activePath is outputPath then close active document saving no
+                end try
+            end if
+            error errorMessage number errorNumber
+        end try
+    end tell
+end run
+"#;
+
+const EXPORT_PDF_SCRIPT: &str = r#"
+on run argv
+    set stagedPath to item 1 of argv
+    set outputPath to item 2 of argv
+    set stagedAlias to POSIX file stagedPath as alias
+    set beforeDocumentCount to 0
+    set ownsActiveDocument to false
+    tell application id "com.microsoft.Word"
+        activate
+        try
+            set beforeDocumentCount to count of documents
+            open stagedAlias confirm conversions false read only true add to recent files false
+            repeat 100 times
+                if (count of documents) > beforeDocumentCount then exit repeat
+                delay 0.1
+            end repeat
+            if (count of documents) is not (beforeDocumentCount + 1) then error "Word PDF export document count did not increase deterministically"
+            if (posix full name of active document as text) is not stagedPath then error "Word PDF export active document identity did not match the operation copy"
+            set ownsActiveDocument to true
+            save as active document file name outputPath file format format PDF add to recent files false
+            close active document saving no
+            set ownsActiveDocument to false
+            repeat 100 times
+                if (count of documents) is beforeDocumentCount then exit repeat
+                delay 0.1
+            end repeat
+            if (count of documents) is not beforeDocumentCount then error "Word PDF export document count was not restored after close"
+            return "AIOS_WORD_PDF_EXPORTED"
+        on error errorMessage number errorNumber
+            if ownsActiveDocument then
+                try
+                    close active document saving no
                 end try
             end if
             error errorMessage number errorNumber
@@ -538,6 +585,29 @@ pub(crate) fn edit_word_document(input: &Value) -> Result<Value, WordError> {
         ));
     }
     let table = parse_table_input(input)?;
+    let image_path = input
+        .get("imagePath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| WordError::invalid("document.edit requires imagePath"))?;
+    let image = Path::new(image_path);
+    let image_extension = image
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !image.is_absolute()
+        || !image.is_file()
+        || !matches!(
+            image_extension.as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tif" | "tiff"
+        )
+    {
+        return Err(WordError::invalid(
+            "document.edit image must be an existing absolute supported local image",
+        ));
+    }
     let (staged_input, input_root) = word_cache_output(&source_extension)?;
     let (cache_output, output_root) = word_cache_output("docx")?;
     fs::copy(source, &staged_input)
@@ -559,6 +629,7 @@ pub(crate) fn edit_word_document(input: &Value) -> Result<Value, WordError> {
             &table.rows.to_string(),
             &table.columns.to_string(),
             &cell_payload,
+            image_path,
         ],
     );
     if !cache_output.is_file() {
@@ -583,19 +654,37 @@ pub(crate) fn edit_word_document(input: &Value) -> Result<Value, WordError> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let mut mismatches = Vec::new();
     if !operation["text"]
         .as_str()
         .unwrap_or("")
         .contains(paragraph_text)
-        || operation["tableCount"].as_u64().unwrap_or(0) == 0
-        || validated_cells != table.cells
-        || operation["headingBold"].as_bool() != Some(heading_bold)
-        || operation["headingItalic"].as_bool() != Some(heading_italic)
-        || (operation["headingFontSize"].as_f64().unwrap_or(0.0) - heading_font_size).abs() > 0.1
     {
-        return Err(WordError::execution(
-            "Word edit read-back validation did not match the structured operations",
-        ));
+        mismatches.push("paragraph");
+    }
+    if operation["tableCount"].as_u64().unwrap_or(0) == 0 {
+        mismatches.push("table-count");
+    }
+    if operation["imageCount"].as_u64() != Some(1) {
+        mismatches.push("image-count");
+    }
+    if validated_cells != table.cells {
+        mismatches.push("table-cells");
+    }
+    if operation["headingBold"].as_bool() != Some(heading_bold) {
+        mismatches.push("heading-bold");
+    }
+    if operation["headingItalic"].as_bool() != Some(heading_italic) {
+        mismatches.push("heading-italic");
+    }
+    if (operation["headingFontSize"].as_f64().unwrap_or(0.0) - heading_font_size).abs() > 0.1 {
+        mismatches.push("heading-font-size");
+    }
+    if !mismatches.is_empty() {
+        return Err(WordError::execution(format!(
+            "Word edit read-back validation failed for: {}",
+            mismatches.join(", ")
+        )));
     }
     Ok(json!({
         "capability": "document.edit",
@@ -610,9 +699,80 @@ pub(crate) fn edit_word_document(input: &Value) -> Result<Value, WordError> {
     }))
 }
 
+pub(crate) fn export_word_document_pdf(input: &Value) -> Result<Value, WordError> {
+    let source = require_path(input, "source", true)?;
+    let destination = require_path(input, "destination", false)?;
+    let source_extension = Path::new(source)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let destination_extension = Path::new(destination)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(source_extension.as_str(), "doc" | "docx") || destination_extension != "pdf" {
+        return Err(WordError::invalid(
+            "document.convert requires a DOC/DOCX source and PDF destination",
+        ));
+    }
+
+    let (staged_input, input_root) = word_cache_output(&source_extension)?;
+    let (cache_output, output_root) = word_cache_output("pdf")?;
+    fs::copy(source, &staged_input)
+        .map_err(|_| WordError::execution("Unable to stage the Word document for PDF export"))?;
+    let staged_string = staged_input.to_string_lossy().to_string();
+    let cache_string = cache_output.to_string_lossy().to_string();
+    let export_result = run_osascript(EXPORT_PDF_SCRIPT, &[&staged_string, &cache_string]);
+    for _ in 0..100 {
+        if cache_output
+            .metadata()
+            .map(|metadata| metadata.len() > 0)
+            .unwrap_or(false)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !cache_output
+        .metadata()
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_dir_all(&input_root);
+        let _ = fs::remove_dir_all(&output_root);
+        return Err(export_result.err().unwrap_or_else(|| {
+            WordError::execution("Word PDF export did not produce a non-empty output")
+        }));
+    }
+    publish_cache_output(&cache_output, Path::new(destination))?;
+    let _ = fs::remove_dir_all(&input_root);
+    let _ = fs::remove_dir_all(&output_root);
+    Ok(json!({
+        "capability": "document.convert",
+        "selectedProvider": "microsoft-word",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "outputResource": destination,
+        "operationResult": "exported-pdf",
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "non-empty-pdf"
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SAFE_TEST_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5,
+        0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64,
+        0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00,
+        0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
 
     fn valid_table() -> Value {
         json!({"table":{"rows":2,"columns":2,"cells":["A1","B1","A2","B2"]}})
@@ -669,6 +829,60 @@ mod tests {
     }
 
     #[test]
+    fn edit_validation_refuses_invalid_image_path_and_extension() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-os-word-image-validation-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.docx");
+        fs::write(&source, b"fixture").unwrap();
+        for image_path in [root.join("missing.png"), root.join("unsupported.svg")] {
+            if image_path.extension().and_then(|value| value.to_str()) == Some("svg") {
+                fs::write(&image_path, b"<svg/>").unwrap();
+            }
+            let error = edit_word_document(&json!({
+                "source": source,
+                "destination": root.join(format!("output-{}.docx", image_path.file_stem().unwrap().to_string_lossy())),
+                "paragraphIndex": 3,
+                "paragraphText": "Changed",
+                "headingIndex": 1,
+                "imagePath": image_path,
+                "table":{"rows":2,"columns":2,"cells":["A1","B1","A2","B2"]}
+            }))
+            .unwrap_err();
+            assert!(error.invalid_request);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pdf_export_validation_refuses_invalid_extension_and_existing_target() {
+        let root =
+            std::env::temp_dir().join(format!("ai-os-word-pdf-validation-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.docx");
+        let existing_pdf = root.join("existing.pdf");
+        fs::write(&source, b"fixture").unwrap();
+        fs::write(&existing_pdf, b"preserve").unwrap();
+
+        let invalid_extension = export_word_document_pdf(&json!({
+            "source": source,
+            "destination": root.join("output.docx")
+        }))
+        .unwrap_err();
+        assert!(invalid_extension.invalid_request);
+        let existing_target = export_word_document_pdf(&json!({
+            "source": source,
+            "destination": existing_pdf
+        }))
+        .unwrap_err();
+        assert!(existing_target.invalid_request);
+        assert_eq!(fs::read(root.join("existing.pdf")).unwrap(), b"preserve");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires Microsoft Word and macOS Automation authorization"]
     fn word_readback_real_e2e() {
         let stamp = SystemTime::now()
@@ -698,7 +912,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires Microsoft Word and macOS Automation authorization"]
-    fn word_edit_table_real_e2e() {
+    fn word_realistic_workflow_real_e2e() {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -710,6 +924,9 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let source = root.join("Word-Edit-Input.docx");
         let destination = root.join("Word-Edit-Output.docx");
+        let pdf_destination = root.join("Word-Edit-Output.pdf");
+        let image = root.join("safe-test-image.png");
+        fs::write(&image, SAFE_TEST_PNG).unwrap();
         let before_state = run_osascript(
             "tell application id \"com.microsoft.Word\" to return (count of documents) as text",
             &[],
@@ -730,6 +947,7 @@ mod tests {
             "headingBold": true,
             "headingItalic": true,
             "headingFontSize": 18.0,
+            "imagePath": image,
             "table":{"rows":2,"columns":2,"cells":["A1","B1","A2","B2"]}
         }))
         .unwrap();
@@ -747,6 +965,75 @@ mod tests {
         );
         assert_eq!(output_read["operationResult"]["headingBold"], true);
         assert_eq!(output_read["operationResult"]["headingItalic"], true);
+        assert_eq!(output_read["operationResult"]["imageCount"], 1);
+        let exported = export_word_document_pdf(&json!({
+            "source": destination,
+            "destination": pdf_destination
+        }))
+        .unwrap();
+        assert_eq!(exported["operationResult"], "exported-pdf");
+        assert!(
+            fs::metadata(root.join("Word-Edit-Output.pdf"))
+                .unwrap()
+                .len()
+                > 0
+        );
+        let preserved_pdf = fs::read(root.join("Word-Edit-Output.pdf")).unwrap();
+        let overwrite_error = export_word_document_pdf(&json!({
+            "source": root.join("Word-Edit-Output.docx"),
+            "destination": root.join("Word-Edit-Output.pdf")
+        }))
+        .unwrap_err();
+        assert!(overwrite_error.invalid_request);
+        assert_eq!(
+            fs::read(root.join("Word-Edit-Output.pdf")).unwrap(),
+            preserved_pdf
+        );
+        assert_eq!(
+            run_osascript(
+                "tell application id \"com.microsoft.Word\" to return (count of documents) as text",
+                &[],
+            )
+            .unwrap(),
+            before_state
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires Microsoft Word and macOS Automation authorization"]
+    fn word_pdf_export_real_e2e() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("ai-os-word-pdf-e2e-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("Word-PDF-Input.docx");
+        let destination = root.join("Word-PDF-Output.pdf");
+        let before_state = run_osascript(
+            "tell application id \"com.microsoft.Word\" to return (count of documents) as text",
+            &[],
+        )
+        .unwrap();
+        create_word_document(&json!({
+            "path": source,
+            "title": "AI-OS Word PDF",
+            "body": "Export fixture"
+        }))
+        .unwrap();
+        export_word_document_pdf(&json!({
+            "source": source,
+            "destination": destination
+        }))
+        .unwrap();
+        assert!(
+            fs::metadata(root.join("Word-PDF-Output.pdf"))
+                .unwrap()
+                .len()
+                > 0
+        );
         assert_eq!(
             run_osascript(
                 "tell application id \"com.microsoft.Word\" to return (count of documents) as text",

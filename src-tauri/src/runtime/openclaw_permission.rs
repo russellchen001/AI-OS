@@ -57,6 +57,7 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
                         | "filesystem.read"
                         | "document.read"
                         | "document.create"
+                        | "document.edit"
                         | "document.convert"
                         | "spreadsheet.read"
                         | "spreadsheet.create"
@@ -528,6 +529,30 @@ mod tests {
             "document.convert",
             json!({
                 "source": "/safe/source.doc",
+                "destination": "/safe/result.docx"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gate.authorize(&request).unwrap(),
+            OpenClawPermissionDecision::Denied
+        );
+        assert_eq!(
+            gate.authorize(&request.with_user_confirmation(true))
+                .unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn document_edit_requires_and_accepts_one_time_user_confirmation() {
+        let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let request = OpenClawExecutionRequest::new(
+            "execution-document-edit",
+            "document.edit",
+            json!({
+                "source": "/safe/source.docx",
                 "destination": "/safe/result.docx"
             }),
         )
