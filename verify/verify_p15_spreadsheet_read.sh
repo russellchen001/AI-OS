@@ -43,7 +43,7 @@ run_test \
 
 run_test \
   "runtime::openclaw_gateway_adapter::tests::spreadsheet_read_" \
-  3 "Input, Excel helper and Gateway behavior"
+  7 "Phase A + Phase B input, parser, bounded command and Gateway behavior"
 
 [ -s "$FIXTURE" ] || fail "Real XLSX fixture missing"
 

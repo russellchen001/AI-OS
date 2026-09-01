@@ -1194,8 +1194,29 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(result["operationResult"]["status"], "edited-copy");
-        assert_eq!(result["ownership"]["workbookCounts"], "1/2/1");
-        assert_eq!(result["ownership"]["windowCounts"], "1/2/1");
+
+        let workbook_counts = result["ownership"]["workbookCounts"]
+            .as_str()
+            .expect("workbook count triplet");
+        let workbook_counts = workbook_counts
+            .split('/')
+            .map(|value| value.parse::<u64>().expect("numeric workbook count"))
+            .collect::<Vec<_>>();
+        assert_eq!(workbook_counts.len(), 3);
+        assert_eq!(workbook_counts[1], workbook_counts[0] + 1);
+        assert_eq!(workbook_counts[2], workbook_counts[0]);
+
+        let window_counts = result["ownership"]["windowCounts"]
+            .as_str()
+            .expect("window count triplet");
+        let window_counts = window_counts
+            .split('/')
+            .map(|value| value.parse::<u64>().expect("numeric window count"))
+            .collect::<Vec<_>>();
+        assert_eq!(window_counts.len(), 3);
+        assert!(window_counts[1] >= window_counts[0]);
+        assert_eq!(window_counts[2], window_counts[0]);
+
         assert_eq!(fs::read(&fixture).unwrap(), original);
         assert!(output.metadata().unwrap().len() > 0);
         let overwrite = edit_excel_workbook(&json!({

@@ -35,6 +35,11 @@ const LONG_DOWNLOAD_WAIT_ATTEMPTS: usize = 1_605;
 const MAX_FILE_READ_BYTES: u64 = 1_000_000;
 const MAX_FILE_OUTPUT_BYTES: u64 = 65_536;
 const MAX_FILE_WRITE_BYTES: usize = 4_096;
+const MAX_SPREADSHEET_READ_SHEETS: usize = 16;
+const MAX_SPREADSHEET_READ_ROWS: usize = 200;
+const MAX_SPREADSHEET_READ_COLUMNS: usize = 64;
+const MAX_SPREADSHEET_READ_CELL_CHARS: usize = 256;
+const MAX_SPREADSHEET_PROTOCOL_CHARS: usize = 60_000;
 
 pub(crate) struct OpenClawGatewayExecutionAdapter;
 
@@ -1522,11 +1527,140 @@ fn finish_spreadsheet_read(
     ))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SpreadsheetReadSelection {
+    First,
+    Named(String),
+    Selected(Vec<String>),
+    All,
+}
+
+fn validate_spreadsheet_sheet_name(value: &str) -> Result<String, OpenClawExecutionError> {
+    let value = value.trim();
+
+    if value.is_empty()
+        || value.chars().count() > 31
+        || value.chars().any(char::is_control)
+        || value
+            .chars()
+            .any(|character| "[]:*?/\\\\".contains(character))
+    {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.read requires valid worksheet names",
+            false,
+        ));
+    }
+
+    Ok(value.to_owned())
+}
+
+fn spreadsheet_read_selection(
+    request: &OpenClawExecutionRequest,
+) -> Result<SpreadsheetReadSelection, OpenClawExecutionError> {
+    let sheet_value = request.input.get("sheet");
+    let sheets_value = request.input.get("sheets");
+
+    let all_sheets = match request.input.get("allSheets") {
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return Err(OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "spreadsheet.read allSheets must be boolean",
+                false,
+            ))
+        }
+        None => false,
+    };
+
+    let active_selectors = usize::from(sheet_value.is_some())
+        + usize::from(sheets_value.is_some())
+        + usize::from(all_sheets);
+
+    if active_selectors > 1 {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.read accepts only one of sheet, sheets, or allSheets",
+            false,
+        ));
+    }
+
+    if let Some(value) = sheet_value {
+        let sheet = value.as_str().ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "spreadsheet.read sheet must be a worksheet name",
+                false,
+            )
+        })?;
+
+        return Ok(SpreadsheetReadSelection::Named(
+            validate_spreadsheet_sheet_name(sheet)?,
+        ));
+    }
+
+    if let Some(value) = sheets_value {
+        let values = value.as_array().ok_or_else(|| {
+            OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                "spreadsheet.read sheets must be an array of worksheet names",
+                false,
+            )
+        })?;
+
+        if values.is_empty() || values.len() > MAX_SPREADSHEET_READ_SHEETS {
+            return Err(OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::InvalidRequest,
+                format!(
+                    "spreadsheet.read sheets must contain between 1 and {} names",
+                    MAX_SPREADSHEET_READ_SHEETS
+                ),
+                false,
+            ));
+        }
+
+        let mut seen = HashSet::new();
+        let mut names = Vec::with_capacity(values.len());
+
+        for value in values {
+            let raw = value.as_str().ok_or_else(|| {
+                OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::InvalidRequest,
+                    "spreadsheet.read sheets must contain only worksheet names",
+                    false,
+                )
+            })?;
+
+            let name = validate_spreadsheet_sheet_name(raw)?;
+
+            if !seen.insert(name.clone()) {
+                return Err(OpenClawExecutionError::new(
+                    OpenClawExecutionErrorKind::InvalidRequest,
+                    "spreadsheet.read sheets must not contain duplicates",
+                    false,
+                ));
+            }
+
+            names.push(name);
+        }
+
+        return Ok(SpreadsheetReadSelection::Selected(names));
+    }
+
+    if all_sheets {
+        return Ok(SpreadsheetReadSelection::All);
+    }
+
+    Ok(SpreadsheetReadSelection::First)
+}
+
 fn start_spreadsheet_read(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<(String, String, String), OpenClawExecutionError> {
     let (path, workdir) = spreadsheet_read_input(request)?;
+    let selection = spreadsheet_read_selection(request)?;
+
     let provider = resolve_office_provider(SPREADSHEET_READ_ACTION).ok_or_else(|| {
         OpenClawExecutionError::new(
             OpenClawExecutionErrorKind::ExecutionFailed,
@@ -1534,6 +1668,7 @@ fn start_spreadsheet_read(
             false,
         )
     })?;
+
     if provider.id != OfficeProviderId::MicrosoftOffice {
         return Err(OpenClawExecutionError::new(
             OpenClawExecutionErrorKind::ExecutionFailed,
@@ -1545,11 +1680,13 @@ fn start_spreadsheet_read(
         ));
     }
 
-    let command = spreadsheet_read_command(path);
+    let command = spreadsheet_read_command_for_selection(path, &selection);
+
     let session_key = format!(
         "agent:{FILESYSTEM_AGENT_ID}:ai-os-spreadsheet-read-{}",
         request.execution_id
     );
+
     let message = format!(
         "This is an AI-OS internal capability request. The label spreadsheet.read is NOT an OpenClaw tool name. Call the existing exec tool exactly once with command {} and workdir {}. Keep background false and yieldMs 10000. Use the command exactly as supplied without adding or changing flags, pipes, or wrappers. This is read-only; close the workbook without saving. Do not claim success without the tool output.",
         serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".to_owned()),
@@ -1570,6 +1707,7 @@ fn start_spreadsheet_read(
             })),
         )
         .map_err(map_gateway_failure)?;
+
     let run_id = accepted
         .get("runId")
         .and_then(Value::as_str)
@@ -1602,21 +1740,101 @@ fn spreadsheet_read_output(history: &Value, path: &str) -> Option<Value> {
         }));
     }
 
-    let (_, payload) = text.split_once("AIOS_SHEET=")?;
-    let (sheet, payload) = payload.split_once("\nAIOS_ROWS=")?;
-    let (rows, payload) = payload.split_once("\nAIOS_COLUMNS=")?;
-    let (columns, content) = payload.split_once("\nAIOS_CONTENT_BEGIN\n")?;
-    let rows = rows.trim().parse::<u64>().ok()?;
-    let columns = columns.trim().parse::<u64>().ok()?;
+    // Backward-compatible Phase A protocol.
+    if !text.contains("AIOS_WORKSHEET_COUNT=") {
+        let (_, payload) = text.split_once("AIOS_SHEET=")?;
+        let (sheet, payload) = payload.split_once("\nAIOS_ROWS=")?;
+        let (rows, payload) = payload.split_once("\nAIOS_COLUMNS=")?;
+        let (columns, content) = payload.split_once("\nAIOS_CONTENT_BEGIN\n")?;
+
+        let rows = rows.trim().parse::<u64>().ok()?;
+        let columns = columns.trim().parse::<u64>().ok()?;
+
+        return Some(serde_json::json!({
+            "path": path,
+            "sheet": sheet.trim(),
+            "status": "table",
+            "rows": rows,
+            "columns": columns,
+            "truncated": text.len() >= MAX_FILE_OUTPUT_BYTES as usize,
+            "content": content,
+        }));
+    }
+
+    let (_, payload) = text.split_once("AIOS_WORKSHEET_COUNT=")?;
+    let (worksheet_count, payload) = payload.split_once("\nAIOS_WORKSHEETS=")?;
+    let (worksheet_names, payload) = payload.split_once("\nAIOS_SELECTION_TRUNCATED=")?;
+    let (selection_truncated, blocks) = payload.split_once("\nAIOS_SHEET_BEGIN\n")?;
+
+    let worksheet_count = worksheet_count.trim().parse::<u64>().ok()?;
+    let worksheet_names = if worksheet_names.is_empty() {
+        Vec::new()
+    } else {
+        worksheet_names
+            .split('\u{1f}')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+
+    let selection_truncated = selection_truncated.trim() == "true";
+
+    let mut sheets = Vec::new();
+
+    for block in blocks.split("\nAIOS_SHEET_BEGIN\n") {
+        let (block, _) = block.split_once("\nAIOS_SHEET_END")?;
+
+        let (_, payload) = block.split_once("AIOS_SHEET=")?;
+        let (sheet, payload) = payload.split_once("\nAIOS_ROWS=")?;
+        let (rows, payload) = payload.split_once("\nAIOS_COLUMNS=")?;
+        let (columns, payload) = payload.split_once("\nAIOS_TOTAL_ROWS=")?;
+        let (total_rows, payload) = payload.split_once("\nAIOS_TOTAL_COLUMNS=")?;
+        let (total_columns, payload) = payload.split_once("\nAIOS_TRUNCATED=")?;
+        let (sheet_truncated, content) = payload.split_once("\nAIOS_CONTENT_BEGIN\n")?;
+
+        sheets.push(serde_json::json!({
+            "name": sheet.trim(),
+            "rows": rows.trim().parse::<u64>().ok()?,
+            "columns": columns.trim().parse::<u64>().ok()?,
+            "totalRows": total_rows.trim().parse::<u64>().ok()?,
+            "totalColumns": total_columns.trim().parse::<u64>().ok()?,
+            "truncated": sheet_truncated.trim() == "true",
+            "content": content,
+        }));
+    }
+
+    if sheets.len() == 1 {
+        let sheet = sheets.first()?;
+
+        return Some(serde_json::json!({
+            "path": path,
+            "sheet": sheet.get("name")?,
+            "status": "table",
+            "rows": sheet.get("rows")?,
+            "columns": sheet.get("columns")?,
+            "totalRows": sheet.get("totalRows")?,
+            "totalColumns": sheet.get("totalColumns")?,
+            "worksheetCount": worksheet_count,
+            "worksheetNames": worksheet_names,
+            "truncated": selection_truncated
+                || sheet.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+            "content": sheet.get("content")?,
+        }));
+    }
 
     Some(serde_json::json!({
         "path": path,
-        "sheet": sheet.trim(),
-        "status": "table",
-        "rows": rows,
-        "columns": columns,
-        "truncated": text.len() >= MAX_FILE_OUTPUT_BYTES as usize,
-        "content": content,
+        "status": "workbook",
+        "worksheetCount": worksheet_count,
+        "worksheetNames": worksheet_names,
+        "sheets": sheets,
+        "truncated": selection_truncated
+            || sheets.iter().any(|sheet| {
+                sheet.get("truncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            }),
     }))
 }
 
@@ -1782,69 +2000,270 @@ fn spreadsheet_create_output(history: &Value, path: &str) -> Option<Value> {
 }
 
 fn spreadsheet_read_command(path: &str) -> String {
+    spreadsheet_read_command_for_selection(path, &SpreadsheetReadSelection::First)
+}
+
+fn spreadsheet_read_command_for_selection(
+    path: &str,
+    selection: &SpreadsheetReadSelection,
+) -> String {
+    let (mode, requested) = match selection {
+        SpreadsheetReadSelection::First => ("first", String::new()),
+        SpreadsheetReadSelection::Named(name) => ("named", name.clone()),
+        SpreadsheetReadSelection::Selected(names) => ("selected", names.join("\u{1f}")),
+        SpreadsheetReadSelection::All => ("all", String::new()),
+    };
+
     format!(
-        r#"/usr/bin/osascript - {} <<'AIOS_APPLESCRIPT' | /usr/bin/head -c {}
-on joinRow(rowValues)
+        r#"set -o pipefail
+/usr/bin/osascript - {} {} {} <<'AIOS_APPLESCRIPT' | /usr/bin/head -c {}
+on splitText(sourceText, delimiterText)
+    if sourceText is "" then return {{}}
     set oldDelimiters to AppleScript's text item delimiters
-    set AppleScript's text item delimiters to tab
-    set rowText to rowValues as text
+    set AppleScript's text item delimiters to delimiterText
+    set resultItems to text items of sourceText
     set AppleScript's text item delimiters to oldDelimiters
-    return rowText
+    return resultItems
+end splitText
+
+on joinText(sourceList, delimiterText)
+    set oldDelimiters to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to delimiterText
+    set resultText to sourceList as text
+    set AppleScript's text item delimiters to oldDelimiters
+    return resultText
+end joinText
+
+on replaceText(sourceText, oldText, newText)
+    set oldDelimiters to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to oldText
+    set parts to text items of sourceText
+    set AppleScript's text item delimiters to newText
+    set resultText to parts as text
+    set AppleScript's text item delimiters to oldDelimiters
+    return resultText
+end replaceText
+
+on safeCell(cellValue)
+    if cellValue is missing value then return ""
+
+    set rendered to cellValue as text
+    set rendered to my replaceText(rendered, tab, " ")
+    set rendered to my replaceText(rendered, return, " ")
+    set rendered to my replaceText(rendered, linefeed, " ")
+
+    if (count characters of rendered) > {MAX_SPREADSHEET_READ_CELL_CHARS} then
+        set rendered to text 1 thru {MAX_SPREADSHEET_READ_CELL_CHARS} of rendered
+    end if
+
+    return rendered
+end safeCell
+
+on joinRow(rowValues, columnLimit)
+    set resultValues to {{}}
+
+    repeat with columnIndex from 1 to columnLimit
+        if columnIndex <= (count of rowValues) then
+            set end of resultValues to my safeCell(contents of item columnIndex of rowValues)
+        else
+            set end of resultValues to ""
+        end if
+    end repeat
+
+    return my joinText(resultValues, tab)
 end joinRow
+
+on worksheetNames(targetWorkbook)
+    tell application "Microsoft Excel"
+        set resultNames to {{}}
+
+        repeat with worksheetIndex from 1 to count of worksheets of targetWorkbook
+            set end of resultNames to (name of worksheet worksheetIndex of targetWorkbook as text)
+        end repeat
+
+        return resultNames
+    end tell
+end worksheetNames
+
+on containsText(sourceList, targetText)
+    repeat with sourceItem in sourceList
+        if (contents of sourceItem as text) is targetText then return true
+    end repeat
+
+    return false
+end containsText
 
 on run argv
     set workbookPath to item 1 of argv
+    set readMode to item 2 of argv
+    set requestedText to item 3 of argv
+
     set openedWorkbook to missing value
+
     tell application "Microsoft Excel"
         try
             open workbook workbook file name workbookPath
+
             repeat 20 times
                 repeat with workbookIndex from 1 to count of workbooks
                     set candidateWorkbook to workbook workbookIndex
                     set candidatePath to full name of candidateWorkbook
+
                     if candidatePath is workbookPath then
                         set openedWorkbook to candidateWorkbook
                         exit repeat
                     end if
                 end repeat
+
                 if openedWorkbook is not missing value then exit repeat
                 delay 0.25
             end repeat
-            if openedWorkbook is missing value then error "Excel did not open the workbook"
-            tell worksheet 1 of openedWorkbook
-                set sheetName to name
-                set usedValues to value of used range
-            end tell
-            if class of usedValues is not list then
-                set usedValues to {{usedValues}}
-            else if (count of usedValues) > 0 then
-                if class of item 1 of usedValues is not list then
-                    set usedValues to {{usedValues}}
-                end if
+
+            if openedWorkbook is missing value then
+                error "Excel did not open the workbook"
             end if
-            set rowCount to count of usedValues
-            set columnCount to count of item 1 of usedValues
-            set outputText to ""
-            repeat with rowValues in usedValues
-                set outputText to outputText & my joinRow(contents of rowValues) & linefeed
+
+            set allWorksheetNames to my worksheetNames(openedWorkbook)
+            set worksheetCount to count of allWorksheetNames
+            set requestedNames to {{}}
+            set selectionTruncated to false
+
+            if readMode is "first" then
+                if worksheetCount < 1 then error "Workbook has no worksheets"
+                set requestedNames to {{item 1 of allWorksheetNames}}
+
+            else if readMode is "named" then
+                if not my containsText(allWorksheetNames, requestedText) then
+                    error "Worksheet not found: " & requestedText number -2801
+                end if
+
+                set requestedNames to {{requestedText}}
+
+            else if readMode is "selected" then
+                set requestedNames to my splitText(requestedText, ASCII character 31)
+
+                repeat with requestedName in requestedNames
+                    set requestedNameText to contents of requestedName as text
+
+                    if not my containsText(allWorksheetNames, requestedNameText) then
+                        error "Worksheet not found: " & requestedNameText number -2801
+                    end if
+                end repeat
+
+            else if readMode is "all" then
+                set selectionLimit to worksheetCount
+
+                if selectionLimit > {MAX_SPREADSHEET_READ_SHEETS} then
+                    set selectionLimit to {MAX_SPREADSHEET_READ_SHEETS}
+                    set selectionTruncated to true
+                end if
+
+                repeat with worksheetIndex from 1 to selectionLimit
+                    set end of requestedNames to item worksheetIndex of allWorksheetNames
+                end repeat
+
+            else
+                error "Unsupported spreadsheet read mode" number -2802
+            end if
+
+            set outputText to "AIOS_WORKSHEET_COUNT=" & worksheetCount & linefeed
+            set outputText to outputText & "AIOS_WORKSHEETS=" & my joinText(allWorksheetNames, ASCII character 31) & linefeed
+            set outputText to outputText & "AIOS_SELECTION_TRUNCATED=" & (selectionTruncated as text)
+
+            repeat with requestedName in requestedNames
+                set sheetName to contents of requestedName as text
+
+                if not (exists worksheet sheetName of openedWorkbook) then
+                    error "Worksheet not found: " & sheetName number -2801
+                end if
+
+                tell worksheet sheetName of openedWorkbook
+                    set usedValues to value of used range
+                end tell
+
+                if class of usedValues is not list then
+                    set usedValues to {{usedValues}}
+                else if (count of usedValues) > 0 then
+                    if class of item 1 of usedValues is not list then
+                        set usedValues to {{usedValues}}
+                    end if
+                end if
+
+                set totalRows to count of usedValues
+
+                if totalRows > 0 then
+                    set totalColumns to count of item 1 of usedValues
+                else
+                    set totalColumns to 0
+                end if
+
+                set rowLimit to totalRows
+                set columnLimit to totalColumns
+                set sheetTruncated to false
+
+                if rowLimit > {MAX_SPREADSHEET_READ_ROWS} then
+                    set rowLimit to {MAX_SPREADSHEET_READ_ROWS}
+                    set sheetTruncated to true
+                end if
+
+                if columnLimit > {MAX_SPREADSHEET_READ_COLUMNS} then
+                    set columnLimit to {MAX_SPREADSHEET_READ_COLUMNS}
+                    set sheetTruncated to true
+                end if
+
+                set sheetContent to ""
+                set returnedRows to 0
+
+                repeat with rowIndex from 1 to rowLimit
+                    set rowValues to item rowIndex of usedValues
+                    set rowText to my joinRow(contents of rowValues, columnLimit)
+
+                    if ((count characters of outputText) + (count characters of sheetContent) + (count characters of rowText)) > {MAX_SPREADSHEET_PROTOCOL_CHARS} then
+                        set sheetTruncated to true
+                        set selectionTruncated to true
+                        exit repeat
+                    end if
+
+                    set sheetContent to sheetContent & rowText & linefeed
+                    set returnedRows to returnedRows + 1
+                end repeat
+
+                set outputText to outputText & linefeed & "AIOS_SHEET_BEGIN" & linefeed
+                set outputText to outputText & "AIOS_SHEET=" & sheetName & linefeed
+                set outputText to outputText & "AIOS_ROWS=" & returnedRows & linefeed
+                set outputText to outputText & "AIOS_COLUMNS=" & columnLimit & linefeed
+                set outputText to outputText & "AIOS_TOTAL_ROWS=" & totalRows & linefeed
+                set outputText to outputText & "AIOS_TOTAL_COLUMNS=" & totalColumns & linefeed
+                set outputText to outputText & "AIOS_TRUNCATED=" & (sheetTruncated as text) & linefeed
+                set outputText to outputText & "AIOS_CONTENT_BEGIN" & linefeed
+                set outputText to outputText & sheetContent
+                set outputText to outputText & "AIOS_SHEET_END"
             end repeat
+
             close openedWorkbook saving no
-            return "AIOS_SHEET=" & sheetName & linefeed & ¬
-                "AIOS_ROWS=" & rowCount & linefeed & ¬
-                "AIOS_COLUMNS=" & columnCount & linefeed & ¬
-                "AIOS_CONTENT_BEGIN" & linefeed & outputText
+            set openedWorkbook to missing value
+
+            if selectionTruncated then
+                set outputText to my replaceText(outputText, "AIOS_SELECTION_TRUNCATED=false", "AIOS_SELECTION_TRUNCATED=true")
+            end if
+
+            return outputText
+
         on error errorMessage number errorNumber
             if openedWorkbook is not missing value then
                 try
                     close openedWorkbook saving no
                 end try
             end if
+
             return "AIOS_FAILED=" & errorNumber & ":" & errorMessage
         end try
     end tell
 end run
 AIOS_APPLESCRIPT"#,
         shell_quote(path),
+        shell_quote(mode),
+        shell_quote(&requested),
         MAX_FILE_OUTPUT_BYTES,
     )
 }
@@ -3189,6 +3608,324 @@ mod tests {
                 json!({"path": "/safe/report.xlsx", "status": status})
             );
         }
+    }
+
+    use std::process::Command;
+
+    #[test]
+    fn spreadsheet_read_phase_b_selection_contract_is_bounded_and_fail_closed() {
+        assert_eq!(
+            spreadsheet_read_selection(&request(
+                "spreadsheet.read",
+                json!({"path":"/safe/report.xlsx"})
+            ))
+            .unwrap(),
+            SpreadsheetReadSelection::First
+        );
+
+        assert_eq!(
+            spreadsheet_read_selection(&request(
+                "spreadsheet.read",
+                json!({"path":"/safe/report.xlsx","sheet":"Summary"})
+            ))
+            .unwrap(),
+            SpreadsheetReadSelection::Named("Summary".to_owned())
+        );
+
+        assert_eq!(
+            spreadsheet_read_selection(&request(
+                "spreadsheet.read",
+                json!({"path":"/safe/report.xlsx","sheets":["Sales","Summary"]})
+            ))
+            .unwrap(),
+            SpreadsheetReadSelection::Selected(vec!["Sales".to_owned(), "Summary".to_owned()])
+        );
+
+        assert_eq!(
+            spreadsheet_read_selection(&request(
+                "spreadsheet.read",
+                json!({"path":"/safe/report.xlsx","allSheets":true})
+            ))
+            .unwrap(),
+            SpreadsheetReadSelection::All
+        );
+
+        for input in [
+            json!({"path":"/safe/report.xlsx","sheet":"","allSheets":false}),
+            json!({"path":"/safe/report.xlsx","sheet":"Bad/Name"}),
+            json!({"path":"/safe/report.xlsx","sheets":[]}),
+            json!({"path":"/safe/report.xlsx","sheets":["Sales","Sales"]}),
+            json!({"path":"/safe/report.xlsx","sheet":"Sales","allSheets":true}),
+            json!({"path":"/safe/report.xlsx","sheet":"Sales","sheets":["Summary"]}),
+            json!({"path":"/safe/report.xlsx","allSheets":"yes"}),
+        ] {
+            let error =
+                spreadsheet_read_selection(&request("spreadsheet.read", input)).unwrap_err();
+            assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+            assert!(!error.retryable);
+        }
+
+        let too_many = (0..=MAX_SPREADSHEET_READ_SHEETS)
+            .map(|index| format!("S{index}"))
+            .collect::<Vec<_>>();
+
+        let error = spreadsheet_read_selection(&request(
+            "spreadsheet.read",
+            json!({"path":"/safe/report.xlsx","sheets":too_many}),
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);
+    }
+
+    #[test]
+    fn spreadsheet_read_phase_b_command_encodes_selection_and_bounds() {
+        let first = spreadsheet_read_command("/safe/report file.xlsx");
+
+        assert!(first.contains("first"));
+        assert!(first.contains("AIOS_WORKSHEET_COUNT="));
+        assert!(first.contains("AIOS_WORKSHEETS="));
+        assert!(first.contains("AIOS_SHEET_BEGIN"));
+        assert!(first.contains("AIOS_TOTAL_ROWS="));
+        assert!(first.contains("AIOS_TOTAL_COLUMNS="));
+        assert!(first.contains("AIOS_SELECTION_TRUNCATED="));
+        assert!(first.contains("close openedWorkbook saving no"));
+        assert!(first.contains(&MAX_SPREADSHEET_READ_SHEETS.to_string()));
+        assert!(first.contains(&MAX_SPREADSHEET_READ_ROWS.to_string()));
+        assert!(first.contains(&MAX_SPREADSHEET_READ_COLUMNS.to_string()));
+        assert!(first.contains(&MAX_SPREADSHEET_PROTOCOL_CHARS.to_string()));
+
+        let named = spreadsheet_read_command_for_selection(
+            "/safe/report.xlsx",
+            &SpreadsheetReadSelection::Named("Summary".to_owned()),
+        );
+
+        assert!(named.contains("named"));
+        assert!(named.contains("Summary"));
+
+        let selected = spreadsheet_read_command_for_selection(
+            "/safe/report.xlsx",
+            &SpreadsheetReadSelection::Selected(vec!["Sales".to_owned(), "Summary".to_owned()]),
+        );
+
+        assert!(selected.contains("selected"));
+        assert!(selected.contains("Sales"));
+        assert!(selected.contains("Summary"));
+    }
+
+    #[test]
+    fn spreadsheet_read_phase_b_parser_returns_workbook_and_single_sheet_shapes() {
+        let multi = format!(
+            "AIOS_WORKSHEET_COUNT=2\nAIOS_WORKSHEETS=Sales\u{1f}Summary\nAIOS_SELECTION_TRUNCATED=false\n\
+AIOS_SHEET_BEGIN\nAIOS_SHEET=Sales\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_ROWS=2\nAIOS_TOTAL_COLUMNS=2\nAIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\tValue\nAlpha\t42\nAIOS_SHEET_END\n\
+AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_ROWS=2\nAIOS_TOTAL_COLUMNS=2\nAIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nMetric\tValue\nTotal\t42\nAIOS_SHEET_END"
+        );
+
+        let history = json!({"messages":[{
+            "role":"toolResult",
+            "toolName":"exec",
+            "isError":false,
+            "content":[{"text":multi}]
+        }]});
+
+        let parsed = spreadsheet_read_output(&history, "/safe/report.xlsx").unwrap();
+
+        assert_eq!(parsed["status"], "workbook");
+        assert_eq!(parsed["worksheetCount"], 2);
+        assert_eq!(parsed["worksheetNames"], json!(["Sales", "Summary"]));
+        assert_eq!(parsed["sheets"].as_array().unwrap().len(), 2);
+        assert_eq!(parsed["sheets"][0]["name"], "Sales");
+        assert_eq!(parsed["sheets"][1]["name"], "Summary");
+        assert_eq!(parsed["truncated"], false);
+
+        let single = "AIOS_WORKSHEET_COUNT=2\nAIOS_WORKSHEETS=Sales\u{1f}Summary\nAIOS_SELECTION_TRUNCATED=false\n\
+AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_ROWS=2\nAIOS_TOTAL_COLUMNS=2\nAIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nMetric\tValue\nTotal\t42\nAIOS_SHEET_END";
+
+        let history = json!({"messages":[{
+            "role":"toolResult",
+            "toolName":"exec",
+            "isError":false,
+            "content":[{"text":single}]
+        }]});
+
+        let parsed = spreadsheet_read_output(&history, "/safe/report.xlsx").unwrap();
+
+        assert_eq!(parsed["status"], "table");
+        assert_eq!(parsed["sheet"], "Summary");
+        assert_eq!(parsed["worksheetCount"], 2);
+        assert_eq!(parsed["worksheetNames"], json!(["Sales", "Summary"]));
+        assert_eq!(parsed["rows"], 2);
+        assert_eq!(parsed["columns"], 2);
+        assert_eq!(parsed["totalRows"], 2);
+        assert_eq!(parsed["totalColumns"], 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft Excel and AI_OS_EXCEL_EDIT_FIXTURE"]
+    fn spreadsheet_read_phase_b_real_multi_sheet_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let multi = root.path().join("phase-b-multi-read.xlsx");
+
+        crate::document::excel::edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": multi,
+            "operations": [
+                {"type":"add_worksheet","name":"Summary"},
+                {"type":"set_cell","sheet":"Summary","row":1,"column":1,"value":"Metric"},
+                {"type":"set_cell","sheet":"Summary","row":1,"column":2,"value":"Value"},
+                {"type":"set_cell","sheet":"Summary","row":2,"column":1,"value":"Total"},
+                {"type":"set_cell","sheet":"Summary","row":2,"column":2,"value":"NinetyNine"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(fs::read(&fixture).unwrap(), original);
+
+        let multi_path = multi.to_str().unwrap();
+
+        let all_command =
+            spreadsheet_read_command_for_selection(multi_path, &SpreadsheetReadSelection::All);
+
+        let all_output = Command::new("/bin/bash")
+            .arg("-lc")
+            .arg(all_command)
+            .output()
+            .unwrap();
+
+        assert!(all_output.status.success());
+
+        let all_text = String::from_utf8_lossy(&all_output.stdout).to_string();
+
+        let history = json!({"messages":[{
+            "role":"toolResult",
+            "toolName":"exec",
+            "isError":false,
+            "content":[{"text":all_text}]
+        }]});
+
+        let all = spreadsheet_read_output(&history, multi_path).unwrap();
+
+        assert_eq!(all["status"], "workbook");
+        assert_eq!(all["worksheetCount"], 2);
+        assert_eq!(all["worksheetNames"].as_array().unwrap().len(), 2);
+        assert!(all["worksheetNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "Sheet1"));
+        assert!(all["worksheetNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "Summary"));
+
+        let sheets = all["sheets"].as_array().unwrap();
+
+        assert_eq!(sheets.len(), 2);
+
+        let summary = sheets
+            .iter()
+            .find(|sheet| sheet["name"] == "Summary")
+            .unwrap();
+
+        assert!(summary["content"]
+            .as_str()
+            .unwrap()
+            .contains("Metric\tValue"));
+        assert!(summary["content"]
+            .as_str()
+            .unwrap()
+            .contains("Total\tNinetyNine"));
+
+        let named_command = spreadsheet_read_command_for_selection(
+            multi_path,
+            &SpreadsheetReadSelection::Named("Summary".to_owned()),
+        );
+
+        let named_output = Command::new("/bin/bash")
+            .arg("-lc")
+            .arg(named_command)
+            .output()
+            .unwrap();
+
+        assert!(named_output.status.success());
+
+        let named_text = String::from_utf8_lossy(&named_output.stdout).to_string();
+
+        let history = json!({"messages":[{
+            "role":"toolResult",
+            "toolName":"exec",
+            "isError":false,
+            "content":[{"text":named_text}]
+        }]});
+
+        let named = spreadsheet_read_output(&history, multi_path).unwrap();
+
+        assert_eq!(named["status"], "table");
+        assert_eq!(named["sheet"], "Summary");
+        assert_eq!(named["worksheetCount"], 2);
+        assert!(named["content"].as_str().unwrap().contains("Metric\tValue"));
+
+        let selected_command = spreadsheet_read_command_for_selection(
+            multi_path,
+            &SpreadsheetReadSelection::Selected(vec!["Summary".to_owned(), "Sheet1".to_owned()]),
+        );
+
+        let selected_output = Command::new("/bin/bash")
+            .arg("-lc")
+            .arg(selected_command)
+            .output()
+            .unwrap();
+
+        assert!(selected_output.status.success());
+
+        let selected_text = String::from_utf8_lossy(&selected_output.stdout).to_string();
+
+        let history = json!({"messages":[{
+            "role":"toolResult",
+            "toolName":"exec",
+            "isError":false,
+            "content":[{"text":selected_text}]
+        }]});
+
+        let selected = spreadsheet_read_output(&history, multi_path).unwrap();
+
+        assert_eq!(selected["status"], "workbook");
+        assert_eq!(selected["sheets"].as_array().unwrap().len(), 2);
+
+        let missing_command = spreadsheet_read_command_for_selection(
+            multi_path,
+            &SpreadsheetReadSelection::Named("Missing".to_owned()),
+        );
+
+        let missing_output = Command::new("/bin/bash")
+            .arg("-lc")
+            .arg(missing_command)
+            .output()
+            .unwrap();
+
+        assert!(missing_output.status.success());
+
+        let missing_text = String::from_utf8_lossy(&missing_output.stdout).to_string();
+
+        let history = json!({"messages":[{
+            "role":"toolResult",
+            "toolName":"exec",
+            "isError":false,
+            "content":[{"text":missing_text}]
+        }]});
+
+        let missing = spreadsheet_read_output(&history, multi_path).unwrap();
+
+        assert_eq!(missing["status"], "failed");
+        assert!(missing["error"]
+            .as_str()
+            .unwrap()
+            .contains("Worksheet not found"));
     }
 
     #[test]
