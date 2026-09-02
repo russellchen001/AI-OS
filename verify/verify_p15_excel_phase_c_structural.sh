@@ -36,6 +36,23 @@ bash verify/verify_p15_spreadsheet_create.sh \
 
 echo "✅ Existing Spreadsheet Create produced real XLSX"
 
+# The adapter's AppleScript is one embedded raw string. Compiling it on its own
+# turns a syntax mistake into a one-second failure here instead of a several
+# minute failure inside the real E2E.
+SCRIPT_SRC="$TMP_DIR/edit.applescript"
+awk '/^const EDIT_SCRIPT: &str = r#"$/{capture=1; next} /^"#;$/{capture=0} capture' \
+  src-tauri/src/document/excel.rs >"$SCRIPT_SRC"
+
+[ -s "$SCRIPT_SRC" ] || fail "Extract embedded AppleScript"
+
+/usr/bin/osacompile -o "$TMP_DIR/edit.scpt" "$SCRIPT_SRC" \
+  >"$TMP_DIR/osacompile.log" 2>&1 || {
+    cat "$TMP_DIR/osacompile.log"
+    fail "Embedded AppleScript compiles"
+  }
+
+echo "✅ embedded AppleScript compiles"
+
 cargo test \
   --manifest-path src-tauri/Cargo.toml \
   document::excel::tests::structural_operations_are_parsed_with_bounded_one_based_indexes \

@@ -884,6 +884,25 @@ on run argv
             set ownsWorkbook to true
             set validationText to ""
 
+            -- A structural change moves every cell after it, so an address
+            -- written earlier on that worksheet is stale by the time the saved
+            -- copy is reopened. Re-asserting it would report a shift that
+            -- worked as a failed write. Those worksheets are collected first so
+            -- the cell branches below can say the address was displaced instead
+            -- of pretending it was not. The structural probes still read real
+            -- content back, so the earlier writes remain evidenced.
+            set structurallyChangedSheets to {}
+            repeat with scanRecord in operationRecords
+                set scanFields to my splitText(contents of scanRecord, ASCII character 31)
+                set scanKind to item 1 of scanFields
+                if scanKind is "insert_row" or scanKind is "delete_row" or scanKind is "insert_column" or scanKind is "delete_column" then
+                    set scanSheet to item 2 of scanFields
+                    if not my listContains(structurallyChangedSheets, scanSheet) then
+                        set end of structurallyChangedSheets to scanSheet
+                    end if
+                end if
+            end repeat
+
             set reopenedWorksheetNames to my worksheetNames(validationWorkbook)
 
             if not my sameNameSet(finalWorksheetNames, reopenedWorksheetNames) then
@@ -902,7 +921,9 @@ on run argv
                     set scalarKind to item 4 of fields
                     set expectedText to item 5 of fields
 
-                    if exists worksheet sheetName of validationWorkbook then
+                    if my listContains(structurallyChangedSheets, sheetName) then
+                        set validationText to validationText & "set_cell:" & sheetName & "!" & cellAddress & "=displaced-by-structural-change" & (ASCII character 30)
+                    else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
                             set actualValue to value of range cellAddress
 
@@ -929,7 +950,9 @@ on run argv
                     set cellAddress to item 3 of fields
                     set expectedFormula to item 4 of fields
 
-                    if exists worksheet sheetName of validationWorkbook then
+                    if my listContains(structurallyChangedSheets, sheetName) then
+                        set validationText to validationText & "set_formula:" & sheetName & "!" & cellAddress & "=displaced-by-structural-change" & (ASCII character 30)
+                    else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
                             set actualFormula to formula of range cellAddress as text
 
@@ -949,7 +972,9 @@ on run argv
                     set cellAddress to item 3 of fields
                     set neighborAddress to item 4 of fields
 
-                    if exists worksheet sheetName of validationWorkbook then
+                    if my listContains(structurallyChangedSheets, sheetName) then
+                        set validationText to validationText & "clear_cell:" & sheetName & "!" & cellAddress & "=displaced-by-structural-change" & (ASCII character 30)
+                    else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
                             set clearedValue to my safeText(value of range cellAddress)
                             set clearedFormula to my safeText(formula of range cellAddress)
@@ -1236,6 +1261,24 @@ mod tests {
         // delete row 1 gives   1=[]  2=R2 3=R3           probes A1,A2
         probed("insert_row:Rows!2:2:", "insert_row:Rows!2:2:A2=,A3=R2");
         probed("delete_row:Rows!1:1:", "delete_row:Rows!1:1:A1=,A2=R2");
+
+        // The earlier cell writes on these sheets were moved by the structural
+        // changes, so their original addresses are stale. The adapter reports
+        // that instead of asserting the old address and calling a working shift
+        // a failed write. The probes above are what evidences those writes.
+        for displaced in [
+            "set_cell:Columns!A1=displaced-by-structural-change",
+            "set_cell:Columns!B1=displaced-by-structural-change",
+            "set_cell:Columns!C1=displaced-by-structural-change",
+            "set_cell:Rows!A1=displaced-by-structural-change",
+            "set_cell:Rows!A2=displaced-by-structural-change",
+            "set_cell:Rows!A3=displaced-by-structural-change",
+        ] {
+            assert!(
+                validation.iter().any(|value| value == displaced),
+                "expected `{displaced}` among {validation:?}"
+            );
+        }
     }
 
     #[test]
