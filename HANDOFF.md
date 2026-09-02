@@ -242,7 +242,7 @@ Excel is still not Common-Capability complete after Phase C.
 
 Remaining work includes:
 
-1. basic formatting
+1. ~~basic formatting~~ — **COMPLETE**, see Excel Phase D below
 2. sort/filter
 3. common chart integration
 4. formula-aware spreadsheet read
@@ -251,34 +251,115 @@ Remaining work includes:
 
 Existing isolated chart probes previously demonstrated that column / line / pie chart creation is technically possible in real Excel. Do not treat those probes alone as integrated Common Capability completion.
 
-#### Formatting, sort and filter primitives already proven on real Excel 16.78
+### Excel Phase D — Basic formatting — COMPLETE
 
-The same isolated probe run that settled Phase C also ran eight formatting /
-sort / filter candidates against a fresh workbook. **All eight passed.** These
-forms are proven and should be used as-is rather than re-probed; what remains is
-adapter integration, which is where Phase C actually went wrong.
+Landed operations, again through the existing `edit_excel_workbook()` adapter on
+the existing provider-neutral `spreadsheet.edit` route. No second Excel adapter.
+
+- `format_cells` — one rectangular range, any combination of `bold`, `italic`,
+  `fontSize`, `fontName`, `fillColorIndex`, `numberFormat`
+- `set_column_width`
+- `set_row_height`
+
+#### What was probed before anything was written
+
+`verify/probe_excel_formatting_semantics.sh` answered the two questions the
+phase could not be written without:
+
+1. **Do these property names exist?** `italic`, `font size` and font `name` had
+   never been probed; only bold, number format, colour index, column width and
+   row height had.
+2. **Does each attribute survive save-as-xlsx, close and reopen?** The adapter
+   validates by reading the reopened saved copy, so an attribute that is correct
+   live but lost on save could not be validated that way at all.
+
+All eight passed both. Proven forms, used verbatim:
 
 ```applescript
-set number format of range "B2" of targetSheet to "0.00"
-set bold of font object of range "A1" of targetSheet to true
-set color of interior object of range "A1" of targetSheet to {255, 0, 0}
-set color index of interior object of range "A1" of targetSheet to 3
+set bold of font object of range rangeReference to true
+set italic of font object of range rangeReference to true
+set font size of font object of range rangeReference to 18
+set name of font object of range rangeReference to "Courier New"
+set number format of range rangeReference to "0.00"
+set color index of interior object of range rangeReference to 6
 set column width of column 1 of targetSheet to 24
 set row height of row 1 of targetSheet to 30
+```
+
+Read-back text forms matter and are not uniform: bold/italic return `true`,
+font size returns `18` (not `18.0`), colour index returns `6`, but column width
+and row height return `24.0` and `30.0`. **Width and height must be compared
+numerically, not as strings**, and the adapter allows half a unit of drift
+because Excel stores them as reals and may settle a fraction away from a
+requested whole number; the observed value is reported, not the requested one.
+
+#### Contract
+
+- one range per operation, bounded: rows 1-10000, columns 1-256, at most 65536
+  cells, and an end that may not precede its start
+- attributes are optional but an operation carrying none is **refused** -- it
+  would change nothing and then validate clean
+- attribute bounds are Excel's own: font size 1-409, palette index 1-56, column
+  width 1-255, row height 1-409. Zero is excluded on width and height because it
+  hides the line rather than resizing it, which is not what the caller asked for
+- encoding is fixed arity with an empty field per absent attribute and an `end`
+  terminator, so no optional value is ever the trailing field
+- the Phase C displacement rule applies here too: formatting addresses on a
+  worksheet that a structural operation touched are reported as
+  `displaced-by-structural-change` rather than asserted stale
+
+#### Accepted real Excel 16.78 evidence
+
+`document::excel::tests::excel_phase_d_formatting_real_e2e`, read out of the
+reopened saved copy at the top-left cell of each range:
+
+| range | requested | read back |
+| --- | --- | --- |
+| `A1:B1` | bold, italic, size 14, Courier New, fill 6 | `bold=true;italic=true;size=14;font=Courier New;fill=6;` |
+| `B2:B2` | number format `0.00` | `number=0.00;` |
+| column 1 | width 24 | within half a unit of 24 |
+| row 1 | height 30 | within half a unit of 30 |
+
+`B2` deliberately asks for a number format and nothing else, so an
+implementation that painted the whole sheet would be caught.
+
+#### Verifiers
+
+- `verify/probe_excel_formatting_semantics.sh` — the isolated probe above
+- `verify/verify_p15_excel_phase_d_formatting.sh` — AppleScript compile, input
+  validation, encoding, the real E2E, then Phase A / Phase B Mutation /
+  Phase B Read / Phase C regressions, then Excel state restoration
+- `verify/gate_p15_excel.sh` — one-pass gate (renamed from
+  `gate_p15_excel_phase_c.sh`; the Phase D verifier subsumes the Phase C step)
+
+Full gate result on real Excel 16.78: **PASS** on every step.
+
+The `document::excel::tests::` count guard in
+`verify/verify_p15_excel_phase_a.sh` moved from 11 to **14**.
+
+### Excel Phase E — sort/filter — NEXT
+
+Already proven by the earlier structural probe run, so integrate rather than
+re-probe:
+
+```applescript
 sort (range "A1:B3" of targetSheet) key1 (range "A1" of targetSheet) order1 sort ascending header header yes
 autofilter range (range "A1:B3" of targetSheet)
 ```
 
-Number format, bold, color index, column width and row height all read back.
-Interior RGB and autofilter apply without a scalar read-back, so they need a
-different piece of evidence than a property re-read.
+Sorting by column A ascending moved `Alpha` into `A2`, so sort has a scalar
+read-back. **Autofilter does not**, and it has not been probed for save/reopen
+survival -- probe that before designing its validation, the way Phase D probed
+its attributes.
 
-Carry forward from Phase C, because both cost a failed real run:
+#### Two rules that each cost a failed real run; carry them forward
 
 - reopen validation reads the saved copy **once, at the end**, so a probe sees
-  the final state of its worksheet, not the state right after its own operation
+  the final state of its worksheet, not the state right after its own
+  operation. Give each operation its own worksheet when the read-back is
+  supposed to prove that one operation.
 - an operation that moves cells invalidates addresses written earlier on that
-  worksheet; report the displacement instead of asserting a stale address
+  worksheet; report the displacement instead of asserting a stale address.
 
 ### Apple iWork — REMAINING OFFICE WORK
 
@@ -389,8 +470,8 @@ Only after those gates pass:
 ### Recommended remaining Office order
 
 1. ~~Excel Phase C — row/column structural mutation~~ — **COMPLETE**
-2. Excel basic formatting — NEXT
-3. Excel sort/filter
+2. ~~Excel basic formatting~~ — **COMPLETE**
+3. Excel sort/filter — NEXT
 4. Excel common chart integration
 5. Excel formula-aware read
 6. Excel final realistic workflow
@@ -1580,6 +1661,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-02  Microsoft Excel Phase D basic formatting completed: `format_cells` (one bounded rectangular range with any combination of bold, italic, font size, font name, fill colour index and number format), `set_column_width` and `set_row_height` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route. An isolated probe (`verify/probe_excel_formatting_semantics.sh`) was run first and established both that the previously unprobed `italic`, `font size` and font `name` properties exist and that all eight attributes survive save-as-xlsx, close and reopen -- the precondition for validating them by reading the reopened saved copy. Read-back text forms are not uniform: bold/italic return `true`, font size returns `18`, colour index returns `6`, but column width and row height return `24.0` and `30.0`, so line measures are compared numerically with half a unit of tolerance and the observed value is reported rather than the requested one. An operation carrying no attribute is refused rather than silently validating clean. Encoding is fixed arity with an `end` terminator so no optional value is ever the trailing field. The Phase C displacement rule extends to formatting addresses. Real Excel 16.78 gate passes Phase D formatting, Phase A, Phase B mutation, Phase B read, Phase C structural, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. The `document::excel::tests::` count guard moved from 11 to 14, and `verify/gate_p15_excel_phase_c.sh` was renamed `verify/gate_p15_excel.sh`. Next Excel work is sort/filter, whose sort form is already proven; autofilter still needs a save/reopen survival probe before its validation is designed. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Microsoft Excel Phase C completed: `insert_row`, `delete_row`, `insert_column` and `delete_column` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route, with explicit worksheet identity, 1-based bounded indexes, one line per operation and no `count` parameter. The previous attempt's hypothesis was disproved: an isolated real Excel 16.78 probe ran all twelve candidate forms and all twelve shifted content correctly and identically, so the `shift` parameter is unnecessary and the plain form is used. The real cause was adapter integration -- reopen validation asserted cell addresses that the structural change had moved, reporting a working shift as `SetCell string validation mismatch`; worksheets touched by a structural operation now report `displaced-by-structural-change` rather than asserting a stale address, and Excel's shift arithmetic is deliberately not reimplemented to predict new addresses. Validation reads the saved copy once at the end, so each structural operation now gets its own worksheet in the E2E and each read-back proves exactly one operation, with a fifth worksheet carrying the composite insert-then-delete sequence the previous attempt failed on. Real Excel 16.78 gate passes Phase C structural, Phase A, Phase B mutation, Phase B read, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. Source workbook preservation, save-copy, workbook/window restoration, Excel-process preservation and user-workbook preservation all hold. `verify/verify_p15_excel_phase_a.sh` now expects 11 tests from the `document::excel::tests::` filter instead of 8. Next Excel work is basic formatting, whose eight AppleScript primitives are already proven by the same probe run. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Office takeover recorded: Word and PowerPoint Common Capability remain Complete; Excel Phase A, Phase B Mutation, and Phase B Multi-Sheet Read remain Complete. Excel Phase C is explicitly NOT LANDED after the temporary candidate passed Rust/API/unit validation but failed real Excel 16.78 column structural read-back; the worker restored stable baseline `633aeb42258a248ed80dd0fa760525a6207ed9d3`. Next owner starts with an isolated real-Excel whole-column-delete semantics probe, then completes Phase C without reopening Phase A/B. Remaining Office work includes Excel formatting, sort/filter, chart integration, formula-aware read and final workflow; iWork Common Capability review/completion; WPS deterministic-support classification; Google Workspace fallback completion; and final Provider Matrix acceptance. Office remains In Progress and P15 remains 5/11.
 - 2026-09-02  Microsoft Excel Phase B completed: `spreadsheet.read` now returns worksheet list/count and supports backward-compatible first-sheet reads, explicit named-sheet reads, selected multi-sheet reads, and bounded all-sheet reads. Real Excel E2E passes list/count, named and multi-sheet content, missing-sheet fail-closed behavior, bounded output metadata, workbook/window restoration, Excel-process preservation, and user-workbook preservation. Read bounds are 16 worksheets, 200 rows x 64 columns per worksheet, 256 rendered characters per cell, and an approximately 60k protocol budget. Combined with the already accepted Phase B mutation subphase, Excel Phase B is complete. Next Excel work is Phase C row/column insertion and deletion. Excel Common Capability, Office, and P15 remain In Progress / In Progress / 5 of 11.
