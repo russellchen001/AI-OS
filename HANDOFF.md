@@ -149,110 +149,92 @@ Phase B real Excel E2E passed.
 
 Do not reopen Excel Phase A or Phase B unless a regression is observed.
 
-### Excel Phase C — NOT LANDED / NEXT TAKEOVER TASK
+### Excel Phase C — COMPLETE
 
-Phase C is **not complete**.
-
-No Phase C production code is currently landed in the stable repository.
-
-The attempted design was:
+Landed operations, all through the existing `edit_excel_workbook()` adapter on
+the existing provider-neutral `spreadsheet.edit` Runtime route. No second Excel
+adapter was added.
 
 - `insert_row`
 - `delete_row`
 - `insert_column`
 - `delete_column`
-- explicit worksheet identity
-- 1-based bounded row/column indexes
-- atomic operations
-- no `count` parameter
-- existing save-copy / reopen ownership model
-- real shifted-content validation
 
-Temporary Phase C candidate results:
+Contract: explicit worksheet identity, 1-based bounded indexes (row 1-10000,
+column 1-256), one line per operation, no `count` parameter, existing
+save-copy / reopen ownership model, real shifted-content validation.
 
-- Rust parser: PASS
-- operation encoding: PASS
-- `cargo check`: PASS
-- Phase C unit contract: PASS
-- real Excel 16.78 row/column E2E: FAILED
+#### The previous attempt's hypothesis was wrong
 
-The failure was isolated to the real column structural workflow.
+The earlier failure was blamed on `delete range range "A:A" shift shift to left`.
+An isolated real Excel 16.78 probe (`verify/probe_excel_structural_semantics.sh`)
+ran all twelve candidate forms -- plain, `shift`, and `entire row`/`entire column`
+-- each in its own `osascript` invocation against a fresh workbook. **All twelve
+shifted content correctly and identically.** The `shift` parameter changes
+nothing.
 
-Observed failure:
+The accepted form is therefore the plain one, with no `shift` parameter:
 
-After the column insert/delete workflow, real workbook read-back returned:
+```applescript
+insert into range (range lineReference of structuralSheet)
+delete range (range lineReference of structuralSheet)
+```
 
-- actual: empty string
-- expected: `C1`
+The real cause of the earlier failure was in adapter integration, not AppleScript
+semantics. Two integration defects were found and fixed:
 
-The failing assertion occurred in the Phase C real E2E after the column mutation workflow.
+1. **Reopen validation read addresses the change had moved.** A structural change
+   moves every cell after it, so an address written earlier on that worksheet is
+   stale by the time the saved copy is reopened. The validation asserted the old
+   address anyway and reported a working shift as
+   `SetCell string validation mismatch`. Worksheets touched by a structural
+   operation are now collected before the validation pass, and cell operations on
+   them report `displaced-by-structural-change` instead of asserting a stale
+   address. Excel's shift arithmetic is deliberately **not** reimplemented in
+   AppleScript to predict the new address -- that is the same looks-equivalent
+   assumption that cost the previous attempt.
 
-The attempted production AppleScript path included:
+2. **Validation reads the saved copy once, at the end.** Every probe therefore
+   sees the final state of its worksheet, not the state right after its own
+   operation. Each structural operation now gets a worksheet to itself in the
+   E2E, so the final state is the post-operation state and each read-back proves
+   exactly one operation.
 
-`delete range range "A:A" shift shift to left`
+#### Accepted real Excel 16.78 evidence
 
-This path must **not** be considered accepted.
+`document::excel::tests::excel_phase_c_structural_real_e2e`, all read out of the
+reopened saved copy:
 
-The Phase C worker automatically restored the repository to stable baseline:
+| worksheet | before | operation | probe |
+| --- | --- | --- | --- |
+| InsCol | `A1=R1 B1=C1 C1=C2` | insert column B | `B1= , C1=C1` |
+| DelCol | `A1=R1 B1=C1 C1=C2` | delete column A | `A1=C1, B1=C2` |
+| InsRow | `A1=X1 A2=R2 A3=R3` | insert row 2 | `A2= , A3=R2` |
+| DelRow | `A1=X1 A2=R2 A3=R3` | delete row 1 | `A1=R2, A2=R3` |
+| Workflow | `A1=R1 B1=C1 C1=C2` | insert column B, delete column A | `A1= , B1=C1` |
 
-`633aeb42258a248ed80dd0fa760525a6207ed9d3`
+`Workflow` is exactly the sequence the previous attempt failed on.
 
-Therefore:
+Used-range snapshots are recorded per operation and reported, not asserted --
+Excel does not always shrink a used range on deletion.
 
-- Phase C source changes were rolled back
-- Phase C verifier was rolled back
-- no Phase C commit exists
-- Excel Phase A/B remain intact
+#### Verifiers
 
-### Exact Excel takeover point
+- `verify/verify_p15_excel_phase_c_structural.sh` -- compiles the embedded
+  AppleScript on its own first, so a syntax mistake fails in a second rather than
+  minutes into the real E2E; then the real structural E2E, then Phase A, Phase B
+  Mutation and Phase B Read regressions, then Excel workbook/window state
+  restoration.
+- `verify/gate_p15_excel_phase_c.sh` -- one-pass acceptance gate: the above plus
+  Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build
+  and `git diff --check`. One line per step.
 
-The next developer should begin here.
+Full gate result on real Excel 16.78: **PASS** on every step.
 
-First perform an isolated real Excel 16.78 probe of whole-column deletion semantics.
-
-Candidate forms to investigate include:
-
-1. `delete range range "A:A" shift shift to left`
-2. `delete range range "A:A"`
-3. direct Excel column-object deletion
-
-Do not choose an implementation based only on AppleScript compilation success.
-
-The accepted form must be proven by actual workbook content.
-
-Controlled fixture expectation:
-
-Initial:
-
-- `A1 = R1`
-- `B1 = C1`
-- `C1 = C2`
-
-Operation:
-
-1. insert column B
-2. delete column A
-
-Expected final result:
-
-- `A1 = ""`
-- `B1 = C1`
-- `C1 = C2`
-
-Once the correct real Excel 16.78 semantics are identified:
-
-1. implement Phase C through the existing `edit_excel_workbook()` adapter
-2. keep the existing provider-neutral `spreadsheet.edit` Runtime route
-3. do not add a second Excel adapter
-4. run real shifted-content reopen validation
-5. run Phase A regression
-6. run Phase B Mutation regression
-7. run Phase B Read regression
-8. run Spreadsheet Read/Create regression
-9. run full Rust tests
-10. run frontend build
-11. run `git diff --check`
-12. only then mark Excel Phase C Complete
+`verify/verify_p15_excel_phase_a.sh` asserts how many tests the
+`document::excel::tests::` filter matches, so that a filter which silently stops
+matching cannot pass as a clean run. Phase C moved that count from 8 to 11.
+**Anyone adding or removing a test in that module must update it.**
 
 ### Remaining Excel Common Capability work after Phase C
 
@@ -268,6 +250,35 @@ Remaining work includes:
 6. final Excel Common Capability acceptance
 
 Existing isolated chart probes previously demonstrated that column / line / pie chart creation is technically possible in real Excel. Do not treat those probes alone as integrated Common Capability completion.
+
+#### Formatting, sort and filter primitives already proven on real Excel 16.78
+
+The same isolated probe run that settled Phase C also ran eight formatting /
+sort / filter candidates against a fresh workbook. **All eight passed.** These
+forms are proven and should be used as-is rather than re-probed; what remains is
+adapter integration, which is where Phase C actually went wrong.
+
+```applescript
+set number format of range "B2" of targetSheet to "0.00"
+set bold of font object of range "A1" of targetSheet to true
+set color of interior object of range "A1" of targetSheet to {255, 0, 0}
+set color index of interior object of range "A1" of targetSheet to 3
+set column width of column 1 of targetSheet to 24
+set row height of row 1 of targetSheet to 30
+sort (range "A1:B3" of targetSheet) key1 (range "A1" of targetSheet) order1 sort ascending header header yes
+autofilter range (range "A1:B3" of targetSheet)
+```
+
+Number format, bold, color index, column width and row height all read back.
+Interior RGB and autofilter apply without a scalar read-back, so they need a
+different piece of evidence than a property re-read.
+
+Carry forward from Phase C, because both cost a failed real run:
+
+- reopen validation reads the saved copy **once, at the end**, so a probe sees
+  the final state of its worksheet, not the state right after its own operation
+- an operation that moves cells invalidates addresses written earlier on that
+  worksheet; report the displacement instead of asserting a stale address
 
 ### Apple iWork — REMAINING OFFICE WORK
 
@@ -377,8 +388,8 @@ Only after those gates pass:
 
 ### Recommended remaining Office order
 
-1. Excel Phase C — row/column structural mutation
-2. Excel basic formatting
+1. ~~Excel Phase C — row/column structural mutation~~ — **COMPLETE**
+2. Excel basic formatting — NEXT
 3. Excel sort/filter
 4. Excel common chart integration
 5. Excel formula-aware read
@@ -1569,6 +1580,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-02  Microsoft Excel Phase C completed: `insert_row`, `delete_row`, `insert_column` and `delete_column` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route, with explicit worksheet identity, 1-based bounded indexes, one line per operation and no `count` parameter. The previous attempt's hypothesis was disproved: an isolated real Excel 16.78 probe ran all twelve candidate forms and all twelve shifted content correctly and identically, so the `shift` parameter is unnecessary and the plain form is used. The real cause was adapter integration -- reopen validation asserted cell addresses that the structural change had moved, reporting a working shift as `SetCell string validation mismatch`; worksheets touched by a structural operation now report `displaced-by-structural-change` rather than asserting a stale address, and Excel's shift arithmetic is deliberately not reimplemented to predict new addresses. Validation reads the saved copy once at the end, so each structural operation now gets its own worksheet in the E2E and each read-back proves exactly one operation, with a fifth worksheet carrying the composite insert-then-delete sequence the previous attempt failed on. Real Excel 16.78 gate passes Phase C structural, Phase A, Phase B mutation, Phase B read, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. Source workbook preservation, save-copy, workbook/window restoration, Excel-process preservation and user-workbook preservation all hold. `verify/verify_p15_excel_phase_a.sh` now expects 11 tests from the `document::excel::tests::` filter instead of 8. Next Excel work is basic formatting, whose eight AppleScript primitives are already proven by the same probe run. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Office takeover recorded: Word and PowerPoint Common Capability remain Complete; Excel Phase A, Phase B Mutation, and Phase B Multi-Sheet Read remain Complete. Excel Phase C is explicitly NOT LANDED after the temporary candidate passed Rust/API/unit validation but failed real Excel 16.78 column structural read-back; the worker restored stable baseline `633aeb42258a248ed80dd0fa760525a6207ed9d3`. Next owner starts with an isolated real-Excel whole-column-delete semantics probe, then completes Phase C without reopening Phase A/B. Remaining Office work includes Excel formatting, sort/filter, chart integration, formula-aware read and final workflow; iWork Common Capability review/completion; WPS deterministic-support classification; Google Workspace fallback completion; and final Provider Matrix acceptance. Office remains In Progress and P15 remains 5/11.
 - 2026-09-02  Microsoft Excel Phase B completed: `spreadsheet.read` now returns worksheet list/count and supports backward-compatible first-sheet reads, explicit named-sheet reads, selected multi-sheet reads, and bounded all-sheet reads. Real Excel E2E passes list/count, named and multi-sheet content, missing-sheet fail-closed behavior, bounded output metadata, workbook/window restoration, Excel-process preservation, and user-workbook preservation. Read bounds are 16 worksheets, 200 rows x 64 columns per worksheet, 256 rendered characters per cell, and an approximately 60k protocol budget. Combined with the already accepted Phase B mutation subphase, Excel Phase B is complete. Next Excel work is Phase C row/column insertion and deletion. Excel Common Capability, Office, and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-01  Microsoft Excel Phase B mutation subphase completed: real Excel 16.78 E2E passes AddWorksheet through snapshot + unique set-difference identity discovery, RenameWorksheet, DeleteWorksheet, explicit named-sheet cell/formula edits, final-sheet delete fail-closed behavior, final worksheet-set reopen validation, save-copy, original preservation, fresh post-save ownership, workbook/window restoration, Excel-process preservation, and user-workbook preservation. No worksheet-index assumption, System Events, UI click, or global Excel setting is used. Full Phase B remains In Progress until worksheet list/count and bounded specific-sheet/multi-sheet read are accepted.
