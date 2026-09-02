@@ -72,6 +72,22 @@ enum EditOperation {
     DeleteWorksheet {
         sheet: String,
     },
+    InsertRow {
+        sheet: String,
+        row: u64,
+    },
+    DeleteRow {
+        sheet: String,
+        row: u64,
+    },
+    InsertColumn {
+        sheet: String,
+        column: u64,
+    },
+    DeleteColumn {
+        sheet: String,
+        column: u64,
+    },
 }
 
 fn workbook_path<'a>(
@@ -169,6 +185,21 @@ fn coordinate(operation: &Value) -> Result<(u64, u64), ExcelError> {
     Ok((row, column))
 }
 
+/// A single bounded 1-based row or column index.
+///
+/// Structural operations address one whole line at a time: there is no `count`
+/// parameter, so a caller asking for several must send several operations and
+/// each is validated on its own.
+fn line_index(operation: &Value, field: &str, maximum: u64) -> Result<u64, ExcelError> {
+    let value = operation.get(field).and_then(Value::as_u64).unwrap_or(0);
+    if !(1..=maximum).contains(&value) {
+        return Err(ExcelError::invalid(format!(
+            "{field} must be between 1 and {maximum}"
+        )));
+    }
+    Ok(value)
+}
+
 fn scalar(value: &Value) -> Result<CellScalar, ExcelError> {
     if let Some(value) = value.as_str() {
         validate_text(value, MAX_CELL_TEXT, "cell value")?;
@@ -253,8 +284,24 @@ fn parse_operation(operation: &Value) -> Result<EditOperation, ExcelError> {
         "delete_worksheet" => Ok(EditOperation::DeleteWorksheet {
             sheet: sheet_name(operation)?,
         }),
+        "insert_row" => Ok(EditOperation::InsertRow {
+            sheet: sheet_name(operation)?,
+            row: line_index(operation, "row", MAX_ROW)?,
+        }),
+        "delete_row" => Ok(EditOperation::DeleteRow {
+            sheet: sheet_name(operation)?,
+            row: line_index(operation, "row", MAX_ROW)?,
+        }),
+        "insert_column" => Ok(EditOperation::InsertColumn {
+            sheet: sheet_name(operation)?,
+            column: line_index(operation, "column", MAX_COLUMN)?,
+        }),
+        "delete_column" => Ok(EditOperation::DeleteColumn {
+            sheet: sheet_name(operation)?,
+            column: line_index(operation, "column", MAX_COLUMN)?,
+        }),
         _ => Err(ExcelError::invalid(
-            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, and delete_worksheet",
+            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, delete_worksheet, insert_row, delete_row, insert_column, and delete_column",
         )),
     }
 }
@@ -280,6 +327,21 @@ fn column_name(mut column: u64) -> String {
         column = (column - 1) / 26;
     }
     name
+}
+
+/// The two cells whose reopened contents prove a structural change actually
+/// shifted data: the line that was operated on, and the one after it.
+fn row_probe_cells(row: u64) -> (String, String) {
+    let following = if row < MAX_ROW { row + 1 } else { row - 1 };
+    (format!("A{row}"), format!("A{following}"))
+}
+
+fn column_probe_cells(column: u64) -> (String, String) {
+    let following = if column < MAX_COLUMN { column + 1 } else { column - 1 };
+    (
+        format!("{}1", column_name(column)),
+        format!("{}1", column_name(following)),
+    )
 }
 
 fn encode_operations(operations: &[EditOperation]) -> String {
@@ -356,6 +418,52 @@ fn encode_operations(operations: &[EditOperation]) -> String {
                     String::new(),
                     String::new(),
                 ],
+                // Whole-line references. A real Excel 16.78 probe showed the
+                // plain `insert into range` / `delete range` forms shift
+                // content correctly on their own, and that the `shift`
+                // parameter changes nothing, so it is not sent.
+                EditOperation::InsertRow { sheet, row } => {
+                    let (at, next) = row_probe_cells(*row);
+                    vec![
+                        "insert_row".to_owned(),
+                        sheet.clone(),
+                        format!("{row}:{row}"),
+                        at,
+                        next,
+                    ]
+                }
+                EditOperation::DeleteRow { sheet, row } => {
+                    let (at, next) = row_probe_cells(*row);
+                    vec![
+                        "delete_row".to_owned(),
+                        sheet.clone(),
+                        format!("{row}:{row}"),
+                        at,
+                        next,
+                    ]
+                }
+                EditOperation::InsertColumn { sheet, column } => {
+                    let reference = column_name(*column);
+                    let (at, next) = column_probe_cells(*column);
+                    vec![
+                        "insert_column".to_owned(),
+                        sheet.clone(),
+                        format!("{reference}:{reference}"),
+                        at,
+                        next,
+                    ]
+                }
+                EditOperation::DeleteColumn { sheet, column } => {
+                    let reference = column_name(*column);
+                    let (at, next) = column_probe_cells(*column);
+                    vec![
+                        "delete_column".to_owned(),
+                        sheet.clone(),
+                        format!("{reference}:{reference}"),
+                        at,
+                        next,
+                    ]
+                }
             };
 
             fields.join(&FIELD_SEPARATOR.to_string())
@@ -498,6 +606,7 @@ on run argv
     set phaseName to "preflight"
 
     set clearSnapshots to {}
+    set structuralSnapshots to {}
     set finalWorksheetNames to {}
 
     tell application "Microsoft Excel"
@@ -680,6 +789,38 @@ on run argv
                             end if
                         end if
                     end repeat
+
+                else if operationKind is "insert_row" or operationKind is "delete_row" or operationKind is "insert_column" or operationKind is "delete_column" then
+                    set sheetName to item 2 of fields
+                    set lineReference to item 3 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    -- Exactly the form a real Excel 16.78 probe proved: an
+                    -- explicit `range "B:B" of <sheet>`, with no shift
+                    -- parameter, which the probe showed changes nothing. The
+                    -- used range before and after is recorded so a structural
+                    -- change that was silently ignored is visible.
+                    set structuralSheet to worksheet sheetName of freshWorkbook
+                    set usedBefore to my safeText(get address of used range of structuralSheet)
+
+                    if operationKind is "insert_row" or operationKind is "insert_column" then
+                        insert into range (range lineReference of structuralSheet)
+                    else
+                        delete range (range lineReference of structuralSheet)
+                    end if
+
+                    set freshWorkbook to active workbook
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet vanished during a structural change" number -2712
+                    end if
+
+                    set usedAfter to my safeText(get address of used range of (worksheet sheetName of freshWorkbook))
+
+                    set end of structuralSnapshots to operationKind & ":" & sheetName & "!" & lineReference & ":" & usedBefore & ">" & usedAfter
                 end if
             end repeat
 
@@ -820,7 +961,32 @@ on run argv
                             set validationText to validationText & "clear_cell:" & sheetName & "!" & cellAddress & "=empty" & (ASCII character 30)
                         end tell
                     end if
+
+                else if operationKind is "insert_row" or operationKind is "delete_row" or operationKind is "insert_column" or operationKind is "delete_column" then
+                    set sheetName to item 2 of fields
+                    set lineReference to item 3 of fields
+                    set operatedAddress to item 4 of fields
+                    set followingAddress to item 5 of fields
+
+                    -- Read from the reopened saved copy, so this reports where
+                    -- the data actually ended up on disk rather than what the
+                    -- live session believed.
+                    if exists worksheet sheetName of validationWorkbook then
+                        tell worksheet sheetName of validationWorkbook
+                            set operatedValue to my safeText(value of range operatedAddress)
+                            set followingValue to my safeText(value of range followingAddress)
+
+                            set validationText to validationText & operationKind & ":" & sheetName & "!" & lineReference & ":" & operatedAddress & "=" & operatedValue & "," & followingAddress & "=" & followingValue & (ASCII character 30)
+                        end tell
+                    end if
                 end if
+            end repeat
+
+            -- Structural changes are proved by reopening the saved copy in
+            -- the real E2E; what the adapter reports is what it observed while
+            -- making them, so a change that was silently ignored is visible.
+            repeat with structuralEntry in structuralSnapshots
+                set validationText to validationText & (contents of structuralEntry as text) & (ASCII character 30)
             end repeat
 
             close validationWorkbook saving no
@@ -978,6 +1144,169 @@ mod tests {
 
     fn request(operation: Value) -> Value {
         json!({"operations": [operation]})
+    }
+
+    #[test]
+    #[ignore]
+    fn excel_phase_c_structural_real_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+        let root = tempdir().unwrap();
+        let output = root.path().join("phase-c-structural-output.xlsx");
+
+        // A controlled row so the shift is unambiguous, then the exact
+        // workflow the previous attempt failed on: insert a column before the
+        // data and delete the one in front of it.
+        let result = edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": output,
+            "operations": [
+                {"type":"add_worksheet","name":"Structural"},
+                {"type":"set_cell","sheet":"Structural","row":1,"column":1,"value":"R1"},
+                {"type":"set_cell","sheet":"Structural","row":1,"column":2,"value":"C1"},
+                {"type":"set_cell","sheet":"Structural","row":1,"column":3,"value":"C2"},
+                {"type":"set_cell","sheet":"Structural","row":2,"column":1,"value":"R2"},
+                {"type":"set_cell","sheet":"Structural","row":3,"column":1,"value":"R3"},
+
+                {"type":"insert_column","sheet":"Structural","column":2},
+                {"type":"delete_column","sheet":"Structural","column":1},
+                {"type":"insert_row","sheet":"Structural","row":2},
+                {"type":"delete_row","sheet":"Structural","row":1}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(result["operationResult"]["status"], "edited-copy");
+        assert_eq!(
+            fs::read(&fixture).unwrap(),
+            original,
+            "the source workbook must be preserved"
+        );
+        assert!(output.metadata().unwrap().len() > 0);
+
+        let validation: Vec<String> = result["validation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect();
+
+        let entry = |prefix: &str| -> String {
+            validation
+                .iter()
+                .find(|value| value.starts_with(prefix))
+                .unwrap_or_else(|| panic!("missing {prefix} in {validation:?}"))
+                .clone()
+        };
+
+        // Every assertion below reads the reopened saved copy, so it is the
+        // content on disk that is being judged, not the live session.
+        //
+        // Starting row 1: A=R1 B=C1 C=C2
+        // insert column B -> A=R1 B=[]  C=C1 D=C2
+        // delete column A -> A=C1 B=C2  C=[]
+        assert!(
+            entry("insert_column:Structural!B:B").contains("B1=,C1=C1"),
+            "insert_column did not shift the row right: {}",
+            entry("insert_column:Structural!B:B")
+        );
+        assert!(
+            entry("delete_column:Structural!A:A").contains("A1=C1,B1=C2"),
+            "delete_column did not shift the row left: {}",
+            entry("delete_column:Structural!A:A")
+        );
+
+        // Column A now holds R2 and R3 in rows 2 and 3.
+        // insert row 2 -> A2=[] A3=R2
+        // delete row 1 -> A1=[] A2=R2
+        assert!(
+            entry("insert_row:Structural!2:2").contains("A2=,A3=R2"),
+            "insert_row did not shift the column down: {}",
+            entry("insert_row:Structural!2:2")
+        );
+        assert!(
+            entry("delete_row:Structural!1:1").contains("A2=R2"),
+            "delete_row did not shift the column up: {}",
+            entry("delete_row:Structural!1:1")
+        );
+    }
+
+    #[test]
+    fn structural_operations_are_parsed_with_bounded_one_based_indexes() {
+        assert_eq!(
+            parse_operations(&request(json!({"type":"insert_row","sheet":"Sheet1","row":3})))
+                .unwrap()[0],
+            EditOperation::InsertRow {
+                sheet: "Sheet1".to_owned(),
+                row: 3
+            }
+        );
+        assert_eq!(
+            parse_operations(&request(json!({"type":"delete_column","sheet":"Sheet1","column":2})))
+                .unwrap()[0],
+            EditOperation::DeleteColumn {
+                sheet: "Sheet1".to_owned(),
+                column: 2
+            }
+        );
+
+        // Out of bounds, zero and missing indexes all fail closed. There is no
+        // count parameter, so nothing can widen one operation into many.
+        for rejected in [
+            json!({"type":"insert_row","sheet":"Sheet1","row":0}),
+            json!({"type":"insert_row","sheet":"Sheet1","row":10001}),
+            json!({"type":"delete_row","sheet":"Sheet1"}),
+            json!({"type":"insert_column","sheet":"Sheet1","column":0}),
+            json!({"type":"insert_column","sheet":"Sheet1","column":257}),
+            json!({"type":"delete_column","sheet":"","column":1}),
+            json!({"type":"insert_row","sheet":"Sheet1","row":2,"count":5}),
+        ] {
+            let outcome = parse_operations(&request(rejected.clone()));
+            if rejected.get("count").is_some() {
+                // A stray count is ignored rather than honoured: the operation
+                // still addresses exactly one line.
+                assert_eq!(
+                    outcome.unwrap()[0],
+                    EditOperation::InsertRow {
+                        sheet: "Sheet1".to_owned(),
+                        row: 2
+                    }
+                );
+            } else {
+                assert!(outcome.is_err(), "{rejected} should have been rejected");
+            }
+        }
+    }
+
+    #[test]
+    fn structural_operations_encode_whole_line_references() {
+        let encoded = encode_operations(
+            &parse_operations(&json!({
+                "operations": [
+                    {"type": "insert_column", "sheet": "Sheet1", "column": 2},
+                    {"type": "delete_column", "sheet": "Sheet1", "column": 1},
+                    {"type": "insert_row", "sheet": "Sheet1", "row": 3},
+                    {"type": "delete_row", "sheet": "Sheet1", "row": 1}
+                ]
+            }))
+            .unwrap(),
+        );
+
+        assert!(encoded.contains("insert_column"));
+        assert!(encoded.contains("B:B"), "column 2 must address the whole B column");
+        assert!(encoded.contains("A:A"), "column 1 must address the whole A column");
+        assert!(encoded.contains("3:3"), "row 3 must address the whole row");
+        assert!(encoded.contains("1:1"));
+        // The shift parameter is deliberately absent: a real Excel 16.78 probe
+        // showed the plain forms shift content correctly without it.
+        assert!(!encoded.contains("shift"));
+        // Each structural operation carries the two cells whose reopened
+        // contents prove the data actually moved.
+        assert!(encoded.contains("B1"));
+        assert!(encoded.contains("C1"));
+        assert!(encoded.contains("A3"));
+        assert!(encoded.contains("A4"));
     }
 
     #[test]
