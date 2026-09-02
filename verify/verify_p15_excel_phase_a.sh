@@ -49,7 +49,7 @@ grep -q "PASS P15-3 Spreadsheet Create" "$TMP_DIR/create.log" ||
 [ -s "$FIXTURE" ] || fail "Preserved XLSX fixture"
 echo "✅ Existing Spreadsheet Create preserved a real XLSX"
 
-run_test "document::excel::tests::" 8 "Excel Phase A + Phase B validation tests"
+run_test "document::excel::tests::" 11 "Excel Phase A + Phase B + Phase C validation tests"
 run_test "spreadsheet_edit_" 3 "Permission and Office Provider routing"
 run_test "document::excel::tests::excel_phase_a_real_e2e" 1 "Combined value, formula, clear, save-copy and read-back" ignored
 run_test "runtime::openclaw_gateway_adapter::tests::spreadsheet_edit_runtime_real_e2e" 1 "Provider-neutral Runtime spreadsheet.edit dispatch" ignored
