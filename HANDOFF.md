@@ -1,5 +1,417 @@
 # AI-OS — Current State
 
+<!-- OFFICE_TAKEOVER_2026-09-02_START -->
+
+## CURRENT P15 OFFICE TAKEOVER STATE — 2026-09-02
+
+> **This section is the authoritative current Office implementation state for the next developer.**
+> If an older Office / Excel note elsewhere in this file conflicts with this section, use this section.
+
+### Current repository baseline
+
+- Branch: `feature/p15-core-skills`
+- Stable takeover baseline before this documentation commit:
+  `633aeb42258a248ed80dd0fa760525a6207ed9d3`
+- Working tree was clean before this HANDOFF update.
+- Office remains **In Progress**.
+- P15 remains **5 / 11**.
+- Do not mark Office Complete or P15 6 / 11 yet.
+
+### Microsoft Word — COMPLETE
+
+Microsoft Word Common Capability is complete.
+
+Accepted deterministic Word workflows include:
+
+- document read
+- document create
+- document edit
+- paragraph / heading changes
+- basic formatting
+- deterministic 2 x 2 table insertion and read-back
+- bounded inline-image insertion and reopen validation
+- save-copy
+- PDF export
+- no-overwrite
+- original-file preservation
+- operation-owned document lifecycle
+- realistic combined document workflow
+
+Important ownership invariant:
+
+Word can return a stale document proxy after opening. The accepted path uses bounded document-count waiting and a fresh active-document reference. Never quit Word and never close a user-owned document.
+
+DOC -> DOCX remains a non-blocking SKIP because no safe legacy DOC fixture was available.
+
+Do not reopen Word work unless an actual regression is observed.
+
+### Microsoft PowerPoint — COMPLETE
+
+Microsoft PowerPoint Common Capability is complete.
+
+Accepted deterministic PowerPoint workflows include:
+
+- presentation read
+- presentation create
+- title/body edit
+- slide add
+- slide delete
+- slide reorder
+- image insertion
+- text insertion
+- table insertion
+- basic-shape insertion
+- save-copy
+- PDF export
+- original-file preservation
+- operation-owned presentation lifecycle
+- realistic combined presentation workflow
+
+PPT -> PPTX remains a non-blocking SKIP because no safe legacy PPT fixture was available.
+
+Do not reopen PowerPoint work unless an actual regression is observed.
+
+### Microsoft Excel — IN PROGRESS
+
+#### Phase A — COMPLETE
+
+Accepted capabilities include:
+
+- `set_cell`
+- `set_formula`
+- `clear_cell`
+- typed cell values
+- formula read-back
+- calculated-value verification
+- unique XLSX save-copy
+- no-overwrite
+- original preservation
+- fresh post-Save-As workbook ownership
+- output reopen validation
+- workbook/window restoration
+- Excel-process preservation
+- user-workbook preservation
+
+Critical invariant:
+
+After Excel Save As, the old workbook proxy may no longer be authoritative. Reacquire the fresh active workbook and verify its full path equals the expected unique output path before continuing.
+
+#### Phase B Mutation — COMPLETE
+
+Accepted capabilities include:
+
+- `add_worksheet`
+- `rename_worksheet`
+- `delete_worksheet`
+- named-sheet `set_cell`
+- named-sheet `set_formula`
+
+Important worksheet identity invariant:
+
+Excel 16.78 does not guarantee the insertion index of a newly created worksheet.
+
+Therefore AddWorksheet must:
+
+1. snapshot worksheet identities before creation
+2. create the worksheet
+3. reacquire the fresh workbook reference
+4. snapshot identities after creation
+5. calculate the unique set difference
+6. use that discovered worksheet identity
+
+Never assume the newly added worksheet is at a particular index.
+
+Deleting the final worksheet fails closed.
+
+#### Phase B Multi-Sheet Read — COMPLETE
+
+Accepted capabilities include:
+
+- worksheet list
+- worksheet count
+- legacy no-selector first-sheet behavior
+- explicit named-sheet read
+- bounded selected multi-sheet read
+- bounded `allSheets`
+- missing worksheet fail closed
+- per-sheet truncation metadata
+- global bounded read protocol
+
+Current bounds:
+
+- maximum 16 worksheets
+- maximum 200 rows per worksheet
+- maximum 64 columns per worksheet
+- maximum 256 rendered characters per cell
+- roughly 60k total protocol-character budget
+
+Phase B real Excel E2E passed.
+
+Do not reopen Excel Phase A or Phase B unless a regression is observed.
+
+### Excel Phase C — NOT LANDED / NEXT TAKEOVER TASK
+
+Phase C is **not complete**.
+
+No Phase C production code is currently landed in the stable repository.
+
+The attempted design was:
+
+- `insert_row`
+- `delete_row`
+- `insert_column`
+- `delete_column`
+- explicit worksheet identity
+- 1-based bounded row/column indexes
+- atomic operations
+- no `count` parameter
+- existing save-copy / reopen ownership model
+- real shifted-content validation
+
+Temporary Phase C candidate results:
+
+- Rust parser: PASS
+- operation encoding: PASS
+- `cargo check`: PASS
+- Phase C unit contract: PASS
+- real Excel 16.78 row/column E2E: FAILED
+
+The failure was isolated to the real column structural workflow.
+
+Observed failure:
+
+After the column insert/delete workflow, real workbook read-back returned:
+
+- actual: empty string
+- expected: `C1`
+
+The failing assertion occurred in the Phase C real E2E after the column mutation workflow.
+
+The attempted production AppleScript path included:
+
+`delete range range "A:A" shift shift to left`
+
+This path must **not** be considered accepted.
+
+The Phase C worker automatically restored the repository to stable baseline:
+
+`633aeb42258a248ed80dd0fa760525a6207ed9d3`
+
+Therefore:
+
+- Phase C source changes were rolled back
+- Phase C verifier was rolled back
+- no Phase C commit exists
+- Excel Phase A/B remain intact
+
+### Exact Excel takeover point
+
+The next developer should begin here.
+
+First perform an isolated real Excel 16.78 probe of whole-column deletion semantics.
+
+Candidate forms to investigate include:
+
+1. `delete range range "A:A" shift shift to left`
+2. `delete range range "A:A"`
+3. direct Excel column-object deletion
+
+Do not choose an implementation based only on AppleScript compilation success.
+
+The accepted form must be proven by actual workbook content.
+
+Controlled fixture expectation:
+
+Initial:
+
+- `A1 = R1`
+- `B1 = C1`
+- `C1 = C2`
+
+Operation:
+
+1. insert column B
+2. delete column A
+
+Expected final result:
+
+- `A1 = ""`
+- `B1 = C1`
+- `C1 = C2`
+
+Once the correct real Excel 16.78 semantics are identified:
+
+1. implement Phase C through the existing `edit_excel_workbook()` adapter
+2. keep the existing provider-neutral `spreadsheet.edit` Runtime route
+3. do not add a second Excel adapter
+4. run real shifted-content reopen validation
+5. run Phase A regression
+6. run Phase B Mutation regression
+7. run Phase B Read regression
+8. run Spreadsheet Read/Create regression
+9. run full Rust tests
+10. run frontend build
+11. run `git diff --check`
+12. only then mark Excel Phase C Complete
+
+### Remaining Excel Common Capability work after Phase C
+
+Excel is still not Common-Capability complete after Phase C.
+
+Remaining work includes:
+
+1. basic formatting
+2. sort/filter
+3. common chart integration
+4. formula-aware spreadsheet read
+5. final realistic spreadsheet workflow
+6. final Excel Common Capability acceptance
+
+Existing isolated chart probes previously demonstrated that column / line / pie chart creation is technically possible in real Excel. Do not treat those probes alone as integrated Common Capability completion.
+
+### Apple iWork — REMAINING OFFICE WORK
+
+Current installed applications on the acceptance Mac include:
+
+- Pages Creator Studio
+- Numbers Creator Studio
+- Keynote Creator Studio
+
+Existing iWork work must be reviewed against the full Office Common Capability Matrix.
+
+Do not treat application detection, metadata, or basic read/create alone as Office completion.
+
+Required provider-neutral capability coverage must be executable across the relevant application type.
+
+Review and finish:
+
+- Pages document common capabilities
+- Numbers spreadsheet common capabilities
+- Keynote presentation common capabilities
+
+Existing Keynote deterministic read/create work and previous iWork acceptance evidence should be reused rather than rewritten unnecessarily.
+
+### WPS Office — CLASSIFICATION REQUIRED
+
+WPS is not installed on the current acceptance Mac.
+
+Previous investigation did not identify a published reliable deterministic macOS desktop AppleScript/CLI automation contract.
+
+WPS AirScript is a Kingsoft cloud-document API and must not masquerade as a local WPS desktop adapter.
+
+Until deterministic local evidence exists, classify unsupported WPS desktop capability explicitly as one of:
+
+- `APP_NOT_INSTALLED`
+- `UNSUPPORTED_BY_PROVIDER_AUTOMATION`
+
+Do not fake executable WPS capability merely because the Provider Registry knows WPS exists.
+
+### Google Workspace — FALLBACK REVIEW REQUIRED
+
+Retain the existing Google Workspace OAuth/API foundation.
+
+Do not rewrite the stable Keychain / OAuth recovery architecture.
+
+Review Docs / Sheets / Slides against the same Office Common Capability contract.
+
+Google Workspace is the cloud fallback when a suitable local provider is unavailable or when the resource is a Google-native cloud resource.
+
+Important boundary:
+
+- local paths are local filesystem resources
+- Google resource IDs are cloud resources
+- never treat one as the other
+
+### Office provider architecture — KEEP
+
+Retain:
+
+`Office Common Capability Layer -> Provider Resolver -> Concrete Provider Adapter`
+
+Provider resolution must consider:
+
+- requested capability
+- resource location
+- file format
+- installed applications
+- provider authorization
+- actual executable adapter support
+- local-first preference
+- compatibility
+- native format
+- explicit user preference where supplied
+
+A Provider Registry declaration does **not** prove an executable capability.
+
+Unsupported provider-specific functionality must fail closed.
+
+### Office completion requirements
+
+Office must remain **In Progress** until all of the following are accepted:
+
+- provider-neutral Common Capability Layer
+- format-aware Provider Resolver
+- Microsoft Word common capability
+- Microsoft Excel common capability
+- Microsoft PowerPoint common capability
+- executable Pages common capability
+- executable Numbers common capability
+- executable Keynote common capability
+- WPS deterministic-support classification
+- Google Docs fallback coverage
+- Google Sheets fallback coverage
+- Google Slides fallback coverage
+- Provider Matrix verifier
+- realistic document workflow
+- realistic spreadsheet workflow
+- realistic presentation workflow
+- permission / confirmation behavior
+- regression suite
+- frontend build
+- scoped diff verification
+
+Only after those gates pass:
+
+- Office -> **Complete**
+- P15 -> **6 / 11**
+
+### Recommended remaining Office order
+
+1. Excel Phase C — row/column structural mutation
+2. Excel basic formatting
+3. Excel sort/filter
+4. Excel common chart integration
+5. Excel formula-aware read
+6. Excel final realistic workflow
+7. close Excel Common Capability
+8. Pages Common Capability review/completion
+9. Numbers Common Capability review/completion
+10. Keynote Common Capability review/completion
+11. WPS capability classification
+12. Google Docs/Sheets/Slides fallback review/completion
+13. final Office Provider Matrix
+14. final provider-neutral realistic workflow acceptance
+15. mark Office Complete only after all gates pass
+
+### Safety / implementation rules for the next developer
+
+- Do not touch stable Browser / Keychain / OAuth recovery unless an actual regression is demonstrated.
+- Do not reopen Word or PowerPoint without a demonstrated regression.
+- Do not reopen Excel Phase A/B without a demonstrated regression.
+- Never quit Excel, Word, or PowerPoint as part of an Office operation.
+- Close only operation-owned resources.
+- Preserve user-owned Office documents/workbooks/presentations.
+- Preserve no-overwrite behavior.
+- Preserve source files.
+- Fail closed on ambiguous identity or unsupported provider automation.
+- Use scoped `rustfmt`; do not run global `cargo fmt`.
+- Use explicit `git add`; do not use `./done.sh` for scoped Office commits.
+- Do not push unless explicitly requested.
+- HANDOFF.md remains the authoritative current-status source.
+
+<!-- OFFICE_TAKEOVER_2026-09-02_END -->
+
+
 > Updated: 2026-08-11
 > This file is the single source of truth for current repository state.
 > Historical detail lives in `docs/archive/HANDOFF_HISTORY.md`.
@@ -1157,6 +1569,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-02  Office takeover recorded: Word and PowerPoint Common Capability remain Complete; Excel Phase A, Phase B Mutation, and Phase B Multi-Sheet Read remain Complete. Excel Phase C is explicitly NOT LANDED after the temporary candidate passed Rust/API/unit validation but failed real Excel 16.78 column structural read-back; the worker restored stable baseline `633aeb42258a248ed80dd0fa760525a6207ed9d3`. Next owner starts with an isolated real-Excel whole-column-delete semantics probe, then completes Phase C without reopening Phase A/B. Remaining Office work includes Excel formatting, sort/filter, chart integration, formula-aware read and final workflow; iWork Common Capability review/completion; WPS deterministic-support classification; Google Workspace fallback completion; and final Provider Matrix acceptance. Office remains In Progress and P15 remains 5/11.
 - 2026-09-02  Microsoft Excel Phase B completed: `spreadsheet.read` now returns worksheet list/count and supports backward-compatible first-sheet reads, explicit named-sheet reads, selected multi-sheet reads, and bounded all-sheet reads. Real Excel E2E passes list/count, named and multi-sheet content, missing-sheet fail-closed behavior, bounded output metadata, workbook/window restoration, Excel-process preservation, and user-workbook preservation. Read bounds are 16 worksheets, 200 rows x 64 columns per worksheet, 256 rendered characters per cell, and an approximately 60k protocol budget. Combined with the already accepted Phase B mutation subphase, Excel Phase B is complete. Next Excel work is Phase C row/column insertion and deletion. Excel Common Capability, Office, and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-01  Microsoft Excel Phase B mutation subphase completed: real Excel 16.78 E2E passes AddWorksheet through snapshot + unique set-difference identity discovery, RenameWorksheet, DeleteWorksheet, explicit named-sheet cell/formula edits, final-sheet delete fail-closed behavior, final worksheet-set reopen validation, save-copy, original preservation, fresh post-save ownership, workbook/window restoration, Excel-process preservation, and user-workbook preservation. No worksheet-index assumption, System Events, UI click, or global Excel setting is used. Full Phase B remains In Progress until worksheet list/count and bounded specific-sheet/multi-sheet read are accepted.
 
