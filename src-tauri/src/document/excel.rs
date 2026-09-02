@@ -1155,24 +1155,34 @@ mod tests {
         let root = tempdir().unwrap();
         let output = root.path().join("phase-c-structural-output.xlsx");
 
-        // A controlled row so the shift is unambiguous, then the exact
-        // workflow the previous attempt failed on: insert a column before the
-        // data and delete the one in front of it.
+        // Two worksheets, so the row fixture cannot be destroyed by the column
+        // workflow and the column fixture cannot be destroyed by the row
+        // workflow. A shared sheet would have made the assertions read as
+        // passing arithmetic rather than as real shifts.
+        //
+        // Columns: A1=R1 B1=C1 C1=C2, then the exact workflow the previous
+        // attempt failed on -- insert a column before the data, delete the one
+        // in front of it.
+        // Rows:    A1=X1 A2=R2 A3=R3, insert a row above the data, then delete
+        // the first row.
         let result = edit_excel_workbook(&json!({
             "source": fixture,
             "destination": output,
             "operations": [
-                {"type":"add_worksheet","name":"Structural"},
-                {"type":"set_cell","sheet":"Structural","row":1,"column":1,"value":"R1"},
-                {"type":"set_cell","sheet":"Structural","row":1,"column":2,"value":"C1"},
-                {"type":"set_cell","sheet":"Structural","row":1,"column":3,"value":"C2"},
-                {"type":"set_cell","sheet":"Structural","row":2,"column":1,"value":"R2"},
-                {"type":"set_cell","sheet":"Structural","row":3,"column":1,"value":"R3"},
+                {"type":"add_worksheet","name":"Columns"},
+                {"type":"set_cell","sheet":"Columns","row":1,"column":1,"value":"R1"},
+                {"type":"set_cell","sheet":"Columns","row":1,"column":2,"value":"C1"},
+                {"type":"set_cell","sheet":"Columns","row":1,"column":3,"value":"C2"},
 
-                {"type":"insert_column","sheet":"Structural","column":2},
-                {"type":"delete_column","sheet":"Structural","column":1},
-                {"type":"insert_row","sheet":"Structural","row":2},
-                {"type":"delete_row","sheet":"Structural","row":1}
+                {"type":"add_worksheet","name":"Rows"},
+                {"type":"set_cell","sheet":"Rows","row":1,"column":1,"value":"X1"},
+                {"type":"set_cell","sheet":"Rows","row":2,"column":1,"value":"R2"},
+                {"type":"set_cell","sheet":"Rows","row":3,"column":1,"value":"R3"},
+
+                {"type":"insert_column","sheet":"Columns","column":2},
+                {"type":"delete_column","sheet":"Columns","column":1},
+                {"type":"insert_row","sheet":"Rows","row":2},
+                {"type":"delete_row","sheet":"Rows","row":1}
             ]
         }))
         .unwrap();
@@ -1192,44 +1202,40 @@ mod tests {
             .map(|value| value.as_str().unwrap().to_owned())
             .collect();
 
-        let entry = |prefix: &str| -> String {
-            validation
+        // Two entries can share a prefix: the disk-read probe and the
+        // used-range snapshot the adapter recorded while making the change.
+        // Matching the exact probe string keeps this reading the saved copy.
+        let probed = |prefix: &str, expected: &str| {
+            let candidates: Vec<&String> = validation
                 .iter()
-                .find(|value| value.starts_with(prefix))
-                .unwrap_or_else(|| panic!("missing {prefix} in {validation:?}"))
-                .clone()
+                .filter(|value| value.starts_with(prefix))
+                .collect();
+            assert!(
+                candidates.iter().any(|value| value.as_str() == expected),
+                "expected `{expected}` among {candidates:?}"
+            );
         };
 
         // Every assertion below reads the reopened saved copy, so it is the
         // content on disk that is being judged, not the live session.
         //
-        // Starting row 1: A=R1 B=C1 C=C2
-        // insert column B -> A=R1 B=[]  C=C1 D=C2
-        // delete column A -> A=C1 B=C2  C=[]
-        assert!(
-            entry("insert_column:Structural!B:B").contains("B1=,C1=C1"),
-            "insert_column did not shift the row right: {}",
-            entry("insert_column:Structural!B:B")
+        // Columns start as        A=R1 B=C1 C=C2
+        // insert column B gives   A=R1 B=[]  C=C1 D=C2   probes B1,C1
+        // delete column A gives   A=[]  B=C1 C=C2        probes A1,B1
+        probed(
+            "insert_column:Columns!B:B:",
+            "insert_column:Columns!B:B:B1=,C1=C1",
         );
-        assert!(
-            entry("delete_column:Structural!A:A").contains("A1=C1,B1=C2"),
-            "delete_column did not shift the row left: {}",
-            entry("delete_column:Structural!A:A")
+        probed(
+            "delete_column:Columns!A:A:",
+            "delete_column:Columns!A:A:A1=,B1=C1",
         );
 
-        // Column A now holds R2 and R3 in rows 2 and 3.
-        // insert row 2 -> A2=[] A3=R2
-        // delete row 1 -> A1=[] A2=R2
-        assert!(
-            entry("insert_row:Structural!2:2").contains("A2=,A3=R2"),
-            "insert_row did not shift the column down: {}",
-            entry("insert_row:Structural!2:2")
-        );
-        assert!(
-            entry("delete_row:Structural!1:1").contains("A2=R2"),
-            "delete_row did not shift the column up: {}",
-            entry("delete_row:Structural!1:1")
-        );
+        // Rows start as        1=X1 2=R2 3=R3
+        // insert row 2 gives   1=X1 2=[]  3=R2 4=R3      probes A2,A3
+        // delete row 1 gives   1=[]  2=R2 3=R3           probes A1,A2
+        probed("insert_row:Rows!2:2:", "insert_row:Rows!2:2:A2=,A3=R2");
+        probed("delete_row:Rows!1:1:", "delete_row:Rows!1:1:A1=,A2=R2");
     }
 
     #[test]
