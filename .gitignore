@@ -49,3 +49,6 @@ browser-diagnostics.log
 browser-launch-stderr.log
 browser-page-*.png
 office-probe-excel-structural.log
+.gate-run.log
+run_gate.command
+.aios-task.sh

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Excel Phase C acceptance gate. Runs the whole handoff checklist in one pass
+# Excel Office phase acceptance gate. Runs the whole handoff checklist in one pass
 # and prints one line per step, so a failure is identifiable without reading
 # every log. Full logs are kept and their paths are printed at the end.
 set -u
@@ -23,7 +23,7 @@ step() {
   fi
 }
 
-step "Phase C structural"        bash verify/verify_p15_excel_phase_c_structural.sh
+step "Phase D formatting"        bash verify/verify_p15_excel_phase_d_formatting.sh
 step "Spreadsheet Create"        bash verify/verify_p15_spreadsheet_create.sh
 step "Spreadsheet Read"          bash verify/verify_p15_spreadsheet_read.sh
 step "Full Rust tests"           cargo test --manifest-path src-tauri/Cargo.toml
@@ -31,5 +31,5 @@ step "Frontend build"            npm run build
 step "Whitespace"                git diff --check
 
 echo
-echo "PASS Excel Phase C gate"
+echo "PASS Excel phase gate"
 echo "Logs: $LOGS"

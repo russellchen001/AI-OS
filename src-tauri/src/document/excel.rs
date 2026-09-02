@@ -10,6 +10,17 @@ const MAX_COLUMN: u64 = 256;
 const MAX_OPERATIONS: usize = 32;
 const MAX_CELL_TEXT: usize = 4_096;
 const MAX_FORMULA_TEXT: usize = 512;
+const MAX_NUMBER_FORMAT_TEXT: usize = 64;
+const MAX_FONT_NAME_TEXT: usize = 64;
+/// Excel's own limits: font size 1-409pt, palette index 1-56, column
+/// width 0-255 characters, row height 0-409pt. Zero is excluded on both
+/// dimensions because it hides the line rather than resizing it, which is
+/// a different intent than the caller expressed.
+const MAX_FONT_SIZE: u64 = 409;
+const MAX_COLOR_INDEX: u64 = 56;
+const MAX_COLUMN_WIDTH: u64 = 255;
+const MAX_ROW_HEIGHT: u64 = 409;
+const MAX_FORMAT_AREA: u64 = 65_536;
 const RECORD_SEPARATOR: char = '\u{1e}';
 const FIELD_SEPARATOR: char = '\u{1f}';
 
@@ -87,6 +98,34 @@ enum EditOperation {
     DeleteColumn {
         sheet: String,
         column: u64,
+    },
+    /// One rectangular range, several optional attributes. Every attribute was
+    /// proved on real Excel 16.78 to both apply and survive save-as-xlsx,
+    /// close and reopen -- the adapter validates by reading the reopened saved
+    /// copy, so an attribute that is correct live but lost on save could not be
+    /// validated that way.
+    FormatCells {
+        sheet: String,
+        start_row: u64,
+        start_column: u64,
+        end_row: u64,
+        end_column: u64,
+        bold: Option<bool>,
+        italic: Option<bool>,
+        font_size: Option<u64>,
+        font_name: Option<String>,
+        fill_color_index: Option<u64>,
+        number_format: Option<String>,
+    },
+    SetColumnWidth {
+        sheet: String,
+        column: u64,
+        width: u64,
+    },
+    SetRowHeight {
+        sheet: String,
+        row: u64,
+        height: u64,
     },
 }
 
@@ -200,6 +239,90 @@ fn line_index(operation: &Value, field: &str, maximum: u64) -> Result<u64, Excel
     Ok(value)
 }
 
+/// A bounded rectangular range, returned as its A1 reference and the address of
+/// the top-left cell, which is where the reopened copy is read to prove the
+/// formatting landed.
+fn cell_range(operation: &Value) -> Result<(u64, u64, u64, u64), ExcelError> {
+    let start_row = line_index(operation, "startRow", MAX_ROW)?;
+    let start_column = line_index(operation, "startColumn", MAX_COLUMN)?;
+    let end_row = line_index(operation, "endRow", MAX_ROW)?;
+    let end_column = line_index(operation, "endColumn", MAX_COLUMN)?;
+
+    if end_row < start_row || end_column < start_column {
+        return Err(ExcelError::invalid(
+            "range end must not precede range start",
+        ));
+    }
+
+    let area = (end_row - start_row + 1) * (end_column - start_column + 1);
+    if area > MAX_FORMAT_AREA {
+        return Err(ExcelError::invalid(format!(
+            "range must cover at most {MAX_FORMAT_AREA} cells"
+        )));
+    }
+
+    Ok((start_row, start_column, end_row, end_column))
+}
+
+fn range_reference(start_row: u64, start_column: u64, end_row: u64, end_column: u64) -> String {
+    format!(
+        "{}{}:{}{}",
+        column_name(start_column),
+        start_row,
+        column_name(end_column),
+        end_row
+    )
+}
+
+fn optional_bool(operation: &Value, field: &str) -> Result<Option<bool>, ExcelError> {
+    match operation.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(ExcelError::invalid(format!("{field} must be a boolean"))),
+    }
+}
+
+fn optional_bounded_number(
+    operation: &Value,
+    field: &str,
+    maximum: u64,
+) -> Result<Option<u64>, ExcelError> {
+    match operation.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            let value = value
+                .as_u64()
+                .ok_or_else(|| ExcelError::invalid(format!("{field} must be a whole number")))?;
+            if !(1..=maximum).contains(&value) {
+                return Err(ExcelError::invalid(format!(
+                    "{field} must be between 1 and {maximum}"
+                )));
+            }
+            Ok(Some(value))
+        }
+    }
+}
+
+fn optional_bounded_text(
+    operation: &Value,
+    field: &str,
+    maximum: usize,
+) -> Result<Option<String>, ExcelError> {
+    match operation.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            let value = value
+                .as_str()
+                .ok_or_else(|| ExcelError::invalid(format!("{field} must be a string")))?;
+            if value.trim().is_empty() {
+                return Err(ExcelError::invalid(format!("{field} must not be empty")));
+            }
+            validate_text(value, maximum, field)?;
+            Ok(Some(value.to_owned()))
+        }
+    }
+}
+
 fn scalar(value: &Value) -> Result<CellScalar, ExcelError> {
     if let Some(value) = value.as_str() {
         validate_text(value, MAX_CELL_TEXT, "cell value")?;
@@ -300,8 +423,59 @@ fn parse_operation(operation: &Value) -> Result<EditOperation, ExcelError> {
             sheet: sheet_name(operation)?,
             column: line_index(operation, "column", MAX_COLUMN)?,
         }),
+        "format_cells" => {
+            let sheet = sheet_name(operation)?;
+            let (start_row, start_column, end_row, end_column) = cell_range(operation)?;
+
+            let bold = optional_bool(operation, "bold")?;
+            let italic = optional_bool(operation, "italic")?;
+            let font_size = optional_bounded_number(operation, "fontSize", MAX_FONT_SIZE)?;
+            let font_name = optional_bounded_text(operation, "fontName", MAX_FONT_NAME_TEXT)?;
+            let fill_color_index =
+                optional_bounded_number(operation, "fillColorIndex", MAX_COLOR_INDEX)?;
+            let number_format =
+                optional_bounded_text(operation, "numberFormat", MAX_NUMBER_FORMAT_TEXT)?;
+
+            // An operation that carries no attribute would change nothing and
+            // then validate successfully, which is worse than refusing it.
+            if bold.is_none()
+                && italic.is_none()
+                && font_size.is_none()
+                && font_name.is_none()
+                && fill_color_index.is_none()
+                && number_format.is_none()
+            {
+                return Err(ExcelError::invalid(
+                    "format_cells requires at least one of bold, italic, fontSize, fontName, fillColorIndex, or numberFormat",
+                ));
+            }
+
+            Ok(EditOperation::FormatCells {
+                sheet,
+                start_row,
+                start_column,
+                end_row,
+                end_column,
+                bold,
+                italic,
+                font_size,
+                font_name,
+                fill_color_index,
+                number_format,
+            })
+        }
+        "set_column_width" => Ok(EditOperation::SetColumnWidth {
+            sheet: sheet_name(operation)?,
+            column: line_index(operation, "column", MAX_COLUMN)?,
+            width: line_index(operation, "width", MAX_COLUMN_WIDTH)?,
+        }),
+        "set_row_height" => Ok(EditOperation::SetRowHeight {
+            sheet: sheet_name(operation)?,
+            row: line_index(operation, "row", MAX_ROW)?,
+            height: line_index(operation, "height", MAX_ROW_HEIGHT)?,
+        }),
         _ => Err(ExcelError::invalid(
-            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, delete_worksheet, insert_row, delete_row, insert_column, and delete_column",
+            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, delete_worksheet, insert_row, delete_row, insert_column, delete_column, format_cells, set_column_width, and set_row_height",
         )),
     }
 }
@@ -464,6 +638,58 @@ fn encode_operations(operations: &[EditOperation]) -> String {
                         next,
                     ]
                 }
+                // Fixed arity, with an empty field for each absent attribute and
+                // a terminator so no optional value is ever the trailing field.
+                EditOperation::FormatCells {
+                    sheet,
+                    start_row,
+                    start_column,
+                    end_row,
+                    end_column,
+                    bold,
+                    italic,
+                    font_size,
+                    font_name,
+                    fill_color_index,
+                    number_format,
+                } => {
+                    let flag = |value: &Option<bool>| {
+                        value.map(|value| value.to_string()).unwrap_or_default()
+                    };
+                    let number = |value: &Option<u64>| {
+                        value.map(|value| value.to_string()).unwrap_or_default()
+                    };
+
+                    vec![
+                        "format_cells".to_owned(),
+                        sheet.clone(),
+                        range_reference(*start_row, *start_column, *end_row, *end_column),
+                        format!("{}{}", column_name(*start_column), start_row),
+                        flag(bold),
+                        flag(italic),
+                        number(font_size),
+                        font_name.clone().unwrap_or_default(),
+                        number(fill_color_index),
+                        number_format.clone().unwrap_or_default(),
+                        "end".to_owned(),
+                    ]
+                }
+                EditOperation::SetColumnWidth {
+                    sheet,
+                    column,
+                    width,
+                } => vec![
+                    "set_column_width".to_owned(),
+                    sheet.clone(),
+                    column.to_string(),
+                    width.to_string(),
+                ],
+                EditOperation::SetRowHeight { sheet, row, height } => vec![
+                    "set_row_height".to_owned(),
+                    sheet.clone(),
+                    row.to_string(),
+                    height.to_string(),
+                ],
             };
 
             fields.join(&FIELD_SEPARATOR.to_string())
@@ -821,6 +1047,71 @@ on run argv
                     set usedAfter to my safeText(get address of used range of (worksheet sheetName of freshWorkbook))
 
                     set end of structuralSnapshots to operationKind & ":" & sheetName & "!" & lineReference & ":" & usedBefore & ">" & usedAfter
+
+                else if operationKind is "format_cells" then
+                    set sheetName to item 2 of fields
+                    set rangeReference to item 3 of fields
+                    set boldText to item 5 of fields
+                    set italicText to item 6 of fields
+                    set sizeText to item 7 of fields
+                    set fontNameText to item 8 of fields
+                    set fillText to item 9 of fields
+                    set numberText to item 10 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    -- Each of these was proved on real Excel 16.78 to apply and
+                    -- to survive save-as-xlsx, close and reopen. An empty field
+                    -- means the caller did not ask for that attribute, so it is
+                    -- left exactly as it was.
+                    tell worksheet sheetName of freshWorkbook
+                        if boldText is not "" then
+                            set bold of font object of range rangeReference to (boldText is "true")
+                        end if
+                        if italicText is not "" then
+                            set italic of font object of range rangeReference to (italicText is "true")
+                        end if
+                        if sizeText is not "" then
+                            set font size of font object of range rangeReference to (sizeText as real)
+                        end if
+                        if fontNameText is not "" then
+                            set name of font object of range rangeReference to fontNameText
+                        end if
+                        if fillText is not "" then
+                            set color index of interior object of range rangeReference to (fillText as integer)
+                        end if
+                        if numberText is not "" then
+                            set number format of range rangeReference to numberText
+                        end if
+                    end tell
+
+                else if operationKind is "set_column_width" then
+                    set sheetName to item 2 of fields
+                    set columnIndexText to item 3 of fields
+                    set widthText to item 4 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    tell worksheet sheetName of freshWorkbook
+                        set column width of column (columnIndexText as integer) to (widthText as real)
+                    end tell
+
+                else if operationKind is "set_row_height" then
+                    set sheetName to item 2 of fields
+                    set rowIndexText to item 3 of fields
+                    set heightText to item 4 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    tell worksheet sheetName of freshWorkbook
+                        set row height of row (rowIndexText as integer) to (heightText as real)
+                    end tell
                 end if
             end repeat
 
@@ -1004,6 +1295,106 @@ on run argv
                             set validationText to validationText & operationKind & ":" & sheetName & "!" & lineReference & ":" & operatedAddress & "=" & operatedValue & "," & followingAddress & "=" & followingValue & (ASCII character 30)
                         end tell
                     end if
+
+                else if operationKind is "format_cells" then
+                    set sheetName to item 2 of fields
+                    set rangeReference to item 3 of fields
+                    set probeAddress to item 4 of fields
+                    set boldText to item 5 of fields
+                    set italicText to item 6 of fields
+                    set sizeText to item 7 of fields
+                    set fontNameText to item 8 of fields
+                    set fillText to item 9 of fields
+                    set numberText to item 10 of fields
+
+                    if my listContains(structurallyChangedSheets, sheetName) then
+                        set validationText to validationText & "format_cells:" & sheetName & "!" & rangeReference & "=displaced-by-structural-change" & (ASCII character 30)
+                    else if exists worksheet sheetName of validationWorkbook then
+                        tell worksheet sheetName of validationWorkbook
+                            set observedText to ""
+
+                            if boldText is not "" then
+                                set actualBold to (bold of font object of range probeAddress) as text
+                                if actualBold is not boldText then
+                                    error "FormatCells bold validation mismatch"
+                                end if
+                                set observedText to observedText & "bold=" & actualBold & ";"
+                            end if
+
+                            if italicText is not "" then
+                                set actualItalic to (italic of font object of range probeAddress) as text
+                                if actualItalic is not italicText then
+                                    error "FormatCells italic validation mismatch"
+                                end if
+                                set observedText to observedText & "italic=" & actualItalic & ";"
+                            end if
+
+                            if sizeText is not "" then
+                                set actualSize to font size of font object of range probeAddress
+                                if (actualSize as real) is not (sizeText as real) then
+                                    error "FormatCells font size validation mismatch"
+                                end if
+                                set observedText to observedText & "size=" & (actualSize as text) & ";"
+                            end if
+
+                            if fontNameText is not "" then
+                                set actualFontName to (name of font object of range probeAddress) as text
+                                if actualFontName is not fontNameText then
+                                    error "FormatCells font name validation mismatch"
+                                end if
+                                set observedText to observedText & "font=" & actualFontName & ";"
+                            end if
+
+                            if fillText is not "" then
+                                set actualFill to color index of interior object of range probeAddress
+                                if (actualFill as integer) is not (fillText as integer) then
+                                    error "FormatCells fill validation mismatch"
+                                end if
+                                set observedText to observedText & "fill=" & (actualFill as text) & ";"
+                            end if
+
+                            if numberText is not "" then
+                                set actualNumber to (number format of range probeAddress) as text
+                                if actualNumber is not numberText then
+                                    error "FormatCells number format validation mismatch"
+                                end if
+                                set observedText to observedText & "number=" & actualNumber & ";"
+                            end if
+
+                            set validationText to validationText & "format_cells:" & sheetName & "!" & rangeReference & ":" & observedText & (ASCII character 30)
+                        end tell
+                    end if
+
+                else if operationKind is "set_column_width" or operationKind is "set_row_height" then
+                    set sheetName to item 2 of fields
+                    set lineIndexText to item 3 of fields
+                    set measureText to item 4 of fields
+
+                    if my listContains(structurallyChangedSheets, sheetName) then
+                        set validationText to validationText & operationKind & ":" & sheetName & "!" & lineIndexText & "=displaced-by-structural-change" & (ASCII character 30)
+                    else if exists worksheet sheetName of validationWorkbook then
+                        tell worksheet sheetName of validationWorkbook
+                            if operationKind is "set_column_width" then
+                                set actualMeasure to column width of column (lineIndexText as integer)
+                            else
+                                set actualMeasure to row height of row (lineIndexText as integer)
+                            end if
+
+                            -- Excel stores these as reals and may settle a
+                            -- fraction away from the requested whole number, so
+                            -- the comparison is a tolerance and the observed
+                            -- value is reported rather than the requested one.
+                            set measureDrift to (actualMeasure as real) - (measureText as real)
+                            if measureDrift < 0 then
+                                set measureDrift to -measureDrift
+                            end if
+                            if measureDrift > 0.5 then
+                                error "Line measure validation mismatch"
+                            end if
+
+                            set validationText to validationText & operationKind & ":" & sheetName & "!" & lineIndexText & "=" & (actualMeasure as text) & (ASCII character 30)
+                        end tell
+                    end if
                 end if
             end repeat
 
@@ -1169,6 +1560,210 @@ mod tests {
 
     fn request(operation: Value) -> Value {
         json!({"operations": [operation]})
+    }
+
+    #[test]
+    #[ignore]
+    fn excel_phase_d_formatting_real_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+        let root = tempdir().unwrap();
+        let output = root.path().join("phase-d-formatting-output.xlsx");
+
+        // Every attribute here was proved on real Excel 16.78 to survive
+        // save-as-xlsx, close and reopen, which is the only reason validation
+        // can read them back off disk at all.
+        let result = edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": output,
+            "operations": [
+                {"type":"add_worksheet","name":"Formatted"},
+                {"type":"set_cell","sheet":"Formatted","row":1,"column":1,"value":"Name"},
+                {"type":"set_cell","sheet":"Formatted","row":1,"column":2,"value":"Amount"},
+                {"type":"set_cell","sheet":"Formatted","row":2,"column":1,"value":"Bravo"},
+                {"type":"set_cell","sheet":"Formatted","row":2,"column":2,"value":1234.5},
+
+                // A header row: several attributes in one operation.
+                {"type":"format_cells","sheet":"Formatted",
+                 "startRow":1,"startColumn":1,"endRow":1,"endColumn":2,
+                 "bold":true,"italic":true,"fontSize":14,"fontName":"Courier New",
+                 "fillColorIndex":6},
+
+                // A data column: number format only, and deliberately not bold,
+                // so a formatter that painted the whole sheet would be caught.
+                {"type":"format_cells","sheet":"Formatted",
+                 "startRow":2,"startColumn":2,"endRow":2,"endColumn":2,
+                 "numberFormat":"0.00"},
+
+                {"type":"set_column_width","sheet":"Formatted","column":1,"width":24},
+                {"type":"set_row_height","sheet":"Formatted","row":1,"height":30}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(result["operationResult"]["status"], "edited-copy");
+        assert_eq!(
+            fs::read(&fixture).unwrap(),
+            original,
+            "the source workbook must be preserved"
+        );
+
+        let validation: Vec<String> = result["validation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect();
+
+        let entry = |prefix: &str| -> String {
+            validation
+                .iter()
+                .find(|value| value.starts_with(prefix))
+                .unwrap_or_else(|| panic!("missing {prefix} in {validation:?}"))
+                .clone()
+        };
+
+        // Read out of the reopened saved copy at the top-left cell of the range.
+        assert_eq!(
+            entry("format_cells:Formatted!A1:B1:"),
+            "format_cells:Formatted!A1:B1:bold=true;italic=true;size=14;font=Courier New;fill=6;"
+        );
+        assert_eq!(
+            entry("format_cells:Formatted!B2:B2:"),
+            "format_cells:Formatted!B2:B2:number=0.00;"
+        );
+
+        // Width and height come back as reals and may settle a fraction away
+        // from the requested whole number, so the observed value is reported and
+        // the assertion is the same tolerance the adapter applies.
+        for (prefix, requested) in [
+            ("set_column_width:Formatted!1=", 24.0_f64),
+            ("set_row_height:Formatted!1=", 30.0_f64),
+        ] {
+            let observed = entry(prefix);
+            let measured: f64 = observed
+                .trim_start_matches(prefix)
+                .parse()
+                .unwrap_or_else(|_| panic!("unparseable measure in {observed}"));
+            assert!(
+                (measured - requested).abs() <= 0.5,
+                "{observed} is more than half a unit from {requested}"
+            );
+        }
+    }
+
+    #[test]
+    fn formatting_operations_validate_ranges_and_attributes() {
+        let formatted = parse_operations(&request(json!({
+            "type":"format_cells","sheet":"Sheet1",
+            "startRow":1,"startColumn":1,"endRow":2,"endColumn":3,
+            "bold":true,"numberFormat":"0.00"
+        })))
+        .unwrap();
+
+        assert_eq!(
+            formatted[0],
+            EditOperation::FormatCells {
+                sheet: "Sheet1".to_owned(),
+                start_row: 1,
+                start_column: 1,
+                end_row: 2,
+                end_column: 3,
+                bold: Some(true),
+                italic: None,
+                font_size: None,
+                font_name: None,
+                fill_color_index: None,
+                number_format: Some("0.00".to_owned()),
+            }
+        );
+
+        for rejected in [
+            // An inverted range.
+            json!({"type":"format_cells","sheet":"S","startRow":3,"startColumn":1,"endRow":2,"endColumn":1,"bold":true}),
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":3,"endRow":1,"endColumn":2,"bold":true}),
+            // Out of bounds on either dimension.
+            json!({"type":"format_cells","sheet":"S","startRow":0,"startColumn":1,"endRow":1,"endColumn":1,"bold":true}),
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":257,"bold":true}),
+            // Nothing to do: this would change nothing and then validate clean.
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":1}),
+            // Attributes outside Excel's own limits, or of the wrong shape.
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":1,"fontSize":0}),
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":1,"fontSize":410}),
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":1,"fillColorIndex":57}),
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":1,"bold":"yes"}),
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":1,"numberFormat":"   "}),
+            json!({"type":"format_cells","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":1,"fontName":""}),
+            // Zero hides a line rather than resizing it, so it is not accepted
+            // as a width or a height.
+            json!({"type":"set_column_width","sheet":"S","column":1,"width":0}),
+            json!({"type":"set_column_width","sheet":"S","column":1,"width":256}),
+            json!({"type":"set_row_height","sheet":"S","row":1,"height":0}),
+            json!({"type":"set_row_height","sheet":"S","row":1,"height":410}),
+        ] {
+            assert!(
+                parse_operations(&request(rejected.clone())).is_err(),
+                "{rejected} should have been rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn formatting_encodes_fixed_arity_fields_with_a_terminator() {
+        let separator = FIELD_SEPARATOR.to_string();
+
+        let encoded = encode_operations(
+            &parse_operations(&request(json!({
+                "type":"format_cells","sheet":"Sheet1",
+                "startRow":2,"startColumn":2,"endRow":4,"endColumn":3,
+                "italic":true,"fillColorIndex":6
+            })))
+            .unwrap(),
+        );
+        let fields: Vec<&str> = encoded.split(&separator).collect();
+
+        // Absent attributes are empty fields rather than missing ones, so every
+        // record has the same shape, and the terminator keeps an optional value
+        // from ever being the trailing field.
+        assert_eq!(
+            fields,
+            vec![
+                "format_cells",
+                "Sheet1",
+                "B2:C4",
+                "B2",
+                "",
+                "true",
+                "",
+                "",
+                "6",
+                "",
+                "end",
+            ]
+        );
+
+        let encoded = encode_operations(
+            &parse_operations(&request(
+                json!({"type":"set_column_width","sheet":"Sheet1","column":3,"width":24}),
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            encoded.split(&separator).collect::<Vec<_>>(),
+            vec!["set_column_width", "Sheet1", "3", "24"]
+        );
+
+        let encoded = encode_operations(
+            &parse_operations(&request(
+                json!({"type":"set_row_height","sheet":"Sheet1","row":5,"height":30}),
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            encoded.split(&separator).collect::<Vec<_>>(),
+            vec!["set_row_height", "Sheet1", "5", "30"]
+        );
     }
 
     #[test]
