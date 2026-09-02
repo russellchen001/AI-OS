@@ -244,7 +244,7 @@ Remaining work includes:
 
 1. ~~basic formatting~~ — **COMPLETE**, see Excel Phase D below
 2. ~~sort/filter~~ — **COMPLETE**, see Excel Phase E below
-3. common chart integration
+3. ~~common chart integration~~ — **COMPLETE**, see Excel Phase F below
 4. formula-aware spreadsheet read
 5. final realistic spreadsheet workflow
 6. final Excel Common Capability acceptance
@@ -434,20 +434,125 @@ Full gate result on real Excel 16.78: **PASS** on every step.
 
 The `document::excel::tests::` count guard moved from 14 to **17**.
 
-### Excel Phase F — common chart integration — NEXT
+### Excel Phase F — common chart integration — COMPLETE
 
-Earlier isolated probes showed column / line / pie creation is technically
-possible in real Excel. **Those probes are not integration evidence** and they
-did not answer the questions that decided Phase D and Phase E:
+`add_chart` creates one chart from a bounded source range, through the existing
+`edit_excel_workbook()` adapter on the existing provider-neutral
+`spreadsheet.edit` route.
 
-1. what can a chart be judged by from the reopened saved copy? Candidates to
-   probe: `count of chart objects of <sheet>`, a chart object's `name`, its
-   `chart type`, and the address its source data came from.
-2. does that evidence survive save-as-xlsx, close and reopen?
+Public chart types are `column`, `bar`, `line`, `pie`. An explicit `name` is
+**required** rather than accepting Excel's own `Chart 1`: it is the handle the
+reopened copy is searched by, and two charts sharing a name would make that
+search ambiguous.
 
-Probe those before designing the operation, exactly as Phase D and Phase E did.
+#### What the probes established
 
-#### Three rules that have each cost a failed real run; carry them forward
+`verify/probe_excel_chart_semantics.sh`, two rounds:
+
+| form | result |
+| --- | --- |
+| `make new chart object at <sheet>` | works |
+| `make new chart at end of <workbook>` | fails, -50 |
+| `set (source data of chart of X) to <range>` | fails, -10006 |
+| `set source data chart of X source (<range>) plot by columns` | works |
+| `name of <chart object>` | settable, survives reopen |
+| `chart type of chart of <chart object>` | readable, survives reopen |
+| `count of series` / `formula of series 1` | readable, survives reopen |
+
+**Excel does not always store the constant that was set.** Asking for
+`line chart` produces a chart that reads back as `line markers`; `pie exploded`
+reads back as `pie chart`; `pie` and `line` alone are not valid constants at
+all, and `xy scatter` does not compile. The encoded record therefore carries
+**both** constants: one selects the AppleScript branch, the other is what the
+reopened copy is compared against.
+
+| public type | set | stored |
+| --- | --- | --- |
+| `column` | `column clustered` | `column clustered` |
+| `bar` | `bar clustered` | `bar clustered` |
+| `line` | `line markers` | `line markers` |
+| `pie` | `pie chart` | `pie chart` |
+
+The strongest evidence available is the **series formula**, which survives the
+reopen and names the ranges the chart actually plots:
+`=SERIES(Charted!$B$1,Charted!$A$2:$A$3,Charted!$B$2:$B$3,1)`. A chart that
+exists but plots nothing cannot pass that.
+
+#### An Excel deadlock that costs half an hour if you hit it
+
+**`repeat with x in chart objects of <sheet>` hangs Excel indefinitely once a
+chart exists on that sheet.** `with timeout` does not rescue it; the osascript
+process has to be killed. The first Phase F run used exactly that loop to check
+for a duplicate chart name and stalled for 30 minutes.
+
+`verify/probe_excel_chart_multi.sh` found working alternatives, all answering in
+under a second:
+
+- `count of chart objects of <sheet>`
+- `name of chart object <index> of <sheet>`
+- `name of every chart object of <sheet>`
+- `exists chart object "<name>" of <sheet>`  ← what the adapter uses
+
+The hanging form is kept in that probe, unrun, so the finding stays
+reproducible. **Do not enumerate `chart objects` with `repeat with x in`
+anywhere.**
+
+#### Accepted real Excel 16.78 evidence
+
+`document::excel::tests::excel_phase_f_chart_real_e2e`. Four charts on one
+worksheet — charts are found by name, not position, and nothing here moves
+cells — each read out of the reopened saved copy:
+
+`add_chart:Charted!A1:B3:name=ByColumn,type=column clustered,series=1,f1==SERIES(Charted!$B$1,Charted!$A$2:$A$3,Charted!$B$2:$B$3,1)`
+and the same for `ByBar` (`bar clustered`), `ByLine` (`line markers`) and
+`ByPie` (`pie chart`).
+
+`add_chart` carries **no displacement guard**: a chart is found by name rather
+than by address, so moving the cells around it does not make the probe stale.
+
+#### Verifiers
+
+- `verify/probe_excel_chart_semantics.sh`, `verify/probe_excel_chart_multi.sh`
+- `verify/verify_p15_excel_phase_f_charts.sh`
+- `verify/gate_p15_excel.sh`
+
+The `document::excel::tests::` count guard moved from 17 to **20**.
+
+### The verification harness was rebuilt during Phase F
+
+Two harness faults cost more time than any code defect, and both are fixed:
+
+1. **The phase verifiers ran each other.** Phase F ran E, which ran D, which ran
+   C, which ran A and B. One gate cost **32 real Excel cycles**. Phase verifiers
+   no longer run their predecessors; `verify/gate_p15_excel.sh` runs every phase
+   once, in order. A full gate now takes about **2.5 minutes**.
+2. **A hang was invisible and unbounded.** Step logs went to `mktemp`, and there
+   was no time limit. `run_gate.command` now enforces `AIOS_TASK_TIMEOUT`
+   (default 1800s) by running the task in its own process group so the whole
+   tree can be killed, writes step logs to `.gate-logs/` inside the repository,
+   and the gate prints a `....` line before each step so an in-progress step is
+   visible.
+
+`run_gate.command`, `.aios-task.sh`, `.gate-run.log` and `.gate-logs/` are
+gitignored developer-machine scaffolding, not part of the product.
+
+**If a run is killed mid-flight, Excel keeps the operation workbook open and
+shows a document-recovery banner on the next launch.** Close the leftover
+`operation-*` workbooks without saving before trusting the next run's
+before/after workbook-state comparison.
+
+### Excel Phase G — formula-aware read — NEXT
+
+`spreadsheet.read` currently returns values. Formula-aware read must return the
+formula as well, on the existing provider-neutral read route, inside the
+existing Phase B read bounds (16 worksheets, 200x64 cells, 256 characters per
+cell, ~60k protocol budget).
+
+Phase A already proves `formula of range <address>` reads back after a save and
+reopen, so the AppleScript form is known. The open questions are the output
+shape and how the extra text fits the existing budget.
+
+#### Four rules that have each cost a failed real run; carry them forward
 
 - reopen validation reads the saved copy **once, at the end**, so a probe sees
   the final state of its worksheet, not the state right after its own
@@ -455,10 +560,13 @@ Probe those before designing the operation, exactly as Phase D and Phase E did.
   supposed to prove that one operation.
 - an operation that **moves content** invalidates addresses written earlier on
   that worksheet; report the displacement instead of asserting a stale address.
-  Check whether a new operation moves values, formatting, or indexes, and add it
-  to the right set.
+  Check whether a new operation moves values, formatting, or indexes.
 - do not choose an AppleScript form because it compiles. The accepted form must
   be proven by actual workbook content, read back after a save and reopen.
+- **what Excel stores is not always what you set**, and **what reads back is not
+  always the shape you set it in** (`line markers` for `line chart`, `18` for a
+  font size, `24.0` for a column width). Probe the read-back, and compare
+  against what Excel actually stores.
 
 ### Apple iWork — REMAINING OFFICE WORK
 
@@ -571,8 +679,8 @@ Only after those gates pass:
 1. ~~Excel Phase C — row/column structural mutation~~ — **COMPLETE**
 2. ~~Excel basic formatting~~ — **COMPLETE**
 3. ~~Excel sort/filter~~ — **COMPLETE**
-4. Excel common chart integration — NEXT
-5. Excel formula-aware read
+4. ~~Excel common chart integration~~ — **COMPLETE**
+5. Excel formula-aware read — NEXT
 6. Excel final realistic workflow
 7. close Excel Common Capability
 8. Pages Common Capability review/completion
@@ -1760,6 +1868,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-02  Microsoft Excel Phase F chart integration completed: `add_chart` creates a column, bar, line or pie chart from a bounded source range with a required explicit name, through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route. Two probe rounds (`verify/probe_excel_chart_semantics.sh`) established that `make new chart object at <sheet>` works while `make new chart at end of <workbook>` fails (-50), that source data must be set by the command form because `set (source data of chart of X) to <range>` fails (-10006), and that a chart's name, chart type, series count and series formula all survive save-as-xlsx/close/reopen. Excel does not always store the constant that was set -- `line chart` stores as `line markers`, `pie exploded` as `pie chart`, and bare `line`/`pie` are not valid constants -- so the encoded record carries both the constant to set and the constant to compare against. The series formula is the accepted evidence because it names the ranges actually plotted, so a chart that exists but plots nothing cannot pass. The first real run hung for thirty minutes: `repeat with x in chart objects of <sheet>` deadlocks Excel once a chart exists on that sheet and `with timeout` does not rescue it, and that loop was how duplicate chart names were checked; `verify/probe_excel_chart_multi.sh` proved `exists chart object <name>`, `count of chart objects`, `name of chart object <index>` and `name of every chart object` all answer instantly, and the adapter now addresses charts by name and never enumerates them. The verification harness was also rebuilt: phase verifiers no longer run their predecessors (the chain had been quadratic, 32 real Excel cycles per gate), `verify/gate_p15_excel.sh` runs every phase once in order and a full gate now takes about 2.5 minutes, and the developer-machine runner enforces a timeout in its own process group and writes step logs inside the repository so a hang is bounded and visible. Real Excel 16.78 gate passes Phase A, Phase B mutation, Phase B read, Phase C structural, Phase D formatting, Phase E sort/filter, Phase F charts, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. The `document::excel::tests::` count guard moved from 17 to 20. Next Excel work is formula-aware read. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Microsoft Excel Phase E sort/filter completed: `sort_range` (bounded range, key column required to fall inside it, explicit `order` and explicit `hasHeader`), `apply_filter` (bounded range, field bounded by the range's own width, criteria string) and `clear_filter` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route. An isolated probe (`verify/probe_excel_sort_filter_semantics.sh`) established that all four sort variants survive save-as-xlsx/close/reopen, that a filter can be judged by `autofilter mode` plus each row's `hidden` state and that both survive the round trip, that `show all data` unhides without removing the filter, and that `range of autofilter object` does not answer `get address` (-1708) and is therefore unused. `hasHeader` and `order` are required rather than defaulted because guessing `hasHeader` wrong sorts the caller's header row into their data irreversibly. The first real run failed with `SetCell string validation mismatch` because Phase C's displacement rule had been implemented for structural operations only and sorting also moves cells; there are now two sets -- `structurallyChangedSheets` (insert/delete row/column, which also moves row and column indexes) and `reorderedSheets` (sort, which moves values and the formatting that travels with them but not indexes) -- and the marker is now `displaced-by-moved-content`. A filter hides rows without moving contents, so ordinary address-based validation still applies on a filtered worksheet, and the E2E asserts that directly so the displacement rule cannot quietly widen into skipping validation whenever anything happened. Real Excel 16.78 gate passes Phase E, Phase A, Phase B mutation, Phase B read, Phase C structural, Phase D formatting, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. The `document::excel::tests::` count guard moved from 14 to 17. Next Excel work is common chart integration, which must be probed for save/reopen-survivable evidence before the operation is designed. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Microsoft Excel Phase D basic formatting completed: `format_cells` (one bounded rectangular range with any combination of bold, italic, font size, font name, fill colour index and number format), `set_column_width` and `set_row_height` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route. An isolated probe (`verify/probe_excel_formatting_semantics.sh`) was run first and established both that the previously unprobed `italic`, `font size` and font `name` properties exist and that all eight attributes survive save-as-xlsx, close and reopen -- the precondition for validating them by reading the reopened saved copy. Read-back text forms are not uniform: bold/italic return `true`, font size returns `18`, colour index returns `6`, but column width and row height return `24.0` and `30.0`, so line measures are compared numerically with half a unit of tolerance and the observed value is reported rather than the requested one. An operation carrying no attribute is refused rather than silently validating clean. Encoding is fixed arity with an `end` terminator so no optional value is ever the trailing field. The Phase C displacement rule extends to formatting addresses. Real Excel 16.78 gate passes Phase D formatting, Phase A, Phase B mutation, Phase B read, Phase C structural, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. The `document::excel::tests::` count guard moved from 11 to 14, and `verify/gate_p15_excel_phase_c.sh` was renamed `verify/gate_p15_excel.sh`. Next Excel work is sort/filter, whose sort form is already proven; autofilter still needs a save/reopen survival probe before its validation is designed. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Microsoft Excel Phase C completed: `insert_row`, `delete_row`, `insert_column` and `delete_column` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route, with explicit worksheet identity, 1-based bounded indexes, one line per operation and no `count` parameter. The previous attempt's hypothesis was disproved: an isolated real Excel 16.78 probe ran all twelve candidate forms and all twelve shifted content correctly and identically, so the `shift` parameter is unnecessary and the plain form is used. The real cause was adapter integration -- reopen validation asserted cell addresses that the structural change had moved, reporting a working shift as `SetCell string validation mismatch`; worksheets touched by a structural operation now report `displaced-by-structural-change` rather than asserting a stale address, and Excel's shift arithmetic is deliberately not reimplemented to predict new addresses. Validation reads the saved copy once at the end, so each structural operation now gets its own worksheet in the E2E and each read-back proves exactly one operation, with a fifth worksheet carrying the composite insert-then-delete sequence the previous attempt failed on. Real Excel 16.78 gate passes Phase C structural, Phase A, Phase B mutation, Phase B read, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. Source workbook preservation, save-copy, workbook/window restoration, Excel-process preservation and user-workbook preservation all hold. `verify/verify_p15_excel_phase_a.sh` now expects 11 tests from the `document::excel::tests::` filter instead of 8. Next Excel work is basic formatting, whose eight AppleScript primitives are already proven by the same probe run. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.

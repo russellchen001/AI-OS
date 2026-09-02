@@ -22,6 +22,7 @@ const MAX_COLUMN_WIDTH: u64 = 255;
 const MAX_ROW_HEIGHT: u64 = 409;
 const MAX_FORMAT_AREA: u64 = 65_536;
 const MAX_CRITERIA_TEXT: usize = 256;
+const MAX_CHART_NAME_TEXT: usize = 64;
 const RECORD_SEPARATOR: char = '\u{1e}';
 const FIELD_SEPARATOR: char = '\u{1f}';
 
@@ -53,6 +54,48 @@ enum CellScalar {
     Integer(i64),
     Float(f64),
     Boolean(bool),
+}
+
+/// The four chart types proven on real Excel 16.78. Each carries both the
+/// constant to set and the constant Excel stores, because they are not always
+/// the same: asking for `line chart` produces a chart that reads back as
+/// `line markers`. Validation compares against what Excel stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChartKind {
+    Column,
+    Bar,
+    Line,
+    Pie,
+}
+
+impl ChartKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "column" => Some(Self::Column),
+            "bar" => Some(Self::Bar),
+            "line" => Some(Self::Line),
+            "pie" => Some(Self::Pie),
+            _ => None,
+        }
+    }
+
+    fn selector(self) -> &'static str {
+        match self {
+            Self::Column => "column",
+            Self::Bar => "bar",
+            Self::Line => "line",
+            Self::Pie => "pie",
+        }
+    }
+
+    fn stored(self) -> &'static str {
+        match self {
+            Self::Column => "column clustered",
+            Self::Bar => "bar clustered",
+            Self::Line => "line markers",
+            Self::Pie => "pie chart",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -157,6 +200,18 @@ enum EditOperation {
         end_row: u64,
         end_column: u64,
         has_header: bool,
+    },
+    /// An explicit name is required rather than accepting Excel's own
+    /// `Chart 1`: it is the handle the reopened copy is searched by, and two
+    /// charts sharing a name would make that search ambiguous.
+    AddChart {
+        sheet: String,
+        start_row: u64,
+        start_column: u64,
+        end_row: u64,
+        end_column: u64,
+        chart_type: ChartKind,
+        name: String,
     },
 }
 
@@ -605,8 +660,38 @@ fn parse_operation(operation: &Value) -> Result<EditOperation, ExcelError> {
                 has_header,
             })
         }
+        "add_chart" => {
+            let sheet = sheet_name(operation)?;
+            let (start_row, start_column, end_row, end_column) = cell_range(operation)?;
+
+            let chart_type = operation
+                .get("chartType")
+                .and_then(Value::as_str)
+                .and_then(ChartKind::parse)
+                .ok_or_else(|| {
+                    ExcelError::invalid(
+                        "add_chart requires chartType to be column, bar, line, or pie",
+                    )
+                })?;
+
+            let name = operation.get("name").and_then(Value::as_str).unwrap_or("");
+            if name.trim().is_empty() {
+                return Err(ExcelError::invalid("add_chart requires a chart name"));
+            }
+            validate_text(name, MAX_CHART_NAME_TEXT, "chart name")?;
+
+            Ok(EditOperation::AddChart {
+                sheet,
+                start_row,
+                start_column,
+                end_row,
+                end_column,
+                chart_type,
+                name: name.to_owned(),
+            })
+        }
         _ => Err(ExcelError::invalid(
-            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, delete_worksheet, insert_row, delete_row, insert_column, delete_column, format_cells, set_column_width, set_row_height, sort_range, apply_filter, and clear_filter",
+            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, delete_worksheet, insert_row, delete_row, insert_column, delete_column, format_cells, set_column_width, set_row_height, sort_range, apply_filter, clear_filter, and add_chart",
         )),
     }
 }
@@ -902,6 +987,22 @@ fn encode_operations(operations: &[EditOperation]) -> String {
                         last_row.to_string(),
                     ]
                 }
+                EditOperation::AddChart {
+                    sheet,
+                    start_row,
+                    start_column,
+                    end_row,
+                    end_column,
+                    chart_type,
+                    name,
+                } => vec![
+                    "add_chart".to_owned(),
+                    sheet.clone(),
+                    range_reference(*start_row, *start_column, *end_row, *end_column),
+                    name.clone(),
+                    chart_type.selector().to_owned(),
+                    chart_type.stored().to_owned(),
+                ],
             };
 
             fields.join(&FIELD_SEPARATOR.to_string())
@@ -1378,6 +1479,50 @@ on run argv
                     -- believed one was there, and silently succeeding would hide
                     -- that they were wrong.
                     show all data (worksheet sheetName of freshWorkbook)
+
+                else if operationKind is "add_chart" then
+                    set sheetName to item 2 of fields
+                    set rangeReference to item 3 of fields
+                    set chartName to item 4 of fields
+                    set chartSelector to item 5 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    set chartSheet to worksheet sheetName of freshWorkbook
+
+                    -- The reopened copy is searched by name, so two charts
+                    -- sharing one would make that search ambiguous.
+                    --
+                    -- Addressed directly rather than enumerated. A real probe
+                    -- showed that `repeat with x in chart objects of <sheet>`
+                    -- hangs Excel indefinitely once a chart exists on that
+                    -- sheet, and `with timeout` does not rescue it -- the
+                    -- process has to be killed. `exists chart object <name>`,
+                    -- `count of chart objects` and `name of chart object <i>`
+                    -- all answer in well under a second.
+                    if exists chart object chartName of chartSheet then
+                        error "A chart named " & chartName & " already exists" number -2712
+                    end if
+
+                    -- Exactly the probed order. The source must be set by the
+                    -- command form: `set (source data of chart of X) to <range>`
+                    -- fails with -10006.
+                    set madeChart to make new chart object at chartSheet
+                    set source data chart of madeChart source (range rangeReference of chartSheet) plot by columns
+
+                    if chartSelector is "column" then
+                        set chart type of chart of madeChart to column clustered
+                    else if chartSelector is "bar" then
+                        set chart type of chart of madeChart to bar clustered
+                    else if chartSelector is "line" then
+                        set chart type of chart of madeChart to line markers
+                    else
+                        set chart type of chart of madeChart to pie chart
+                    end if
+
+                    set name of madeChart to chartName
                 end if
             end repeat
 
@@ -1722,6 +1867,46 @@ on run argv
 
                         set validationText to validationText & operationKind & ":" & sheetName & "!" & rangeReference & ":mode=" & filterMode & ",row" & firstRowText & "hidden=" & firstHidden & ",row" & lastRowText & "hidden=" & lastHidden & (ASCII character 30)
                     end if
+
+                else if operationKind is "add_chart" then
+                    set sheetName to item 2 of fields
+                    set rangeReference to item 3 of fields
+                    set chartName to item 4 of fields
+                    set expectedType to item 6 of fields
+
+                    -- No displacement guard: a chart is found by name, not by
+                    -- address, so moving the cells around it does not make this
+                    -- probe stale.
+                    if exists worksheet sheetName of validationWorkbook then
+                        set validationSheet to worksheet sheetName of validationWorkbook
+
+                        -- Addressed by name, never enumerated: see the note in
+                        -- the mutation branch above.
+                        if not (exists chart object chartName of validationSheet) then
+                            error "AddChart left no chart named " & chartName
+                        end if
+
+                        set matchedChart to chart object chartName of validationSheet
+
+                        -- Excel does not always store the constant that was
+                        -- set: asking for `line chart` stores `line markers`.
+                        -- This compares against what it stores.
+                        set actualChartType to (chart type of chart of matchedChart) as text
+                        if actualChartType is not expectedType then
+                            error "AddChart chart type validation mismatch"
+                        end if
+
+                        -- A chart that exists but plots nothing would satisfy
+                        -- every other check here.
+                        set seriesCount to count of series of chart of matchedChart
+                        if seriesCount < 1 then
+                            error "AddChart produced a chart with no series"
+                        end if
+
+                        set seriesFormula to my safeText(formula of series 1 of chart of matchedChart)
+
+                        set validationText to validationText & "add_chart:" & sheetName & "!" & rangeReference & ":name=" & chartName & ",type=" & actualChartType & ",series=" & (seriesCount as text) & ",f1=" & seriesFormula & (ASCII character 30)
+                    end if
                 end if
             end repeat
 
@@ -1887,6 +2072,157 @@ mod tests {
 
     fn request(operation: Value) -> Value {
         json!({"operations": [operation]})
+    }
+
+    #[test]
+    #[ignore]
+    fn excel_phase_f_chart_real_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+        let root = tempdir().unwrap();
+        let output = root.path().join("phase-f-chart-output.xlsx");
+
+        // Charts are found by name rather than by position, and nothing here
+        // moves cells, so all four can share one worksheet.
+        let result = edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": output,
+            "operations": [
+                {"type":"add_worksheet","name":"Charted"},
+                {"type":"set_cell","sheet":"Charted","row":1,"column":1,"value":"Name"},
+                {"type":"set_cell","sheet":"Charted","row":1,"column":2,"value":"Score"},
+                {"type":"set_cell","sheet":"Charted","row":2,"column":1,"value":"Bravo"},
+                {"type":"set_cell","sheet":"Charted","row":2,"column":2,"value":2},
+                {"type":"set_cell","sheet":"Charted","row":3,"column":1,"value":"Alpha"},
+                {"type":"set_cell","sheet":"Charted","row":3,"column":2,"value":1},
+
+                {"type":"add_chart","sheet":"Charted","startRow":1,"startColumn":1,
+                 "endRow":3,"endColumn":2,"chartType":"column","name":"ByColumn"},
+                {"type":"add_chart","sheet":"Charted","startRow":1,"startColumn":1,
+                 "endRow":3,"endColumn":2,"chartType":"bar","name":"ByBar"},
+                {"type":"add_chart","sheet":"Charted","startRow":1,"startColumn":1,
+                 "endRow":3,"endColumn":2,"chartType":"line","name":"ByLine"},
+                {"type":"add_chart","sheet":"Charted","startRow":1,"startColumn":1,
+                 "endRow":3,"endColumn":2,"chartType":"pie","name":"ByPie"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(result["operationResult"]["status"], "edited-copy");
+        assert_eq!(
+            fs::read(&fixture).unwrap(),
+            original,
+            "the source workbook must be preserved"
+        );
+
+        let validation: Vec<String> = result["validation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect();
+
+        let entry = |name: &str| -> String {
+            let prefix = format!("add_chart:Charted!A1:B3:name={name},");
+            validation
+                .iter()
+                .find(|value| value.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("missing chart {name} in {validation:?}"))
+                .clone()
+        };
+
+        // The series formula is the strongest evidence available: it survives
+        // the reopen and names the ranges the chart actually plots, so a chart
+        // that exists but plots nothing cannot pass.
+        let plotted = "series=1,f1==SERIES(Charted!$B$1,Charted!$A$2:$A$3,Charted!$B$2:$B$3,1)";
+
+        // Excel stores its own constant, which is not always the one that was
+        // set: `line markers` for a line chart, `pie chart` for a pie.
+        assert_eq!(
+            entry("ByColumn"),
+            format!("add_chart:Charted!A1:B3:name=ByColumn,type=column clustered,{plotted}")
+        );
+        assert_eq!(
+            entry("ByBar"),
+            format!("add_chart:Charted!A1:B3:name=ByBar,type=bar clustered,{plotted}")
+        );
+        assert_eq!(
+            entry("ByLine"),
+            format!("add_chart:Charted!A1:B3:name=ByLine,type=line markers,{plotted}")
+        );
+        assert_eq!(
+            entry("ByPie"),
+            format!("add_chart:Charted!A1:B3:name=ByPie,type=pie chart,{plotted}")
+        );
+    }
+
+    #[test]
+    fn chart_operations_require_a_known_type_and_an_explicit_name() {
+        assert_eq!(
+            parse_operations(&request(json!({
+                "type":"add_chart","sheet":"Sheet1",
+                "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                "chartType":"line","name":"Trend"
+            })))
+            .unwrap()[0],
+            EditOperation::AddChart {
+                sheet: "Sheet1".to_owned(),
+                start_row: 1,
+                start_column: 1,
+                end_row: 3,
+                end_column: 2,
+                chart_type: ChartKind::Line,
+                name: "Trend".to_owned(),
+            }
+        );
+
+        for rejected in [
+            // A type Excel was never proved to accept.
+            json!({"type":"add_chart","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"chartType":"scatter","name":"T"}),
+            json!({"type":"add_chart","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"chartType":"pie chart","name":"T"}),
+            json!({"type":"add_chart","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"name":"T"}),
+            // Without a name the reopened copy cannot be searched for it.
+            json!({"type":"add_chart","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"chartType":"pie"}),
+            json!({"type":"add_chart","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"chartType":"pie","name":"  "}),
+            // The source range is bounded like every other range.
+            json!({"type":"add_chart","sheet":"S","startRow":3,"startColumn":1,"endRow":1,"endColumn":2,"chartType":"pie","name":"T"}),
+            json!({"type":"add_chart","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":257,"chartType":"pie","name":"T"}),
+        ] {
+            assert!(
+                parse_operations(&request(rejected.clone())).is_err(),
+                "{rejected} should have been rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn chart_encoding_carries_both_the_set_and_the_stored_constant() {
+        let separator = FIELD_SEPARATOR.to_string();
+
+        // Excel does not always store the constant that was set, so the record
+        // carries both: one selects the AppleScript branch, the other is what
+        // the reopened copy is compared against.
+        for (requested, selector, stored) in [
+            ("column", "column", "column clustered"),
+            ("bar", "bar", "bar clustered"),
+            ("line", "line", "line markers"),
+            ("pie", "pie", "pie chart"),
+        ] {
+            let encoded = encode_operations(
+                &parse_operations(&request(json!({
+                    "type":"add_chart","sheet":"Sheet1",
+                    "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                    "chartType":requested,"name":"Trend"
+                })))
+                .unwrap(),
+            );
+
+            assert_eq!(
+                encoded.split(&separator).collect::<Vec<_>>(),
+                vec!["add_chart", "Sheet1", "A1:B3", "Trend", selector, stored]
+            );
+        }
     }
 
     #[test]

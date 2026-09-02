@@ -94,23 +94,9 @@ echo "✅ delete_row shifted the column up, proved from the reopened copy"
 echo "✅ source workbook preserved"
 
 # Phase A and Phase B must still hold: Phase C reuses their adapter.
-bash verify/verify_p15_excel_phase_a.sh >"$TMP_DIR/phase_a.log" 2>&1 || {
-  tail -60 "$TMP_DIR/phase_a.log"
-  fail "Phase A regression"
-}
-echo "✅ Phase A regression"
-
-bash verify/verify_p15_excel_phase_b_mutation.sh >"$TMP_DIR/phase_b_mutation.log" 2>&1 || {
-  tail -60 "$TMP_DIR/phase_b_mutation.log"
-  fail "Phase B mutation regression"
-}
-echo "✅ Phase B mutation regression"
-
-bash verify/verify_p15_excel_phase_b_read.sh >"$TMP_DIR/phase_b_read.log" 2>&1 || {
-  tail -60 "$TMP_DIR/phase_b_read.log"
-  fail "Phase B read regression"
-}
-echo "✅ Phase B read regression"
+# Earlier phases are NOT run from here. The gate runs every phase once, in
+# order; a verifier that also ran its predecessors made the chain quadratic --
+# one gate cost 32 real Excel cycles and took half an hour.
 
 AFTER_STATE="$(
   /usr/bin/osascript -e \

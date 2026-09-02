@@ -90,18 +90,9 @@ echo "✅ column width and row height applied"
 echo "✅ every attribute read back from the reopened saved copy"
 echo "✅ source workbook preserved"
 
-for phase in \
-  verify_p15_excel_phase_a \
-  verify_p15_excel_phase_b_mutation \
-  verify_p15_excel_phase_b_read \
-  verify_p15_excel_phase_c_structural
-do
-  bash "verify/$phase.sh" >"$TMP_DIR/$phase.log" 2>&1 || {
-    tail -60 "$TMP_DIR/$phase.log"
-    fail "$phase regression"
-  }
-  echo "✅ $phase regression"
-done
+# Earlier phases are NOT run from here. The gate runs every phase once, in
+# order; a verifier that also ran its predecessors made the chain quadratic --
+# one gate cost 32 real Excel cycles and took half an hour.
 
 AFTER_STATE="$(
   /usr/bin/osascript -e \

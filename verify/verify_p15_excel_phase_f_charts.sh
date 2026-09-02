@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-NAME="P15 Microsoft Excel Phase E Sort and Filter"
+NAME="P15 Microsoft Excel Phase F Charts"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 FIXTURE="$TMP_DIR/created.xlsx"
@@ -52,43 +52,44 @@ echo "✅ embedded AppleScript compiles"
 
 cargo test \
   --manifest-path src-tauri/Cargo.toml \
-  document::excel::tests::sort_and_filter_operations_fail_closed_on_ambiguous_input \
+  document::excel::tests::chart_operations_require_a_known_type_and_an_explicit_name \
   --lib >"$LOG" 2>&1 || {
     tail -80 "$LOG"
-    fail "sort and filter input validation"
+    fail "chart input validation"
   }
 
-echo "✅ key inside the range, explicit order and hasHeader, bounded field"
+echo "✅ known chart type, explicit name, bounded source range"
 
 cargo test \
   --manifest-path src-tauri/Cargo.toml \
-  document::excel::tests::sort_and_filter_encode_probe_rows_that_skip_a_header \
+  document::excel::tests::chart_encoding_carries_both_the_set_and_the_stored_constant \
   --lib >"$LOG" 2>&1 || {
     tail -80 "$LOG"
-    fail "sort and filter encoding"
+    fail "chart encoding"
   }
 
-echo "✅ probe rows skip the header row"
+echo "✅ record carries both the set and the stored chart constant"
 
-# verify/probe_excel_sort_filter_semantics.sh established that autofilter can be
-# judged by `autofilter mode` plus each row's `hidden` state, and that both
-# survive save-as-xlsx, close and reopen. This asserts it on the real file.
+# verify/probe_excel_chart_semantics.sh established that a chart's name, type
+# and series formula all survive save-as-xlsx, close and reopen, and that the
+# series formula names the ranges actually plotted. This asserts it on the real
+# file.
 AI_OS_EXCEL_EDIT_FIXTURE="$FIXTURE" \
 cargo test \
   --manifest-path src-tauri/Cargo.toml \
-  document::excel::tests::excel_phase_e_sort_filter_real_e2e \
+  document::excel::tests::excel_phase_f_chart_real_e2e \
   --lib -- --ignored >"$LOG" 2>&1 || {
     tail -140 "$LOG"
-    fail "real sort and filter E2E"
+    fail "real chart E2E"
   }
 
 grep -q "test result: ok" "$LOG" ||
-  fail "real sort and filter E2E result marker"
+  fail "real chart E2E result marker"
 
-echo "✅ ascending sort reordered the data and left the header at row 1"
-echo "✅ filter criteria hid the non-matching row and kept the matching one"
-echo "✅ clearing the filter put the hidden row back"
-echo "✅ filter state and hidden rows read back from the reopened saved copy"
+echo "✅ column, bar, line and pie charts created and found by name"
+echo "✅ each stored chart type matches what Excel actually stores"
+echo "✅ each chart plots a real series, proved by its SERIES formula"
+echo "✅ chart identity and series read back from the reopened saved copy"
 echo "✅ source workbook preserved"
 
 # Earlier phases are NOT run from here. The gate runs every phase once, in

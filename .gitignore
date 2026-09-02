@@ -52,3 +52,4 @@ office-probe-excel-structural.log
 .gate-run.log
 run_gate.command
 .aios-task.sh
+.gate-logs/
