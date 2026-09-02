@@ -243,7 +243,7 @@ Excel is still not Common-Capability complete after Phase C.
 Remaining work includes:
 
 1. ~~basic formatting~~ — **COMPLETE**, see Excel Phase D below
-2. sort/filter
+2. ~~sort/filter~~ — **COMPLETE**, see Excel Phase E below
 3. common chart integration
 4. formula-aware spreadsheet read
 5. final realistic spreadsheet workflow
@@ -337,29 +337,128 @@ Full gate result on real Excel 16.78: **PASS** on every step.
 The `document::excel::tests::` count guard in
 `verify/verify_p15_excel_phase_a.sh` moved from 11 to **14**.
 
-### Excel Phase E — sort/filter — NEXT
+### Excel Phase E — sort/filter — COMPLETE
 
-Already proven by the earlier structural probe run, so integrate rather than
-re-probe:
+Landed operations, again through the existing `edit_excel_workbook()` adapter on
+the existing provider-neutral `spreadsheet.edit` route.
 
-```applescript
-sort (range "A1:B3" of targetSheet) key1 (range "A1" of targetSheet) order1 sort ascending header header yes
-autofilter range (range "A1:B3" of targetSheet)
-```
+- `sort_range` — one bounded range, a key column that must fall inside it,
+  explicit `order` and explicit `hasHeader`
+- `apply_filter` — one bounded range, a `field` bounded by the range's own
+  width, and a criteria string
+- `clear_filter` — unhides the rows a filter hid
 
-Sorting by column A ascending moved `Alpha` into `A2`, so sort has a scalar
-read-back. **Autofilter does not**, and it has not been probed for save/reopen
-survival -- probe that before designing its validation, the way Phase D probed
-its attributes.
+`hasHeader` and `order` are **required, not defaulted**. Guessing `hasHeader`
+wrong sorts the caller's header row into their data, and no later operation
+undoes that.
 
-#### Two rules that each cost a failed real run; carry them forward
+#### What the probe established
+
+`verify/probe_excel_sort_filter_semantics.sh`. Sort already had a proven form
+and a scalar read-back; autofilter had neither, so the probe existed to find
+what a filter CAN be judged by and whether that evidence survives save-as-xlsx,
+close and reopen.
+
+- all four sort variants work and survive the round trip: ascending,
+  descending, header yes, header no, and a non-first key column
+- `autofilter mode of <sheet>` reads back `true` and survives the round trip
+- `hidden of row N of <sheet>` reflects the criteria and survives the round trip
+  — filtering `Score > 1` over `Bravo 2 / Alpha 1` leaves row 2 visible and row
+  3 hidden, in the reopened copy
+- `show all data <sheet>` unhides the rows and leaves `autofilter mode` true
+- `range of autofilter object` does **not** answer `get address` (error -1708);
+  it is not used
+
+So a filter is validated by `autofilter mode` plus the hidden state of the
+range's first data row and last row. `apply_filter` asserts the mode is on;
+`clear_filter` asserts neither probe row is hidden. Both report all three
+values.
+
+The AppleScript enumeration constants `sort ascending` and `header yes` cannot
+be interpolated from a field, so the adapter writes out the four probed forms
+literally and selects between them.
+
+#### The displacement rule had to grow, and this cost a real run
+
+Phase C established that an operation which moves cells invalidates addresses
+written earlier on that worksheet. That was implemented for structural
+operations only. **Sorting also moves cells**, so the first real Phase E run
+failed with `SetCell string validation mismatch` for exactly the Phase C reason.
+
+There are now two sets, because the two kinds of movement invalidate different
+things:
+
+| | `structurallyChangedSheets` | `reorderedSheets` |
+| --- | --- | --- |
+| filled by | insert/delete row/column | `sort_range` |
+| moves values | yes | yes |
+| moves cell formatting | yes | yes (it travels with the row) |
+| moves row/column **indexes** | yes | no |
+| invalidates `set_cell` / `set_formula` / `clear_cell` / `format_cells` | yes | yes |
+| invalidates `set_column_width` / `set_row_height` / `sort_range` probes / filter row probes | yes | **no** |
+
+The marker is now `displaced-by-moved-content` rather than
+`displaced-by-structural-change`.
+
+A filter hides rows without moving their contents, so **ordinary
+address-based validation still applies on a filtered worksheet**. The Phase E
+E2E asserts that directly (`set_cell:Filtered!A2=Bravo`), which is what keeps
+the displacement rule from quietly widening into "skip validation whenever
+anything happened".
+
+#### Accepted real Excel 16.78 evidence
+
+`document::excel::tests::excel_phase_e_sort_filter_real_e2e`. Three worksheets,
+each `Name/Score` with `Bravo 2` and `Alpha 1`, all read out of the reopened
+saved copy:
+
+| worksheet | operation | read back |
+| --- | --- | --- |
+| Sorted | sort by Name ascending, header | `A2=Alpha,A3=Bravo` |
+| Filtered | filter Score `>1` | `mode=true,row2hidden=false,row3hidden=true` |
+| Cleared | same filter, then clear | `mode=true,row2hidden=false,row3hidden=false` |
+
+Plus `set_cell:Sorted!A2=displaced-by-moved-content` and
+`set_cell:Filtered!A2=Bravo`.
+
+#### Verifiers
+
+- `verify/probe_excel_sort_filter_semantics.sh`
+- `verify/verify_p15_excel_phase_e_sort_filter.sh` — AppleScript compile, input
+  validation, encoding, the real E2E, then Phase A / B Mutation / B Read /
+  C / D regressions, then Excel state restoration
+- `verify/gate_p15_excel.sh` now runs the Phase E verifier, which subsumes the
+  earlier phase steps
+
+Full gate result on real Excel 16.78: **PASS** on every step.
+
+The `document::excel::tests::` count guard moved from 14 to **17**.
+
+### Excel Phase F — common chart integration — NEXT
+
+Earlier isolated probes showed column / line / pie creation is technically
+possible in real Excel. **Those probes are not integration evidence** and they
+did not answer the questions that decided Phase D and Phase E:
+
+1. what can a chart be judged by from the reopened saved copy? Candidates to
+   probe: `count of chart objects of <sheet>`, a chart object's `name`, its
+   `chart type`, and the address its source data came from.
+2. does that evidence survive save-as-xlsx, close and reopen?
+
+Probe those before designing the operation, exactly as Phase D and Phase E did.
+
+#### Three rules that have each cost a failed real run; carry them forward
 
 - reopen validation reads the saved copy **once, at the end**, so a probe sees
   the final state of its worksheet, not the state right after its own
   operation. Give each operation its own worksheet when the read-back is
   supposed to prove that one operation.
-- an operation that moves cells invalidates addresses written earlier on that
-  worksheet; report the displacement instead of asserting a stale address.
+- an operation that **moves content** invalidates addresses written earlier on
+  that worksheet; report the displacement instead of asserting a stale address.
+  Check whether a new operation moves values, formatting, or indexes, and add it
+  to the right set.
+- do not choose an AppleScript form because it compiles. The accepted form must
+  be proven by actual workbook content, read back after a save and reopen.
 
 ### Apple iWork — REMAINING OFFICE WORK
 
@@ -471,8 +570,8 @@ Only after those gates pass:
 
 1. ~~Excel Phase C — row/column structural mutation~~ — **COMPLETE**
 2. ~~Excel basic formatting~~ — **COMPLETE**
-3. Excel sort/filter — NEXT
-4. Excel common chart integration
+3. ~~Excel sort/filter~~ — **COMPLETE**
+4. Excel common chart integration — NEXT
 5. Excel formula-aware read
 6. Excel final realistic workflow
 7. close Excel Common Capability
@@ -1661,6 +1760,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-02  Microsoft Excel Phase E sort/filter completed: `sort_range` (bounded range, key column required to fall inside it, explicit `order` and explicit `hasHeader`), `apply_filter` (bounded range, field bounded by the range's own width, criteria string) and `clear_filter` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route. An isolated probe (`verify/probe_excel_sort_filter_semantics.sh`) established that all four sort variants survive save-as-xlsx/close/reopen, that a filter can be judged by `autofilter mode` plus each row's `hidden` state and that both survive the round trip, that `show all data` unhides without removing the filter, and that `range of autofilter object` does not answer `get address` (-1708) and is therefore unused. `hasHeader` and `order` are required rather than defaulted because guessing `hasHeader` wrong sorts the caller's header row into their data irreversibly. The first real run failed with `SetCell string validation mismatch` because Phase C's displacement rule had been implemented for structural operations only and sorting also moves cells; there are now two sets -- `structurallyChangedSheets` (insert/delete row/column, which also moves row and column indexes) and `reorderedSheets` (sort, which moves values and the formatting that travels with them but not indexes) -- and the marker is now `displaced-by-moved-content`. A filter hides rows without moving contents, so ordinary address-based validation still applies on a filtered worksheet, and the E2E asserts that directly so the displacement rule cannot quietly widen into skipping validation whenever anything happened. Real Excel 16.78 gate passes Phase E, Phase A, Phase B mutation, Phase B read, Phase C structural, Phase D formatting, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. The `document::excel::tests::` count guard moved from 14 to 17. Next Excel work is common chart integration, which must be probed for save/reopen-survivable evidence before the operation is designed. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Microsoft Excel Phase D basic formatting completed: `format_cells` (one bounded rectangular range with any combination of bold, italic, font size, font name, fill colour index and number format), `set_column_width` and `set_row_height` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route. An isolated probe (`verify/probe_excel_formatting_semantics.sh`) was run first and established both that the previously unprobed `italic`, `font size` and font `name` properties exist and that all eight attributes survive save-as-xlsx, close and reopen -- the precondition for validating them by reading the reopened saved copy. Read-back text forms are not uniform: bold/italic return `true`, font size returns `18`, colour index returns `6`, but column width and row height return `24.0` and `30.0`, so line measures are compared numerically with half a unit of tolerance and the observed value is reported rather than the requested one. An operation carrying no attribute is refused rather than silently validating clean. Encoding is fixed arity with an `end` terminator so no optional value is ever the trailing field. The Phase C displacement rule extends to formatting addresses. Real Excel 16.78 gate passes Phase D formatting, Phase A, Phase B mutation, Phase B read, Phase C structural, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. The `document::excel::tests::` count guard moved from 11 to 14, and `verify/gate_p15_excel_phase_c.sh` was renamed `verify/gate_p15_excel.sh`. Next Excel work is sort/filter, whose sort form is already proven; autofilter still needs a save/reopen survival probe before its validation is designed. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Microsoft Excel Phase C completed: `insert_row`, `delete_row`, `insert_column` and `delete_column` landed through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route, with explicit worksheet identity, 1-based bounded indexes, one line per operation and no `count` parameter. The previous attempt's hypothesis was disproved: an isolated real Excel 16.78 probe ran all twelve candidate forms and all twelve shifted content correctly and identically, so the `shift` parameter is unnecessary and the plain form is used. The real cause was adapter integration -- reopen validation asserted cell addresses that the structural change had moved, reporting a working shift as `SetCell string validation mismatch`; worksheets touched by a structural operation now report `displaced-by-structural-change` rather than asserting a stale address, and Excel's shift arithmetic is deliberately not reimplemented to predict new addresses. Validation reads the saved copy once at the end, so each structural operation now gets its own worksheet in the E2E and each read-back proves exactly one operation, with a fifth worksheet carrying the composite insert-then-delete sequence the previous attempt failed on. Real Excel 16.78 gate passes Phase C structural, Phase A, Phase B mutation, Phase B read, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. Source workbook preservation, save-copy, workbook/window restoration, Excel-process preservation and user-workbook preservation all hold. `verify/verify_p15_excel_phase_a.sh` now expects 11 tests from the `document::excel::tests::` filter instead of 8. Next Excel work is basic formatting, whose eight AppleScript primitives are already proven by the same probe run. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
 - 2026-09-02  Office takeover recorded: Word and PowerPoint Common Capability remain Complete; Excel Phase A, Phase B Mutation, and Phase B Multi-Sheet Read remain Complete. Excel Phase C is explicitly NOT LANDED after the temporary candidate passed Rust/API/unit validation but failed real Excel 16.78 column structural read-back; the worker restored stable baseline `633aeb42258a248ed80dd0fa760525a6207ed9d3`. Next owner starts with an isolated real-Excel whole-column-delete semantics probe, then completes Phase C without reopening Phase A/B. Remaining Office work includes Excel formatting, sort/filter, chart integration, formula-aware read and final workflow; iWork Common Capability review/completion; WPS deterministic-support classification; Google Workspace fallback completion; and final Provider Matrix acceptance. Office remains In Progress and P15 remains 5/11.

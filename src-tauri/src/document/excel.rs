@@ -21,6 +21,7 @@ const MAX_COLOR_INDEX: u64 = 56;
 const MAX_COLUMN_WIDTH: u64 = 255;
 const MAX_ROW_HEIGHT: u64 = 409;
 const MAX_FORMAT_AREA: u64 = 65_536;
+const MAX_CRITERIA_TEXT: usize = 256;
 const RECORD_SEPARATOR: char = '\u{1e}';
 const FIELD_SEPARATOR: char = '\u{1f}';
 
@@ -126,6 +127,36 @@ enum EditOperation {
         sheet: String,
         row: u64,
         height: u64,
+    },
+    /// `hasHeader` is required rather than defaulted: guessing it wrong sorts
+    /// the caller's header row into their data, which no later operation can
+    /// undo.
+    SortRange {
+        sheet: String,
+        start_row: u64,
+        start_column: u64,
+        end_row: u64,
+        end_column: u64,
+        key_column: u64,
+        descending: bool,
+        has_header: bool,
+    },
+    ApplyFilter {
+        sheet: String,
+        start_row: u64,
+        start_column: u64,
+        end_row: u64,
+        end_column: u64,
+        field: u64,
+        criteria: String,
+    },
+    ClearFilter {
+        sheet: String,
+        start_row: u64,
+        start_column: u64,
+        end_row: u64,
+        end_column: u64,
+        has_header: bool,
     },
 }
 
@@ -262,6 +293,19 @@ fn cell_range(operation: &Value) -> Result<(u64, u64, u64, u64), ExcelError> {
     }
 
     Ok((start_row, start_column, end_row, end_column))
+}
+
+/// The first row a sort or filter is allowed to move, and the last row of the
+/// range. Both are read back from the reopened copy: the first proves a sort
+/// reordered real data, and the pair proves a cleared filter left nothing
+/// hidden.
+fn data_rows(start_row: u64, end_row: u64, has_header: bool) -> (u64, u64) {
+    let first = if has_header && end_row > start_row {
+        start_row + 1
+    } else {
+        start_row
+    };
+    (first, end_row)
 }
 
 fn range_reference(start_row: u64, start_column: u64, end_row: u64, end_column: u64) -> String {
@@ -474,8 +518,95 @@ fn parse_operation(operation: &Value) -> Result<EditOperation, ExcelError> {
             row: line_index(operation, "row", MAX_ROW)?,
             height: line_index(operation, "height", MAX_ROW_HEIGHT)?,
         }),
+        "sort_range" => {
+            let sheet = sheet_name(operation)?;
+            let (start_row, start_column, end_row, end_column) = cell_range(operation)?;
+            let key_column = line_index(operation, "keyColumn", MAX_COLUMN)?;
+
+            if !(start_column..=end_column).contains(&key_column) {
+                return Err(ExcelError::invalid(
+                    "keyColumn must fall inside the sorted range",
+                ));
+            }
+
+            let descending = match operation.get("order").and_then(Value::as_str) {
+                Some("ascending") => false,
+                Some("descending") => true,
+                _ => {
+                    return Err(ExcelError::invalid(
+                        "sort_range requires order to be ascending or descending",
+                    ))
+                }
+            };
+
+            let has_header = operation
+                .get("hasHeader")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    ExcelError::invalid("sort_range requires an explicit hasHeader boolean")
+                })?;
+
+            if has_header && end_row == start_row {
+                return Err(ExcelError::invalid(
+                    "a sorted range with a header must contain at least one data row",
+                ));
+            }
+
+            Ok(EditOperation::SortRange {
+                sheet,
+                start_row,
+                start_column,
+                end_row,
+                end_column,
+                key_column,
+                descending,
+                has_header,
+            })
+        }
+        "apply_filter" => {
+            let sheet = sheet_name(operation)?;
+            let (start_row, start_column, end_row, end_column) = cell_range(operation)?;
+            let width = end_column - start_column + 1;
+            let field = line_index(operation, "field", width)?;
+
+            let criteria = operation.get("criteria").and_then(Value::as_str).unwrap_or("");
+            if criteria.trim().is_empty() {
+                return Err(ExcelError::invalid("apply_filter requires criteria"));
+            }
+            validate_text(criteria, MAX_CRITERIA_TEXT, "criteria")?;
+
+            Ok(EditOperation::ApplyFilter {
+                sheet,
+                start_row,
+                start_column,
+                end_row,
+                end_column,
+                field,
+                criteria: criteria.to_owned(),
+            })
+        }
+        "clear_filter" => {
+            let sheet = sheet_name(operation)?;
+            let (start_row, start_column, end_row, end_column) = cell_range(operation)?;
+
+            let has_header = operation
+                .get("hasHeader")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    ExcelError::invalid("clear_filter requires an explicit hasHeader boolean")
+                })?;
+
+            Ok(EditOperation::ClearFilter {
+                sheet,
+                start_row,
+                start_column,
+                end_row,
+                end_column,
+                has_header,
+            })
+        }
         _ => Err(ExcelError::invalid(
-            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, delete_worksheet, insert_row, delete_row, insert_column, delete_column, format_cells, set_column_width, and set_row_height",
+            "spreadsheet.edit supports set_cell, set_formula, clear_cell, add_worksheet, rename_worksheet, delete_worksheet, insert_row, delete_row, insert_column, delete_column, format_cells, set_column_width, set_row_height, sort_range, apply_filter, and clear_filter",
         )),
     }
 }
@@ -690,6 +821,87 @@ fn encode_operations(operations: &[EditOperation]) -> String {
                     row.to_string(),
                     height.to_string(),
                 ],
+                // The sort order and the header flag are AppleScript enumeration
+                // constants, not strings, so they cannot be interpolated; these
+                // fields select between four literal probed forms.
+                EditOperation::SortRange {
+                    sheet,
+                    start_row,
+                    start_column,
+                    end_row,
+                    end_column,
+                    key_column,
+                    descending,
+                    has_header,
+                } => {
+                    let (first_row, _) = data_rows(*start_row, *end_row, *has_header);
+                    let following = if first_row < *end_row {
+                        first_row + 1
+                    } else {
+                        first_row
+                    };
+                    let key = column_name(*key_column);
+
+                    vec![
+                        "sort_range".to_owned(),
+                        sheet.clone(),
+                        range_reference(*start_row, *start_column, *end_row, *end_column),
+                        format!("{key}{start_row}"),
+                        if *descending {
+                            "descending".to_owned()
+                        } else {
+                            "ascending".to_owned()
+                        },
+                        if *has_header {
+                            "yes".to_owned()
+                        } else {
+                            "no".to_owned()
+                        },
+                        format!("{key}{first_row}"),
+                        format!("{key}{following}"),
+                    ]
+                }
+                EditOperation::ApplyFilter {
+                    sheet,
+                    start_row,
+                    start_column,
+                    end_row,
+                    end_column,
+                    field,
+                    criteria,
+                } => {
+                    let (first_row, last_row) = data_rows(*start_row, *end_row, true);
+
+                    vec![
+                        "apply_filter".to_owned(),
+                        sheet.clone(),
+                        range_reference(*start_row, *start_column, *end_row, *end_column),
+                        field.to_string(),
+                        criteria.clone(),
+                        first_row.to_string(),
+                        last_row.to_string(),
+                    ]
+                }
+                EditOperation::ClearFilter {
+                    sheet,
+                    start_row,
+                    start_column,
+                    end_row,
+                    end_column,
+                    has_header,
+                } => {
+                    let (first_row, last_row) = data_rows(*start_row, *end_row, *has_header);
+
+                    vec![
+                        "clear_filter".to_owned(),
+                        sheet.clone(),
+                        range_reference(*start_row, *start_column, *end_row, *end_column),
+                        String::new(),
+                        String::new(),
+                        first_row.to_string(),
+                        last_row.to_string(),
+                    ]
+                }
             };
 
             fields.join(&FIELD_SEPARATOR.to_string())
@@ -1112,6 +1324,60 @@ on run argv
                     tell worksheet sheetName of freshWorkbook
                         set row height of row (rowIndexText as integer) to (heightText as real)
                     end tell
+
+                else if operationKind is "sort_range" then
+                    set sheetName to item 2 of fields
+                    set rangeReference to item 3 of fields
+                    set keyReference to item 4 of fields
+                    set orderText to item 5 of fields
+                    set headerText to item 6 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    -- `sort ascending` and `header yes` are enumeration
+                    -- constants, not strings, so they cannot be built from a
+                    -- field. These are the four probed forms written out.
+                    set sortSheet to worksheet sheetName of freshWorkbook
+                    if orderText is "ascending" then
+                        if headerText is "yes" then
+                            sort (range rangeReference of sortSheet) key1 (range keyReference of sortSheet) order1 sort ascending header header yes
+                        else
+                            sort (range rangeReference of sortSheet) key1 (range keyReference of sortSheet) order1 sort ascending header header no
+                        end if
+                    else
+                        if headerText is "yes" then
+                            sort (range rangeReference of sortSheet) key1 (range keyReference of sortSheet) order1 sort descending header header yes
+                        else
+                            sort (range rangeReference of sortSheet) key1 (range keyReference of sortSheet) order1 sort descending header header no
+                        end if
+                    end if
+
+                else if operationKind is "apply_filter" then
+                    set sheetName to item 2 of fields
+                    set rangeReference to item 3 of fields
+                    set fieldText to item 4 of fields
+                    set criteriaText to item 5 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    set filterSheet to worksheet sheetName of freshWorkbook
+                    autofilter range (range rangeReference of filterSheet) field (fieldText as integer) criteria1 criteriaText
+
+                else if operationKind is "clear_filter" then
+                    set sheetName to item 2 of fields
+
+                    if not (exists worksheet sheetName of freshWorkbook) then
+                        error "Worksheet not found: " & sheetName number -2702
+                    end if
+
+                    -- Fails closed when there is no filter to clear: the caller
+                    -- believed one was there, and silently succeeding would hide
+                    -- that they were wrong.
+                    show all data (worksheet sheetName of freshWorkbook)
                 end if
             end repeat
 
@@ -1175,21 +1441,34 @@ on run argv
             set ownsWorkbook to true
             set validationText to ""
 
-            -- A structural change moves every cell after it, so an address
-            -- written earlier on that worksheet is stale by the time the saved
-            -- copy is reopened. Re-asserting it would report a shift that
-            -- worked as a failed write. Those worksheets are collected first so
-            -- the cell branches below can say the address was displaced instead
-            -- of pretending it was not. The structural probes still read real
-            -- content back, so the earlier writes remain evidenced.
+            -- An operation that moves content makes an address written earlier
+            -- on that worksheet stale by the time the saved copy is reopened.
+            -- Re-asserting it would report a move that worked as a failed
+            -- write. Those worksheets are collected first so the branches below
+            -- can say the address was displaced instead of pretending it was
+            -- not; the moving operations' own probes still read real content
+            -- back, so the earlier writes remain evidenced.
+            --
+            -- Two sets, because the two kinds of movement invalidate different
+            -- things. A structural change shifts everything after it, so row
+            -- and column INDEXES move too and every address- or index-based
+            -- probe is stale. A sort only reorders rows within its own range:
+            -- values and the cell formatting that travels with them move, but
+            -- row and column indexes do not, so line measures and filter row
+            -- probes still hold.
             set structurallyChangedSheets to {}
+            set reorderedSheets to {}
             repeat with scanRecord in operationRecords
                 set scanFields to my splitText(contents of scanRecord, ASCII character 31)
                 set scanKind to item 1 of scanFields
+                set scanSheet to item 2 of scanFields
                 if scanKind is "insert_row" or scanKind is "delete_row" or scanKind is "insert_column" or scanKind is "delete_column" then
-                    set scanSheet to item 2 of scanFields
                     if not my listContains(structurallyChangedSheets, scanSheet) then
                         set end of structurallyChangedSheets to scanSheet
+                    end if
+                else if scanKind is "sort_range" then
+                    if not my listContains(reorderedSheets, scanSheet) then
+                        set end of reorderedSheets to scanSheet
                     end if
                 end if
             end repeat
@@ -1212,8 +1491,8 @@ on run argv
                     set scalarKind to item 4 of fields
                     set expectedText to item 5 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) then
-                        set validationText to validationText & "set_cell:" & sheetName & "!" & cellAddress & "=displaced-by-structural-change" & (ASCII character 30)
+                    if my listContains(structurallyChangedSheets, sheetName) or my listContains(reorderedSheets, sheetName) then
+                        set validationText to validationText & "set_cell:" & sheetName & "!" & cellAddress & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
                             set actualValue to value of range cellAddress
@@ -1241,8 +1520,8 @@ on run argv
                     set cellAddress to item 3 of fields
                     set expectedFormula to item 4 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) then
-                        set validationText to validationText & "set_formula:" & sheetName & "!" & cellAddress & "=displaced-by-structural-change" & (ASCII character 30)
+                    if my listContains(structurallyChangedSheets, sheetName) or my listContains(reorderedSheets, sheetName) then
+                        set validationText to validationText & "set_formula:" & sheetName & "!" & cellAddress & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
                             set actualFormula to formula of range cellAddress as text
@@ -1263,8 +1542,8 @@ on run argv
                     set cellAddress to item 3 of fields
                     set neighborAddress to item 4 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) then
-                        set validationText to validationText & "clear_cell:" & sheetName & "!" & cellAddress & "=displaced-by-structural-change" & (ASCII character 30)
+                    if my listContains(structurallyChangedSheets, sheetName) or my listContains(reorderedSheets, sheetName) then
+                        set validationText to validationText & "clear_cell:" & sheetName & "!" & cellAddress & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
                             set clearedValue to my safeText(value of range cellAddress)
@@ -1307,8 +1586,8 @@ on run argv
                     set fillText to item 9 of fields
                     set numberText to item 10 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) then
-                        set validationText to validationText & "format_cells:" & sheetName & "!" & rangeReference & "=displaced-by-structural-change" & (ASCII character 30)
+                    if my listContains(structurallyChangedSheets, sheetName) or my listContains(reorderedSheets, sheetName) then
+                        set validationText to validationText & "format_cells:" & sheetName & "!" & rangeReference & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
                             set observedText to ""
@@ -1371,7 +1650,7 @@ on run argv
                     set measureText to item 4 of fields
 
                     if my listContains(structurallyChangedSheets, sheetName) then
-                        set validationText to validationText & operationKind & ":" & sheetName & "!" & lineIndexText & "=displaced-by-structural-change" & (ASCII character 30)
+                        set validationText to validationText & operationKind & ":" & sheetName & "!" & lineIndexText & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
                             if operationKind is "set_column_width" then
@@ -1394,6 +1673,54 @@ on run argv
 
                             set validationText to validationText & operationKind & ":" & sheetName & "!" & lineIndexText & "=" & (actualMeasure as text) & (ASCII character 30)
                         end tell
+                    end if
+
+                else if operationKind is "sort_range" then
+                    set sheetName to item 2 of fields
+                    set rangeReference to item 3 of fields
+                    set firstProbe to item 7 of fields
+                    set secondProbe to item 8 of fields
+
+                    if my listContains(structurallyChangedSheets, sheetName) then
+                        set validationText to validationText & "sort_range:" & sheetName & "!" & rangeReference & "=displaced-by-moved-content" & (ASCII character 30)
+                    else if exists worksheet sheetName of validationWorkbook then
+                        tell worksheet sheetName of validationWorkbook
+                            set firstValue to my safeText(value of range firstProbe)
+                            set secondValue to my safeText(value of range secondProbe)
+
+                            set validationText to validationText & "sort_range:" & sheetName & "!" & rangeReference & ":" & firstProbe & "=" & firstValue & "," & secondProbe & "=" & secondValue & (ASCII character 30)
+                        end tell
+                    end if
+
+                else if operationKind is "apply_filter" or operationKind is "clear_filter" then
+                    set sheetName to item 2 of fields
+                    set rangeReference to item 3 of fields
+                    set firstRowText to item 6 of fields
+                    set lastRowText to item 7 of fields
+
+                    if my listContains(structurallyChangedSheets, sheetName) then
+                        set validationText to validationText & operationKind & ":" & sheetName & "!" & rangeReference & "=displaced-by-moved-content" & (ASCII character 30)
+                    else if exists worksheet sheetName of validationWorkbook then
+                        set filterSheet to worksheet sheetName of validationWorkbook
+
+                        -- Both of these were proved to survive save-as-xlsx,
+                        -- close and reopen, which is the only reason a filter
+                        -- can be judged from the saved copy at all.
+                        set filterMode to my safeText(autofilter mode of filterSheet)
+                        set firstHidden to my safeText(hidden of row (firstRowText as integer) of filterSheet)
+                        set lastHidden to my safeText(hidden of row (lastRowText as integer) of filterSheet)
+
+                        if operationKind is "apply_filter" then
+                            if filterMode is not "true" then
+                                error "ApplyFilter left no autofilter on the worksheet"
+                            end if
+                        else
+                            if firstHidden is "true" or lastHidden is "true" then
+                                error "ClearFilter left a row hidden"
+                            end if
+                        end if
+
+                        set validationText to validationText & operationKind & ":" & sheetName & "!" & rangeReference & ":mode=" & filterMode & ",row" & firstRowText & "hidden=" & firstHidden & ",row" & lastRowText & "hidden=" & lastHidden & (ASCII character 30)
                     end if
                 end if
             end repeat
@@ -1560,6 +1887,233 @@ mod tests {
 
     fn request(operation: Value) -> Value {
         json!({"operations": [operation]})
+    }
+
+    #[test]
+    #[ignore]
+    fn excel_phase_e_sort_filter_real_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+        let root = tempdir().unwrap();
+        let output = root.path().join("phase-e-sort-filter-output.xlsx");
+
+        // Sorting moves rows, so a sorted worksheet cannot also carry a filter
+        // assertion about a fixed row. Each capability gets its own worksheet,
+        // the same rule Phase C had to learn.
+        //
+        //   Sorted   Name/Score, Bravo 2, Alpha 1  -> sort by Name ascending
+        //   Filtered Name/Score, Bravo 2, Alpha 1  -> filter Score > 1, then clear
+        let result = edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": output,
+            "operations": [
+                {"type":"add_worksheet","name":"Sorted"},
+                {"type":"set_cell","sheet":"Sorted","row":1,"column":1,"value":"Name"},
+                {"type":"set_cell","sheet":"Sorted","row":1,"column":2,"value":"Score"},
+                {"type":"set_cell","sheet":"Sorted","row":2,"column":1,"value":"Bravo"},
+                {"type":"set_cell","sheet":"Sorted","row":2,"column":2,"value":2},
+                {"type":"set_cell","sheet":"Sorted","row":3,"column":1,"value":"Alpha"},
+                {"type":"set_cell","sheet":"Sorted","row":3,"column":2,"value":1},
+
+                {"type":"add_worksheet","name":"Filtered"},
+                {"type":"set_cell","sheet":"Filtered","row":1,"column":1,"value":"Name"},
+                {"type":"set_cell","sheet":"Filtered","row":1,"column":2,"value":"Score"},
+                {"type":"set_cell","sheet":"Filtered","row":2,"column":1,"value":"Bravo"},
+                {"type":"set_cell","sheet":"Filtered","row":2,"column":2,"value":2},
+                {"type":"set_cell","sheet":"Filtered","row":3,"column":1,"value":"Alpha"},
+                {"type":"set_cell","sheet":"Filtered","row":3,"column":2,"value":1},
+
+                {"type":"add_worksheet","name":"Cleared"},
+                {"type":"set_cell","sheet":"Cleared","row":1,"column":1,"value":"Name"},
+                {"type":"set_cell","sheet":"Cleared","row":1,"column":2,"value":"Score"},
+                {"type":"set_cell","sheet":"Cleared","row":2,"column":1,"value":"Bravo"},
+                {"type":"set_cell","sheet":"Cleared","row":2,"column":2,"value":2},
+                {"type":"set_cell","sheet":"Cleared","row":3,"column":1,"value":"Alpha"},
+                {"type":"set_cell","sheet":"Cleared","row":3,"column":2,"value":1},
+
+                {"type":"sort_range","sheet":"Sorted",
+                 "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                 "keyColumn":1,"order":"ascending","hasHeader":true},
+
+                {"type":"apply_filter","sheet":"Filtered",
+                 "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                 "field":2,"criteria":">1"},
+
+                {"type":"apply_filter","sheet":"Cleared",
+                 "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                 "field":2,"criteria":">1"},
+                {"type":"clear_filter","sheet":"Cleared",
+                 "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                 "hasHeader":true}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(result["operationResult"]["status"], "edited-copy");
+        assert_eq!(
+            fs::read(&fixture).unwrap(),
+            original,
+            "the source workbook must be preserved"
+        );
+
+        let validation: Vec<String> = result["validation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect();
+
+        let entry = |prefix: &str| -> String {
+            validation
+                .iter()
+                .find(|value| value.starts_with(prefix))
+                .unwrap_or_else(|| panic!("missing {prefix} in {validation:?}"))
+                .clone()
+        };
+
+        // Alpha sorts above Bravo, and the header stayed at row 1 rather than
+        // being sorted into the data.
+        assert_eq!(
+            entry("sort_range:Sorted!A1:B3:"),
+            "sort_range:Sorted!A1:B3:A2=Alpha,A3=Bravo"
+        );
+
+        // Score > 1 keeps Bravo in row 2 and hides Alpha in row 3. Both the
+        // filter and the hidden row survived the save and reopen.
+        assert_eq!(
+            entry("apply_filter:Filtered!A1:B3:"),
+            "apply_filter:Filtered!A1:B3:mode=true,row2hidden=false,row3hidden=true"
+        );
+
+        // Clearing put the hidden row back without removing the filter itself.
+        assert_eq!(
+            entry("clear_filter:Cleared!A1:B3:"),
+            "clear_filter:Cleared!A1:B3:mode=true,row2hidden=false,row3hidden=false"
+        );
+
+        // A sort moves values, so the addresses written before it are stale and
+        // are reported as such rather than asserted.
+        assert!(
+            validation
+                .iter()
+                .any(|value| value == "set_cell:Sorted!A2=displaced-by-moved-content"),
+            "a sorted sheet's earlier writes must be reported as displaced: {validation:?}"
+        );
+
+        // A filter only hides rows, so nothing moved and the ordinary
+        // address-based validation still applies on those worksheets. This is
+        // the assertion that keeps the displacement rule from quietly widening
+        // into "skip validation whenever anything happened".
+        assert_eq!(entry("set_cell:Filtered!A2="), "set_cell:Filtered!A2=Bravo");
+        assert_eq!(entry("set_cell:Cleared!A3="), "set_cell:Cleared!A3=Alpha");
+    }
+
+    #[test]
+    fn sort_and_filter_operations_fail_closed_on_ambiguous_input() {
+        assert_eq!(
+            parse_operations(&request(json!({
+                "type":"sort_range","sheet":"Sheet1",
+                "startRow":1,"startColumn":1,"endRow":9,"endColumn":3,
+                "keyColumn":2,"order":"descending","hasHeader":false
+            })))
+            .unwrap()[0],
+            EditOperation::SortRange {
+                sheet: "Sheet1".to_owned(),
+                start_row: 1,
+                start_column: 1,
+                end_row: 9,
+                end_column: 3,
+                key_column: 2,
+                descending: true,
+                has_header: false,
+            }
+        );
+
+        for rejected in [
+            // A key outside the range would sort by a column the caller did not
+            // include.
+            json!({"type":"sort_range","sheet":"S","startRow":1,"startColumn":2,"endRow":3,"endColumn":3,"keyColumn":1,"order":"ascending","hasHeader":true}),
+            json!({"type":"sort_range","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"keyColumn":3,"order":"ascending","hasHeader":true}),
+            // Guessing either of these wrong is destructive, so both are required.
+            json!({"type":"sort_range","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"keyColumn":1,"hasHeader":true}),
+            json!({"type":"sort_range","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"keyColumn":1,"order":"ascending"}),
+            json!({"type":"sort_range","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"keyColumn":1,"order":"sideways","hasHeader":true}),
+            // A header with no data row below it.
+            json!({"type":"sort_range","sheet":"S","startRow":1,"startColumn":1,"endRow":1,"endColumn":2,"keyColumn":1,"order":"ascending","hasHeader":true}),
+            // A field outside the filtered range's own width.
+            json!({"type":"apply_filter","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"field":3,"criteria":">1"}),
+            json!({"type":"apply_filter","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"field":0,"criteria":">1"}),
+            // A filter with nothing to filter by.
+            json!({"type":"apply_filter","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"field":1}),
+            json!({"type":"apply_filter","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2,"field":1,"criteria":"  "}),
+            json!({"type":"clear_filter","sheet":"S","startRow":1,"startColumn":1,"endRow":3,"endColumn":2}),
+        ] {
+            assert!(
+                parse_operations(&request(rejected.clone())).is_err(),
+                "{rejected} should have been rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn sort_and_filter_encode_probe_rows_that_skip_a_header() {
+        let separator = FIELD_SEPARATOR.to_string();
+
+        let encoded = encode_operations(
+            &parse_operations(&request(json!({
+                "type":"sort_range","sheet":"Sheet1",
+                "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                "keyColumn":1,"order":"ascending","hasHeader":true
+            })))
+            .unwrap(),
+        );
+
+        // The sort key anchors on the range's first row, but the probes read the
+        // first two DATA rows -- reading the header back would prove nothing.
+        assert_eq!(
+            encoded.split(&separator).collect::<Vec<_>>(),
+            vec!["sort_range", "Sheet1", "A1:B3", "A1", "ascending", "yes", "A2", "A3"]
+        );
+
+        let encoded = encode_operations(
+            &parse_operations(&request(json!({
+                "type":"sort_range","sheet":"Sheet1",
+                "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                "keyColumn":2,"order":"descending","hasHeader":false
+            })))
+            .unwrap(),
+        );
+        assert_eq!(
+            encoded.split(&separator).collect::<Vec<_>>(),
+            vec!["sort_range", "Sheet1", "A1:B3", "B1", "descending", "no", "B1", "B2"]
+        );
+
+        let encoded = encode_operations(
+            &parse_operations(&request(json!({
+                "type":"apply_filter","sheet":"Sheet1",
+                "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                "field":2,"criteria":">1"
+            })))
+            .unwrap(),
+        );
+        assert_eq!(
+            encoded.split(&separator).collect::<Vec<_>>(),
+            vec!["apply_filter", "Sheet1", "A1:B3", "2", ">1", "2", "3"]
+        );
+
+        let encoded = encode_operations(
+            &parse_operations(&request(json!({
+                "type":"clear_filter","sheet":"Sheet1",
+                "startRow":1,"startColumn":1,"endRow":3,"endColumn":2,
+                "hasHeader":true
+            })))
+            .unwrap(),
+        );
+        assert_eq!(
+            encoded.split(&separator).collect::<Vec<_>>(),
+            vec!["clear_filter", "Sheet1", "A1:B3", "", "", "2", "3"]
+        );
     }
 
     #[test]
@@ -1892,11 +2446,11 @@ mod tests {
         // asserting an old address and calling a working shift a failed write.
         // The probes above are what evidences the writes actually landed.
         for displaced in [
-            "set_cell:InsCol!B1=displaced-by-structural-change",
-            "set_cell:DelCol!A1=displaced-by-structural-change",
-            "set_cell:InsRow!A2=displaced-by-structural-change",
-            "set_cell:DelRow!A1=displaced-by-structural-change",
-            "set_cell:Workflow!C1=displaced-by-structural-change",
+            "set_cell:InsCol!B1=displaced-by-moved-content",
+            "set_cell:DelCol!A1=displaced-by-moved-content",
+            "set_cell:InsRow!A2=displaced-by-moved-content",
+            "set_cell:DelRow!A1=displaced-by-moved-content",
+            "set_cell:Workflow!C1=displaced-by-moved-content",
         ] {
             assert!(
                 validation.iter().any(|value| value == displaced),
