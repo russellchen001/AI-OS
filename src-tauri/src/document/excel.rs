@@ -1180,34 +1180,56 @@ mod tests {
         let root = tempdir().unwrap();
         let output = root.path().join("phase-c-structural-output.xlsx");
 
-        // Two worksheets, so the row fixture cannot be destroyed by the column
-        // workflow and the column fixture cannot be destroyed by the row
-        // workflow. A shared sheet would have made the assertions read as
-        // passing arithmetic rather than as real shifts.
+        // Validation reads the saved copy once, at the end, so every probe sees
+        // the final state of its worksheet and not the state right after its
+        // own operation. Each structural operation therefore gets a worksheet
+        // to itself: the final state IS the post-operation state, and the
+        // read-back proves that one operation rather than a composite.
         //
-        // Columns: A1=R1 B1=C1 C1=C2, then the exact workflow the previous
-        // attempt failed on -- insert a column before the data, delete the one
-        // in front of it.
-        // Rows:    A1=X1 A2=R2 A3=R3, insert a row above the data, then delete
-        // the first row.
+        // "Workflow" is the exception, and is deliberately the sequence the
+        // previous Phase C attempt failed on.
+        //
+        //   InsCol   A1=R1 B1=C1 C1=C2   insert column B
+        //   DelCol   A1=R1 B1=C1 C1=C2   delete column A
+        //   InsRow   A1=X1 A2=R2 A3=R3   insert row 2
+        //   DelRow   A1=X1 A2=R2 A3=R3   delete row 1
+        //   Workflow A1=R1 B1=C1 C1=C2   insert column B, then delete column A
         let result = edit_excel_workbook(&json!({
             "source": fixture,
             "destination": output,
             "operations": [
-                {"type":"add_worksheet","name":"Columns"},
-                {"type":"set_cell","sheet":"Columns","row":1,"column":1,"value":"R1"},
-                {"type":"set_cell","sheet":"Columns","row":1,"column":2,"value":"C1"},
-                {"type":"set_cell","sheet":"Columns","row":1,"column":3,"value":"C2"},
+                {"type":"add_worksheet","name":"InsCol"},
+                {"type":"set_cell","sheet":"InsCol","row":1,"column":1,"value":"R1"},
+                {"type":"set_cell","sheet":"InsCol","row":1,"column":2,"value":"C1"},
+                {"type":"set_cell","sheet":"InsCol","row":1,"column":3,"value":"C2"},
 
-                {"type":"add_worksheet","name":"Rows"},
-                {"type":"set_cell","sheet":"Rows","row":1,"column":1,"value":"X1"},
-                {"type":"set_cell","sheet":"Rows","row":2,"column":1,"value":"R2"},
-                {"type":"set_cell","sheet":"Rows","row":3,"column":1,"value":"R3"},
+                {"type":"add_worksheet","name":"DelCol"},
+                {"type":"set_cell","sheet":"DelCol","row":1,"column":1,"value":"R1"},
+                {"type":"set_cell","sheet":"DelCol","row":1,"column":2,"value":"C1"},
+                {"type":"set_cell","sheet":"DelCol","row":1,"column":3,"value":"C2"},
 
-                {"type":"insert_column","sheet":"Columns","column":2},
-                {"type":"delete_column","sheet":"Columns","column":1},
-                {"type":"insert_row","sheet":"Rows","row":2},
-                {"type":"delete_row","sheet":"Rows","row":1}
+                {"type":"add_worksheet","name":"InsRow"},
+                {"type":"set_cell","sheet":"InsRow","row":1,"column":1,"value":"X1"},
+                {"type":"set_cell","sheet":"InsRow","row":2,"column":1,"value":"R2"},
+                {"type":"set_cell","sheet":"InsRow","row":3,"column":1,"value":"R3"},
+
+                {"type":"add_worksheet","name":"DelRow"},
+                {"type":"set_cell","sheet":"DelRow","row":1,"column":1,"value":"X1"},
+                {"type":"set_cell","sheet":"DelRow","row":2,"column":1,"value":"R2"},
+                {"type":"set_cell","sheet":"DelRow","row":3,"column":1,"value":"R3"},
+
+                {"type":"add_worksheet","name":"Workflow"},
+                {"type":"set_cell","sheet":"Workflow","row":1,"column":1,"value":"R1"},
+                {"type":"set_cell","sheet":"Workflow","row":1,"column":2,"value":"C1"},
+                {"type":"set_cell","sheet":"Workflow","row":1,"column":3,"value":"C2"},
+
+                {"type":"insert_column","sheet":"InsCol","column":2},
+                {"type":"delete_column","sheet":"DelCol","column":1},
+                {"type":"insert_row","sheet":"InsRow","row":2},
+                {"type":"delete_row","sheet":"DelRow","row":1},
+
+                {"type":"insert_column","sheet":"Workflow","column":2},
+                {"type":"delete_column","sheet":"Workflow","column":1}
             ]
         }))
         .unwrap();
@@ -1227,9 +1249,11 @@ mod tests {
             .map(|value| value.as_str().unwrap().to_owned())
             .collect();
 
-        // Two entries can share a prefix: the disk-read probe and the
-        // used-range snapshot the adapter recorded while making the change.
-        // Matching the exact probe string keeps this reading the saved copy.
+        // Two entries share a prefix: the probe read out of the reopened saved
+        // copy, and the used-range snapshot the adapter recorded live while
+        // making the change. Matching the exact probe string keeps this
+        // judging the file on disk. The snapshot is reported, not asserted,
+        // because Excel's used range does not always shrink on deletion.
         let probed = |prefix: &str, expected: &str| {
             let candidates: Vec<&String> = validation
                 .iter()
@@ -1241,38 +1265,43 @@ mod tests {
             );
         };
 
-        // Every assertion below reads the reopened saved copy, so it is the
-        // content on disk that is being judged, not the live session.
-        //
-        // Columns start as        A=R1 B=C1 C=C2
-        // insert column B gives   A=R1 B=[]  C=C1 D=C2   probes B1,C1
-        // delete column A gives   A=[]  B=C1 C=C2        probes A1,B1
+        // R1 C1 C2 -> R1 [] C1 C2. The row moved right by exactly one column.
         probed(
-            "insert_column:Columns!B:B:",
-            "insert_column:Columns!B:B:B1=,C1=C1",
-        );
-        probed(
-            "delete_column:Columns!A:A:",
-            "delete_column:Columns!A:A:A1=,B1=C1",
+            "insert_column:InsCol!B:B:",
+            "insert_column:InsCol!B:B:B1=,C1=C1",
         );
 
-        // Rows start as        1=X1 2=R2 3=R3
-        // insert row 2 gives   1=X1 2=[]  3=R2 4=R3      probes A2,A3
-        // delete row 1 gives   1=[]  2=R2 3=R3           probes A1,A2
-        probed("insert_row:Rows!2:2:", "insert_row:Rows!2:2:A2=,A3=R2");
-        probed("delete_row:Rows!1:1:", "delete_row:Rows!1:1:A1=,A2=R2");
+        // R1 C1 C2 -> C1 C2. The row moved left by exactly one column and R1
+        // is gone with the column that held it.
+        probed(
+            "delete_column:DelCol!A:A:",
+            "delete_column:DelCol!A:A:A1=C1,B1=C2",
+        );
 
-        // The earlier cell writes on these sheets were moved by the structural
-        // changes, so their original addresses are stale. The adapter reports
-        // that instead of asserting the old address and calling a working shift
-        // a failed write. The probes above are what evidences those writes.
+        // X1 R2 R3 -> X1 [] R2 R3. The column moved down by exactly one row.
+        probed("insert_row:InsRow!2:2:", "insert_row:InsRow!2:2:A2=,A3=R2");
+
+        // X1 R2 R3 -> R2 R3. The column moved up by exactly one row and X1 is
+        // gone with the row that held it.
+        probed("delete_row:DelRow!1:1:", "delete_row:DelRow!1:1:A1=R2,A2=R3");
+
+        // The workflow the previous attempt failed on, read off disk: an empty
+        // leading column, then the original data intact behind it.
+        probed(
+            "delete_column:Workflow!A:A:",
+            "delete_column:Workflow!A:A:A1=,B1=C1",
+        );
+
+        // Those cell writes were moved by the structural changes, so their
+        // original addresses are stale. The adapter says so instead of
+        // asserting an old address and calling a working shift a failed write.
+        // The probes above are what evidences the writes actually landed.
         for displaced in [
-            "set_cell:Columns!A1=displaced-by-structural-change",
-            "set_cell:Columns!B1=displaced-by-structural-change",
-            "set_cell:Columns!C1=displaced-by-structural-change",
-            "set_cell:Rows!A1=displaced-by-structural-change",
-            "set_cell:Rows!A2=displaced-by-structural-change",
-            "set_cell:Rows!A3=displaced-by-structural-change",
+            "set_cell:InsCol!B1=displaced-by-structural-change",
+            "set_cell:DelCol!A1=displaced-by-structural-change",
+            "set_cell:InsRow!A2=displaced-by-structural-change",
+            "set_cell:DelRow!A1=displaced-by-structural-change",
+            "set_cell:Workflow!C1=displaced-by-structural-change",
         ] {
             assert!(
                 validation.iter().any(|value| value == displaced),
