@@ -48,3 +48,4 @@ openclaw.log
 browser-diagnostics.log
 browser-launch-stderr.log
 browser-page-*.png
+office-probe-excel-structural.log
