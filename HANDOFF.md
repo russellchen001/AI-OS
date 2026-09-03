@@ -897,20 +897,94 @@ created, by identity rather than by name — an errored candidate leaves an
 *unsaved* document, which no name prefix matches, and closing every document
 would take the user's own work with it.
 
-### WPS Office — CLASSIFICATION REQUIRED
+### The Office skill is a capability, not six application integrations
 
-WPS is not installed on the current acceptance Mac.
+This is the correction that reframes all the remaining Office work, and it came
+from the owner: *"办公技能是一个通用技能，不能因为遇到某个软件就不能用了"* — the
+Office skill is a general capability; it must not stop working because of which
+application happens to be installed.
 
-Previous investigation did not identify a published reliable deterministic macOS desktop AppleScript/CLI automation contract.
+Everything before this was built entirely on desktop application automation. No
+Excel meant no spreadsheet capability. No iWork meant no iWork capability. No
+WPS meant a sentence explaining that WPS was not installed. That is six
+integrations wearing a capability's name.
 
-WPS AirScript is a Kingsoft cloud-document API and must not masquerade as a local WPS desktop adapter.
+#### Three layers, chosen by what is available
 
-Until deterministic local evidence exists, classify unsupported WPS desktop capability explicitly as one of:
+1. **Application automation** — Excel, Word, PowerPoint, Pages, Numbers,
+   Keynote. Highest fidelity: charts, formulas, formatting, sorting. Requires
+   the application.
+2. **Structured file access** — `document/structured.rs`. `.xlsx`, `.docx` and
+   `.pptx` are ZIP archives of XML, so they are read from the file itself with
+   **no application at all**. Available on every machine. This is the floor that
+   keeps a capability from disappearing.
+3. **Cloud fallback** — Google Workspace, for cloud-native resources.
 
-- `APP_NOT_INSTALLED`
-- `UNSUPPORTED_BY_PROVIDER_AUTOMATION`
+The registry now ranks the structured layer at priority 900, below every
+installed application, and `spreadsheet.read` falls to it only when Microsoft
+Office is absent. An installed application still reads its own format better;
+the point is that its absence is no longer fatal.
 
-Do not fake executable WPS capability merely because the Provider Registry knows WPS exists.
+#### What proves it is interchangeable rather than merely similar
+
+`document::structured::tests::structured_and_excel_agree_on_the_same_workbook`:
+a workbook **Excel itself wrote** is read by Excel and read without Excel, and
+the two must agree — escaping (`&`, `<tag>`), booleans, numbers and worksheet
+identity included. Anything weaker and "works without the application" is a
+claim rather than a fact.
+
+### WPS Office — supported through its files, not through its UI
+
+The earlier instruction was to classify WPS as `APP_NOT_INSTALLED` or
+`UNSUPPORTED_BY_PROVIDER_AUTOMATION` and move on. **That answer is wrong for a
+general capability**, and the owner rejected it: *"不能因为本机没安装 wps 就写一句
+没安装不能做"*.
+
+The right answer follows from what WPS actually is: **WPS's formats are the
+Microsoft formats.** A `.xlsx` written by WPS is the same ZIP of XML as one
+written by Excel. So:
+
+- **The skill supports WPS files whether or not WPS is installed**, through the
+  structured layer. That is real support, not a classification.
+- WPS's *desktop automation* still has no published deterministic AppleScript
+  contract on macOS, and WPS AirScript is a Kingsoft **cloud** API that must
+  never masquerade as a local desktop adapter. So the WPS *provider* declares no
+  executable capability — that part of the earlier instruction stands.
+
+The distinction to hold onto: **a provider having no automation adapter is not
+the same as a format being unsupported.** The first is about an application; the
+second is about the capability, and the capability is what the user asked for.
+
+### Remaining work to finish the general capability
+
+In order, each one widening what works with no application present:
+
+1. `spreadsheet.create` in the structured layer — write `.xlsx` directly
+2. `document.read` in the structured layer — `.docx` is `word/document.xml`
+3. `presentation.read` in the structured layer — `.pptx` slide text
+4. Wire `document/resolver.rs` in. It is a complete format-aware provider
+   resolver, with native/import format ranking, fidelity warnings and an
+   `executable` flag, **that no production code calls**. The extension dispatch
+   now in the gateway is the narrow, testable part of the same idea; the
+   resolver is the general form, and it is what lets a request that names no
+   format pick the best available provider.
+5. Then the final Provider Matrix, built from what is reachable rather than what
+   is declared.
+
+#### The pattern that keeps recurring — check for it
+
+Four things in this stretch were found written, plausible, and callable from
+nowhere:
+
+| | state found |
+| --- | --- |
+| `document/powerpoint.rs` | proven by its own verifier, unreachable |
+| `document/resolver.rs` | proven by its own tests, unreachable |
+| `LocalStructured` provider | four declared capabilities, no implementation, `available: false` |
+| Apple iWork declaration | all eight capabilities, one adapter |
+
+**A passing verifier proves an adapter works. It does not prove anything can
+call it.** Build the Provider Matrix from traced production call paths.
 
 ### Google Workspace — FALLBACK REVIEW REQUIRED
 
@@ -2175,6 +2249,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-03  Office reframed as a capability rather than six application integrations, on the owner's correction that the skill must not stop working because of which application is installed. `document/structured.rs` reads `.xlsx` from the file itself -- workbook order, worksheets resolved through relationships, shared strings with rich-text runs joined, inline strings, booleans, numbers and the five XML entities, with cells placed by their own reference rather than document order because a real sheet omits empty cells. It applies the same bounds as the application adapters and reports what the file holds when it truncates. The proof that it is interchangeable rather than merely similar is a cross-check: a workbook Excel itself wrote is read by Excel and read without Excel and the two must agree, escaping, booleans and worksheet identity included. The registry's `LocalStructured` provider -- previously four declared capabilities, no implementation and `available: false`, the fourth thing found written-but-unreachable in this stretch -- now declares the one capability it executes, is available on every machine because it needs no application, and is ranked at priority 900 below every installed application; `spreadsheet.read` falls to it only when Microsoft Office is absent. This also settles WPS correctly: WPS's formats are the Microsoft formats, so the skill supports WPS files whether or not WPS is installed, through the structured layer. The WPS provider still declares no executable capability because macOS has no published deterministic automation contract for it and AirScript is a cloud API, but a provider having no adapter is not the same as a format being unsupported. Office gate is 20 steps, all green. Remaining: structured `spreadsheet.create`, `document.read` and `presentation.read`; wiring `document/resolver.rs`; then a Provider Matrix built from traced production call paths rather than declarations. Office remains In Progress and P15 remains 5 of 11.
 - 2026-09-03  Apple iWork Common Capability COMPLETE, and a second unreachable adapter found and wired. Keynote needed no new evidence: `keynote_real_e2e` already asserted title and body content, proved a document the user had open stays open, proved a refused overwrite leaves the original content intact, and scanned the source for `quit`. Its gap was that the verifier belonged to no gate; it is now a step in `verify/gate_p15_office.sh`. Worth recording: that E2E writes to a temp directory and passes, so Keynote reads back from one without a sandbox prompt, unlike Excel -- Pages and Numbers were given the more conservative Documents-folder workspace before this was known. The presentation route turned out to have the `.pages` defect in reverse: `presentation.read`/`create` resolved straight to Apple iWork regardless of format, so a `.pptx` was handed to the Keynote adapter and refused for not being a `.key`, while `document/powerpoint.rs` -- with read, create, edit and export all proven by `verify_p15_powerpoint_common_capability.sh` -- was called from no production path at all. Both entry points now dispatch on the file's own extension, `.key` still falls through to Keynote, and the PowerPoint verifier is also now a gate step. That makes three adapters found written, proven and unreachable in this stretch: PowerPoint, the format-aware resolver in `document/resolver.rs`, and (before this work) any Pages/Numbers path. A passing verifier proves an adapter works; it does not prove anything can call it, and the final Provider Matrix must check the production call path for every capability it claims. The Office gate is 19 steps, all green. Remaining Office work: WPS classification, Google Workspace fallback review, final Provider Matrix -- plus deciding whether `presentation.edit` and `presentation.convert`, which `powerpoint.rs` implements but no capability list declares, should be exposed. Office remains In Progress and P15 remains 5 of 11.
 - 2026-09-03  Apple Pages and Apple Numbers Common Capability COMPLETE. Pages gains `document.read`, `document.create` and `document.convert`; Numbers gains `spreadsheet.read` and `spreadsheet.create`. Both were probed before either was written (`verify/probe_iwork_pages_numbers_semantics.sh`) and both are proven by real E2Es that assert content rather than `get version`. Pages: an export target must carry its extension or Pages treats the path as a folder, fails with error 6 and leaves its document open. Numbers: a new table is already 22x7 and there is no used range, so reads trim trailing blanks while still reporting what Numbers holds; an empty cell reads back as `missing value`; sheet and table names are localized and are addressed by index and only reported by name; `make new sheet` fails with -10000, so a Numbers create is single-sheet and says so. Rows and columns can be added, so a create grows the table to fit. Two structural corrections landed with them. First, the registry stopped overstating iWork: it had declared all eight Office capabilities while only Keynote had an adapter, and now declares the seven it can execute, with `spreadsheet.edit` deliberately absent because Numbers has no edit adapter. Second, routing: the registry is priority-ordered, so Microsoft Office won every capability it declared and a `.pages` file was handed to an adapter that could not open it -- the Pages and Numbers adapters existed but nothing could reach them. `document.read`/`create`/`convert` and `spreadsheet.read`/`create` now dispatch on the file's own extension before the priority list applies, with everything else falling through unchanged. Note that `document/resolver.rs` already contains a complete format-aware provider resolver that no production code calls; wiring it in belongs with the final Provider Matrix, and the extension dispatch was chosen so eight proven Excel phases did not have to move. The gate is renamed `verify/gate_p15_office.sh` and is 17 steps, all green on the acceptance Mac. Remaining Office work: Keynote review, WPS classification, Google Workspace fallback review, final Provider Matrix. Office remains In Progress and P15 remains 5 of 11.
 - 2026-09-03  Microsoft Excel Common Capability COMPLETE. Phase H landed the realistic workflow: one workbook built in a single `spreadsheet.edit` call with typed cells, formula totals, a descending sort on the computed total, a bold filled header, a number format, a wider label column, a chart and a filter, then read back through `spreadsheet.read` in its own osascript invocation. It is the only test crossing both halves of the Excel work, and it asserts three things no per-phase test can: the rows come back in sorted order, a filtered row is hidden rather than deleted, and Excel rewrote each total's relative references as the sort moved its row. It immediately caught a real defect in the displacement rule, now fixed: displacement had been answered per worksheet ("was this sheet ever sorted"), so a format applied AFTER a sort was reported as displaced and its check silently skipped even though its address was valid -- the quiet widening into "skip validation whenever anything happened" that earlier phases warned against. Displacement is now answered per operation via `movesAfter`: does any LATER operation move content on this worksheet, with structural changes invalidating index-based probes as well as address-based ones and sorts invalidating only the latter. Phase E and Phase H now pin the rule from both sides. The Excel gate is 14 steps, about 3 minutes, all green on real Excel 16.78: Phase A through Phase H, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. Every phase preserves the source workbook, saves without overwriting, restores Excel's workbook and window state, never quits Excel and leaves user workbooks untouched. Next Office work is Pages, Numbers and Keynote Common Capability. Office remains In Progress and P15 remains 5 of 11.
