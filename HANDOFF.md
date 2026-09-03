@@ -704,27 +704,97 @@ Every phase preserves the source workbook, saves to a unique path without
 overwriting, restores Excel's workbook and window state, never quits Excel, and
 leaves the user's own workbooks untouched.
 
-### Apple iWork — REMAINING OFFICE WORK
+### Apple iWork — IN PROGRESS
 
-Current installed applications on the acceptance Mac include:
+Pages, Numbers and Keynote 15.3.1 are installed on the acceptance Mac and all
+three answer AppleScript.
 
-- Pages Creator Studio
-- Numbers Creator Studio
-- Keynote Creator Studio
+#### The honest starting position
 
-Existing iWork work must be reviewed against the full Office Common Capability Matrix.
+The Provider Registry declares **all eight** Office capabilities for Apple
+iWork. What is actually executable is much less:
 
-Do not treat application detection, metadata, or basic read/create alone as Office completion.
+| capability | iWork adapter | evidence |
+| --- | --- | --- |
+| `presentation.read` / `presentation.create` | `document/keynote.rs` | real E2E |
+| everything else | **none** | — |
 
-Required provider-neutral capability coverage must be executable across the relevant application type.
+`verify/verify_p15_iwork_real_e2e.sh` checks only that the three apps exist and
+answer `get version`. The handoff is explicit that application detection and
+metadata do not count as capability, so **Pages and Numbers currently have no
+proven capability at all**, and the registry declaration overstates what iWork
+can do. A Provider Registry declaration is not executable evidence.
 
-Review and finish:
+Note the bundle identifiers are `com.apple.Pages` / `com.apple.Numbers` /
+`com.apple.Keynote` — **not** `com.apple.iWork.*`, which does not resolve.
 
-- Pages document common capabilities
-- Numbers spreadsheet common capabilities
-- Keynote presentation common capabilities
+#### What the probe established
 
-Existing Keynote deterministic read/create work and previous iWork acceptance evidence should be reused rather than rewritten unnecessarily.
+`verify/probe_iwork_pages_numbers_semantics.sh`, two rounds.
+
+**Pages — enough for `document.read`, `document.create` and `document.convert`:**
+
+| form | result |
+| --- | --- |
+| `make new document`, `set body text`, `save in POSIX file <path>` | works |
+| close, `open POSIX file <path>`, read `body text` | works, content intact |
+| `count of paragraphs` / `words` / `characters of body text` | works |
+| `export <doc> to POSIX file (<path> & ".pdf") as PDF` | works |
+| `export <doc> to POSIX file <path-without-extension> as PDF` | **fails, error 6** |
+
+**The export target must carry its extension.** Without one Pages treats the
+path as a folder and errors, leaving its document open.
+
+**Numbers — enough for `spreadsheet.read` and `spreadsheet.create`, with one
+hard limit:**
+
+| form | result |
+| --- | --- |
+| `make new document`, `set value of cell "A1" of table 1 of sheet 1` | works |
+| save, close, reopen, read cells back | works (`A1=Region`, `B2=42.0`) |
+| `value of every cell of range "A1:B1"` / `of row 1` | list, as expected |
+| a `"=SUM(A1:A2)"` string really becomes a formula | value `30.0`, `formula` reads back |
+| `export ... as CSV` / `as Microsoft Excel` | works, with the extension on the path |
+| **`make new sheet at end of sheets`** | **FAILS, -10000** |
+
+Three consequences the adapter has to live with:
+
+1. **A new Numbers table is already 22 rows x 7 columns.** There is no "used
+   range" the way Excel has one, so a read must trim trailing empty rows and
+   columns itself or it will return a wall of blanks.
+2. **An empty cell reads back as `missing value`**, not as an empty string.
+3. **Sheet and table names are localized** — `工作表 1`, `表格 1` on this
+   machine. Address sheets and tables **by index**; read the name only to
+   report it, never to find anything.
+
+Numbers cannot add a sheet through AppleScript, so a Numbers
+`spreadsheet.create` is single-sheet. That is a real provider limit and must be
+declared as one rather than worked around or hidden.
+
+#### Remaining iWork work
+
+1. `document/pages.rs` — `document.read`, `document.create`, `document.convert`
+2. `document/numbers.rs` — `spreadsheet.read`, `spreadsheet.create` (single sheet)
+3. correct the registry declaration to what each provider can actually execute,
+   rather than `ALL_OFFICE_CAPABILITIES` for everyone
+4. Keynote review against the same contract
+5. real E2Es that assert content, not `get version`
+
+#### An unresolved cleanup for the machine owner
+
+Round 2 of the probe left **two Numbers documents open** before its cleanup was
+fixed:
+
+- `未命名` — saved at
+  `~/Library/Mobile Documents/com~apple~Numbers/Documents/未命名.numbers`
+- `未命名2` — unsaved
+
+They are almost certainly the probe's own (the counts line up exactly), but that
+is not certain enough to close or delete someone's unsaved document, so they
+were left alone. The probe now closes exactly the documents each candidate
+created, by identity rather than by name — an errored candidate leaves an
+*unsaved* document, which no name prefix matches, and closing every document
+would take the user's own work with it.
 
 ### WPS Office — CLASSIFICATION REQUIRED
 
