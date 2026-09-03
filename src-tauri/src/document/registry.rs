@@ -16,17 +16,6 @@ const IWORK_CAPABILITIES: &[&str] = &[
     "presentation.create",
 ];
 
-const ALL_OFFICE_CAPABILITIES: &[&str] = &[
-    "document.read",
-    "document.create",
-    "document.convert",
-    "spreadsheet.read",
-    "spreadsheet.create",
-    "spreadsheet.edit",
-    "presentation.read",
-    "presentation.create",
-];
-
 /// What Microsoft Office can actually execute.
 ///
 /// It is the widest of these lists because it is the only provider with an
@@ -45,6 +34,28 @@ const MICROSOFT_OFFICE_CAPABILITIES: &[&str] = &[
     "presentation.create",
     "presentation.edit",
     "presentation.convert",
+];
+
+/// What Google Workspace can actually execute.
+///
+/// Its Docs, Sheets and Slides adapters are real and are proven by their own
+/// E2Es, so this is not the WPS case. It is the reachability case: they are
+/// exposed as commands the frontend calls directly, and the provider-neutral
+/// Office capabilities are local-only, so `document.read` cannot reach them.
+/// That is the fifth instance of the same pattern in this work and it is
+/// recorded rather than papered over -- routing a cloud resource needs a
+/// request shape (a Drive file id is not a path) and a way to call an async
+/// adapter from the synchronous gateway, which are decisions, not omissions.
+///
+/// It declares neither conversion nor editing, which it does not implement.
+const GOOGLE_WORKSPACE_CAPABILITIES: &[&str] = &[
+    "document.read",
+    "document.create",
+    "spreadsheet.read",
+    "spreadsheet.create",
+    "spreadsheet.edit",
+    "presentation.read",
+    "presentation.create",
 ];
 
 /// What WPS Office can actually execute: nothing.
@@ -154,7 +165,7 @@ pub(crate) fn office_providers() -> Vec<OfficeProvider> {
             name: "Google Workspace",
             local: false,
             priority: 100,
-            capabilities: ALL_OFFICE_CAPABILITIES,
+            capabilities: GOOGLE_WORKSPACE_CAPABILITIES,
             available: browser_provider_available(),
         },
     ]
@@ -276,6 +287,15 @@ mod tests {
         assert!(google.supports("document.read"));
         assert!(google.supports("spreadsheet.read"));
         assert!(google.supports("presentation.create"));
+
+        // And it declares nothing it cannot execute: there is no Google
+        // conversion or document-editing adapter.
+        for unimplemented in ["document.convert", "document.edit", "presentation.edit"] {
+            assert!(
+                !google.supports(unimplemented),
+                "Google Workspace does not implement {unimplemented}"
+            );
+        }
     }
 
     #[test]
