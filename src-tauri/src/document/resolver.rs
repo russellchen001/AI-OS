@@ -30,6 +30,13 @@ pub(crate) struct OfficeRouteRequest<'a> {
     pub capability: &'a str,
     pub location: OfficeResourceLocation,
     pub format: Option<&'a str>,
+    /// The format being written, for a conversion.
+    ///
+    /// Conversion is the one capability that cannot be routed on the source
+    /// alone: `.docx` to `.pdf` is Word's job and `.docx` to `.pages` is
+    /// Pages', because Word cannot write a `.pages` at all. Left as None for
+    /// every other capability.
+    pub destination_format: Option<&'a str>,
     pub preferred_application: Option<OfficeApplication>,
 }
 
@@ -53,11 +60,39 @@ pub(crate) struct OfficeCandidate {
     pub capabilities: &'static [&'static str],
     pub native_formats: &'static [&'static str],
     pub import_formats: &'static [&'static str],
+    /// Formats it can WRITE besides its own.
+    ///
+    /// Reading a format and writing it are different abilities and conversion
+    /// needs both asked separately. macOS conversion reads and writes DOC and
+    /// DOCX; Word reads both but, through this adapter, writes only PDF -- so
+    /// DOC to DOCX must not route to Word even though Word reads DOC natively.
+    pub export_formats: &'static [&'static str],
 }
 
 impl OfficeCandidate {
     fn supports(&self, capability: &str) -> bool {
         self.capabilities.contains(&capability)
+    }
+
+    /// Whether this ADAPTER can produce this format.
+    ///
+    /// Only `export_formats` is consulted, and the distinction is not
+    /// pedantic: Word writes a .docx perfectly well, but its adapter here only
+    /// exports PDF, so routing DOC to DOCX to Word on the strength of Word
+    /// natively writing DOCX sends the request to code that cannot do it. What
+    /// the application could do and what this build can ask it to do are
+    /// different lists, and this is the second one.
+    ///
+    /// Empty for a candidate that converts nothing, and irrelevant to every
+    /// capability that is not a conversion, which passes None.
+    fn can_write(&self, format: Option<&str>) -> bool {
+        let Some(format) = format.map(normalize_format) else {
+            return true;
+        };
+
+        self.export_formats
+            .iter()
+            .any(|candidate| *candidate == format)
     }
 
     fn format_rank(&self, format: Option<&str>) -> Option<(u8, Option<&'static str>)> {
@@ -105,6 +140,7 @@ pub(crate) fn resolve_office_route(
                 && candidate.authorized
                 && candidate.executable
                 && candidate.supports(capability)
+                && candidate.can_write(request.destination_format)
                 && match request.location {
                     OfficeResourceLocation::Local => candidate.local,
                     OfficeResourceLocation::GoogleCloud => {
@@ -160,7 +196,12 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
         "document.convert",
         "document.edit",
     ];
-    const EXCEL: &[&str] = &["spreadsheet.read", "spreadsheet.create", "spreadsheet.edit"];
+    const EXCEL: &[&str] = &[
+        "spreadsheet.read",
+        "spreadsheet.create",
+        "spreadsheet.edit",
+        "spreadsheet.convert",
+    ];
     const POWERPOINT: &[&str] = &[
         "presentation.read",
         "presentation.create",
@@ -168,8 +209,16 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
         "presentation.convert",
     ];
     const PAGES: &[&str] = &["document.read", "document.create", "document.convert"];
-    const NUMBERS: &[&str] = &["spreadsheet.read", "spreadsheet.create"];
-    const KEYNOTE: &[&str] = &["presentation.read", "presentation.create"];
+    const NUMBERS_CAPS: &[&str] = &[
+        "spreadsheet.read",
+        "spreadsheet.create",
+        "spreadsheet.convert",
+    ];
+    const KEYNOTE_CAPS: &[&str] = &[
+        "presentation.read",
+        "presentation.create",
+        "presentation.convert",
+    ];
     const NATIVE: &[&str] = &["document.read", "document.create", "document.convert"];
     const STRUCTURED: &[&str] = &[
         "document.read",
@@ -195,6 +244,9 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             capabilities: STRUCTURED,
             native_formats: &["docx", "xlsx", "pptx"],
             import_formats: &[],
+            // It reads and writes files, but it does not convert between
+            // formats, so it never wins a conversion.
+            export_formats: &[],
         },
         OfficeCandidate {
             provider: OfficeProviderId::MicrosoftOffice,
@@ -207,6 +259,10 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             capabilities: WORD,
             native_formats: &["doc", "docx"],
             import_formats: &[],
+            // Word's adapter exports PDF. It does NOT convert DOC to DOCX, so
+            // it must not claim to write them for a conversion even though it
+            // reads both natively.
+            export_formats: &["pdf"],
         },
         OfficeCandidate {
             provider: OfficeProviderId::MicrosoftOffice,
@@ -219,6 +275,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             capabilities: EXCEL,
             native_formats: &["xls", "xlsx"],
             import_formats: &[],
+            export_formats: &["pdf"],
         },
         OfficeCandidate {
             provider: OfficeProviderId::MicrosoftOffice,
@@ -231,6 +288,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             capabilities: POWERPOINT,
             native_formats: &["ppt", "pptx"],
             import_formats: &[],
+            export_formats: &["pdf"],
         },
         // The iWork adapters each accept only their own format, so neither
         // declares an import route it would refuse.
@@ -244,7 +302,10 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             priority: 20,
             capabilities: PAGES,
             native_formats: &["pages"],
-            import_formats: &[],
+            // Reading a .docx is what makes .docx -> .pages possible, and
+            // nothing else on the machine can write a .pages.
+            import_formats: &["docx"],
+            export_formats: &["pages", "docx", "pdf"],
         },
         OfficeCandidate {
             provider: OfficeProviderId::AppleIwork,
@@ -254,9 +315,10 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             authorized: true,
             executable: true,
             priority: 20,
-            capabilities: NUMBERS,
+            capabilities: NUMBERS_CAPS,
             native_formats: &["numbers"],
-            import_formats: &[],
+            import_formats: &["xlsx"],
+            export_formats: &["numbers", "xlsx", "pdf"],
         },
         OfficeCandidate {
             provider: OfficeProviderId::AppleIwork,
@@ -266,9 +328,10 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             authorized: true,
             executable: true,
             priority: 20,
-            capabilities: KEYNOTE,
+            capabilities: KEYNOTE_CAPS,
             native_formats: &["key"],
-            import_formats: &[],
+            import_formats: &["pptx"],
+            export_formats: &["key", "pptx", "pdf"],
         },
         // The floor for the Microsoft word-processing formats: it needs no
         // application, and it is the only path that reads the old binary .doc
@@ -285,6 +348,9 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             capabilities: NATIVE,
             native_formats: &[],
             import_formats: &["doc", "docx", "rtf", "txt"],
+            // It converts among the formats it reads, which is what makes it
+            // the only route for DOC to DOCX. It cannot write a PDF.
+            export_formats: &["doc", "docx", "rtf", "txt"],
         },
         // WPS is installed on some machines and reads all three Microsoft
         // formats, but macOS publishes no deterministic automation contract for
@@ -303,6 +369,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             capabilities: DOCUMENT_READ,
             native_formats: &["doc", "docx"],
             import_formats: &[],
+            export_formats: &[],
         },
     ]
 }
@@ -337,6 +404,7 @@ mod tests {
             capabilities: READ,
             native_formats,
             import_formats,
+            export_formats: &[],
         }
     }
 
@@ -365,11 +433,150 @@ mod tests {
                 capability,
                 location: OfficeResourceLocation::Local,
                 format: Some(format),
+                destination_format: None,
                 preferred_application: None,
             },
             candidates,
         )
         .map(|route| route.application)
+    }
+
+    fn convert_on(
+        candidates: &[OfficeCandidate],
+        capability: &str,
+        from: &str,
+        to: &str,
+    ) -> Option<OfficeApplication> {
+        resolve_office_route(
+            &OfficeRouteRequest {
+                capability,
+                location: OfficeResourceLocation::Local,
+                format: Some(from),
+                destination_format: Some(to),
+                preferred_application: None,
+            },
+            candidates,
+        )
+        .map(|route| route.application)
+    }
+
+    /// The conversion table, which the destination decides.
+    ///
+    /// The owner settled that conversion is two things -- cross-suite format
+    /// conversion and PDF export -- and that both must work. Every row here is
+    /// a pair a caller can actually ask for, and the reason this is a table
+    /// rather than a rule is that the answer changes with the destination and
+    /// not only with the source: the same .docx goes to Word to become a PDF
+    /// and to Pages to become a .pages, because Word cannot write a .pages and
+    /// macOS conversion cannot write a PDF.
+    #[test]
+    fn conversion_routes_on_the_destination_and_not_only_the_source() {
+        let everything = machine_with(&[
+            OfficeApplication::MicrosoftWord,
+            OfficeApplication::MicrosoftExcel,
+            OfficeApplication::MicrosoftPowerPoint,
+            OfficeApplication::ApplePages,
+            OfficeApplication::AppleNumbers,
+            OfficeApplication::AppleKeynote,
+            OfficeApplication::MacosNative,
+        ]);
+
+        for (capability, from, to, expected) in [
+            // PDF export goes to whichever application owns the source format.
+            ("document.convert", "docx", "pdf", OfficeApplication::MicrosoftWord),
+            ("document.convert", "pages", "pdf", OfficeApplication::ApplePages),
+            ("spreadsheet.convert", "xlsx", "pdf", OfficeApplication::MicrosoftExcel),
+            (
+                "spreadsheet.convert",
+                "numbers",
+                "pdf",
+                OfficeApplication::AppleNumbers,
+            ),
+            (
+                "presentation.convert",
+                "pptx",
+                "pdf",
+                OfficeApplication::MicrosoftPowerPoint,
+            ),
+            ("presentation.convert", "key", "pdf", OfficeApplication::AppleKeynote),
+            // Cross-suite conversion goes to iWork in BOTH directions, because
+            // no Microsoft application reads or writes an iWork format.
+            ("document.convert", "docx", "pages", OfficeApplication::ApplePages),
+            ("document.convert", "pages", "docx", OfficeApplication::ApplePages),
+            (
+                "spreadsheet.convert",
+                "xlsx",
+                "numbers",
+                OfficeApplication::AppleNumbers,
+            ),
+            (
+                "spreadsheet.convert",
+                "numbers",
+                "xlsx",
+                OfficeApplication::AppleNumbers,
+            ),
+            ("presentation.convert", "pptx", "key", OfficeApplication::AppleKeynote),
+            ("presentation.convert", "key", "pptx", OfficeApplication::AppleKeynote),
+            // And conversion between the Microsoft word-processing formats
+            // needs no application. Word reads both natively but its adapter
+            // only exports PDF, so it must not win this row -- which is the
+            // whole reason a candidate declares what it can WRITE separately
+            // from what it can read.
+            ("document.convert", "doc", "docx", OfficeApplication::MacosNative),
+            ("document.convert", "docx", "doc", OfficeApplication::MacosNative),
+            ("document.convert", "rtf", "docx", OfficeApplication::MacosNative),
+        ] {
+            assert_eq!(
+                convert_on(&everything, capability, from, to),
+                Some(expected),
+                "{capability} from .{from} to .{to} reached the wrong adapter"
+            );
+        }
+
+        // A pair nothing on the machine can do says so, rather than routing to
+        // an application that would refuse the file.
+        for (capability, from, to) in [
+            ("document.convert", "pages", "key"),
+            ("spreadsheet.convert", "numbers", "docx"),
+            ("presentation.convert", "key", "xlsx"),
+            ("document.convert", "docx", "epub"),
+        ] {
+            assert_eq!(
+                convert_on(&everything, capability, from, to),
+                None,
+                "{capability} from .{from} to .{to} should have no route"
+            );
+        }
+    }
+
+    /// Conversion on a machine with no Office application at all.
+    ///
+    /// The structured layer reads and writes files but converts nothing, so
+    /// this is where the capability legitimately runs out -- except between the
+    /// Microsoft word-processing formats, which macOS itself converts.
+    #[test]
+    fn conversion_without_any_office_application_says_what_it_cannot_do() {
+        let bare = machine_with(&[OfficeApplication::MacosNative]);
+
+        assert_eq!(
+            convert_on(&bare, "document.convert", "doc", "docx"),
+            Some(OfficeApplication::MacosNative)
+        );
+
+        for (capability, from, to) in [
+            ("document.convert", "docx", "pdf"),
+            ("document.convert", "docx", "pages"),
+            ("spreadsheet.convert", "xlsx", "pdf"),
+            ("spreadsheet.convert", "xlsx", "numbers"),
+            ("presentation.convert", "pptx", "pdf"),
+            ("presentation.convert", "pptx", "key"),
+        ] {
+            assert_eq!(
+                convert_on(&bare, capability, from, to),
+                None,
+                "{capability} from .{from} to .{to} should have no route with no application"
+            );
+        }
     }
 
     /// The Provider Matrix, traced rather than declared.
@@ -538,6 +745,7 @@ mod tests {
                 capability: "document.read",
                 location: OfficeResourceLocation::Local,
                 format: Some("docx"),
+                destination_format: None,
                 preferred_application: None,
             },
             &[declared_only, pages],
@@ -573,6 +781,7 @@ mod tests {
                 capability: "presentation.edit",
                 location: OfficeResourceLocation::Local,
                 format: Some("pptx"),
+                destination_format: None,
                 preferred_application: None,
             },
             &[declared_only_keynote, powerpoint],
@@ -604,6 +813,7 @@ mod tests {
                 capability: "document.read",
                 location: OfficeResourceLocation::Local,
                 format: Some("pages"),
+                destination_format: None,
                 preferred_application: None,
             },
             &[word, pages],
@@ -633,6 +843,7 @@ mod tests {
                 capability: "document.read",
                 location: OfficeResourceLocation::GoogleCloud,
                 format: None,
+                destination_format: None,
                 preferred_application: None,
             },
             &[word, docs],
@@ -656,6 +867,7 @@ mod tests {
                 capability: "document.read",
                 location: OfficeResourceLocation::Local,
                 format: Some("docx"),
+                destination_format: None,
                 preferred_application: None,
             },
             &[docs],

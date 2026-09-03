@@ -2083,9 +2083,260 @@ pub(crate) fn edit_excel_workbook(input: &Value) -> Result<Value, ExcelError> {
     }))
 }
 
+/// Excel writes a PDF itself, so `.xlsx -> .pdf` needs no other application.
+///
+/// Proven form, from `verify/probe_office_conversion_semantics.sh`:
+/// `save workbook as <book> filename <path> file format PDF file format`.
+const EXPORT_PDF_SCRIPT: &str = r#"
+on run argv
+    set stagedPath to item 1 of argv
+    set pdfPath to item 2 of argv
+    set beforeCount to 0
+    set ownsWorkbook to false
+    tell application "Microsoft Excel"
+        try
+            set beforeCount to count of workbooks
+            open POSIX file stagedPath
+            repeat 100 times
+                if (count of workbooks) > beforeCount then exit repeat
+                delay 0.1
+            end repeat
+            if (count of workbooks) is not (beforeCount + 1) then error "Excel workbook count did not increase deterministically"
+            set theBook to active workbook
+            if (full name of theBook as text) is not stagedPath then error "Excel active workbook identity did not match the operation copy"
+            set ownsWorkbook to true
+            save workbook as theBook filename pdfPath file format PDF file format
+            close active workbook saving no
+            set ownsWorkbook to false
+            repeat 100 times
+                if (count of workbooks) is beforeCount then exit repeat
+                delay 0.1
+            end repeat
+            if (count of workbooks) is not beforeCount then error "Excel workbook count was not restored after close"
+            return "AIOS_EXCEL_PDF_EXPORTED"
+        on error errorMessage number errorNumber
+            if ownsWorkbook then
+                try
+                    close active workbook saving no
+                end try
+            end if
+            error errorMessage number errorNumber
+        end try
+    end tell
+end run
+"#;
+
+/// A path with the extension this operation requires.
+///
+/// `workbook_path` cannot be reused here: it insists on .xlsx for both fields
+/// and reports every problem as `spreadsheet.edit`.
+fn convert_path<'a>(
+    input: &'a Value,
+    field: &str,
+    extension: &str,
+    must_exist: bool,
+) -> Result<&'a str, ExcelError> {
+    let path = input
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ExcelError::invalid(format!("spreadsheet.convert requires {field}")))?;
+    let parsed = Path::new(path);
+    if !parsed.is_absolute() {
+        return Err(ExcelError::invalid(format!(
+            "spreadsheet.convert requires an absolute {field}"
+        )));
+    }
+    if parsed
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        != extension
+    {
+        return Err(ExcelError::invalid(format!(
+            "spreadsheet.convert requires a .{extension} {field}"
+        )));
+    }
+    if must_exist && !parsed.is_file() {
+        return Err(ExcelError::invalid(format!("{field} does not exist")));
+    }
+    if !must_exist && parsed.exists() {
+        return Err(ExcelError::invalid(format!(
+            "{field} already exists; overwrite is not permitted"
+        )));
+    }
+    Ok(path)
+}
+
+pub(crate) fn export_excel_pdf(input: &Value) -> Result<Value, ExcelError> {
+    let source = convert_path(input, "source", "xlsx", true)?;
+    let destination = convert_path(input, "destination", "pdf", false)?;
+
+    let original = fs::read(source)
+        .map_err(|_| ExcelError::execution("Unable to fingerprint source workbook"))?;
+
+    // The same reason the edit path stages: a read runs its own osascript
+    // invocation and does not inherit the implicit access macOS grants an app
+    // for a file that app just wrote, so a workbook opened from an arbitrary
+    // directory can raise a grant prompt no automated run can answer.
+    let workspace = cache_workspace()?;
+    let staged = workspace.join(format!("convert-{}.xlsx", uuid::Uuid::new_v4()));
+    let produced = workspace.join(format!("convert-{}.pdf", uuid::Uuid::new_v4()));
+
+    fs::copy(source, &staged)
+        .map_err(|_| ExcelError::execution("Unable to stage Excel input workbook"))?;
+
+    let staged_path = staged.to_string_lossy().to_string();
+    let produced_path = produced.to_string_lossy().to_string();
+
+    let automation = run_osascript(EXPORT_PDF_SCRIPT, &[&staged_path, &produced_path]);
+    let _ = fs::remove_file(&staged);
+
+    let confirmation = match automation {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = fs::remove_file(&produced);
+            let _ = fs::remove_dir_all(&workspace);
+            return Err(error);
+        }
+    };
+
+    if !confirmation.contains("AIOS_EXCEL_PDF_EXPORTED") {
+        let _ = fs::remove_file(&produced);
+        let _ = fs::remove_dir_all(&workspace);
+        return Err(ExcelError::execution("Excel did not confirm the PDF export"));
+    }
+
+    let publish = publish_without_overwrite(&produced, Path::new(destination));
+    let _ = fs::remove_file(&produced);
+    let _ = fs::remove_dir_all(&workspace);
+    publish?;
+
+    // The source is an input and must come back unchanged.
+    let after = fs::read(source)
+        .map_err(|_| ExcelError::execution("Unable to re-read source workbook"))?;
+    if after != original {
+        return Err(ExcelError::execution(
+            "Excel PDF export modified the source workbook",
+        ));
+    }
+
+    Ok(json!({
+        "capability": "spreadsheet.convert",
+        "selectedProvider": "microsoft-excel",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "converted",
+            "application": "Excel",
+            "source": source,
+            "destination": destination,
+            "format": "pdf",
+        },
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "converted",
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Excel writes the PDF itself, so .xlsx -> .pdf needs no other application.
+    ///
+    /// The fixture is written by the structured layer, so this proves the whole
+    /// path without a second application anywhere in it. A temp directory is
+    /// safe here precisely because the export stages the workbook into Excel's
+    /// own container before opening it -- Excel is never handed this path.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft Excel"]
+    fn excel_exports_a_pdf_real_e2e() {
+        let root = tempfile::tempdir().unwrap();
+        let workbook = root.path().join("figures.xlsx");
+        let pdf = root.path().join("figures.pdf");
+
+        crate::document::structured::create_structured_spreadsheet(&json!({
+            "path": workbook.to_str().unwrap(),
+            "content": "Region\tTotal\nNorth\t42",
+        }))
+        .unwrap();
+
+        let before = fs::read(&workbook).unwrap();
+
+        let exported = export_excel_pdf(&json!({
+            "source": workbook.to_str().unwrap(),
+            "destination": pdf.to_str().unwrap(),
+        }))
+        .unwrap();
+
+        assert_eq!(exported["operationResult"]["format"], "pdf");
+        assert_eq!(exported["selectedProvider"], "microsoft-excel");
+
+        // A PDF, not an empty file with the right name.
+        let produced = fs::read(&pdf).unwrap();
+        assert!(produced.len() > 0);
+        assert_eq!(
+            &produced[..4],
+            b"%PDF",
+            "the destination is not a PDF at all"
+        );
+
+        // The source is an input.
+        assert_eq!(fs::read(&workbook).unwrap(), before);
+
+        // And a second export refuses rather than replacing the first.
+        let refused = export_excel_pdf(&json!({
+            "source": workbook.to_str().unwrap(),
+            "destination": pdf.to_str().unwrap(),
+        }))
+        .unwrap_err();
+        assert!(refused.invalid_request);
+        assert_eq!(fs::read(&pdf).unwrap(), produced);
+    }
+
+    #[test]
+    fn pdf_export_paths_fail_closed_before_excel_is_asked() {
+        let root = tempfile::tempdir().unwrap();
+        let workbook = root.path().join("book.xlsx");
+        fs::write(&workbook, b"placeholder").unwrap();
+        let taken = root.path().join("taken.pdf");
+        fs::write(&taken, b"placeholder").unwrap();
+
+        let source = workbook.to_str().unwrap().to_owned();
+
+        for (label, request) in [
+            ("no source", json!({"destination": "/safe/out.pdf"})),
+            ("no destination", json!({"source": source.clone()})),
+            (
+                "relative source",
+                json!({"source": "book.xlsx", "destination": "/safe/out.pdf"}),
+            ),
+            (
+                "source is not a workbook",
+                json!({
+                    "source": root.path().join("book.numbers").to_str().unwrap(),
+                    "destination": "/safe/out.pdf"
+                }),
+            ),
+            (
+                "destination is not a pdf",
+                json!({"source": source.clone(), "destination": "/safe/out.docx"}),
+            ),
+            (
+                "destination already exists",
+                json!({"source": source.clone(), "destination": taken.to_str().unwrap()}),
+            ),
+        ] {
+            let error = export_excel_pdf(&request).unwrap_err();
+            assert!(error.invalid_request, "{label} should be a request problem");
+        }
+
+        assert_eq!(fs::read(&taken).unwrap(), b"placeholder");
+    }
     use tempfile::tempdir;
 
     fn request(operation: Value) -> Value {

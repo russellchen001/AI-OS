@@ -12,8 +12,10 @@ const IWORK_CAPABILITIES: &[&str] = &[
     "document.convert",
     "spreadsheet.read",
     "spreadsheet.create",
+    "spreadsheet.convert",
     "presentation.read",
     "presentation.create",
+    "presentation.convert",
 ];
 
 /// What Microsoft Office can actually execute.
@@ -30,6 +32,7 @@ const MICROSOFT_OFFICE_CAPABILITIES: &[&str] = &[
     "spreadsheet.read",
     "spreadsheet.create",
     "spreadsheet.edit",
+    "spreadsheet.convert",
     "presentation.read",
     "presentation.create",
     "presentation.edit",

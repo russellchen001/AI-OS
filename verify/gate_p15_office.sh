@@ -52,6 +52,8 @@ step "Apple Keynote"             bash verify/verify_p15_presentation_real_e2e.sh
 step "Apple iWork detection"     bash verify/verify_p15_iwork_real_e2e.sh
 step "Microsoft Word"            bash verify/verify_p15_word_common_capability.sh
 step "Microsoft PowerPoint"      bash verify/verify_p15_powerpoint_common_capability.sh
+step "Office conversion"         bash verify/verify_p15_office_conversion.sh
+step "Verifier file modes"       bash verify/verify_verifiers_are_executable.sh
 step "Whitespace"                git diff --check
 
 echo

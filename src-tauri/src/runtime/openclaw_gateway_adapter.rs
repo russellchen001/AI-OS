@@ -27,6 +27,7 @@ const PRESENTATION_CREATE_ACTION: &str = "presentation.create";
 /// produces an edited copy with tables, images and heading formatting;
 /// PowerPoint's edits slides and exports PDF. They are exposed here.
 const DOCUMENT_EDIT_ACTION: &str = "document.edit";
+const SPREADSHEET_CONVERT_ACTION: &str = "spreadsheet.convert";
 const PRESENTATION_EDIT_ACTION: &str = "presentation.edit";
 const PRESENTATION_CONVERT_ACTION: &str = "presentation.convert";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
@@ -127,6 +128,9 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == PRESENTATION_CONVERT_ACTION {
         return execute_presentation_convert(request);
+    }
+    if request.action.as_str() == SPREADSHEET_CONVERT_ACTION {
+        return execute_spreadsheet_convert(request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -1032,14 +1036,53 @@ fn execute_document_convert(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
-    if is_format(&request.input, "source", "pages") {
-        let output = crate::document::pages::convert_pages_document(&request.input)
-            .map_err(map_pages_error)?;
+    use crate::document::resolver::OfficeApplication;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS converted the Pages document to PDF.".to_owned()),
-        });
+    let route = route_with_destination(
+        DOCUMENT_CONVERT_ACTION,
+        &request.input,
+        "source",
+        Some("destination"),
+    )
+    .ok_or_else(|| no_conversion_route(DOCUMENT_CONVERT_ACTION, &request.input))?;
+
+    match route.application {
+        // Pages is the only application on the machine that can write a
+        // .pages, so it owns every conversion into iWork's own format -- and it
+        // exports Word format and PDF out of one.
+        OfficeApplication::ApplePages => {
+            let output = crate::document::iwork_convert::convert_with_iwork(
+                crate::document::iwork_convert::IworkApplication::Pages,
+                &request.input,
+            )
+            .map_err(map_iwork_convert_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS converted the document with Pages.".to_owned()),
+            });
+        }
+        // Word's adapter exports PDF. It does not convert DOC to DOCX, which is
+        // why it does not claim to write those formats and does not win here.
+        OfficeApplication::MicrosoftWord => {
+            let output = crate::document::word::export_word_document_pdf(&request.input)
+                .map_err(map_word_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS exported the document to PDF with Word.".to_owned()),
+            });
+        }
+        // Conversion between the Microsoft word-processing formats, which needs
+        // no application at all.
+        OfficeApplication::MacosNative => {}
+        other => {
+            return Err(OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ExecutionFailed,
+                format!("Office application {other:?} has no document.convert adapter."),
+                false,
+            ));
+        }
     }
 
     let (source, destination, session_key, run_id) = start_document_convert(invoker, request)?;
@@ -1444,6 +1487,32 @@ fn is_format(input: &Value, field: &str, expected: &str) -> bool {
     request_format(input, field).as_deref() == Some(expected)
 }
 
+fn map_iwork_convert_error(
+    error: crate::document::iwork_convert::IworkConvertError,
+) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
+fn map_excel_error(error: crate::document::excel::ExcelError) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
 fn map_word_error(error: crate::document::word::WordError) -> OpenClawExecutionError {
     OpenClawExecutionError::new(
         if error.invalid_request {
@@ -1469,13 +1538,30 @@ fn office_route(
     input: &Value,
     field: &str,
 ) -> Option<crate::document::resolver::OfficeRoute> {
+    route_with_destination(capability, input, field, None)
+}
+
+/// Conversion is the one capability that cannot be routed on the source alone.
+///
+/// The owner settled what convert means: the DESTINATION decides. `.pdf` is an
+/// export and anything else is a cross-suite conversion, so `.docx` to `.pdf`
+/// is Word's and `.docx` to `.pages` is Pages' -- because Word cannot write a
+/// `.pages` at all, and macOS conversion cannot write a PDF.
+fn route_with_destination(
+    capability: &str,
+    input: &Value,
+    field: &str,
+    destination_field: Option<&str>,
+) -> Option<crate::document::resolver::OfficeRoute> {
     let format = request_format(input, field);
+    let destination = destination_field.and_then(|field| request_format(input, field));
 
     crate::document::resolver::resolve_office_route(
         &crate::document::resolver::OfficeRouteRequest {
             capability,
             location: crate::document::resolver::OfficeResourceLocation::Local,
             format: format.as_deref(),
+            destination_format: destination.as_deref(),
             preferred_application: None,
         },
         &crate::document::resolver::office_candidates(),
@@ -1497,6 +1583,26 @@ fn no_route(capability: &str, input: &Value, field: &str) -> OpenClawExecutionEr
                 "No available Office Provider supports {capability} for a .{format} file."
             ),
             None => format!("No available Office Provider supports {capability}."),
+        },
+        false,
+    )
+}
+
+/// The same, naming what was asked for AND what it was asked to become.
+///
+/// "No provider supports document.convert" is not actionable when the real
+/// answer is that this machine has nothing that turns a .pages into a .docx.
+fn no_conversion_route(capability: &str, input: &Value) -> OpenClawExecutionError {
+    let from = request_format(input, "source");
+    let to = request_format(input, "destination");
+
+    OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        match (from, to) {
+            (Some(from), Some(to)) => format!(
+                "No available Office Provider can convert a .{from} to a .{to} on this machine."
+            ),
+            _ => format!("No available Office Provider supports {capability}."),
         },
         false,
     )
@@ -1766,27 +1872,87 @@ fn execute_presentation_convert(
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
     use crate::document::resolver::OfficeApplication;
 
-    let route = office_route(PRESENTATION_CONVERT_ACTION, &request.input, "source")
-        .ok_or_else(|| no_route(PRESENTATION_CONVERT_ACTION, &request.input, "source"))?;
+    let route = route_with_destination(
+        PRESENTATION_CONVERT_ACTION,
+        &request.input,
+        "source",
+        Some("destination"),
+    )
+    .ok_or_else(|| no_conversion_route(PRESENTATION_CONVERT_ACTION, &request.input))?;
 
-    if route.application != OfficeApplication::MicrosoftPowerPoint {
-        return Err(OpenClawExecutionError::new(
+    match route.application {
+        OfficeApplication::MicrosoftPowerPoint => {
+            let output = crate::document::powerpoint::export_powerpoint_pdf(&request.input)
+                .map_err(map_powerpoint_error)?;
+
+            Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS exported the presentation to PDF.".to_owned()),
+            })
+        }
+        // Keynote owns .key in both directions: nothing else writes one, and
+        // nothing else reads one.
+        OfficeApplication::AppleKeynote => {
+            let output = crate::document::iwork_convert::convert_with_iwork(
+                crate::document::iwork_convert::IworkApplication::Keynote,
+                &request.input,
+            )
+            .map_err(map_iwork_convert_error)?;
+
+            Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS converted the presentation with Keynote.".to_owned()),
+            })
+        }
+        other => Err(OpenClawExecutionError::new(
             OpenClawExecutionErrorKind::ExecutionFailed,
-            format!(
-                "Office application {:?} has no presentation.convert adapter.",
-                route.application
-            ),
+            format!("Office application {other:?} has no presentation.convert adapter."),
             false,
-        ));
+        )),
     }
+}
 
-    let output = crate::document::powerpoint::export_powerpoint_pdf(&request.input)
-        .map_err(map_powerpoint_error)?;
+fn execute_spreadsheet_convert(
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    use crate::document::resolver::OfficeApplication;
 
-    Ok(OpenClawExecutionResult {
-        output,
-        summary: Some("AI-OS exported the presentation to PDF.".to_owned()),
-    })
+    let route = route_with_destination(
+        SPREADSHEET_CONVERT_ACTION,
+        &request.input,
+        "source",
+        Some("destination"),
+    )
+    .ok_or_else(|| no_conversion_route(SPREADSHEET_CONVERT_ACTION, &request.input))?;
+
+    match route.application {
+        OfficeApplication::MicrosoftExcel => {
+            let output = crate::document::excel::export_excel_pdf(&request.input)
+                .map_err(map_excel_error)?;
+
+            Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS exported the spreadsheet to PDF with Excel.".to_owned()),
+            })
+        }
+        OfficeApplication::AppleNumbers => {
+            let output = crate::document::iwork_convert::convert_with_iwork(
+                crate::document::iwork_convert::IworkApplication::Numbers,
+                &request.input,
+            )
+            .map_err(map_iwork_convert_error)?;
+
+            Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS converted the spreadsheet with Numbers.".to_owned()),
+            })
+        }
+        other => Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!("Office application {other:?} has no spreadsheet.convert adapter."),
+            false,
+        )),
+    }
 }
 
 fn execute_spreadsheet_read(
@@ -4792,8 +4958,10 @@ f1==SERIES(Sales!$B$1,Sales!$A$2:$A$4,Sales!$B$2:$B$4,1)"
             "document.convert",
             "spreadsheet.read",
             "spreadsheet.create",
+            "spreadsheet.convert",
             "presentation.read",
             "presentation.create",
+            "presentation.convert",
         ] {
             assert!(iwork.supports(executable), "iWork should declare {executable}");
         }
