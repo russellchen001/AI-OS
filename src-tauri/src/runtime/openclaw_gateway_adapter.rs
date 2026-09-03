@@ -831,6 +831,16 @@ fn execute_document_create(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    if is_format(&request.input, "path", "pages") {
+        let output = crate::document::pages::create_pages_document(&request.input)
+            .map_err(map_pages_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS created the Pages document.".to_owned()),
+        });
+    }
+
     let (path, session_key, run_id) = start_document_create(invoker, request)?;
     finish_document_create(invoker, &path, &session_key, &run_id)
 }
@@ -1006,6 +1016,16 @@ fn execute_document_convert(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    if is_format(&request.input, "source", "pages") {
+        let output = crate::document::pages::convert_pages_document(&request.input)
+            .map_err(map_pages_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS converted the Pages document to PDF.".to_owned()),
+        });
+    }
+
     let (source, destination, session_key, run_id) = start_document_convert(invoker, request)?;
     finish_document_convert(invoker, &source, &destination, &session_key, &run_id)
 }
@@ -1336,6 +1356,49 @@ fn finish_spreadsheet_create(
     ))
 }
 
+fn map_pages_error(error: crate::document::pages::PagesError) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
+fn map_numbers_error(error: crate::document::numbers::NumbersError) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
+/// The lowercased extension of a path field, if there is one.
+///
+/// The provider registry is ordered by priority, so Microsoft Office wins every
+/// capability it declares for as long as it is installed -- and a `.pages` file
+/// would then be handed to an adapter that cannot open it. A format-aware
+/// resolver already exists in `document::resolver`, but nothing calls it yet;
+/// until it is wired in, the two iWork formats are dispatched by their own
+/// extension, which is the narrow and testable part of the same idea.
+fn request_format(input: &Value, field: &str) -> Option<String> {
+    Path::new(input.get(field)?.as_str()?.trim())
+        .extension()?
+        .to_str()
+        .map(str::to_ascii_lowercase)
+}
+
+fn is_format(input: &Value, field: &str, expected: &str) -> bool {
+    request_format(input, field).as_deref() == Some(expected)
+}
+
 fn map_keynote_error(error: crate::document::keynote::KeynoteError) -> OpenClawExecutionError {
     OpenClawExecutionError::new(
         if error.invalid_request {
@@ -1418,6 +1481,16 @@ fn execute_spreadsheet_create(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    if is_format(&request.input, "path", "numbers") {
+        let output = crate::document::numbers::create_numbers_spreadsheet(&request.input)
+            .map_err(map_numbers_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS created the Numbers spreadsheet.".to_owned()),
+        });
+    }
+
     let (path, session_key, run_id) = start_spreadsheet_create(invoker, request)?;
     finish_spreadsheet_create(invoker, &path, &session_key, &run_id)
 }
@@ -1463,6 +1536,16 @@ fn execute_spreadsheet_read(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    if is_format(&request.input, "path", "numbers") {
+        let output = crate::document::numbers::read_numbers_spreadsheet(&request.input)
+            .map_err(map_numbers_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS completed the Numbers spreadsheet read.".to_owned()),
+        });
+    }
+
     let (path, session_key, run_id) = start_spreadsheet_read(invoker, request)?;
     finish_spreadsheet_read(invoker, &path, &session_key, &run_id)
 }
@@ -2767,6 +2850,16 @@ fn execute_document_read(
             "document.read requires an absolute file path",
             false,
         ));
+    }
+
+    if is_format(&request.input, "path", "pages") {
+        let output = crate::document::pages::read_pages_document(&request.input)
+            .map_err(map_pages_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS completed the Pages document read.".to_owned()),
+        });
     }
 
     let provider = resolve_office_provider(DOCUMENT_READ_ACTION).ok_or_else(|| {
@@ -4329,6 +4422,57 @@ f1==SERIES(Sales!$B$1,Sales!$A$2:$A$4,Sales!$B$2:$B$4,1)"
             .as_str()
             .unwrap()
             .contains("Worksheet not found"));
+    }
+
+    #[test]
+    fn iwork_formats_route_by_their_own_extension() {
+        // The registry is ordered by priority, so Microsoft Office wins every
+        // capability it declares while it is installed. Without this dispatch a
+        // .pages file is handed to an adapter that cannot open it.
+        assert!(is_format(&json!({"path": "/safe/report.pages"}), "path", "pages"));
+        assert!(is_format(&json!({"path": "/safe/REPORT.PAGES"}), "path", "pages"));
+        assert!(is_format(&json!({"path": "/safe/book.numbers"}), "path", "numbers"));
+        assert!(is_format(
+            &json!({"source": "/safe/report.pages", "destination": "/safe/report.pdf"}),
+            "source",
+            "pages"
+        ));
+
+        // Everything else falls through to the provider list, unchanged.
+        for other in ["/safe/report.docx", "/safe/book.xlsx", "/safe/deck.key", "/safe/plain"] {
+            assert!(!is_format(&json!({"path": other}), "path", "pages"));
+            assert!(!is_format(&json!({"path": other}), "path", "numbers"));
+        }
+
+        // A missing or non-string field is not a format.
+        assert!(!is_format(&json!({}), "path", "pages"));
+        assert!(!is_format(&json!({"path": 42}), "path", "pages"));
+        assert_eq!(request_format(&json!({"path": "/safe/a.PAGES"}), "path").as_deref(), Some("pages"));
+    }
+
+    #[test]
+    fn iwork_declares_only_what_it_can_execute() {
+        let iwork = crate::document::registry::office_providers()
+            .into_iter()
+            .find(|provider| provider.id == OfficeProviderId::AppleIwork)
+            .unwrap();
+
+        for executable in [
+            "document.read",
+            "document.create",
+            "document.convert",
+            "spreadsheet.read",
+            "spreadsheet.create",
+            "presentation.read",
+            "presentation.create",
+        ] {
+            assert!(iwork.supports(executable), "iWork should declare {executable}");
+        }
+
+        // Numbers has a read and a create adapter but no edit one. Declaring a
+        // capability the provider cannot execute is what made the Provider
+        // Matrix overstate iWork; a registry declaration is not evidence.
+        assert!(!iwork.supports("spreadsheet.edit"));
     }
 
     #[test]

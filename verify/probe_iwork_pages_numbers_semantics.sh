@@ -228,6 +228,50 @@ set liveText to liveText & "|tablesOnNew=" & ((count of tables of extraSheet) as
 close madeDocument saving no
 BODY
       ;;
+    grow_rows_and_columns)
+      cat <<'BODY'
+set madeDocument to make new document
+tell table 1 of sheet 1 of madeDocument
+    set liveText to "before=" & ((count of rows) as text) & "x" & ((count of columns) as text)
+    repeat 3 times
+        add row below last row
+    end repeat
+    repeat 2 times
+        add column after last column
+    end repeat
+    set liveText to liveText & "|after=" & ((count of rows) as text) & "x" & ((count of columns) as text)
+    set value of cell "I25" to "corner"
+    set liveText to liveText & "|I25=[" & ((value of cell "I25") as text) & "]"
+end tell
+close madeDocument saving no
+BODY
+      ;;
+    shrink_rows)
+      cat <<'BODY'
+set madeDocument to make new document
+tell table 1 of sheet 1 of madeDocument
+    set liveText to "before=" & ((count of rows) as text)
+    repeat 5 times
+        remove last row
+    end repeat
+    set liveText to liveText & "|after=" & ((count of rows) as text)
+end tell
+close madeDocument saving no
+BODY
+      ;;
+    separator_inside_tell)
+      cat <<'BODY'
+set madeDocument to make new document
+set tabConstant to "unavailable"
+try
+    set tabConstant to "[" & tab & "]"
+end try
+set asciiNine to "[" & (ASCII character 9) & "]"
+set liveText to "tab=" & tabConstant & "|ascii9=" & asciiNine
+set liveText to liveText & "|tabIsAscii9=" & ((tabConstant is asciiNine) as text)
+close madeDocument saving no
+BODY
+      ;;
     export_csv)
       cat <<'BODY'
 set madeDocument to make new document
@@ -347,10 +391,10 @@ say "Pages and Numbers: what is actually executable?"
 say "output goes under $OUT_DIR and is removed on exit"
 
 run_candidates pages com.apple.Pages pages pages_body \
-  export_pdf_with_extension export_pdf_into_directory
+  export_pdf_with_extension
 
 run_candidates numbers com.apple.Numbers numbers numbers_body \
-  empty_cell_and_trim add_sheet_and_table export_xlsx
+  grow_rows_and_columns shrink_rows separator_inside_tell
 
 say ""
 say "log: $LOG"

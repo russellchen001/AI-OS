@@ -1,5 +1,5 @@
 #!/bin/bash
-# Excel acceptance gate. Runs every phase once, in order, and prints one line
+# Office acceptance gate. Runs every phase once, in order, and prints one line
 # per step so a failure is identifiable without reading every log.
 #
 # Phase verifiers deliberately do NOT run each other. When they did, the chain
@@ -45,8 +45,11 @@ step "Spreadsheet Create"        bash verify/verify_p15_spreadsheet_create.sh
 step "Spreadsheet Read"          bash verify/verify_p15_spreadsheet_read.sh
 step "Full Rust tests"           cargo test --manifest-path src-tauri/Cargo.toml
 step "Frontend build"            npm run build
+step "Apple Pages"               bash verify/verify_p15_iwork_pages.sh
+step "Apple Numbers"             bash verify/verify_p15_iwork_numbers.sh
+step "Apple iWork detection"     bash verify/verify_p15_iwork_real_e2e.sh
 step "Whitespace"                git diff --check
 
 echo
-echo "PASS Excel phase gate"
+echo "PASS Office phase gate"
 echo "Logs: $LOGS"

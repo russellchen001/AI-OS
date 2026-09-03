@@ -1,5 +1,21 @@
 use super::provider::{OfficeProvider, OfficeProviderId};
 
+/// What Apple iWork can actually execute.
+///
+/// `spreadsheet.edit` is deliberately absent: Numbers has a read and a create
+/// adapter but no edit one. Declaring a capability the provider cannot execute
+/// is what made the Provider Matrix overstate iWork for as long as it did, and
+/// a registry declaration is not executable evidence.
+const IWORK_CAPABILITIES: &[&str] = &[
+    "document.read",
+    "document.create",
+    "document.convert",
+    "spreadsheet.read",
+    "spreadsheet.create",
+    "presentation.read",
+    "presentation.create",
+];
+
 const ALL_OFFICE_CAPABILITIES: &[&str] = &[
     "document.read",
     "document.create",
@@ -75,7 +91,7 @@ pub(crate) fn office_providers() -> Vec<OfficeProvider> {
             name: "Apple iWork",
             local: true,
             priority: 20,
-            capabilities: ALL_OFFICE_CAPABILITIES,
+            capabilities: IWORK_CAPABILITIES,
             available: crate::connections::local_application_installed("pages")
                 || crate::connections::local_application_installed("numbers")
                 || crate::connections::local_application_installed("keynote"),
