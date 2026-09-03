@@ -1,5 +1,6 @@
 pub(crate) mod excel;
 pub(crate) mod keynote;
+pub(crate) mod pages;
 pub(crate) mod powerpoint;
 pub(crate) mod provider;
 pub(crate) mod registry;
