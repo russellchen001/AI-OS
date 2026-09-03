@@ -771,14 +771,62 @@ Numbers cannot add a sheet through AppleScript, so a Numbers
 `spreadsheet.create` is single-sheet. That is a real provider limit and must be
 declared as one rather than worked around or hidden.
 
+#### Pages and Numbers — COMPLETE
+
+`document/pages.rs` — `document.read`, `document.create`, `document.convert`.
+`document/numbers.rs` — `spreadsheet.read`, `spreadsheet.create`.
+
+Both are proven by real E2Es that assert **content**, not `get version`:
+`verify/verify_p15_iwork_pages.sh` and `verify/verify_p15_iwork_numbers.sh`,
+both in the Office gate.
+
+Shared behaviour, matching the Keynote adapter:
+
+- a document the caller already has open is read where it is and **left open**;
+  only documents the adapter opened are closed
+- creating over an existing file is refused, never replaced
+- the E2Es write under a uniquely named directory in the user's Documents
+  folder and remove it. Pages and Numbers are sandboxed; the probe proved that
+  location works, an arbitrary temp directory is not known to, and a sandbox
+  prompt in an unattended run blocks every later automation
+
+#### The registry no longer overstates iWork
+
+Apple iWork declared `ALL_OFFICE_CAPABILITIES` — all eight — while only Keynote
+had an adapter. It now declares `IWORK_CAPABILITIES`, the seven it can actually
+execute. **`spreadsheet.edit` is deliberately absent**: Numbers has read and
+create adapters but no edit one.
+
+`iwork_declares_only_what_it_can_execute` pins this, including the absence.
+
+#### Routing: dispatch by format, not by priority
+
+The registry is ordered by priority, so Microsoft Office wins every capability
+it declares for as long as it is installed. A `.pages` file was therefore handed
+to an adapter that could not open it, and `document.read` rejected the extension
+outright. **The Pages and Numbers adapters existed but nothing could reach
+them.**
+
+`document.read`, `document.create`, `document.convert`, `spreadsheet.read` and
+`spreadsheet.create` now dispatch on the file's own extension before the
+priority list gets a say. Everything else falls through unchanged, so no
+Microsoft path moved.
+
+**`document/resolver.rs` already contains a full format-aware provider
+resolver** — candidates, native and import format ranking, fidelity warnings,
+an `executable` flag — and **nothing in production calls it**. Only its own
+tests do. Wiring it in is the right end state and belongs with the final
+Provider Matrix; the extension dispatch is the narrow, testable part of the same
+idea, chosen so that eight proven Excel phases did not have to move to make
+iWork reachable.
+
 #### Remaining iWork work
 
-1. `document/pages.rs` — `document.read`, `document.create`, `document.convert`
-2. `document/numbers.rs` — `spreadsheet.read`, `spreadsheet.create` (single sheet)
-3. correct the registry declaration to what each provider can actually execute,
-   rather than `ALL_OFFICE_CAPABILITIES` for everyone
-4. Keynote review against the same contract
-5. real E2Es that assert content, not `get version`
+1. Keynote review against the same contract — it has read and create, but its
+   E2E should assert content the way Pages and Numbers now do
+2. decide whether `presentation.read` / `presentation.create` should also
+   dispatch by extension (`.key`), rather than through
+   `resolve_local_presentation_provider`
 
 #### An unresolved cleanup for the machine owner
 
@@ -889,9 +937,9 @@ Only after those gates pass:
 5. ~~Excel formula-aware read~~ — **COMPLETE**
 6. ~~Excel final realistic workflow~~ — **COMPLETE**
 7. ~~close Excel Common Capability~~ — **COMPLETE**
-8. Pages Common Capability review/completion — NEXT
-9. Numbers Common Capability review/completion
-10. Keynote Common Capability review/completion
+8. ~~Pages Common Capability~~ — **COMPLETE**
+9. ~~Numbers Common Capability~~ — **COMPLETE**
+10. Keynote Common Capability review/completion — NEXT
 11. WPS capability classification
 12. Google Docs/Sheets/Slides fallback review/completion
 13. final Office Provider Matrix
@@ -2074,6 +2122,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-03  Apple Pages and Apple Numbers Common Capability COMPLETE. Pages gains `document.read`, `document.create` and `document.convert`; Numbers gains `spreadsheet.read` and `spreadsheet.create`. Both were probed before either was written (`verify/probe_iwork_pages_numbers_semantics.sh`) and both are proven by real E2Es that assert content rather than `get version`. Pages: an export target must carry its extension or Pages treats the path as a folder, fails with error 6 and leaves its document open. Numbers: a new table is already 22x7 and there is no used range, so reads trim trailing blanks while still reporting what Numbers holds; an empty cell reads back as `missing value`; sheet and table names are localized and are addressed by index and only reported by name; `make new sheet` fails with -10000, so a Numbers create is single-sheet and says so. Rows and columns can be added, so a create grows the table to fit. Two structural corrections landed with them. First, the registry stopped overstating iWork: it had declared all eight Office capabilities while only Keynote had an adapter, and now declares the seven it can execute, with `spreadsheet.edit` deliberately absent because Numbers has no edit adapter. Second, routing: the registry is priority-ordered, so Microsoft Office won every capability it declared and a `.pages` file was handed to an adapter that could not open it -- the Pages and Numbers adapters existed but nothing could reach them. `document.read`/`create`/`convert` and `spreadsheet.read`/`create` now dispatch on the file's own extension before the priority list applies, with everything else falling through unchanged. Note that `document/resolver.rs` already contains a complete format-aware provider resolver that no production code calls; wiring it in belongs with the final Provider Matrix, and the extension dispatch was chosen so eight proven Excel phases did not have to move. The gate is renamed `verify/gate_p15_office.sh` and is 17 steps, all green on the acceptance Mac. Remaining Office work: Keynote review, WPS classification, Google Workspace fallback review, final Provider Matrix. Office remains In Progress and P15 remains 5 of 11.
 - 2026-09-03  Microsoft Excel Common Capability COMPLETE. Phase H landed the realistic workflow: one workbook built in a single `spreadsheet.edit` call with typed cells, formula totals, a descending sort on the computed total, a bold filled header, a number format, a wider label column, a chart and a filter, then read back through `spreadsheet.read` in its own osascript invocation. It is the only test crossing both halves of the Excel work, and it asserts three things no per-phase test can: the rows come back in sorted order, a filtered row is hidden rather than deleted, and Excel rewrote each total's relative references as the sort moved its row. It immediately caught a real defect in the displacement rule, now fixed: displacement had been answered per worksheet ("was this sheet ever sorted"), so a format applied AFTER a sort was reported as displaced and its check silently skipped even though its address was valid -- the quiet widening into "skip validation whenever anything happened" that earlier phases warned against. Displacement is now answered per operation via `movesAfter`: does any LATER operation move content on this worksheet, with structural changes invalidating index-based probes as well as address-based ones and sorts invalidating only the latter. Phase E and Phase H now pin the rule from both sides. The Excel gate is 14 steps, about 3 minutes, all green on real Excel 16.78: Phase A through Phase H, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. Every phase preserves the source workbook, saves without overwriting, restores Excel's workbook and window state, never quits Excel and leaves user workbooks untouched. Next Office work is Pages, Numbers and Keynote Common Capability. Office remains In Progress and P15 remains 5 of 11.
 - 2026-09-03  Microsoft Excel Phase G formula-aware read completed: `spreadsheet.read` accepts an opt-in, strictly typed `includeFormulas` boolean on the existing provider-neutral read route; absent/null/false reproduce the previous output byte for byte and a truthy string is refused. Each worksheet now reports `usedRange` always, and `formulas` only when requested, as a sparse list of {row, column, formula} -- sparse because a constant cell reports the constant as its formula, so only a leading `=` marks a real one, and because an empty list ("asked, none present") and an absent key ("never asked") are different answers. Bounded to 512 formula entries per worksheet inside the existing cell and protocol budgets, with a declared-versus-arrived count check so a payload cut on the way out cannot read as complete. An isolated probe (`verify/probe_excel_formula_read_semantics.sh`) established that `formula of used range` returns the same 2D list shape as `value of used range`, that constants report themselves, that `formula` returns English function names on a Chinese-locale Excel, and that all of it survives save/close/reopen. Two real-Excel traps were hit and are recorded: inside a `tell application "Microsoft Excel"` block `tab` resolves to Excel terminology and emitted the literal text "tab", so the separator is now `ASCII character 9`; and a read E2E that opens a workbook from a temp directory raises a sandbox "locate this file" modal that no unattended run can answer and that then blocks every later Excel automation, so read E2Es now build under Excel's own cache directory. That investigation also exposed a latent Phase B regression: `delete_worksheet` raises a permanent-delete modal unless `display alerts` is off, which had been masked by this machine's Excel happening to have alerts off; the adapter now suppresses alerts immediately around the delete and restores the previous value on both the success and the error path, proven by `verify/probe_excel_alert_suppression.sh`. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11; the only remaining Excel work is one realistic multi-capability workflow and final acceptance.
 - 2026-09-02  Microsoft Excel Phase F chart integration completed: `add_chart` creates a column, bar, line or pie chart from a bounded source range with a required explicit name, through the existing `edit_excel_workbook()` adapter on the existing provider-neutral `spreadsheet.edit` route. Two probe rounds (`verify/probe_excel_chart_semantics.sh`) established that `make new chart object at <sheet>` works while `make new chart at end of <workbook>` fails (-50), that source data must be set by the command form because `set (source data of chart of X) to <range>` fails (-10006), and that a chart's name, chart type, series count and series formula all survive save-as-xlsx/close/reopen. Excel does not always store the constant that was set -- `line chart` stores as `line markers`, `pie exploded` as `pie chart`, and bare `line`/`pie` are not valid constants -- so the encoded record carries both the constant to set and the constant to compare against. The series formula is the accepted evidence because it names the ranges actually plotted, so a chart that exists but plots nothing cannot pass. The first real run hung for thirty minutes: `repeat with x in chart objects of <sheet>` deadlocks Excel once a chart exists on that sheet and `with timeout` does not rescue it, and that loop was how duplicate chart names were checked; `verify/probe_excel_chart_multi.sh` proved `exists chart object <name>`, `count of chart objects`, `name of chart object <index>` and `name of every chart object` all answer instantly, and the adapter now addresses charts by name and never enumerates them. The verification harness was also rebuilt: phase verifiers no longer run their predecessors (the chain had been quadratic, 32 real Excel cycles per gate), `verify/gate_p15_excel.sh` runs every phase once in order and a full gate now takes about 2.5 minutes, and the developer-machine runner enforces a timeout in its own process group and writes step logs inside the repository so a hang is bounded and visible. Real Excel 16.78 gate passes Phase A, Phase B mutation, Phase B read, Phase C structural, Phase D formatting, Phase E sort/filter, Phase F charts, Spreadsheet Create, Spreadsheet Read, the full Rust suite, the frontend build and `git diff --check`. The `document::excel::tests::` count guard moved from 17 to 20. Next Excel work is formula-aware read. Excel Common Capability, Office and P15 remain In Progress / In Progress / 5 of 11.
