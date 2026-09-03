@@ -22,6 +22,13 @@ const SPREADSHEET_CREATE_ACTION: &str = "spreadsheet.create";
 const SPREADSHEET_EDIT_ACTION: &str = "spreadsheet.edit";
 const PRESENTATION_READ_ACTION: &str = "presentation.read";
 const PRESENTATION_CREATE_ACTION: &str = "presentation.create";
+/// Three adapters were implemented, verified by their own gate steps, and
+/// declared by no capability at all, so nothing could call them. Word's edit
+/// produces an edited copy with tables, images and heading formatting;
+/// PowerPoint's edits slides and exports PDF. They are exposed here.
+const DOCUMENT_EDIT_ACTION: &str = "document.edit";
+const PRESENTATION_EDIT_ACTION: &str = "presentation.edit";
+const PRESENTATION_CONVERT_ACTION: &str = "presentation.convert";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
 const FILESYSTEM_MOVE_ACTION: &str = "filesystem.move";
 const DOWNLOAD_START_ACTION: &str = "download.start";
@@ -111,6 +118,15 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == PRESENTATION_CREATE_ACTION {
         return execute_presentation_create(invoker, request);
+    }
+    if request.action.as_str() == DOCUMENT_EDIT_ACTION {
+        return execute_document_edit(request);
+    }
+    if request.action.as_str() == PRESENTATION_EDIT_ACTION {
+        return execute_presentation_edit(request);
+    }
+    if request.action.as_str() == PRESENTATION_CONVERT_ACTION {
+        return execute_presentation_convert(request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -1673,6 +1689,103 @@ fn execute_spreadsheet_edit(
     Ok(OpenClawExecutionResult {
         output,
         summary: Some("AI-OS completed and validated the Excel spreadsheet edit copy.".to_owned()),
+    })
+}
+
+/// Editing a document in place is not what any of these adapters do.
+///
+/// Every one of them reads a source and writes a separate destination, leaving
+/// the source byte-identical -- which is what makes an edit safe to offer at
+/// all. The capability is named `edit` because that is what the caller wants;
+/// the contract is a copy.
+fn execute_document_edit(
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    use crate::document::resolver::OfficeApplication;
+
+    let route = office_route(DOCUMENT_EDIT_ACTION, &request.input, "source")
+        .ok_or_else(|| no_route(DOCUMENT_EDIT_ACTION, &request.input, "source"))?;
+
+    if route.application != OfficeApplication::MicrosoftWord {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office application {:?} has no document.edit adapter.",
+                route.application
+            ),
+            false,
+        ));
+    }
+
+    let output =
+        crate::document::word::edit_word_document(&request.input).map_err(map_word_error)?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some("AI-OS completed and validated the Word document edit copy.".to_owned()),
+    })
+}
+
+fn execute_presentation_edit(
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    use crate::document::resolver::OfficeApplication;
+
+    let route = office_route(PRESENTATION_EDIT_ACTION, &request.input, "source")
+        .ok_or_else(|| no_route(PRESENTATION_EDIT_ACTION, &request.input, "source"))?;
+
+    if route.application != OfficeApplication::MicrosoftPowerPoint {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office application {:?} has no presentation.edit adapter.",
+                route.application
+            ),
+            false,
+        ));
+    }
+
+    let output = crate::document::powerpoint::edit_powerpoint_presentation(&request.input)
+        .map_err(map_powerpoint_error)?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some(
+            "AI-OS completed and validated the PowerPoint presentation edit copy.".to_owned(),
+        ),
+    })
+}
+
+/// `presentation.convert` means one thing and says so: export to PDF.
+///
+/// This is deliberately unlike `document.convert`, which means DOC/DOCX
+/// conversion through macOS and PDF export through Pages, and which is why that
+/// capability is still not routed through the resolver.
+fn execute_presentation_convert(
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    use crate::document::resolver::OfficeApplication;
+
+    let route = office_route(PRESENTATION_CONVERT_ACTION, &request.input, "source")
+        .ok_or_else(|| no_route(PRESENTATION_CONVERT_ACTION, &request.input, "source"))?;
+
+    if route.application != OfficeApplication::MicrosoftPowerPoint {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office application {:?} has no presentation.convert adapter.",
+                route.application
+            ),
+            false,
+        ));
+    }
+
+    let output = crate::document::powerpoint::export_powerpoint_pdf(&request.input)
+        .map_err(map_powerpoint_error)?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some("AI-OS exported the presentation to PDF.".to_owned()),
     })
 }
 

@@ -154,9 +154,19 @@ pub(crate) fn resolve_office_route(
 /// generic path outrank both Word and the structured layer on their own format.
 pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
     const DOCUMENT_READ: &[&str] = &["document.read"];
-    const WORD: &[&str] = &["document.read", "document.create", "document.convert"];
+    const WORD: &[&str] = &[
+        "document.read",
+        "document.create",
+        "document.convert",
+        "document.edit",
+    ];
     const EXCEL: &[&str] = &["spreadsheet.read", "spreadsheet.create", "spreadsheet.edit"];
-    const POWERPOINT: &[&str] = &["presentation.read", "presentation.create"];
+    const POWERPOINT: &[&str] = &[
+        "presentation.read",
+        "presentation.create",
+        "presentation.edit",
+        "presentation.convert",
+    ];
     const PAGES: &[&str] = &["document.read", "document.create", "document.convert"];
     const NUMBERS: &[&str] = &["spreadsheet.read", "spreadsheet.create"];
     const KEYNOTE: &[&str] = &["presentation.read", "presentation.create"];
@@ -419,6 +429,17 @@ mod tests {
                 "pptx",
                 OfficeApplication::MicrosoftPowerPoint,
             ),
+            (
+                "presentation.edit",
+                "pptx",
+                OfficeApplication::MicrosoftPowerPoint,
+            ),
+            (
+                "presentation.convert",
+                "pptx",
+                OfficeApplication::MicrosoftPowerPoint,
+            ),
+            ("document.edit", "docx", OfficeApplication::MicrosoftWord),
             // Plain-text conversion is the floor, so it answers only for the
             // formats no application here claims.
             ("document.read", "rtf", OfficeApplication::MacosNative),
@@ -460,6 +481,11 @@ mod tests {
             // And what genuinely cannot be done says so, rather than routing to
             // an adapter that would refuse the file.
             ("spreadsheet.edit", "xlsx", None),
+            // Editing and PDF export need the application; the structured layer
+            // reads and writes files, it does not drive a word processor.
+            ("document.edit", "docx", None),
+            ("presentation.edit", "pptx", None),
+            ("presentation.convert", "pptx", None),
             ("presentation.read", "key", None),
             ("document.read", "pages", None),
             ("spreadsheet.read", "numbers", None),

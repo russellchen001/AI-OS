@@ -27,6 +27,36 @@ const ALL_OFFICE_CAPABILITIES: &[&str] = &[
     "presentation.create",
 ];
 
+/// What Microsoft Office can actually execute.
+///
+/// It is the widest of these lists because it is the only provider with an
+/// editing adapter for all three document kinds. `document.edit`,
+/// `presentation.edit` and `presentation.convert` were implemented and verified
+/// long before any capability declared them, so nothing could call them.
+const MICROSOFT_OFFICE_CAPABILITIES: &[&str] = &[
+    "document.read",
+    "document.create",
+    "document.convert",
+    "document.edit",
+    "spreadsheet.read",
+    "spreadsheet.create",
+    "spreadsheet.edit",
+    "presentation.read",
+    "presentation.create",
+    "presentation.edit",
+    "presentation.convert",
+];
+
+/// What WPS Office can actually execute: nothing.
+///
+/// It reads and writes all three Microsoft formats, and it is detected when
+/// installed, but macOS publishes no deterministic automation contract for it
+/// and AirScript is a cloud API, so there is no local adapter to route to.
+/// Declaring the eight capabilities it cannot execute is the same mistake the
+/// iWork and LocalStructured entries used to make. WPS *files* are supported
+/// through the structured layer, which is a different statement and a true one.
+const WPS_CAPABILITIES: &[&str] = &[];
+
 const NATIVE_CAPABILITIES: &[&str] = &["document.read", "document.create", "document.convert"];
 const GRAPH_CAPABILITIES: &[&str] = &[
     "document.read",
@@ -95,7 +125,7 @@ pub(crate) fn office_providers() -> Vec<OfficeProvider> {
             name: "Microsoft Office",
             local: true,
             priority: 10,
-            capabilities: ALL_OFFICE_CAPABILITIES,
+            capabilities: MICROSOFT_OFFICE_CAPABILITIES,
             available: app_exists("/Applications/Microsoft Word.app")
                 || app_exists("/Applications/Microsoft Excel.app")
                 || app_exists("/Applications/Microsoft PowerPoint.app"),
@@ -115,7 +145,7 @@ pub(crate) fn office_providers() -> Vec<OfficeProvider> {
             name: "WPS Office",
             local: true,
             priority: 30,
-            capabilities: ALL_OFFICE_CAPABILITIES,
+            capabilities: WPS_CAPABILITIES,
             available: app_exists("/Applications/wpsoffice.app")
                 || app_exists("/Applications/WPS Office.app"),
         },

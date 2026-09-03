@@ -50,6 +50,7 @@ step "Apple Pages"               bash verify/verify_p15_iwork_pages.sh
 step "Apple Numbers"             bash verify/verify_p15_iwork_numbers.sh
 step "Apple Keynote"             bash verify/verify_p15_presentation_real_e2e.sh
 step "Apple iWork detection"     bash verify/verify_p15_iwork_real_e2e.sh
+step "Microsoft Word"            bash verify/verify_p15_word_common_capability.sh
 step "Microsoft PowerPoint"      bash verify/verify_p15_powerpoint_common_capability.sh
 step "Whitespace"                git diff --check
 
