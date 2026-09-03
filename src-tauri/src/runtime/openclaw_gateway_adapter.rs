@@ -40,6 +40,9 @@ const MAX_SPREADSHEET_READ_ROWS: usize = 200;
 const MAX_SPREADSHEET_READ_COLUMNS: usize = 64;
 const MAX_SPREADSHEET_READ_CELL_CHARS: usize = 256;
 const MAX_SPREADSHEET_PROTOCOL_CHARS: usize = 60_000;
+/// Formulas are reported sparsely -- only cells whose text begins with
+/// `=` -- so this caps a pathological sheet rather than a normal one.
+const MAX_SPREADSHEET_READ_FORMULAS: usize = 512;
 
 pub(crate) struct OpenClawGatewayExecutionAdapter;
 
@@ -1654,12 +1657,29 @@ fn spreadsheet_read_selection(
     Ok(SpreadsheetReadSelection::First)
 }
 
+/// Formula-aware read is opt-in. Without it the output is byte-for-byte what
+/// it was before, which is what keeps every existing consumer working.
+fn spreadsheet_read_include_formulas(
+    request: &OpenClawExecutionRequest,
+) -> Result<bool, OpenClawExecutionError> {
+    match request.input.get("includeFormulas") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::InvalidRequest,
+            "spreadsheet.read includeFormulas must be boolean",
+            false,
+        )),
+    }
+}
+
 fn start_spreadsheet_read(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<(String, String, String), OpenClawExecutionError> {
     let (path, workdir) = spreadsheet_read_input(request)?;
     let selection = spreadsheet_read_selection(request)?;
+    let include_formulas = spreadsheet_read_include_formulas(request)?;
 
     let provider = resolve_office_provider(SPREADSHEET_READ_ACTION).ok_or_else(|| {
         OpenClawExecutionError::new(
@@ -1680,7 +1700,7 @@ fn start_spreadsheet_read(
         ));
     }
 
-    let command = spreadsheet_read_command_for_selection(path, &selection);
+    let command = spreadsheet_read_command_for_selection(path, &selection, include_formulas);
 
     let session_key = format!(
         "agent:{FILESYSTEM_AGENT_ID}:ai-os-spreadsheet-read-{}",
@@ -1721,6 +1741,55 @@ fn start_spreadsheet_read(
         })?;
 
     Ok((path.to_owned(), session_key, run_id.to_owned()))
+}
+
+/// Everything between the truncation flag and the content block.
+///
+/// The keys after `AIOS_TRUNCATED=` are OPTIONAL on purpose: a reader that
+/// demanded them would reject output from a read that did not ask for
+/// formulas, and would have made the existing protocol tests useless as a
+/// compatibility guard.
+fn parse_sheet_head(head: &str) -> (bool, Option<String>, Vec<Value>, bool) {
+    let mut lines = head.lines();
+    let truncated = lines.next().map(str::trim) == Some("true");
+
+    let mut used_range = None;
+    let mut declared = None;
+    let mut formulas = Vec::new();
+    let mut inside = false;
+
+    for line in lines {
+        if let Some(value) = line.strip_prefix("AIOS_USED_RANGE=") {
+            used_range = Some(value.trim().to_owned());
+        } else if let Some(value) = line.strip_prefix("AIOS_FORMULA_COUNT=") {
+            declared = value.trim().parse::<usize>().ok();
+        } else if line.trim() == "AIOS_FORMULAS_BEGIN" {
+            inside = true;
+        } else if line.trim() == "AIOS_FORMULAS_END" {
+            inside = false;
+        } else if inside {
+            let mut fields = line.splitn(3, '\t');
+            if let (Some(row), Some(column), Some(formula)) =
+                (fields.next(), fields.next(), fields.next())
+            {
+                if let (Ok(row), Ok(column)) =
+                    (row.trim().parse::<u64>(), column.trim().parse::<u64>())
+                {
+                    formulas.push(serde_json::json!({
+                        "row": row,
+                        "column": column,
+                        "formula": formula,
+                    }));
+                }
+            }
+        }
+    }
+
+    // A declared count that does not match what arrived means the payload was
+    // cut, which is a truncation the caller has to know about.
+    let short = declared.is_some_and(|declared| declared != formulas.len());
+
+    (truncated || short, used_range, formulas, declared.is_some())
 }
 
 fn spreadsheet_read_output(history: &Value, path: &str) -> Option<Value> {
@@ -1791,23 +1860,37 @@ fn spreadsheet_read_output(history: &Value, path: &str) -> Option<Value> {
         let (columns, payload) = payload.split_once("\nAIOS_TOTAL_ROWS=")?;
         let (total_rows, payload) = payload.split_once("\nAIOS_TOTAL_COLUMNS=")?;
         let (total_columns, payload) = payload.split_once("\nAIOS_TRUNCATED=")?;
-        let (sheet_truncated, content) = payload.split_once("\nAIOS_CONTENT_BEGIN\n")?;
+        let (head, content) = payload.split_once("\nAIOS_CONTENT_BEGIN\n")?;
 
-        sheets.push(serde_json::json!({
+        let (sheet_truncated, used_range, formulas, formulas_requested) = parse_sheet_head(head);
+
+        let mut entry = serde_json::json!({
             "name": sheet.trim(),
             "rows": rows.trim().parse::<u64>().ok()?,
             "columns": columns.trim().parse::<u64>().ok()?,
             "totalRows": total_rows.trim().parse::<u64>().ok()?,
             "totalColumns": total_columns.trim().parse::<u64>().ok()?,
-            "truncated": sheet_truncated.trim() == "true",
+            "truncated": sheet_truncated,
             "content": content,
-        }));
+        });
+
+        if let Some(used_range) = used_range {
+            entry["usedRange"] = Value::String(used_range);
+        }
+
+        // An empty array and an absent key mean different things: no formulas
+        // on the sheet, versus formulas never asked for.
+        if formulas_requested {
+            entry["formulas"] = Value::Array(formulas);
+        }
+
+        sheets.push(entry);
     }
 
     if sheets.len() == 1 {
         let sheet = sheets.first()?;
 
-        return Some(serde_json::json!({
+        let mut single = serde_json::json!({
             "path": path,
             "sheet": sheet.get("name")?,
             "status": "table",
@@ -1820,7 +1903,15 @@ fn spreadsheet_read_output(history: &Value, path: &str) -> Option<Value> {
             "truncated": selection_truncated
                 || sheet.get("truncated").and_then(Value::as_bool).unwrap_or(false),
             "content": sheet.get("content")?,
-        }));
+        });
+
+        for carried in ["usedRange", "formulas"] {
+            if let Some(value) = sheet.get(carried) {
+                single[carried] = value.clone();
+            }
+        }
+
+        return Some(single);
     }
 
     Some(serde_json::json!({
@@ -2000,12 +2091,13 @@ fn spreadsheet_create_output(history: &Value, path: &str) -> Option<Value> {
 }
 
 fn spreadsheet_read_command(path: &str) -> String {
-    spreadsheet_read_command_for_selection(path, &SpreadsheetReadSelection::First)
+    spreadsheet_read_command_for_selection(path, &SpreadsheetReadSelection::First, false)
 }
 
 fn spreadsheet_read_command_for_selection(
     path: &str,
     selection: &SpreadsheetReadSelection,
+    include_formulas: bool,
 ) -> String {
     let (mode, requested) = match selection {
         SpreadsheetReadSelection::First => ("first", String::new()),
@@ -2016,7 +2108,7 @@ fn spreadsheet_read_command_for_selection(
 
     format!(
         r#"set -o pipefail
-/usr/bin/osascript - {} {} {} <<'AIOS_APPLESCRIPT' | /usr/bin/head -c {}
+/usr/bin/osascript - {} {} {} {} <<'AIOS_APPLESCRIPT' | /usr/bin/head -c {}
 on splitText(sourceText, delimiterText)
     if sourceText is "" then return {{}}
     set oldDelimiters to AppleScript's text item delimiters
@@ -2097,6 +2189,7 @@ on run argv
     set workbookPath to item 1 of argv
     set readMode to item 2 of argv
     set requestedText to item 3 of argv
+    set includeFormulas to (item 4 of argv is "formulas")
 
     set openedWorkbook to missing value
 
@@ -2177,8 +2270,20 @@ on run argv
                     error "Worksheet not found: " & sheetName number -2801
                 end if
 
+                set usedFormulas to {{}}
+
                 tell worksheet sheetName of openedWorkbook
                     set usedValues to value of used range
+                    set usedAddress to (get address of used range) as text
+
+                    -- A real probe showed `formula of used range` comes back in
+                    -- the same 2D list shape as `value of used range`, and in
+                    -- English even on a Chinese-locale Excel. It is only asked
+                    -- for when the caller wants it, so the default read costs
+                    -- exactly what it always did.
+                    if includeFormulas then
+                        set usedFormulas to formula of used range
+                    end if
                 end tell
 
                 if class of usedValues is not list then
@@ -2186,6 +2291,16 @@ on run argv
                 else if (count of usedValues) > 0 then
                     if class of item 1 of usedValues is not list then
                         set usedValues to {{usedValues}}
+                    end if
+                end if
+
+                if includeFormulas then
+                    if class of usedFormulas is not list then
+                        set usedFormulas to {{usedFormulas}}
+                    else if (count of usedFormulas) > 0 then
+                        if class of item 1 of usedFormulas is not list then
+                            set usedFormulas to {{usedFormulas}}
+                        end if
                     end if
                 end if
 
@@ -2228,6 +2343,48 @@ on run argv
                     set returnedRows to returnedRows + 1
                 end repeat
 
+                -- Sparse on purpose. A cell holding a constant reports that
+                -- constant as its formula, so the only thing that marks a real
+                -- formula is the leading "=", and reporting every cell would
+                -- double the payload to say nothing.
+                --
+                -- The separator is `ASCII character 9`, not `tab`. Inside a
+                -- `tell application "Microsoft Excel"` block Excel's own
+                -- terminology wins, and `tab` resolves to an Excel term that
+                -- renders as the literal text "tab". The joinRow helpers above
+                -- can use `tab` safely only because they live outside the tell.
+                set formulaLines to ""
+                set formulaCount to 0
+
+                if includeFormulas then
+                    repeat with rowIndex from 1 to rowLimit
+                        if rowIndex > (count of usedFormulas) then exit repeat
+                        set formulaRow to contents of item rowIndex of usedFormulas
+
+                        repeat with columnIndex from 1 to columnLimit
+                            if columnIndex <= (count of formulaRow) then
+                                set formulaText to my safeCell(contents of item columnIndex of formulaRow)
+
+                                if formulaText starts with "=" then
+                                    if formulaCount < {MAX_SPREADSHEET_READ_FORMULAS} then
+                                        set formulaLines to formulaLines & (rowIndex as text) & (ASCII character 9) & (columnIndex as text) & (ASCII character 9) & formulaText & linefeed
+                                        set formulaCount to formulaCount + 1
+                                    else
+                                        set sheetTruncated to true
+                                    end if
+                                end if
+                            end if
+                        end repeat
+                    end repeat
+
+                    if ((count characters of outputText) + (count characters of sheetContent) + (count characters of formulaLines)) > {MAX_SPREADSHEET_PROTOCOL_CHARS} then
+                        set formulaLines to ""
+                        set formulaCount to 0
+                        set sheetTruncated to true
+                        set selectionTruncated to true
+                    end if
+                end if
+
                 set outputText to outputText & linefeed & "AIOS_SHEET_BEGIN" & linefeed
                 set outputText to outputText & "AIOS_SHEET=" & sheetName & linefeed
                 set outputText to outputText & "AIOS_ROWS=" & returnedRows & linefeed
@@ -2235,6 +2392,17 @@ on run argv
                 set outputText to outputText & "AIOS_TOTAL_ROWS=" & totalRows & linefeed
                 set outputText to outputText & "AIOS_TOTAL_COLUMNS=" & totalColumns & linefeed
                 set outputText to outputText & "AIOS_TRUNCATED=" & (sheetTruncated as text) & linefeed
+                set outputText to outputText & "AIOS_USED_RANGE=" & usedAddress & linefeed
+
+                -- Emitted only when asked. Always emitting an empty block would
+                -- make "no formulas on this sheet" indistinguishable from "the
+                -- caller never asked", which are different answers.
+                if includeFormulas then
+                    set outputText to outputText & "AIOS_FORMULA_COUNT=" & (formulaCount as text) & linefeed
+                    set outputText to outputText & "AIOS_FORMULAS_BEGIN" & linefeed
+                    set outputText to outputText & formulaLines
+                    set outputText to outputText & "AIOS_FORMULAS_END" & linefeed
+                end if
                 set outputText to outputText & "AIOS_CONTENT_BEGIN" & linefeed
                 set outputText to outputText & sheetContent
                 set outputText to outputText & "AIOS_SHEET_END"
@@ -2264,6 +2432,7 @@ AIOS_APPLESCRIPT"#,
         shell_quote(path),
         shell_quote(mode),
         shell_quote(&requested),
+        shell_quote(if include_formulas { "formulas" } else { "values" }),
         MAX_FILE_OUTPUT_BYTES,
     )
 }
@@ -3698,6 +3867,7 @@ mod tests {
         let named = spreadsheet_read_command_for_selection(
             "/safe/report.xlsx",
             &SpreadsheetReadSelection::Named("Summary".to_owned()),
+            false,
         );
 
         assert!(named.contains("named"));
@@ -3706,6 +3876,7 @@ mod tests {
         let selected = spreadsheet_read_command_for_selection(
             "/safe/report.xlsx",
             &SpreadsheetReadSelection::Selected(vec!["Sales".to_owned(), "Summary".to_owned()]),
+            false,
         );
 
         assert!(selected.contains("selected"));
@@ -3760,6 +3931,24 @@ AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_RO
         assert_eq!(parsed["totalColumns"], 2);
     }
 
+    /// A directory Excel can always read from.
+    ///
+    /// A read E2E opens the workbook in its OWN osascript invocation, so it does
+    /// not inherit the implicit access macOS grants an app for a file that app
+    /// just wrote. Reading from a temp directory therefore makes Excel raise a
+    /// "please locate this file" grant prompt that no automated run can answer,
+    /// and that prompt then blocks every later Excel automation until a person
+    /// dismisses it. The edit-side E2Es do not hit this: they reopen their
+    /// output inside the same invocation that saved it.
+    #[cfg(target_os = "macos")]
+    fn excel_readable_workspace(label: &str) -> std::path::PathBuf {
+        let root = std::path::Path::new(&std::env::var("HOME").unwrap())
+            .join("Library/Containers/com.microsoft.Excel/Data/Library/Caches/com.microsoft.Excel")
+            .join(format!("ai-os-{label}-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "requires Microsoft Excel and AI_OS_EXCEL_EDIT_FIXTURE"]
@@ -3767,8 +3956,9 @@ AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_RO
         let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
 
         let original = fs::read(&fixture).unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let multi = root.path().join("phase-b-multi-read.xlsx");
+        let root = excel_readable_workspace("phase-b-read");
+        let multi = root.join("phase-b-multi-read.xlsx");
+        let _ = fs::remove_file(&multi);
 
         crate::document::excel::edit_excel_workbook(&json!({
             "source": fixture,
@@ -3788,7 +3978,7 @@ AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_RO
         let multi_path = multi.to_str().unwrap();
 
         let all_command =
-            spreadsheet_read_command_for_selection(multi_path, &SpreadsheetReadSelection::All);
+            spreadsheet_read_command_for_selection(multi_path, &SpreadsheetReadSelection::All, false);
 
         let all_output = Command::new("/bin/bash")
             .arg("-lc")
@@ -3844,6 +4034,7 @@ AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_RO
         let named_command = spreadsheet_read_command_for_selection(
             multi_path,
             &SpreadsheetReadSelection::Named("Summary".to_owned()),
+            false,
         );
 
         let named_output = Command::new("/bin/bash")
@@ -3873,6 +4064,7 @@ AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_RO
         let selected_command = spreadsheet_read_command_for_selection(
             multi_path,
             &SpreadsheetReadSelection::Selected(vec!["Summary".to_owned(), "Sheet1".to_owned()]),
+            false,
         );
 
         let selected_output = Command::new("/bin/bash")
@@ -3900,6 +4092,7 @@ AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_RO
         let missing_command = spreadsheet_read_command_for_selection(
             multi_path,
             &SpreadsheetReadSelection::Named("Missing".to_owned()),
+            false,
         );
 
         let missing_output = Command::new("/bin/bash")
@@ -3926,6 +4119,194 @@ AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_RO
             .as_str()
             .unwrap()
             .contains("Worksheet not found"));
+    }
+
+    #[test]
+    fn spreadsheet_read_include_formulas_is_opt_in_and_typed() {
+        let read = |input: Value| request(SPREADSHEET_READ_ACTION, input);
+
+        // Absent and null both mean the read behaves exactly as it always did.
+        assert!(!spreadsheet_read_include_formulas(&read(json!({"path": "/safe/a.xlsx"}))).unwrap());
+        assert!(!spreadsheet_read_include_formulas(&read(
+            json!({"path": "/safe/a.xlsx", "includeFormulas": null})
+        ))
+        .unwrap());
+        assert!(spreadsheet_read_include_formulas(&read(
+            json!({"path": "/safe/a.xlsx", "includeFormulas": true})
+        ))
+        .unwrap());
+
+        // A truthy string is not a boolean. Accepting it would silently change
+        // the shape of the response for a caller who did not ask.
+        for rejected in [json!("true"), json!(1), json!([]), json!({})] {
+            assert!(spreadsheet_read_include_formulas(&read(
+                json!({"path": "/safe/a.xlsx", "includeFormulas": rejected})
+            ))
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn spreadsheet_read_phase_g_command_asks_excel_for_formulas_only_when_requested() {
+        let without =
+            spreadsheet_read_command_for_selection("/safe/a.xlsx", &SpreadsheetReadSelection::First, false);
+        let with =
+            spreadsheet_read_command_for_selection("/safe/a.xlsx", &SpreadsheetReadSelection::First, true);
+
+        assert!(without.contains("'values'"));
+        assert!(with.contains("'formulas'"));
+
+        // The AppleScript is the same either way; the argv decides. A second
+        // script would be a second thing to keep correct.
+        assert!(without.contains("formula of used range"));
+        assert!(with.contains("formula of used range"));
+        assert!(with.contains("AIOS_FORMULAS_BEGIN"));
+    }
+
+    #[test]
+    fn spreadsheet_read_phase_g_parser_reports_formulas_sparsely() {
+        let history = |text: &str| {
+            json!({"messages":[{
+                "role":"toolResult",
+                "toolName":"exec",
+                "isError":false,
+                "content":[{"text": text}]
+            }]})
+        };
+
+        let with_formulas = "AIOS_WORKSHEET_COUNT=1\nAIOS_WORKSHEETS=Sheet1\nAIOS_SELECTION_TRUNCATED=false\n\
+AIOS_SHEET_BEGIN\nAIOS_SHEET=Sheet1\nAIOS_ROWS=4\nAIOS_COLUMNS=2\nAIOS_TOTAL_ROWS=4\nAIOS_TOTAL_COLUMNS=2\n\
+AIOS_TRUNCATED=false\nAIOS_USED_RANGE=$A$1:$B$4\nAIOS_FORMULA_COUNT=1\nAIOS_FORMULAS_BEGIN\n\
+4\t2\t=SUM(B2:B3)\nAIOS_FORMULAS_END\nAIOS_CONTENT_BEGIN\nName\tScore\nBravo\t2\nAlpha\t1\nTotal\t3\nAIOS_SHEET_END";
+
+        let parsed = spreadsheet_read_output(&history(with_formulas), "/safe/a.xlsx").unwrap();
+
+        assert_eq!(parsed["usedRange"], "$A$1:$B$4");
+        assert_eq!(parsed["formulas"][0]["row"], 4);
+        assert_eq!(parsed["formulas"][0]["column"], 2);
+        assert_eq!(parsed["formulas"][0]["formula"], "=SUM(B2:B3)");
+        assert_eq!(parsed["formulas"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["truncated"], false);
+
+        // Asked for and none present is an empty array, which is not the same
+        // answer as never asked.
+        let none_present = with_formulas
+            .replace("AIOS_FORMULA_COUNT=1", "AIOS_FORMULA_COUNT=0")
+            .replace("4\t2\t=SUM(B2:B3)\n", "");
+        let parsed = spreadsheet_read_output(&history(&none_present), "/safe/a.xlsx").unwrap();
+        assert_eq!(parsed["formulas"], json!([]));
+
+        // Never asked: the key is absent, and the pre-Phase-G protocol still
+        // parses unchanged.
+        let never_asked = "AIOS_WORKSHEET_COUNT=1\nAIOS_WORKSHEETS=Sheet1\nAIOS_SELECTION_TRUNCATED=false\n\
+AIOS_SHEET_BEGIN\nAIOS_SHEET=Sheet1\nAIOS_ROWS=1\nAIOS_COLUMNS=1\nAIOS_TOTAL_ROWS=1\nAIOS_TOTAL_COLUMNS=1\n\
+AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
+        let parsed = spreadsheet_read_output(&history(never_asked), "/safe/a.xlsx").unwrap();
+        assert!(parsed.get("formulas").is_none());
+        assert!(parsed.get("usedRange").is_none());
+        // The trailing newline belongs to the AIOS_SHEET_END delimiter, so the
+        // content ends at the last cell.
+        assert_eq!(parsed["content"], "Name");
+
+        // A declared count that does not match what arrived means the payload
+        // was cut on the way out, and the caller has to be told.
+        let cut = with_formulas.replace("AIOS_FORMULA_COUNT=1", "AIOS_FORMULA_COUNT=9");
+        let parsed = spreadsheet_read_output(&history(&cut), "/safe/a.xlsx").unwrap();
+        assert_eq!(parsed["truncated"], true);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft Excel and AI_OS_EXCEL_EDIT_FIXTURE"]
+    fn spreadsheet_read_phase_g_formula_real_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+
+        let root = excel_readable_workspace("phase-g");
+        let workbook = root.join("phase-g-formula-read.xlsx");
+        let _ = fs::remove_file(&workbook);
+
+        crate::document::excel::edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": workbook,
+            "operations": [
+                {"type":"add_worksheet","name":"Computed"},
+                {"type":"set_cell","sheet":"Computed","row":1,"column":1,"value":"Name"},
+                {"type":"set_cell","sheet":"Computed","row":1,"column":2,"value":"Score"},
+                {"type":"set_cell","sheet":"Computed","row":2,"column":1,"value":"Bravo"},
+                {"type":"set_cell","sheet":"Computed","row":2,"column":2,"value":2},
+                {"type":"set_cell","sheet":"Computed","row":3,"column":1,"value":"Alpha"},
+                {"type":"set_cell","sheet":"Computed","row":3,"column":2,"value":1},
+                {"type":"set_cell","sheet":"Computed","row":4,"column":1,"value":"Total"},
+                {"type":"set_formula","sheet":"Computed","row":4,"column":2,"formula":"=SUM(B2:B3)"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(fs::read(&fixture).unwrap(), original);
+
+        let path = workbook.to_str().unwrap();
+        assert!(
+            workbook.is_file(),
+            "the edit adapter did not leave a workbook at {path}"
+        );
+        eprintln!("phase-g workbook: {path} ({} bytes)", fs::metadata(&workbook).unwrap().len());
+
+        let selection = SpreadsheetReadSelection::Named("Computed".to_owned());
+
+        let run = |include_formulas: bool| {
+            let output = Command::new("/bin/bash")
+                .arg("-lc")
+                .arg(spreadsheet_read_command_for_selection(
+                    path,
+                    &selection,
+                    include_formulas,
+                ))
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            eprintln!("--- raw read output (includeFormulas={include_formulas}) ---\n{text}\n--- end ---");
+            spreadsheet_read_output(
+                &json!({"messages":[{
+                    "role":"toolResult",
+                    "toolName":"exec",
+                    "isError":false,
+                    "content":[{"text": text}]
+                }]}),
+                path,
+            )
+            .unwrap()
+        };
+
+        // Values only: unchanged behaviour, and no formula keys at all.
+        let values = run(false);
+        assert_eq!(values["sheet"], "Computed", "values read returned {values:#?}");
+        assert!(values["content"].as_str().unwrap().contains("Total"));
+
+        // The used range is always known, but formulas are opt-in: no key at
+        // all, rather than an empty list that would read as "none present".
+        assert_eq!(values["usedRange"], "$A$1:$B$4");
+        assert!(values.get("formulas").is_none());
+
+        // Formula-aware: the computed VALUE still comes back in the grid, and
+        // the formula is reported separately at its own coordinates.
+        let formulas = run(true);
+        assert_eq!(formulas["usedRange"], "$A$1:$B$4");
+        assert!(formulas["content"].as_str().unwrap().contains("Total"));
+
+        let reported = formulas["formulas"].as_array().unwrap();
+        assert_eq!(
+            reported.len(),
+            1,
+            "only the cell that actually holds a formula: {reported:?}"
+        );
+        assert_eq!(reported[0]["row"], 4);
+        assert_eq!(reported[0]["column"], 2);
+        assert_eq!(reported[0]["formula"], "=SUM(B2:B3)");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

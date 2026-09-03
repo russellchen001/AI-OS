@@ -39,6 +39,7 @@ step "Phase C structural"        bash verify/verify_p15_excel_phase_c_structural
 step "Phase D formatting"        bash verify/verify_p15_excel_phase_d_formatting.sh
 step "Phase E sort and filter"   bash verify/verify_p15_excel_phase_e_sort_filter.sh
 step "Phase F charts"            bash verify/verify_p15_excel_phase_f_charts.sh
+step "Phase G formula read"      bash verify/verify_p15_excel_phase_g_formula_read.sh
 step "Spreadsheet Create"        bash verify/verify_p15_spreadsheet_create.sh
 step "Spreadsheet Read"          bash verify/verify_p15_spreadsheet_read.sh
 step "Full Rust tests"           cargo test --manifest-path src-tauri/Cargo.toml

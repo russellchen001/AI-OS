@@ -1312,7 +1312,27 @@ on run argv
 
                     set namesBeforeDelete to my worksheetNames(freshWorkbook)
 
-                    delete worksheet sourceName of freshWorkbook
+                    -- Excel raises "will permanently delete this sheet" unless
+                    -- alerts are off, and an unattended run cannot answer a
+                    -- modal: it sits there until killed, and the modal then
+                    -- blocks every later Excel automation. This worked for a
+                    -- long time only because this machine's `display alerts`
+                    -- happened to be false, which made the failure look random
+                    -- when it flipped back to true.
+                    --
+                    -- The previous value is restored on both paths, because
+                    -- leaving a user's Excel with alerts off is not acceptable.
+                    set alertsBeforeDelete to display alerts
+                    set display alerts to false
+
+                    try
+                        delete worksheet sourceName of freshWorkbook
+                        set display alerts to alertsBeforeDelete
+                    on error deleteErrorText number deleteErrorNumber
+                        set display alerts to alertsBeforeDelete
+                        error deleteErrorText number deleteErrorNumber
+                    end try
+
                     set freshWorkbook to active workbook
 
                     if exists worksheet sourceName of freshWorkbook then
