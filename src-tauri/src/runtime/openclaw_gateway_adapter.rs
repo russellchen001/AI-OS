@@ -3,7 +3,7 @@ use super::openclaw_execution::{
     OpenClawExecutionProgress, OpenClawExecutionRequest, OpenClawExecutionResult,
 };
 use crate::document::provider::OfficeProviderId;
-use crate::document::registry::{resolve_local_presentation_provider, resolve_office_provider};
+use crate::document::registry::resolve_office_provider;
 use crate::download::strategy::{resolve_openclaw_download, DownloadExecutionRoute};
 use crate::openclaw::{
     invoke_active_gateway_method, ActiveGatewayFailureKind, ActiveGatewayMethodFailure,
@@ -1385,12 +1385,6 @@ fn map_structured_error(
 }
 
 /// Whether the Microsoft Office provider is installed and therefore preferred.
-fn microsoft_office_available() -> bool {
-    crate::document::registry::office_providers()
-        .into_iter()
-        .any(|provider| provider.id == OfficeProviderId::MicrosoftOffice && provider.available)
-}
-
 fn map_pages_error(error: crate::document::pages::PagesError) -> OpenClawExecutionError {
     OpenClawExecutionError::new(
         if error.invalid_request {
@@ -1434,6 +1428,64 @@ fn is_format(input: &Value, field: &str, expected: &str) -> bool {
     request_format(input, field).as_deref() == Some(expected)
 }
 
+fn map_word_error(error: crate::document::word::WordError) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
+/// Which adapter answers this request.
+///
+/// Routing used to be three different mechanisms: a chain of extension checks
+/// at the top of each entry point, a priority-ordered registry lookup below it,
+/// and an `is Office installed` test in between. They disagreed -- the same
+/// .docx returned Word's shape or plain text depending on an application
+/// neither path used -- and a complete format-aware resolver sat in
+/// `document::resolver` that nothing called. This is that resolver, called.
+fn office_route(
+    capability: &str,
+    input: &Value,
+    field: &str,
+) -> Option<crate::document::resolver::OfficeRoute> {
+    let format = request_format(input, field);
+
+    crate::document::resolver::resolve_office_route(
+        &crate::document::resolver::OfficeRouteRequest {
+            capability,
+            location: crate::document::resolver::OfficeResourceLocation::Local,
+            format: format.as_deref(),
+            preferred_application: None,
+        },
+        &crate::document::resolver::office_candidates(),
+    )
+}
+
+/// The error a caller gets when no installed provider can answer for this file.
+///
+/// It names the format, because "no provider supports document.read" is not
+/// actionable when the real answer is that this machine has nothing that reads
+/// a .pages.
+fn no_route(capability: &str, input: &Value, field: &str) -> OpenClawExecutionError {
+    let format = request_format(input, field);
+
+    OpenClawExecutionError::new(
+        OpenClawExecutionErrorKind::ExecutionFailed,
+        match format {
+            Some(format) => format!(
+                "No available Office Provider supports {capability} for a .{format} file."
+            ),
+            None => format!("No available Office Provider supports {capability}."),
+        },
+        false,
+    )
+}
+
 fn map_keynote_error(error: crate::document::keynote::KeynoteError) -> OpenClawExecutionError {
     OpenClawExecutionError::new(
         if error.invalid_request {
@@ -1450,21 +1502,25 @@ fn execute_presentation_read(
     _invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
-    // PowerPoint has a proven read/create/edit/export adapter that nothing
-    // could reach: this route resolved straight to Apple iWork, so a .pptx was
-    // handed to the Keynote adapter and refused for not being a .key. Dispatch
-    // on the file's own format first, the same way the document and spreadsheet
-    // routes now do.
-    if matches!(
-        request_format(&request.input, "path").as_deref(),
-        Some("pptx") | Some("ppt")
-    ) {
-        // .pptx is a ZIP of XML, so the capability does not depend on
-        // PowerPoint being installed. PowerPoint answers with the highest
-        // fidelity when it is here; the structured layer answers when it is
-        // not. A .ppt is the old binary format and has no structured reading,
-        // so it stays with PowerPoint and fails honestly without it.
-        if is_format(&request.input, "path", "pptx") && !microsoft_office_available() {
+    use crate::document::resolver::OfficeApplication;
+
+    let route = office_route(PRESENTATION_READ_ACTION, &request.input, "path")
+        .ok_or_else(|| no_route(PRESENTATION_READ_ACTION, &request.input, "path"))?;
+
+    match route.application {
+        // PowerPoint reads its own format best; the structured layer reads the
+        // same .pptx when PowerPoint is absent, and a .ppt is the old binary
+        // format that only PowerPoint reads.
+        OfficeApplication::MicrosoftPowerPoint => {
+            let output = crate::document::powerpoint::read_powerpoint_presentation(&request.input)
+                .map_err(map_powerpoint_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS completed the PowerPoint presentation read.".to_owned()),
+            });
+        }
+        OfficeApplication::StructuredFile => {
             let output = crate::document::structured::read_structured_presentation(&request.input)
                 .map_err(map_structured_error)?;
 
@@ -1476,34 +1532,14 @@ fn execute_presentation_read(
                 ),
             });
         }
-
-        let output = crate::document::powerpoint::read_powerpoint_presentation(&request.input)
-            .map_err(map_powerpoint_error)?;
-
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS completed the PowerPoint presentation read.".to_owned()),
-        });
-    }
-
-    let provider =
-        resolve_local_presentation_provider(PRESENTATION_READ_ACTION).ok_or_else(|| {
-            OpenClawExecutionError::new(
+        OfficeApplication::AppleKeynote => {}
+        other => {
+            return Err(OpenClawExecutionError::new(
                 OpenClawExecutionErrorKind::ExecutionFailed,
-                "No executable local Office Provider supports presentation.read.",
+                format!("Office application {other:?} has no presentation.read adapter."),
                 false,
-            )
-        })?;
-
-    if provider.id != OfficeProviderId::AppleIwork {
-        return Err(OpenClawExecutionError::new(
-            OpenClawExecutionErrorKind::ExecutionFailed,
-            format!(
-                "Office Provider {} does not have a native presentation.read adapter.",
-                provider.name
-            ),
-            false,
-        ));
+            ));
+        }
     }
 
     let output = crate::document::keynote::read_keynote_presentation(&request.input)
@@ -1519,34 +1555,30 @@ fn execute_presentation_create(
     _invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
-    if is_format(&request.input, "path", "pptx") {
-        let output = crate::document::powerpoint::create_powerpoint_presentation(&request.input)
-            .map_err(map_powerpoint_error)?;
+    use crate::document::resolver::OfficeApplication;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS created the PowerPoint presentation.".to_owned()),
-        });
-    }
+    let route = office_route(PRESENTATION_CREATE_ACTION, &request.input, "path")
+        .ok_or_else(|| no_route(PRESENTATION_CREATE_ACTION, &request.input, "path"))?;
 
-    let provider =
-        resolve_local_presentation_provider(PRESENTATION_CREATE_ACTION).ok_or_else(|| {
-            OpenClawExecutionError::new(
+    match route.application {
+        OfficeApplication::MicrosoftPowerPoint => {
+            let output =
+                crate::document::powerpoint::create_powerpoint_presentation(&request.input)
+                    .map_err(map_powerpoint_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS created the PowerPoint presentation.".to_owned()),
+            });
+        }
+        OfficeApplication::AppleKeynote => {}
+        other => {
+            return Err(OpenClawExecutionError::new(
                 OpenClawExecutionErrorKind::ExecutionFailed,
-                "No executable local Office Provider supports presentation.create.",
+                format!("Office application {other:?} has no presentation.create adapter."),
                 false,
-            )
-        })?;
-
-    if provider.id != OfficeProviderId::AppleIwork {
-        return Err(OpenClawExecutionError::new(
-            OpenClawExecutionErrorKind::ExecutionFailed,
-            format!(
-                "Office Provider {} does not have a native presentation.create adapter.",
-                provider.name
-            ),
-            false,
-        ));
+            ));
+        }
     }
 
     let output = crate::document::keynote::create_keynote_presentation(&request.input)
@@ -1562,29 +1594,43 @@ fn execute_spreadsheet_create(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
-    if is_format(&request.input, "path", "numbers") {
-        let output = crate::document::numbers::create_numbers_spreadsheet(&request.input)
-            .map_err(map_numbers_error)?;
+    use crate::document::resolver::OfficeApplication;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS created the Numbers spreadsheet.".to_owned()),
-        });
-    }
+    let route = office_route(SPREADSHEET_CREATE_ACTION, &request.input, "path")
+        .ok_or_else(|| no_route(SPREADSHEET_CREATE_ACTION, &request.input, "path"))?;
 
-    // Same floor as the read side: Excel writes its own format with the highest
-    // fidelity, but its absence must not remove the capability. The workbook the
-    // structured layer writes is proven to open in Excel.
-    if is_format(&request.input, "path", "xlsx") && !microsoft_office_available() {
-        let output = crate::document::structured::create_structured_spreadsheet(&request.input)
-            .map_err(map_structured_error)?;
+    match route.application {
+        OfficeApplication::AppleNumbers => {
+            let output = crate::document::numbers::create_numbers_spreadsheet(&request.input)
+                .map_err(map_numbers_error)?;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some(
-                "AI-OS wrote the spreadsheet directly to the file, without Excel.".to_owned(),
-            ),
-        });
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS created the Numbers spreadsheet.".to_owned()),
+            });
+        }
+        // Same floor as the read side: Excel writes its own format with the
+        // highest fidelity, but its absence must not remove the capability. The
+        // workbook the structured layer writes is proven to open in Excel.
+        OfficeApplication::StructuredFile => {
+            let output = crate::document::structured::create_structured_spreadsheet(&request.input)
+                .map_err(map_structured_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some(
+                    "AI-OS wrote the spreadsheet directly to the file, without Excel.".to_owned(),
+                ),
+            });
+        }
+        OfficeApplication::MicrosoftExcel => {}
+        other => {
+            return Err(OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ExecutionFailed,
+                format!("Office application {other:?} has no spreadsheet.create adapter."),
+                false,
+            ));
+        }
     }
 
     let (path, session_key, run_id) = start_spreadsheet_create(invoker, request)?;
@@ -1594,23 +1640,25 @@ fn execute_spreadsheet_create(
 fn execute_spreadsheet_edit(
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
-    let provider = resolve_office_provider(SPREADSHEET_EDIT_ACTION).ok_or_else(|| {
-        OpenClawExecutionError::new(
-            OpenClawExecutionErrorKind::ExecutionFailed,
-            "No available Office Provider supports spreadsheet.edit.",
-            false,
-        )
-    })?;
-    if provider.id != OfficeProviderId::MicrosoftOffice {
+    use crate::document::resolver::OfficeApplication;
+
+    // The one Office capability with a single adapter: editing a workbook in
+    // place needs a spreadsheet application, and the structured layer can only
+    // read and create. It says so rather than pretending.
+    let route = office_route(SPREADSHEET_EDIT_ACTION, &request.input, "source")
+        .ok_or_else(|| no_route(SPREADSHEET_EDIT_ACTION, &request.input, "source"))?;
+
+    if route.application != OfficeApplication::MicrosoftExcel {
         return Err(OpenClawExecutionError::new(
             OpenClawExecutionErrorKind::ExecutionFailed,
             format!(
-                "Office Provider {} does not have a spreadsheet.edit adapter.",
-                provider.name
+                "Office application {:?} has no spreadsheet.edit adapter.",
+                route.application
             ),
             false,
         ));
     }
+
     let output = crate::document::excel::edit_excel_workbook(&request.input).map_err(|error| {
         OpenClawExecutionError::new(
             if error.invalid_request {
@@ -1632,31 +1680,46 @@ fn execute_spreadsheet_read(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
-    if is_format(&request.input, "path", "numbers") {
-        let output = crate::document::numbers::read_numbers_spreadsheet(&request.input)
-            .map_err(map_numbers_error)?;
+    use crate::document::resolver::OfficeApplication;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS completed the Numbers spreadsheet read.".to_owned()),
-        });
-    }
+    let route = office_route(SPREADSHEET_READ_ACTION, &request.input, "path")
+        .ok_or_else(|| no_route(SPREADSHEET_READ_ACTION, &request.input, "path"))?;
 
-    // Excel reads its own format with the highest fidelity, so it is preferred
-    // whenever it is installed. When it is not, the capability does not
-    // disappear: .xlsx is a ZIP of XML and the structured layer reads the file
-    // directly, with no application involved. This is the difference between an
-    // Office capability and a set of per-application integrations.
-    if is_format(&request.input, "path", "xlsx") && !microsoft_office_available() {
-        let output = crate::document::structured::read_structured_spreadsheet(&request.input)
-            .map_err(map_structured_error)?;
+    match route.application {
+        OfficeApplication::AppleNumbers => {
+            let output = crate::document::numbers::read_numbers_spreadsheet(&request.input)
+                .map_err(map_numbers_error)?;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some(
-                "AI-OS read the spreadsheet directly from the file, without Excel.".to_owned(),
-            ),
-        });
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS completed the Numbers spreadsheet read.".to_owned()),
+            });
+        }
+        // Excel reads its own format with the highest fidelity -- it is the only
+        // path that resolves formulas -- so it is preferred whenever it is
+        // installed. When it is not, the capability does not disappear: .xlsx is
+        // a ZIP of XML and the structured layer reads the file directly. This is
+        // the difference between an Office capability and a set of
+        // per-application integrations.
+        OfficeApplication::StructuredFile => {
+            let output = crate::document::structured::read_structured_spreadsheet(&request.input)
+                .map_err(map_structured_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some(
+                    "AI-OS read the spreadsheet directly from the file, without Excel.".to_owned(),
+                ),
+            });
+        }
+        OfficeApplication::MicrosoftExcel => {}
+        other => {
+            return Err(OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ExecutionFailed,
+                format!("Office application {other:?} has no spreadsheet.read adapter."),
+                false,
+            ));
+        }
     }
 
     let (path, session_key, run_id) = start_spreadsheet_read(invoker, request)?;
@@ -2972,46 +3035,57 @@ fn execute_document_read(
         ));
     }
 
-    if is_format(&request.input, "path", "pages") {
-        let output = crate::document::pages::read_pages_document(&request.input)
-            .map_err(map_pages_error)?;
+    use crate::document::resolver::OfficeApplication;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS completed the Pages document read.".to_owned()),
-        });
-    }
+    let route = office_route(DOCUMENT_READ_ACTION, &request.input, "path")
+        .ok_or_else(|| no_route(DOCUMENT_READ_ACTION, &request.input, "path"))?;
 
-    // The same reasoning as the spreadsheet route: Word reads its own format
-    // best, but .docx is a ZIP of XML, so document.read does not disappear on a
-    // machine without Word.
-    if is_format(&request.input, "path", "docx") && !microsoft_office_available() {
-        let output = crate::document::structured::read_structured_document(&request.input)
-            .map_err(map_structured_error)?;
+    match route.application {
+        OfficeApplication::ApplePages => {
+            let output = crate::document::pages::read_pages_document(&request.input)
+                .map_err(map_pages_error)?;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS read the document directly from the file, without Word.".to_owned()),
-        });
-    }
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS completed the Pages document read.".to_owned()),
+            });
+        }
+        // Word reads its own format with the highest fidelity, so it answers
+        // whenever it is installed.
+        OfficeApplication::MicrosoftWord => {
+            let output = crate::document::word::read_word_document(&request.input)
+                .map_err(map_word_error)?;
 
-    let provider = resolve_office_provider(DOCUMENT_READ_ACTION).ok_or_else(|| {
-        OpenClawExecutionError::new(
-            OpenClawExecutionErrorKind::ExecutionFailed,
-            "No available Office Provider supports document.read.",
-            false,
-        )
-    })?;
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS completed the Word document read.".to_owned()),
+            });
+        }
+        // And when it is not, the capability does not disappear or change
+        // shape: .docx is a ZIP of XML, and this returns the same fields Word
+        // would have.
+        OfficeApplication::StructuredFile => {
+            let output = crate::document::structured::read_structured_document(&request.input)
+                .map_err(map_structured_error)?;
 
-    if provider.id != OfficeProviderId::MacosNative {
-        return Err(OpenClawExecutionError::new(
-            OpenClawExecutionErrorKind::ExecutionFailed,
-            format!(
-                "Office Provider {} does not yet have a document.read adapter.",
-                provider.name
-            ),
-            false,
-        ));
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some(
+                    "AI-OS read the document directly from the file, without Word.".to_owned(),
+                ),
+            });
+        }
+        // The floor: the only path that reads the old binary .doc with no Word
+        // installed. It converts to plain text, which is why it is an import
+        // route and never outranks an application on its own format.
+        OfficeApplication::MacosNative => {}
+        other => {
+            return Err(OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ExecutionFailed,
+                format!("Office application {other:?} has no document.read adapter."),
+                false,
+            ));
+        }
     }
 
     let extension = document_path
@@ -3019,10 +3093,10 @@ fn execute_document_read(
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    if !matches!(extension.as_str(), "doc" | "docx") {
+    if !matches!(extension.as_str(), "doc" | "docx" | "rtf" | "txt") {
         return Err(OpenClawExecutionError::new(
             OpenClawExecutionErrorKind::InvalidRequest,
-            "document.read currently supports DOC and DOCX files",
+            "document.read through macOS conversion supports DOC, DOCX, RTF and TXT files",
             false,
         ));
     }
@@ -5138,6 +5212,12 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
     }
 
     #[test]
+    /// The floor, exercised on a format only it claims.
+    ///
+    /// A `.docx` here would route to Word on a machine that has Word and to the
+    /// structured layer on one that does not, so the assertion would depend on
+    /// the machine running the test rather than on the code. `.rtf` is read by
+    /// nothing else, so this test says the same thing everywhere.
     fn document_read_uses_native_textutil_and_returns_text_result() {
         let history = json!({"messages": [{
             "role": "toolResult",
@@ -5159,7 +5239,7 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
             &request(
                 "document.read",
                 json!({
-                    "path": "/safe/example/read me.docx"
+                    "path": "/safe/example/read me.rtf"
                 }),
             ),
             &mut |_| {},
@@ -5170,7 +5250,7 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
         assert_eq!(
             result.output,
             json!({
-                "path": "/safe/example/read me.docx",
+                "path": "/safe/example/read me.rtf",
                 "status": "text",
                 "content": "Document body\n",
             })

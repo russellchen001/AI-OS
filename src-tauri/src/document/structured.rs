@@ -1782,17 +1782,24 @@ mod tests {
         0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
-    /// A directory of this test's own, removed when it finishes.
+    /// A directory the application can reach, removed when the test finishes.
+    ///
+    /// A sandboxed Office application has implicit access to what it wrote
+    /// itself and to its own container, and to nothing else. Handing it a file
+    /// from a temp directory -- a source document to open, or an image to
+    /// insert -- makes macOS raise a "grant access to this file" panel that no
+    /// automated run can answer, and that panel then blocks every later
+    /// automation of that application until a person dismisses it. It cost this
+    /// work an Excel timeout and then a PowerPoint crash before it was pinned
+    /// down. The application's own container is the one place that never asks.
     #[cfg(target_os = "macos")]
-    fn scratch(label: &str) -> std::path::PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "ai-os-structured-{label}-{}-{stamp}",
-            std::process::id()
-        ));
+    fn scratch(bundle_id: &str, label: &str) -> std::path::PathBuf {
+        let root = std::path::Path::new(&std::env::var("HOME").unwrap())
+            .join("Library/Containers")
+            .join(bundle_id)
+            .join("Data/Library/Caches")
+            .join(bundle_id)
+            .join(format!("ai-os-structured-{label}-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         root
     }
@@ -1807,7 +1814,7 @@ mod tests {
     #[test]
     #[ignore = "requires Microsoft Word"]
     fn structured_and_word_agree_on_the_same_document() {
-        let root = scratch("word-agreement");
+        let root = scratch("com.microsoft.Word", "word-agreement");
         let source = root.join("Structured-Word-Input.docx");
         let document = root.join("Structured-Word-Agreement.docx");
         let image = root.join("safe-test-image.png");
@@ -1919,7 +1926,7 @@ mod tests {
     #[test]
     #[ignore = "requires Microsoft PowerPoint"]
     fn structured_and_powerpoint_agree_on_the_same_presentation() {
-        let root = scratch("powerpoint-agreement");
+        let root = scratch("com.microsoft.Powerpoint", "powerpoint-agreement");
         let deck = root.join("Structured-PowerPoint-Agreement.pptx");
         let image = root.join("safe-test-image.png");
         std::fs::write(&image, SAFE_TEST_PNG).unwrap();
@@ -1969,23 +1976,6 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// A directory Excel can always read from.
-    ///
-    /// This file is written with no application at all, so Excel has no
-    /// implicit access to it. Opening it from a temp directory makes Excel
-    /// raise a "please locate this file" grant prompt that no automated run
-    /// can answer, and that prompt then blocks every later Excel automation
-    /// until a person dismisses it. Excel's own container is inside its
-    /// sandbox, so a workbook placed there needs no grant.
-    #[cfg(target_os = "macos")]
-    fn excel_readable_workspace(label: &str) -> std::path::PathBuf {
-        let root = std::path::Path::new(&std::env::var("HOME").unwrap())
-            .join("Library/Containers/com.microsoft.Excel/Data/Library/Caches/com.microsoft.Excel")
-            .join(format!("ai-os-{label}-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
-
     /// The other direction, and the one that decides whether this layer can be
     /// trusted to WRITE: a workbook produced with no application at all has to
     /// open in Excel and read back as what was written.
@@ -1996,7 +1986,7 @@ mod tests {
     #[test]
     #[ignore = "requires Microsoft Excel"]
     fn excel_can_open_what_the_structured_layer_wrote() {
-        let root = excel_readable_workspace("structured-write");
+        let root = scratch("com.microsoft.Excel", "excel-write");
         let workbook = root.join("written-without-excel.xlsx");
         let workbook_path = workbook.to_str().unwrap();
 
