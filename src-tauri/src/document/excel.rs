@@ -1102,6 +1102,25 @@ on listContains(sourceList, targetText)
     return false
 end listContains
 
+-- Does any operation AFTER this one move content on the same worksheet?
+--
+-- Displacement has to be answered per operation, not per worksheet. Asking only
+-- "was this sheet ever sorted" marks a format applied AFTER the sort as
+-- displaced, which silently skips a check that would have held -- exactly the
+-- quiet widening into "skip validation whenever anything happened" that this
+-- rule must not become.
+on movesAfter(recordList, startIndex, sheetName, movingKinds)
+    repeat with laterIndex from (startIndex + 1) to (count of recordList)
+        set laterFields to my splitText(contents of item laterIndex of recordList, ASCII character 31)
+
+        if my listContains(movingKinds, item 1 of laterFields) then
+            if (item 2 of laterFields) is sheetName then return true
+        end if
+    end repeat
+
+    return false
+end movesAfter
+
 on worksheetNames(targetWorkbook)
     tell application "Microsoft Excel"
         set resultList to {}
@@ -1606,38 +1625,6 @@ on run argv
             set ownsWorkbook to true
             set validationText to ""
 
-            -- An operation that moves content makes an address written earlier
-            -- on that worksheet stale by the time the saved copy is reopened.
-            -- Re-asserting it would report a move that worked as a failed
-            -- write. Those worksheets are collected first so the branches below
-            -- can say the address was displaced instead of pretending it was
-            -- not; the moving operations' own probes still read real content
-            -- back, so the earlier writes remain evidenced.
-            --
-            -- Two sets, because the two kinds of movement invalidate different
-            -- things. A structural change shifts everything after it, so row
-            -- and column INDEXES move too and every address- or index-based
-            -- probe is stale. A sort only reorders rows within its own range:
-            -- values and the cell formatting that travels with them move, but
-            -- row and column indexes do not, so line measures and filter row
-            -- probes still hold.
-            set structurallyChangedSheets to {}
-            set reorderedSheets to {}
-            repeat with scanRecord in operationRecords
-                set scanFields to my splitText(contents of scanRecord, ASCII character 31)
-                set scanKind to item 1 of scanFields
-                set scanSheet to item 2 of scanFields
-                if scanKind is "insert_row" or scanKind is "delete_row" or scanKind is "insert_column" or scanKind is "delete_column" then
-                    if not my listContains(structurallyChangedSheets, scanSheet) then
-                        set end of structurallyChangedSheets to scanSheet
-                    end if
-                else if scanKind is "sort_range" then
-                    if not my listContains(reorderedSheets, scanSheet) then
-                        set end of reorderedSheets to scanSheet
-                    end if
-                end if
-            end repeat
-
             set reopenedWorksheetNames to my worksheetNames(validationWorkbook)
 
             if not my sameNameSet(finalWorksheetNames, reopenedWorksheetNames) then
@@ -1646,9 +1633,20 @@ on run argv
 
             set validationText to validationText & "final_worksheets=validated" & (ASCII character 30)
 
-            repeat with encodedRecord in operationRecords
-                set fields to my splitText(contents of encodedRecord, ASCII character 31)
+            repeat with recordIndex from 1 to count of operationRecords
+                set fields to my splitText(contents of item recordIndex of operationRecords, ASCII character 31)
                 set operationKind to item 1 of fields
+                set recordSheet to item 2 of fields
+
+                -- Two answers, because the two kinds of movement invalidate
+                -- different things. A structural change shifts everything after
+                -- it, so row and column INDEXES move too and every address- or
+                -- index-based probe is stale. A sort only reorders rows within
+                -- its own range: values and the cell formatting that travels
+                -- with them move, but indexes do not, so line measures and
+                -- filter row probes still hold.
+                set structuralAfter to my movesAfter(operationRecords, recordIndex, recordSheet, {"insert_row", "delete_row", "insert_column", "delete_column"})
+                set reorderAfter to my movesAfter(operationRecords, recordIndex, recordSheet, {"sort_range"})
 
                 if operationKind is "set_cell" then
                     set sheetName to item 2 of fields
@@ -1656,7 +1654,7 @@ on run argv
                     set scalarKind to item 4 of fields
                     set expectedText to item 5 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) or my listContains(reorderedSheets, sheetName) then
+                    if structuralAfter or reorderAfter then
                         set validationText to validationText & "set_cell:" & sheetName & "!" & cellAddress & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
@@ -1685,7 +1683,7 @@ on run argv
                     set cellAddress to item 3 of fields
                     set expectedFormula to item 4 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) or my listContains(reorderedSheets, sheetName) then
+                    if structuralAfter or reorderAfter then
                         set validationText to validationText & "set_formula:" & sheetName & "!" & cellAddress & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
@@ -1707,7 +1705,7 @@ on run argv
                     set cellAddress to item 3 of fields
                     set neighborAddress to item 4 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) or my listContains(reorderedSheets, sheetName) then
+                    if structuralAfter or reorderAfter then
                         set validationText to validationText & "clear_cell:" & sheetName & "!" & cellAddress & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
@@ -1751,7 +1749,7 @@ on run argv
                     set fillText to item 9 of fields
                     set numberText to item 10 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) or my listContains(reorderedSheets, sheetName) then
+                    if structuralAfter or reorderAfter then
                         set validationText to validationText & "format_cells:" & sheetName & "!" & rangeReference & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
@@ -1814,7 +1812,7 @@ on run argv
                     set lineIndexText to item 3 of fields
                     set measureText to item 4 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) then
+                    if structuralAfter then
                         set validationText to validationText & operationKind & ":" & sheetName & "!" & lineIndexText & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
@@ -1846,7 +1844,7 @@ on run argv
                     set firstProbe to item 7 of fields
                     set secondProbe to item 8 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) then
+                    if structuralAfter then
                         set validationText to validationText & "sort_range:" & sheetName & "!" & rangeReference & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         tell worksheet sheetName of validationWorkbook
@@ -1863,7 +1861,7 @@ on run argv
                     set firstRowText to item 6 of fields
                     set lastRowText to item 7 of fields
 
-                    if my listContains(structurallyChangedSheets, sheetName) then
+                    if structuralAfter then
                         set validationText to validationText & operationKind & ":" & sheetName & "!" & rangeReference & "=displaced-by-moved-content" & (ASCII character 30)
                     else if exists worksheet sheetName of validationWorkbook then
                         set filterSheet to worksheet sheetName of validationWorkbook
@@ -2359,8 +2357,8 @@ mod tests {
 
         // A filter only hides rows, so nothing moved and the ordinary
         // address-based validation still applies on those worksheets. This is
-        // the assertion that keeps the displacement rule from quietly widening
-        // into "skip validation whenever anything happened".
+        // one of the two assertions that keep the displacement rule from
+        // quietly widening into "skip validation whenever anything happened".
         assert_eq!(entry("set_cell:Filtered!A2="), "set_cell:Filtered!A2=Bravo");
         assert_eq!(entry("set_cell:Cleared!A3="), "set_cell:Cleared!A3=Alpha");
     }

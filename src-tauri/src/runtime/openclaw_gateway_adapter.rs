@@ -3949,6 +3949,216 @@ AIOS_SHEET_BEGIN\nAIOS_SHEET=Summary\nAIOS_ROWS=2\nAIOS_COLUMNS=2\nAIOS_TOTAL_RO
         root
     }
 
+    /// The realistic workflow: build a sales sheet the way someone actually
+    /// would, then read it back through the OTHER capability.
+    ///
+    /// This is the only test that crosses the two halves of the Excel work. The
+    /// per-phase E2Es validate the edit adapter against its own reopened copy;
+    /// this one proves the file is also correct to a separate `spreadsheet.read`
+    /// invocation, which is what a caller actually gets.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft Excel and AI_OS_EXCEL_EDIT_FIXTURE"]
+    fn excel_phase_h_realistic_workflow_real_e2e() {
+        let fixture = std::env::var("AI_OS_EXCEL_EDIT_FIXTURE").expect("preserved fixture path");
+
+        let original = fs::read(&fixture).unwrap();
+        let root = excel_readable_workspace("phase-h");
+        let workbook = root.join("phase-h-sales.xlsx");
+        let _ = fs::remove_file(&workbook);
+
+        // Region  Q1  Q2  Total
+        // North   10  20  =SUM(B2:C2) -> 30
+        // South   50   5  =SUM(B3:C3) -> 55
+        // East    30  30  =SUM(B4:C4) -> 60
+        //
+        // Then the ordinary things someone does next: sort by the total, make
+        // the header stand out, give the numbers a format, widen the label
+        // column, chart it, and filter to the rows that matter.
+        //
+        // The order is deliberate. Sorting moves cells, so everything written
+        // before it is reported as displaced, and everything that has to be
+        // asserted at a fixed address comes after it.
+        let result = crate::document::excel::edit_excel_workbook(&json!({
+            "source": fixture,
+            "destination": workbook,
+            "operations": [
+                {"type":"add_worksheet","name":"Sales"},
+
+                {"type":"set_cell","sheet":"Sales","row":1,"column":1,"value":"Region"},
+                {"type":"set_cell","sheet":"Sales","row":1,"column":2,"value":"Q1"},
+                {"type":"set_cell","sheet":"Sales","row":1,"column":3,"value":"Q2"},
+                {"type":"set_cell","sheet":"Sales","row":1,"column":4,"value":"Total"},
+
+                {"type":"set_cell","sheet":"Sales","row":2,"column":1,"value":"North"},
+                {"type":"set_cell","sheet":"Sales","row":2,"column":2,"value":10},
+                {"type":"set_cell","sheet":"Sales","row":2,"column":3,"value":20},
+                {"type":"set_formula","sheet":"Sales","row":2,"column":4,"formula":"=SUM(B2:C2)"},
+
+                {"type":"set_cell","sheet":"Sales","row":3,"column":1,"value":"South"},
+                {"type":"set_cell","sheet":"Sales","row":3,"column":2,"value":50},
+                {"type":"set_cell","sheet":"Sales","row":3,"column":3,"value":5},
+                {"type":"set_formula","sheet":"Sales","row":3,"column":4,"formula":"=SUM(B3:C3)"},
+
+                {"type":"set_cell","sheet":"Sales","row":4,"column":1,"value":"East"},
+                {"type":"set_cell","sheet":"Sales","row":4,"column":2,"value":30},
+                {"type":"set_cell","sheet":"Sales","row":4,"column":3,"value":30},
+                {"type":"set_formula","sheet":"Sales","row":4,"column":4,"formula":"=SUM(B4:C4)"},
+
+                {"type":"sort_range","sheet":"Sales",
+                 "startRow":1,"startColumn":1,"endRow":4,"endColumn":4,
+                 "keyColumn":4,"order":"descending","hasHeader":true},
+
+                {"type":"format_cells","sheet":"Sales",
+                 "startRow":1,"startColumn":1,"endRow":1,"endColumn":4,
+                 "bold":true,"fillColorIndex":15},
+                {"type":"format_cells","sheet":"Sales",
+                 "startRow":2,"startColumn":2,"endRow":4,"endColumn":4,
+                 "numberFormat":"#,##0"},
+                {"type":"set_column_width","sheet":"Sales","column":1,"width":18},
+
+                {"type":"add_chart","sheet":"Sales","startRow":1,"startColumn":1,
+                 "endRow":4,"endColumn":2,"chartType":"column","name":"Q1ByRegion"},
+
+                {"type":"apply_filter","sheet":"Sales",
+                 "startRow":1,"startColumn":1,"endRow":4,"endColumn":4,
+                 "field":4,"criteria":">40"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(result["operationResult"]["status"], "edited-copy");
+        assert_eq!(
+            fs::read(&fixture).unwrap(),
+            original,
+            "the source workbook must be preserved"
+        );
+
+        let validation: Vec<String> = result["validation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect();
+
+        let entry = |prefix: &str| -> String {
+            validation
+                .iter()
+                .find(|value| value.starts_with(prefix))
+                .unwrap_or_else(|| panic!("missing {prefix} in {validation:#?}"))
+                .clone()
+        };
+
+        // Sorting descending by Total puts East (60) above South (55). The probe
+        // reads the key column, whose values are numbers, and Excel renders those
+        // with a decimal -- so this checks the ordering, not the rendering.
+        let sorted = entry("sort_range:Sales!A1:D4:");
+        assert!(
+            sorted.contains("D2=60") && sorted.contains("D3=55"),
+            "descending sort by Total did not reorder the rows: {sorted}"
+        );
+
+        // Everything written before the sort moved with it.
+        assert!(
+            validation
+                .iter()
+                .any(|value| value == "set_cell:Sales!A2=displaced-by-moved-content"),
+            "writes made before a sort must be reported as displaced: {validation:#?}"
+        );
+
+        // Everything after the sort is asserted at a fixed address.
+        assert_eq!(
+            entry("format_cells:Sales!A1:D1:"),
+            "format_cells:Sales!A1:D1:bold=true;fill=15;"
+        );
+        assert_eq!(
+            entry("format_cells:Sales!B2:D4:"),
+            "format_cells:Sales!B2:D4:number=#,##0;"
+        );
+
+        let width = entry("set_column_width:Sales!1=");
+        let measured: f64 = width
+            .trim_start_matches("set_column_width:Sales!1=")
+            .parse()
+            .unwrap_or_else(|_| panic!("unparseable width in {width}"));
+        assert!((measured - 18.0).abs() <= 0.5, "{width} is not about 18");
+
+        assert_eq!(
+            entry("add_chart:Sales!A1:B4:"),
+            "add_chart:Sales!A1:B4:name=Q1ByRegion,type=column clustered,series=1,\
+f1==SERIES(Sales!$B$1,Sales!$A$2:$A$4,Sales!$B$2:$B$4,1)"
+        );
+
+        // Total > 40 keeps East (60) in row 2 and hides North (30) in row 4.
+        assert_eq!(
+            entry("apply_filter:Sales!A1:D4:"),
+            "apply_filter:Sales!A1:D4:mode=true,row2hidden=false,row4hidden=true"
+        );
+
+        // Now the part no per-phase test covers: read the finished file back
+        // through the other capability, in its own osascript invocation.
+        let path = workbook.to_str().unwrap();
+        let output = Command::new("/bin/bash")
+            .arg("-lc")
+            .arg(spreadsheet_read_command_for_selection(
+                path,
+                &SpreadsheetReadSelection::Named("Sales".to_owned()),
+                true,
+            ))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        eprintln!("--- phase-h read ---\n{text}\n--- end ---");
+
+        let read = spreadsheet_read_output(
+            &json!({"messages":[{
+                "role":"toolResult",
+                "toolName":"exec",
+                "isError":false,
+                "content":[{"text": text}]
+            }]}),
+            path,
+        )
+        .unwrap();
+
+        assert_eq!(read["sheet"], "Sales");
+        assert_eq!(read["usedRange"], "$A$1:$D$4");
+
+        // The sort is visible in the file itself, not just in the adapter's own
+        // report: the rows come back in descending order of Total.
+        let content = read["content"].as_str().unwrap();
+        let position = |needle: &str| {
+            content
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} missing from:\n{content}"))
+        };
+        assert!(
+            position("East") < position("South") && position("South") < position("North"),
+            "rows are not in descending Total order:\n{content}"
+        );
+
+        // A filtered row is hidden, not deleted: North is still in the file.
+        assert!(content.contains("North"));
+
+        // Excel rewrote each formula's relative references as the sort moved its
+        // row, so the totals still add up their own row rather than the row they
+        // were written on.
+        let formulas = read["formulas"].as_array().unwrap();
+        assert_eq!(formulas.len(), 3, "expected one total per region: {formulas:#?}");
+        for (index, expected_row) in [2u64, 3, 4].into_iter().enumerate() {
+            assert_eq!(formulas[index]["row"], expected_row);
+            assert_eq!(formulas[index]["column"], 4);
+            assert_eq!(
+                formulas[index]["formula"],
+                format!("=SUM(B{expected_row}:C{expected_row})")
+            );
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "requires Microsoft Excel and AI_OS_EXCEL_EDIT_FIXTURE"]
