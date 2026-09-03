@@ -32,6 +32,7 @@ step() {
   fi
 }
 
+step "Structured files"          bash verify/verify_p15_structured_office_files.sh
 step "Phase A"                   bash verify/verify_p15_excel_phase_a.sh
 step "Phase B mutation"          bash verify/verify_p15_excel_phase_b_mutation.sh
 step "Phase B read"              bash verify/verify_p15_excel_phase_b_read.sh

@@ -1370,6 +1370,27 @@ fn map_powerpoint_error(
     )
 }
 
+fn map_structured_error(
+    error: crate::document::structured::StructuredError,
+) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
+/// Whether the Microsoft Office provider is installed and therefore preferred.
+fn microsoft_office_available() -> bool {
+    crate::document::registry::office_providers()
+        .into_iter()
+        .any(|provider| provider.id == OfficeProviderId::MicrosoftOffice && provider.available)
+}
+
 fn map_pages_error(error: crate::document::pages::PagesError) -> OpenClawExecutionError {
     OpenClawExecutionError::new(
         if error.invalid_request {
@@ -1585,6 +1606,23 @@ fn execute_spreadsheet_read(
         return Ok(OpenClawExecutionResult {
             output,
             summary: Some("AI-OS completed the Numbers spreadsheet read.".to_owned()),
+        });
+    }
+
+    // Excel reads its own format with the highest fidelity, so it is preferred
+    // whenever it is installed. When it is not, the capability does not
+    // disappear: .xlsx is a ZIP of XML and the structured layer reads the file
+    // directly, with no application involved. This is the difference between an
+    // Office capability and a set of per-application integrations.
+    if is_format(&request.input, "path", "xlsx") && !microsoft_office_available() {
+        let output = crate::document::structured::read_structured_spreadsheet(&request.input)
+            .map_err(map_structured_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some(
+                "AI-OS read the spreadsheet directly from the file, without Excel.".to_owned(),
+            ),
         });
     }
 

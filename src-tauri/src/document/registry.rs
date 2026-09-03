@@ -35,12 +35,16 @@ const GRAPH_CAPABILITIES: &[&str] = &[
     "spreadsheet.create",
     "spreadsheet.update",
 ];
-const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &[
-    "document.read",
-    "document.create",
-    "spreadsheet.read",
-    "spreadsheet.create",
-];
+/// What the structured file layer can actually execute today.
+///
+/// This provider reads the file itself -- .xlsx is a ZIP of XML -- so it needs
+/// no application and is available on every machine. That is what makes Office
+/// a capability rather than a set of per-application integrations: when no
+/// spreadsheet application is installed, this still answers.
+///
+/// It declares only `spreadsheet.read` because that is all that is implemented.
+/// It previously declared four capabilities with no implementation at all.
+const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &["spreadsheet.read"];
 
 fn app_exists(path: &str) -> bool {
     std::path::Path::new(path).exists()
@@ -64,9 +68,13 @@ pub(crate) fn office_providers() -> Vec<OfficeProvider> {
             id: OfficeProviderId::LocalStructured,
             name: "Local Structured File",
             local: true,
-            priority: 0,
+            // Lowest preference of the local providers: an installed
+            // application reads its own format with higher fidelity. This is
+            // the floor that keeps the capability from disappearing when none
+            // of them is installed.
+            priority: 900,
             capabilities: LOCAL_STRUCTURED_CAPABILITIES,
-            available: false,
+            available: true,
         },
         OfficeProvider {
             id: OfficeProviderId::MacosNative,
@@ -166,7 +174,45 @@ mod tests {
         assert_eq!(providers[0].id, OfficeProviderId::MicrosoftGraph);
         assert_eq!(providers[1].id, OfficeProviderId::LocalStructured);
         assert!(!providers[0].available);
-        assert!(!providers[1].available);
+
+        let structured = &providers[1];
+
+        // The structured layer reads the file itself, so it is available on
+        // every machine -- this is the floor that keeps a spreadsheet capability
+        // from disappearing when no spreadsheet application is installed.
+        assert!(structured.available);
+        assert!(structured.local);
+        assert!(structured.supports("spreadsheet.read"));
+
+        // It must never outrank an installed application, which reads its own
+        // format with higher fidelity.
+        for application in [
+            OfficeProviderId::MicrosoftOffice,
+            OfficeProviderId::AppleIwork,
+            OfficeProviderId::MacosNative,
+        ] {
+            let candidate = providers
+                .iter()
+                .find(|provider| provider.id == application)
+                .unwrap();
+            assert!(
+                candidate.priority < structured.priority,
+                "{application:?} must be preferred over the structured layer"
+            );
+        }
+
+        // And it declares nothing it cannot execute.
+        for unimplemented in [
+            "document.read",
+            "document.create",
+            "spreadsheet.create",
+            "spreadsheet.edit",
+        ] {
+            assert!(
+                !structured.supports(unimplemented),
+                "the structured layer does not implement {unimplemented} yet"
+            );
+        }
     }
 
     #[test]

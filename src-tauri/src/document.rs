@@ -6,6 +6,7 @@ pub(crate) mod powerpoint;
 pub(crate) mod provider;
 pub(crate) mod registry;
 pub(crate) mod resolver;
+pub(crate) mod structured;
 pub(crate) mod word;
 
 use serde::{Deserialize, Serialize};
