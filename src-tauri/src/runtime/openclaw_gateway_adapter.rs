@@ -1356,6 +1356,20 @@ fn finish_spreadsheet_create(
     ))
 }
 
+fn map_powerpoint_error(
+    error: crate::document::powerpoint::PowerPointError,
+) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
 fn map_pages_error(error: crate::document::pages::PagesError) -> OpenClawExecutionError {
     OpenClawExecutionError::new(
         if error.invalid_request {
@@ -1415,6 +1429,24 @@ fn execute_presentation_read(
     _invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    // PowerPoint has a proven read/create/edit/export adapter that nothing
+    // could reach: this route resolved straight to Apple iWork, so a .pptx was
+    // handed to the Keynote adapter and refused for not being a .key. Dispatch
+    // on the file's own format first, the same way the document and spreadsheet
+    // routes now do.
+    if matches!(
+        request_format(&request.input, "path").as_deref(),
+        Some("pptx") | Some("ppt")
+    ) {
+        let output = crate::document::powerpoint::read_powerpoint_presentation(&request.input)
+            .map_err(map_powerpoint_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS completed the PowerPoint presentation read.".to_owned()),
+        });
+    }
+
     let provider =
         resolve_local_presentation_provider(PRESENTATION_READ_ACTION).ok_or_else(|| {
             OpenClawExecutionError::new(
@@ -1448,6 +1480,16 @@ fn execute_presentation_create(
     _invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    if is_format(&request.input, "path", "pptx") {
+        let output = crate::document::powerpoint::create_powerpoint_presentation(&request.input)
+            .map_err(map_powerpoint_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS created the PowerPoint presentation.".to_owned()),
+        });
+    }
+
     let provider =
         resolve_local_presentation_provider(PRESENTATION_CREATE_ACTION).ok_or_else(|| {
             OpenClawExecutionError::new(
@@ -4443,6 +4485,15 @@ f1==SERIES(Sales!$B$1,Sales!$A$2:$A$4,Sales!$B$2:$B$4,1)"
             assert!(!is_format(&json!({"path": other}), "path", "pages"));
             assert!(!is_format(&json!({"path": other}), "path", "numbers"));
         }
+
+        // The presentation route had the same defect in reverse: it resolved
+        // straight to Apple iWork, so a .pptx reached the Keynote adapter and
+        // was refused for not being a .key -- while PowerPoint's own proven
+        // adapter could not be reached at all.
+        assert!(is_format(&json!({"path": "/safe/deck.pptx"}), "path", "pptx"));
+        assert!(is_format(&json!({"path": "/safe/deck.ppt"}), "path", "ppt"));
+        assert!(!is_format(&json!({"path": "/safe/deck.key"}), "path", "pptx"));
+        assert!(!is_format(&json!({"path": "/safe/deck.key"}), "path", "ppt"));
 
         // A missing or non-string field is not a format.
         assert!(!is_format(&json!({}), "path", "pages"));
