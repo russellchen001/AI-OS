@@ -188,6 +188,16 @@ pub(crate) fn resolve_office_route(
 /// `textutil` reads a .docx by converting it to plain text, which is an import,
 /// not a native read; declaring it as one is what let the lowest-priority
 /// generic path outrank both Word and the structured layer on their own format.
+fn wps_installed() -> bool {
+    ["/Applications/wpsoffice.app", "/Applications/WPS Office.app"]
+        .iter()
+        .any(|path| std::path::Path::new(path).exists())
+}
+
+fn google_workspace_connected() -> bool {
+    crate::providers::provider_credential_present(crate::google_workspace::office::INSTANCE)
+}
+
 pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
     const DOCUMENT_READ: &[&str] = &["document.read"];
     const WORD: &[&str] = &[
@@ -352,6 +362,60 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             // the only route for DOC to DOCX. It cannot write a PDF.
             export_formats: &["doc", "docx", "rtf", "txt"],
         },
+        // Google Workspace. Docs, Sheets and Slides have real adapters proven by
+        // their own E2Es; what they lacked was any route from a
+        // provider-neutral capability, which is why they are here now. They are
+        // the only candidates that are not local, so a cloud request can reach
+        // nothing else and a local path can never reach them.
+        //
+        // `available` is whether the account is connected, answered from the
+        // stored credential rather than by asking for a token, because a
+        // routing decision should not perform a network refresh.
+        OfficeCandidate {
+            provider: OfficeProviderId::GoogleWorkspace,
+            application: OfficeApplication::GoogleDocs,
+            local: false,
+            available: google_workspace_connected(),
+            authorized: true,
+            executable: true,
+            priority: 100,
+            capabilities: &["document.read", "document.create"],
+            // A cloud resource is named by id and has no extension, so format
+            // never decides a cloud route.
+            native_formats: &[],
+            import_formats: &[],
+            export_formats: &[],
+        },
+        OfficeCandidate {
+            provider: OfficeProviderId::GoogleWorkspace,
+            application: OfficeApplication::GoogleSheets,
+            local: false,
+            available: google_workspace_connected(),
+            authorized: true,
+            executable: true,
+            priority: 100,
+            capabilities: &[
+                "spreadsheet.read",
+                "spreadsheet.create",
+                "spreadsheet.edit",
+            ],
+            native_formats: &[],
+            import_formats: &[],
+            export_formats: &[],
+        },
+        OfficeCandidate {
+            provider: OfficeProviderId::GoogleWorkspace,
+            application: OfficeApplication::GoogleSlides,
+            local: false,
+            available: google_workspace_connected(),
+            authorized: true,
+            executable: true,
+            priority: 100,
+            capabilities: &["presentation.read", "presentation.create"],
+            native_formats: &[],
+            import_formats: &[],
+            export_formats: &[],
+        },
         // WPS is installed on some machines and reads all three Microsoft
         // formats, but macOS publishes no deterministic automation contract for
         // it, so there is no adapter to route to. Its files are supported
@@ -361,13 +425,38 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::WpsOffice,
             application: OfficeApplication::WpsWriter,
             local: true,
-            available: microsoft("/Applications/wpsoffice.app")
-                || microsoft("/Applications/WPS Office.app"),
+            available: wps_installed(),
             authorized: true,
             executable: false,
             priority: 30,
             capabilities: DOCUMENT_READ,
             native_formats: &["doc", "docx"],
+            import_formats: &[],
+            export_formats: &[],
+        },
+        OfficeCandidate {
+            provider: OfficeProviderId::WpsOffice,
+            application: OfficeApplication::WpsSpreadsheet,
+            local: true,
+            available: wps_installed(),
+            authorized: true,
+            executable: false,
+            priority: 30,
+            capabilities: &["spreadsheet.read"],
+            native_formats: &["xls", "xlsx"],
+            import_formats: &[],
+            export_formats: &[],
+        },
+        OfficeCandidate {
+            provider: OfficeProviderId::WpsOffice,
+            application: OfficeApplication::WpsPresentation,
+            local: true,
+            available: wps_installed(),
+            authorized: true,
+            executable: false,
+            priority: 30,
+            capabilities: &["presentation.read"],
+            native_formats: &["ppt", "pptx"],
             import_formats: &[],
             export_formats: &[],
         },
@@ -712,14 +801,125 @@ mod tests {
     /// route to. Its files are still supported -- through the structured layer,
     /// because a WPS .docx is a .docx. A provider having no adapter and a
     /// format being unsupported are different statements.
+    /// The cloud half of the matrix.
+    ///
+    /// Google's Docs, Sheets and Slides adapters were real and proven and
+    /// reachable from no provider-neutral capability -- the fifth adapter in
+    /// this work found working and callable from nowhere. These rows are the
+    /// statement that they are reachable now, and that the two boundaries hold
+    /// in both directions: a cloud resource never reaches a local application,
+    /// and a local path never reaches Google.
+    #[test]
+    fn a_cloud_resource_reaches_google_and_a_local_path_never_does() {
+        // Everything installed AND the account connected, which is the case
+        // where a mistake would be invisible.
+        let everything: Vec<OfficeCandidate> = office_candidates()
+            .into_iter()
+            .map(|mut candidate| {
+                candidate.available = true;
+                candidate
+            })
+            .collect();
+
+        for (capability, expected) in [
+            ("document.read", OfficeApplication::GoogleDocs),
+            ("document.create", OfficeApplication::GoogleDocs),
+            ("spreadsheet.read", OfficeApplication::GoogleSheets),
+            ("spreadsheet.create", OfficeApplication::GoogleSheets),
+            ("spreadsheet.edit", OfficeApplication::GoogleSheets),
+            ("presentation.read", OfficeApplication::GoogleSlides),
+            ("presentation.create", OfficeApplication::GoogleSlides),
+        ] {
+            let route = resolve_office_route(
+                &OfficeRouteRequest {
+                    capability,
+                    location: OfficeResourceLocation::GoogleCloud,
+                    // A cloud resource is named by id and has no extension, so
+                    // format never decides a cloud route.
+                    format: None,
+                    destination_format: None,
+                    preferred_application: None,
+                },
+                &everything,
+            )
+            .unwrap_or_else(|| panic!("{capability} had no cloud route"));
+
+            assert_eq!(route.application, expected, "{capability} routed wrongly");
+            assert!(!route.local, "{capability} routed to a local application");
+        }
+
+        // What Google has no adapter for says so, rather than falling back to
+        // a local application that cannot see the file at all.
+        for capability in [
+            "document.edit",
+            "document.convert",
+            "spreadsheet.convert",
+            "presentation.edit",
+            "presentation.convert",
+        ] {
+            assert!(
+                resolve_office_route(
+                    &OfficeRouteRequest {
+                        capability,
+                        location: OfficeResourceLocation::GoogleCloud,
+                        format: None,
+                        destination_format: None,
+                        preferred_application: None,
+                    },
+                    &everything,
+                )
+                .is_none(),
+                "{capability} must not claim a cloud route"
+            );
+        }
+
+        // And with the account not connected there is no cloud route at all,
+        // which is what `available` means for a provider that is reached over
+        // the network rather than installed.
+        let disconnected: Vec<OfficeCandidate> = office_candidates()
+            .into_iter()
+            .map(|mut candidate| {
+                candidate.available = candidate.provider != OfficeProviderId::GoogleWorkspace;
+                candidate
+            })
+            .collect();
+
+        assert!(resolve_office_route(
+            &OfficeRouteRequest {
+                capability: "document.read",
+                location: OfficeResourceLocation::GoogleCloud,
+                format: None,
+                destination_format: None,
+                preferred_application: None,
+            },
+            &disconnected,
+        )
+        .is_none());
+    }
+
     #[test]
     fn wps_being_installed_does_not_invent_an_adapter_for_it() {
-        let with_wps = machine_with(&[OfficeApplication::WpsWriter]);
+        let with_wps = machine_with(&[
+            OfficeApplication::WpsWriter,
+            OfficeApplication::WpsSpreadsheet,
+            OfficeApplication::WpsPresentation,
+        ]);
 
-        assert_eq!(
-            route_on(&with_wps, "document.read", "docx"),
-            Some(OfficeApplication::StructuredFile)
-        );
+        // All three kinds, because WPS reads all three Microsoft formats and
+        // has an adapter for none of them. Every one falls to the structured
+        // layer, which is the true statement: the FILES are supported, the
+        // application is not driven.
+        for (capability, format) in [
+            ("document.read", "docx"),
+            ("spreadsheet.read", "xlsx"),
+            ("presentation.read", "pptx"),
+        ] {
+            assert_eq!(
+                route_on(&with_wps, capability, format),
+                Some(OfficeApplication::StructuredFile),
+                "{capability} on a .{format} should fall to the structured layer"
+            );
+        }
     }
 
     #[test]

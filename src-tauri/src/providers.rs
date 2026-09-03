@@ -2618,6 +2618,18 @@ pub(crate) fn set_provider_credential(
     })
 }
 
+/// Whether a Provider instance has a stored credential, answered synchronously.
+///
+/// The Office capabilities need this to decide whether Google Workspace is a
+/// candidate at all, and they run on a synchronous path. Asking for the access
+/// token would answer the same question but requires a runtime and can perform
+/// a network refresh, which is not what a routing decision should do.
+pub(crate) fn provider_credential_present(instance_id: &str) -> bool {
+    validate_instance_id(instance_id)
+        .and_then(|account| secret_exists(account, "provider_credential_present"))
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 pub(crate) fn get_provider_credential_status(
     query: ProviderCredentialQuery,

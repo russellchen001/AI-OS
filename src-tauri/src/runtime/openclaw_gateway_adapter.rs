@@ -851,6 +851,21 @@ fn execute_document_create(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    // document.create still routes by extension rather than through the
+    // resolver, for the reason recorded with the routing matrix: the providers
+    // do not agree on what document.convert means and the two entry points
+    // share that resolution. The cloud branch is therefore explicit here.
+    if requested_location(&request.input)
+        == crate::document::resolver::OfficeResourceLocation::GoogleCloud
+    {
+        let output = run_cloud(crate::google_workspace::office::document_create(&request.input))?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS created the Google document.".to_owned()),
+        });
+    }
+
     if is_format(&request.input, "path", "pages") {
         let output = crate::document::pages::create_pages_document(&request.input)
             .map_err(map_pages_error)?;
@@ -1559,13 +1574,71 @@ fn route_with_destination(
     crate::document::resolver::resolve_office_route(
         &crate::document::resolver::OfficeRouteRequest {
             capability,
-            location: crate::document::resolver::OfficeResourceLocation::Local,
+            location: requested_location(input),
             format: format.as_deref(),
             destination_format: destination.as_deref(),
             preferred_application: None,
         },
         &crate::document::resolver::office_candidates(),
     )
+}
+
+/// Whether this request is about a file on this machine or a cloud resource.
+///
+/// A Drive file id is not a path, so the request has to say which it means.
+/// It is a cloud request when it carries `resource.fileId`, or when it says
+/// `provider: "google-workspace"` -- which is the only way a CREATE can say so,
+/// because a file that does not exist yet has no id.
+///
+/// Everything else is local, so no existing caller changes behaviour.
+fn requested_location(input: &Value) -> crate::document::resolver::OfficeResourceLocation {
+    use crate::document::resolver::OfficeResourceLocation;
+
+    let named_provider = input
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|provider| provider.eq_ignore_ascii_case("google-workspace"));
+
+    let carries_file_id = input
+        .pointer("/resource/fileId")
+        .or_else(|| input.get("fileId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+
+    if named_provider || carries_file_id {
+        OfficeResourceLocation::GoogleCloud
+    } else {
+        OfficeResourceLocation::Local
+    }
+}
+
+/// A cloud adapter, run from the synchronous gateway.
+///
+/// The Office capabilities are synchronous and the Google adapters are async.
+/// `tauri::async_runtime::block_on` is the bridge `download/registry.rs`
+/// already uses for the same reason.
+fn run_cloud<F>(future: F) -> Result<Value, OpenClawExecutionError>
+where
+    F: std::future::Future<Output = Result<Value, String>>,
+{
+    tauri::async_runtime::block_on(future).map_err(|message| {
+        // A Google failure is a request problem when it is about what was
+        // asked for, and an execution problem when it is about reaching the
+        // service. The messages come from one place, so they can be told apart.
+        let invalid = message.contains("requires") || message.contains("was not found");
+
+        OpenClawExecutionError::new(
+            if invalid {
+                OpenClawExecutionErrorKind::InvalidRequest
+            } else {
+                OpenClawExecutionErrorKind::ExecutionFailed
+            },
+            message,
+            false,
+        )
+    })
 }
 
 /// The error a caller gets when no installed provider can answer for this file.
@@ -1630,6 +1703,14 @@ fn execute_presentation_read(
         .ok_or_else(|| no_route(PRESENTATION_READ_ACTION, &request.input, "path"))?;
 
     match route.application {
+        OfficeApplication::GoogleSlides => {
+            let output = run_cloud(crate::google_workspace::office::presentation_read(&request.input))?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS read the Google presentation.".to_owned()),
+            });
+        }
         // PowerPoint reads its own format best; the structured layer reads the
         // same .pptx when PowerPoint is absent, and a .ppt is the old binary
         // format that only PowerPoint reads.
@@ -1683,6 +1764,14 @@ fn execute_presentation_create(
         .ok_or_else(|| no_route(PRESENTATION_CREATE_ACTION, &request.input, "path"))?;
 
     match route.application {
+        OfficeApplication::GoogleSlides => {
+            let output = run_cloud(crate::google_workspace::office::presentation_create(&request.input))?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS created the Google presentation.".to_owned()),
+            });
+        }
         OfficeApplication::MicrosoftPowerPoint => {
             let output =
                 crate::document::powerpoint::create_powerpoint_presentation(&request.input)
@@ -1722,6 +1811,14 @@ fn execute_spreadsheet_create(
         .ok_or_else(|| no_route(SPREADSHEET_CREATE_ACTION, &request.input, "path"))?;
 
     match route.application {
+        OfficeApplication::GoogleSheets => {
+            let output = run_cloud(crate::google_workspace::office::spreadsheet_create(&request.input))?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS created the Google spreadsheet.".to_owned()),
+            });
+        }
         OfficeApplication::AppleNumbers => {
             let output = crate::document::numbers::create_numbers_spreadsheet(&request.input)
                 .map_err(map_numbers_error)?;
@@ -1769,6 +1866,17 @@ fn execute_spreadsheet_edit(
     // read and create. It says so rather than pretending.
     let route = office_route(SPREADSHEET_EDIT_ACTION, &request.input, "source")
         .ok_or_else(|| no_route(SPREADSHEET_EDIT_ACTION, &request.input, "source"))?;
+
+    // Google's edit is a values write that validates itself by reading back,
+    // which is the same contract the Excel adapter holds itself to.
+    if route.application == OfficeApplication::GoogleSheets {
+        let output = run_cloud(crate::google_workspace::office::spreadsheet_edit(&request.input))?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS wrote and validated the Google spreadsheet.".to_owned()),
+        });
+    }
 
     if route.application != OfficeApplication::MicrosoftExcel {
         return Err(OpenClawExecutionError::new(
@@ -1965,6 +2073,14 @@ fn execute_spreadsheet_read(
         .ok_or_else(|| no_route(SPREADSHEET_READ_ACTION, &request.input, "path"))?;
 
     match route.application {
+        OfficeApplication::GoogleSheets => {
+            let output = run_cloud(crate::google_workspace::office::spreadsheet_read(&request.input))?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS read the Google spreadsheet.".to_owned()),
+            });
+        }
         OfficeApplication::AppleNumbers => {
             let output = crate::document::numbers::read_numbers_spreadsheet(&request.input)
                 .map_err(map_numbers_error)?;
@@ -3320,6 +3436,14 @@ fn execute_document_read(
         .ok_or_else(|| no_route(DOCUMENT_READ_ACTION, &request.input, "path"))?;
 
     match route.application {
+        OfficeApplication::GoogleDocs => {
+            let output = run_cloud(crate::google_workspace::office::document_read(&request.input))?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS read the Google document.".to_owned()),
+            });
+        }
         OfficeApplication::ApplePages => {
             let output = crate::document::pages::read_pages_document(&request.input)
                 .map_err(map_pages_error)?;
