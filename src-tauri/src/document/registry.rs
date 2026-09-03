@@ -37,14 +37,20 @@ const GRAPH_CAPABILITIES: &[&str] = &[
 ];
 /// What the structured file layer can actually execute today.
 ///
-/// This provider reads the file itself -- .xlsx is a ZIP of XML -- so it needs
-/// no application and is available on every machine. That is what makes Office
-/// a capability rather than a set of per-application integrations: when no
-/// spreadsheet application is installed, this still answers.
+/// This provider reads the file itself -- .xlsx, .docx and .pptx are all ZIP
+/// archives of XML -- so it needs no application and is available on every
+/// machine. That is what makes Office a capability rather than a set of
+/// per-application integrations: when no Office application is installed, this
+/// still answers.
 ///
 /// It declares only what is implemented. It previously declared four
 /// capabilities with no implementation at all.
-const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &["spreadsheet.read", "spreadsheet.create"];
+const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &[
+    "document.read",
+    "presentation.read",
+    "spreadsheet.read",
+    "spreadsheet.create",
+];
 
 fn app_exists(path: &str) -> bool {
     std::path::Path::new(path).exists()
@@ -184,6 +190,8 @@ mod tests {
         assert!(structured.local);
         assert!(structured.supports("spreadsheet.read"));
         assert!(structured.supports("spreadsheet.create"));
+        assert!(structured.supports("document.read"));
+        assert!(structured.supports("presentation.read"));
 
         // It must never outrank an installed application, which reads its own
         // format with higher fidelity.
@@ -202,8 +210,15 @@ mod tests {
             );
         }
 
-        // And it declares nothing it cannot execute.
-        for unimplemented in ["document.read", "document.create", "spreadsheet.edit"] {
+        // And it declares nothing it cannot execute. Writing a document or a
+        // presentation without the application, and editing a workbook in
+        // place, are not implemented -- so they are not claimed.
+        for unimplemented in [
+            "document.create",
+            "document.convert",
+            "presentation.create",
+            "spreadsheet.edit",
+        ] {
             assert!(
                 !structured.supports(unimplemented),
                 "the structured layer does not implement {unimplemented} yet"

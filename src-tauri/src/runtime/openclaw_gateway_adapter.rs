@@ -1459,6 +1459,24 @@ fn execute_presentation_read(
         request_format(&request.input, "path").as_deref(),
         Some("pptx") | Some("ppt")
     ) {
+        // .pptx is a ZIP of XML, so the capability does not depend on
+        // PowerPoint being installed. PowerPoint answers with the highest
+        // fidelity when it is here; the structured layer answers when it is
+        // not. A .ppt is the old binary format and has no structured reading,
+        // so it stays with PowerPoint and fails honestly without it.
+        if is_format(&request.input, "path", "pptx") && !microsoft_office_available() {
+            let output = crate::document::structured::read_structured_presentation(&request.input)
+                .map_err(map_structured_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some(
+                    "AI-OS read the presentation directly from the file, without PowerPoint."
+                        .to_owned(),
+                ),
+            });
+        }
+
         let output = crate::document::powerpoint::read_powerpoint_presentation(&request.input)
             .map_err(map_powerpoint_error)?;
 
@@ -2961,6 +2979,19 @@ fn execute_document_read(
         return Ok(OpenClawExecutionResult {
             output,
             summary: Some("AI-OS completed the Pages document read.".to_owned()),
+        });
+    }
+
+    // The same reasoning as the spreadsheet route: Word reads its own format
+    // best, but .docx is a ZIP of XML, so document.read does not disappear on a
+    // machine without Word.
+    if is_format(&request.input, "path", "docx") && !microsoft_office_available() {
+        let output = crate::document::structured::read_structured_document(&request.input)
+            .map_err(map_structured_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some("AI-OS read the document directly from the file, without Word.".to_owned()),
         });
     }
 

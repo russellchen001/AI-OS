@@ -30,7 +30,7 @@ cargo test \
     fail "structured reader contract"
   }
 
-grep -q "running 12 tests" "$LOG" || {
+grep -q "running 19 tests" "$LOG" || {
   tail -20 "$LOG"
   fail "structured reader test count changed"
 }
@@ -42,6 +42,9 @@ echo "✅ out-of-bounds cells truncate and say so, rather than growing the grid"
 echo "✅ a file that is not an archive is refused, not read as empty"
 echo "✅ writing escapes what would break the XML and keeps text that looks numeric"
 echo "✅ writing refuses to overwrite, and leaves no part-file behind when it refuses"
+echo "✅ a .docx is read without Word: paragraphs, tables, images, run formatting"
+echo "✅ a .pptx is read without PowerPoint, in presentation order, tables included"
+echo "✅ a broken package is refused, not reported as an empty document or deck"
 
 cargo test \
   --manifest-path src-tauri/Cargo.toml \
@@ -103,5 +106,41 @@ cargo test \
 grep -q "test result: ok" "$LOG" || fail "Excel open result marker"
 
 echo "✅ a workbook written WITHOUT Excel opens in Excel and reads back correctly"
+
+# The document and presentation halves of the same claim: both providers answer
+# the same capability, so a caller must not be able to tell which one answered.
+if /usr/bin/osascript -e 'tell application "Microsoft Word" to get version' >/dev/null 2>&1; then
+  cargo test \
+    --manifest-path src-tauri/Cargo.toml \
+    document::structured::tests::structured_and_word_agree_on_the_same_document \
+    --lib -- --ignored >"$LOG" 2>&1 || {
+      tail -100 "$LOG"
+      fail "Word agreement"
+    }
+
+  grep -q "test result: ok" "$LOG" || fail "Word agreement result marker"
+
+  echo "✅ a document Word wrote reads identically WITHOUT Word"
+  echo "✅ heading formatting, image and table cells agree across both providers"
+else
+  echo "SKIP $NAME: Word unavailable, document cross-check not run"
+fi
+
+if /usr/bin/osascript -e 'tell application "Microsoft PowerPoint" to get version' >/dev/null 2>&1; then
+  cargo test \
+    --manifest-path src-tauri/Cargo.toml \
+    document::structured::tests::structured_and_powerpoint_agree_on_the_same_presentation \
+    --lib -- --ignored >"$LOG" 2>&1 || {
+      tail -100 "$LOG"
+      fail "PowerPoint agreement"
+    }
+
+  grep -q "test result: ok" "$LOG" || fail "PowerPoint agreement result marker"
+
+  echo "✅ a deck PowerPoint wrote reads identically WITHOUT PowerPoint"
+  echo "✅ slide order, titles, bodies and table cells agree across both providers"
+else
+  echo "SKIP $NAME: PowerPoint unavailable, presentation cross-check not run"
+fi
 
 echo "PASS $NAME"

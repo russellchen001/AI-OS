@@ -21,6 +21,12 @@ const MAX_CELL_CHARS: usize = 256;
 /// A part far larger than any legitimate worksheet is refused rather than
 /// decompressed: a small archive can expand without limit otherwise.
 const MAX_PART_BYTES: u64 = 64 * 1024 * 1024;
+/// The document and presentation bounds mirror the application adapters, so a
+/// caller gets the same amount of material whichever provider answered.
+const MAX_DOCUMENT_TEXT: usize = 64 * 1024;
+const MAX_SLIDES: usize = 50;
+const MAX_SLIDE_TEXT: usize = 16 * 1024;
+const MAX_TABLE_CELL_TEXT: usize = 512;
 
 #[derive(Debug)]
 pub(crate) struct StructuredError {
@@ -758,6 +764,441 @@ pub(crate) fn create_structured_spreadsheet(input: &Value) -> Result<Value, Stru
     }))
 }
 
+/// The raw inner XML of every occurrence of one element, in document order.
+///
+/// This is the counterpart to `element_texts` for elements whose children
+/// matter: a paragraph's runs, a table's cells. Nesting of the same element is
+/// not expected in the parts this layer reads and is not handled.
+fn element_bodies<'a>(xml: &'a str, element: &str) -> Vec<&'a str> {
+    let open_exact = format!("<{element}>");
+    let open_attrs = format!("<{element} ");
+    let close = format!("</{element}>");
+    let self_closing = format!("<{element}/>");
+
+    let mut found = Vec::new();
+    let mut rest = xml;
+
+    loop {
+        let exact = rest.find(&open_exact);
+        let with_attrs = rest.find(&open_attrs);
+        let empty = rest.find(&self_closing);
+
+        let Some(start) = [exact, with_attrs, empty].into_iter().flatten().min() else {
+            break;
+        };
+
+        if Some(start) == empty {
+            found.push("");
+            rest = &rest[start + self_closing.len()..];
+            continue;
+        }
+
+        let Some(open_end) = rest[start..].find('>').map(|offset| start + offset + 1) else {
+            break;
+        };
+
+        let Some(close_at) = rest[open_end..].find(&close).map(|offset| open_end + offset) else {
+            break;
+        };
+
+        found.push(&rest[open_end..close_at]);
+        rest = &rest[close_at + close.len()..];
+    }
+
+    found
+}
+
+/// The opening tag of every occurrence of one element, in document order.
+fn element_tags<'a>(xml: &'a str, element: &str) -> Vec<&'a str> {
+    let mut found = Vec::new();
+    let mut rest = xml;
+
+    while let Some(start) = rest.find(&format!("<{element}")) {
+        let after = &rest[start + element.len() + 1..];
+        // `<w:tbl` must not match `<w:tblPr`: what follows the name has to end
+        // the name.
+        if !after.starts_with([' ', '>', '/', '\t', '\n', '\r']) {
+            rest = &rest[start + 1..];
+            continue;
+        }
+
+        let Some(end) = rest[start..].find('>').map(|offset| start + offset) else {
+            break;
+        };
+
+        found.push(&rest[start..=end]);
+        rest = &rest[end + 1..];
+    }
+
+    found
+}
+
+/// The visible text of one paragraph, in document order.
+///
+/// Tabs and line breaks are carried as their characters rather than dropped,
+/// because a paragraph that reads `Name<tab>Total` in the application must not
+/// read `NameTotal` here.
+fn paragraph_text(xml: &str, text_element: &str, tab_element: &str, break_element: &str) -> String {
+    let mut text = String::new();
+    let mut rest = xml;
+
+    while let Some(open) = rest.find('<') {
+        rest = &rest[open + 1..];
+
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+
+        let tag = &rest[..end];
+        let name = tag
+            .split([' ', '/', '\t', '\n', '\r'])
+            .next()
+            .unwrap_or_default();
+
+        if name == text_element && !tag.ends_with('/') {
+            let body = &rest[end + 1..];
+            let close = format!("</{text_element}>");
+
+            let Some(close_at) = body.find(&close) else {
+                break;
+            };
+
+            text.push_str(&decode_entities(&body[..close_at]));
+            rest = &body[close_at + close.len()..];
+            continue;
+        }
+
+        if name == tab_element {
+            text.push('\t');
+        }
+
+        if name == break_element {
+            text.push('\n');
+        }
+
+        rest = &rest[end + 1..];
+    }
+
+    text
+}
+
+/// The text of every paragraph inside one element, in document order.
+fn word_paragraphs(xml: &str) -> Vec<String> {
+    element_bodies(xml, "w:p")
+        .into_iter()
+        .map(|paragraph| paragraph_text(paragraph, "w:t", "w:tab", "w:br"))
+        .collect()
+}
+
+pub(crate) fn read_structured_document(input: &Value) -> Result<Value, StructuredError> {
+    let path = require_existing_path(input, "document.read", "docx")?;
+
+    let file = std::fs::File::open(path)
+        .map_err(|_| StructuredError::execution("the document could not be opened"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|_| StructuredError::invalid("the file is not a readable DOCX archive"))?;
+
+    let document = read_part(&mut archive, "word/document.xml")?
+        .ok_or_else(|| StructuredError::invalid("the archive has no document part"))?;
+
+    // Headers, footers and footnotes live in their own parts, so the body is
+    // the whole of what this reads.
+    let body = element_bodies(&document, "w:body")
+        .first()
+        .copied()
+        .unwrap_or(document.as_str());
+
+    let paragraphs = word_paragraphs(body);
+
+    // Word reports the document's text with a carriage return after every
+    // paragraph, and its paragraph count includes the paragraphs inside tables.
+    // Both are matched here so a caller sees the same document whichever
+    // provider answered.
+    //
+    // What is NOT matched is the marks Word adds that the file does not
+    // declare: one at the end of every table row, and one around an inline
+    // drawing. Those belong to a word processor's editing model, not to the
+    // document, so this reports the paragraphs the file has and the agreement
+    // test states the difference exactly rather than hiding it.
+    let full_text: String = paragraphs
+        .iter()
+        .map(|paragraph| format!("{paragraph}\r"))
+        .collect();
+    let text: String = full_text.chars().take(MAX_DOCUMENT_TEXT).collect();
+
+    let tables = element_bodies(body, "w:tbl");
+    let images = element_tags(body, "pic:pic").len();
+
+    // Word reports the cells of the FIRST table only.
+    let table_cells: Vec<String> = tables
+        .first()
+        .map(|table| {
+            element_bodies(table, "w:tc")
+                .into_iter()
+                .map(|cell| {
+                    word_paragraphs(cell)
+                        .join("\r")
+                        .chars()
+                        .take(MAX_TABLE_CELL_TEXT)
+                        .collect::<String>()
+                })
+                .filter(|cell| !cell.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let (heading_bold, heading_italic, heading_font_size) =
+        heading_run_properties(&mut archive, body)?;
+
+    Ok(json!({
+        "capability": "document.read",
+        "selectedProvider": "local-structured",
+        "resourceLocation": "local",
+        "inputResource": path,
+        "operationResult": {
+            "text": text,
+            "paragraphCount": paragraphs.len(),
+            "tableCount": tables.len(),
+            "imageCount": images,
+            "headingBold": heading_bold,
+            "headingItalic": heading_italic,
+            "headingFontSize": heading_font_size,
+            "tableCells": table_cells
+        },
+        "warnings": if full_text.chars().count() > MAX_DOCUMENT_TEXT {
+            vec!["Document text was truncated at the deterministic extraction limit."]
+        } else {
+            Vec::<&str>::new()
+        },
+        "confirmationConsumed": true,
+        "validationResult": "read",
+    }))
+}
+
+/// Bold, italic and point size of the document's first paragraph.
+///
+/// A run says only what it overrides, so the document defaults in `styles.xml`
+/// answer whatever the run leaves unsaid -- which is what the application
+/// reports, and the reason this consults a second part rather than reading the
+/// paragraph alone.
+fn heading_run_properties(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    body: &str,
+) -> Result<(bool, bool, f64), StructuredError> {
+    let defaults = read_part(archive, "word/styles.xml")?.unwrap_or_default();
+    let default_properties = element_bodies(&defaults, "w:rPrDefault")
+        .first()
+        .copied()
+        .unwrap_or("")
+        .to_owned();
+
+    let first_paragraph = element_bodies(body, "w:p")
+        .first()
+        .copied()
+        .unwrap_or("")
+        .to_owned();
+    let first_run = element_bodies(&first_paragraph, "w:r")
+        .first()
+        .copied()
+        .unwrap_or("")
+        .to_owned();
+
+    let properties = element_bodies(&first_run, "w:rPr")
+        .first()
+        .copied()
+        .unwrap_or("")
+        .to_owned();
+
+    let toggle = |name: &str| -> Option<bool> {
+        element_tags(&properties, name)
+            .first()
+            .map(|tag| !matches!(attribute(tag, "w:val").as_deref(), Some("0" | "false")))
+    };
+
+    let size = |xml: &str| -> Option<f64> {
+        element_tags(xml, "w:sz")
+            .first()
+            .and_then(|tag| attribute(tag, "w:val"))
+            .and_then(|value| value.parse::<f64>().ok())
+            // Half-points in the file, points in the application.
+            .map(|half_points| half_points / 2.0)
+    };
+
+    Ok((
+        toggle("w:b").unwrap_or(false),
+        toggle("w:i").unwrap_or(false),
+        size(&properties)
+            .or_else(|| size(&default_properties))
+            .unwrap_or(0.0),
+    ))
+}
+
+/// Slide parts in presentation order.
+fn slide_parts(
+    presentation: &str,
+    relationships: &str,
+) -> Result<Vec<String>, StructuredError> {
+    let mut order = Vec::new();
+
+    for tag in element_tags(presentation, "p:sldId") {
+        let relationship = attribute(tag, "r:id").ok_or_else(|| {
+            StructuredError::execution("the presentation declares a slide with no relationship")
+        })?;
+        order.push(relationship);
+    }
+
+    let mut parts = Vec::new();
+
+    for relationship in order {
+        let target = element_tags(relationships, "Relationship")
+            .into_iter()
+            .find(|tag| attribute(tag, "Id").as_deref() == Some(relationship.as_str()))
+            .and_then(|tag| attribute(tag, "Target"))
+            .ok_or_else(|| {
+                StructuredError::execution(format!(
+                    "the presentation refers to {relationship}, which the archive does not declare"
+                ))
+            })?;
+
+        let target = target.trim_start_matches('/');
+        let part = if target.starts_with("ppt/") {
+            target.to_owned()
+        } else {
+            format!("ppt/{}", target.trim_start_matches("../"))
+        };
+
+        parts.push(part);
+    }
+
+    Ok(parts)
+}
+
+/// The text of one shape, with the carriage return the application puts between
+/// a shape's paragraphs.
+fn shape_text(shape: &str) -> String {
+    element_bodies(shape, "a:p")
+        .into_iter()
+        .map(|paragraph| paragraph_text(paragraph, "a:t", "a:tab", "a:br"))
+        .collect::<Vec<_>>()
+        .join("\r")
+}
+
+pub(crate) fn read_structured_presentation(input: &Value) -> Result<Value, StructuredError> {
+    let path = require_existing_path(input, "presentation.read", "pptx")?;
+
+    let file = std::fs::File::open(path)
+        .map_err(|_| StructuredError::execution("the presentation could not be opened"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|_| StructuredError::invalid("the file is not a readable PPTX archive"))?;
+
+    let presentation = read_part(&mut archive, "ppt/presentation.xml")?
+        .ok_or_else(|| StructuredError::invalid("the archive has no presentation part"))?;
+    let relationships = read_part(&mut archive, "ppt/_rels/presentation.xml.rels")?
+        .ok_or_else(|| StructuredError::invalid("the archive has no presentation relationships"))?;
+
+    let parts = slide_parts(&presentation, &relationships)?;
+
+    if parts.len() > MAX_SLIDES {
+        return Err(StructuredError::invalid(format!(
+            "presentation.read supports at most {MAX_SLIDES} slides"
+        )));
+    }
+
+    let mut slides = Vec::new();
+
+    for (index, part) in parts.iter().enumerate() {
+        let xml = read_part(&mut archive, part)?.ok_or_else(|| {
+            StructuredError::execution(format!("slide part {part} is missing from the archive"))
+        })?;
+
+        let tree = element_bodies(&xml, "p:spTree")
+            .first()
+            .copied()
+            .unwrap_or("")
+            .to_owned();
+
+        let pictures = element_tags(&tree, "p:pic").len();
+        let tables = element_tags(&tree, "a:tbl").len();
+
+        // What the application calls an auto shape: a shape with geometry that
+        // is neither a placeholder nor a text box.
+        let shapes = element_bodies(&tree, "p:sp");
+        let basic_shapes = shapes
+            .iter()
+            .filter(|shape| {
+                element_tags(shape, "p:ph").is_empty()
+                    && !element_tags(shape, "p:cNvSpPr")
+                        .iter()
+                        .any(|tag| attribute(tag, "txBox").as_deref() == Some("1"))
+            })
+            .count();
+
+        // Title is the first shape with text and body the second, matching what
+        // the application reports rather than what the layout declares.
+        let texts: Vec<String> = shape_texts_in_order(&tree);
+        let title = texts.first().cloned().unwrap_or_default();
+        let body = texts.get(1).cloned().unwrap_or_default();
+        let all_text: String = texts
+            .iter()
+            .map(|text| format!("{text}\n"))
+            .collect::<String>()
+            .chars()
+            .take(MAX_SLIDE_TEXT)
+            .collect();
+
+        let table_cells: Vec<String> = element_bodies(&tree, "a:tbl")
+            .first()
+            .map(|table| {
+                element_bodies(table, "a:tc")
+                    .into_iter()
+                    .map(|cell| {
+                        shape_text(cell)
+                            .chars()
+                            .take(MAX_TABLE_CELL_TEXT)
+                            .collect::<String>()
+                    })
+                    .filter(|cell| !cell.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        slides.push(json!({
+            "index": index + 1,
+            "title": title,
+            "body": body,
+            "text": all_text,
+            "imageCount": pictures,
+            "tableCount": tables,
+            "basicShapeCount": basic_shapes,
+            "tableCells": table_cells,
+        }));
+    }
+
+    Ok(json!({
+        "capability": "presentation.read",
+        "selectedProvider": "local-structured",
+        "resourceLocation": "local",
+        "inputResource": path,
+        "operationResult": {"slideCount": slides.len(), "slides": slides},
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "read",
+    }))
+}
+
+/// The text of every shape that has any, in the order the slide declares them.
+///
+/// Only `p:sp` contributes: a picture or a table lives in its own element and
+/// has no text frame, which is why the application does not take a slide's
+/// title from its table either.
+fn shape_texts_in_order(tree: &str) -> Vec<String> {
+    element_bodies(tree, "p:sp")
+        .into_iter()
+        .map(shape_text)
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1070,6 +1511,462 @@ mod tests {
             .map(|name| name.as_str().unwrap())
             .collect();
         assert!(names.contains(&"Agree"), "names were {names:?}");
+    }
+
+    /// An OOXML package built in the test, so the reader is exercised against a
+    /// known archive rather than a checked-in binary nobody can review.
+    fn archive_at(path: &std::path::Path, parts: &[(&str, &str)]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        for (name, body) in parts {
+            archive.start_file(*name, options).unwrap();
+            std::io::Write::write_all(&mut archive, body.as_bytes()).unwrap();
+        }
+
+        archive.finish().unwrap();
+    }
+
+    const DOCUMENT_XML: &str = concat!(
+        r#"<?xml version="1.0"?><w:document xmlns:w="w" xmlns:pic="pic"><w:body>"#,
+        r#"<w:p><w:r><w:rPr><w:b/><w:i/><w:sz w:val="36"/></w:rPr>"#,
+        r#"<w:t>Quarterly Report</w:t></w:r></w:p>"#,
+        r#"<w:p><w:pPr><w:jc w:val="left"/></w:pPr>"#,
+        r#"<w:r><w:t xml:space="preserve">Revenue &amp; costs</w:t></w:r>"#,
+        r#"<w:r><w:tab/></w:r><w:r><w:t>&lt;final&gt;</w:t></w:r></w:p>"#,
+        r#"<w:p><w:r><w:drawing><pic:pic><pic:nvPicPr/></pic:pic></w:drawing></w:r></w:p>"#,
+        r#"<w:tbl><w:tblPr/>"#,
+        r#"<w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc>"#,
+        r#"<w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr>"#,
+        r#"<w:tr><w:tc><w:p><w:r><w:t>A2</w:t></w:r></w:p></w:tc>"#,
+        r#"<w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#,
+        r#"</w:body></w:document>"#
+    );
+
+    const STYLES_XML: &str = concat!(
+        r#"<?xml version="1.0"?><w:styles xmlns:w="w"><w:docDefaults>"#,
+        r#"<w:rPrDefault><w:rPr><w:sz w:val="22"/></w:rPr></w:rPrDefault>"#,
+        r#"</w:docDefaults></w:styles>"#
+    );
+
+    #[test]
+    fn a_document_is_read_without_word_at_all() {
+        let root = tempfile::tempdir().unwrap();
+        let document = root.path().join("report.docx");
+        archive_at(
+            &document,
+            &[
+                ("word/document.xml", DOCUMENT_XML),
+                ("word/styles.xml", STYLES_XML),
+            ],
+        );
+
+        let read = read_structured_document(&json!({"path": document.to_str().unwrap()})).unwrap();
+
+        assert_eq!(read["capability"], "document.read");
+        assert_eq!(read["selectedProvider"], "local-structured");
+
+        let result = &read["operationResult"];
+
+        // Three body paragraphs plus the four inside the table, which is what
+        // Word counts too.
+        assert_eq!(result["paragraphCount"], 7);
+        assert_eq!(result["tableCount"], 1);
+        assert_eq!(result["imageCount"], 1);
+        assert_eq!(result["tableCells"], json!(["A1", "B1", "A2", "B2"]));
+
+        let text = result["text"].as_str().unwrap();
+
+        // Entities are resolved, a tab between runs survives as a tab, and each
+        // paragraph ends the way Word reports it.
+        assert!(text.starts_with("Quarterly Report\r"), "text was {text:?}");
+        assert!(
+            text.contains("Revenue & costs\t<final>\r"),
+            "text was {text:?}"
+        );
+
+        // Run properties are read from the file, not guessed.
+        assert_eq!(result["headingBold"], true);
+        assert_eq!(result["headingItalic"], true);
+        assert_eq!(result["headingFontSize"], 18.0);
+    }
+
+    #[test]
+    fn a_run_that_says_nothing_inherits_the_document_default() {
+        let root = tempfile::tempdir().unwrap();
+        let document = root.path().join("plain.docx");
+        archive_at(
+            &document,
+            &[
+                (
+                    "word/document.xml",
+                    concat!(
+                        r#"<?xml version="1.0"?><w:document xmlns:w="w"><w:body>"#,
+                        r#"<w:p><w:r><w:t>Plain</w:t></w:r></w:p>"#,
+                        r#"</w:body></w:document>"#
+                    ),
+                ),
+                ("word/styles.xml", STYLES_XML),
+            ],
+        );
+
+        let read = read_structured_document(&json!({"path": document.to_str().unwrap()})).unwrap();
+        let result = &read["operationResult"];
+
+        assert_eq!(result["headingBold"], false);
+        assert_eq!(result["headingItalic"], false);
+        // 22 half-points in the file is 11 points in the application.
+        assert_eq!(result["headingFontSize"], 11.0);
+    }
+
+    #[test]
+    fn a_document_that_is_not_an_archive_is_refused_rather_than_read_as_empty() {
+        let root = tempfile::tempdir().unwrap();
+
+        let not_an_archive = root.path().join("broken.docx");
+        std::fs::write(&not_an_archive, b"not really a zip").unwrap();
+
+        let error =
+            read_structured_document(&json!({"path": not_an_archive.to_str().unwrap()})).unwrap_err();
+        assert!(error.invalid_request, "{}", error.message);
+
+        // An archive with no document part is a broken package, not an empty
+        // document.
+        let no_body = root.path().join("empty.docx");
+        archive_at(&no_body, &[("word/styles.xml", STYLES_XML)]);
+
+        let error = read_structured_document(&json!({"path": no_body.to_str().unwrap()})).unwrap_err();
+        assert!(error.invalid_request, "{}", error.message);
+    }
+
+    const PRESENTATION_XML: &str = concat!(
+        r#"<?xml version="1.0"?><p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst>"#,
+        r#"<p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId3"/>"#,
+        r#"</p:sldIdLst></p:presentation>"#
+    );
+
+    const PRESENTATION_RELS: &str = concat!(
+        r#"<?xml version="1.0"?><Relationships>"#,
+        r#"<Relationship Id="rId1" Target="slideMasters/slideMaster1.xml"/>"#,
+        r#"<Relationship Id="rId2" Target="slides/slide1.xml"/>"#,
+        r#"<Relationship Id="rId3" Target="slides/slide2.xml"/>"#,
+        r#"</Relationships>"#
+    );
+
+    const SLIDE_ONE: &str = concat!(
+        r#"<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree>"#,
+        r#"<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>"#,
+        r#"<p:txBody><a:p><a:r><a:t>Alpha title</a:t></a:r></a:p></p:txBody></p:sp>"#,
+        r#"<p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>"#,
+        r#"<p:txBody><a:p><a:r><a:t>First &amp; second</a:t></a:r></a:p>"#,
+        r#"<a:p><a:r><a:t>Third</a:t></a:r></a:p></p:txBody></p:sp>"#,
+        r#"<p:pic><p:nvPicPr/></p:pic>"#,
+        r#"<p:sp><p:nvSpPr><p:cNvSpPr/><p:nvPr/></p:nvSpPr>"#,
+        r#"<p:spPr><a:prstGeom prst="rect"/></p:spPr></p:sp>"#,
+        r#"</p:spTree></p:cSld></p:sld>"#
+    );
+
+    const SLIDE_TWO: &str = concat!(
+        r#"<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree>"#,
+        r#"<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>"#,
+        r#"<p:txBody><a:p><a:r><a:t>Bravo title</a:t></a:r></a:p></p:txBody></p:sp>"#,
+        r#"<p:graphicFrame><a:graphic><a:graphicData><a:tbl><a:tblPr/>"#,
+        r#"<a:tr><a:tc><a:txBody><a:p><a:r><a:t>A1</a:t></a:r></a:p></a:txBody></a:tc>"#,
+        r#"<a:tc><a:txBody><a:p><a:r><a:t>B1</a:t></a:r></a:p></a:txBody></a:tc></a:tr>"#,
+        r#"<a:tr><a:tc><a:txBody><a:p><a:r><a:t>A2</a:t></a:r></a:p></a:txBody></a:tc>"#,
+        r#"<a:tc><a:txBody><a:p><a:r><a:t>B2</a:t></a:r></a:p></a:txBody></a:tc></a:tr>"#,
+        r#"</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#,
+        r#"</p:spTree></p:cSld></p:sld>"#
+    );
+
+    #[test]
+    fn a_presentation_is_read_without_powerpoint_at_all() {
+        let root = tempfile::tempdir().unwrap();
+        let deck = root.path().join("deck.pptx");
+        archive_at(
+            &deck,
+            &[
+                ("ppt/presentation.xml", PRESENTATION_XML),
+                ("ppt/_rels/presentation.xml.rels", PRESENTATION_RELS),
+                ("ppt/slides/slide1.xml", SLIDE_ONE),
+                ("ppt/slides/slide2.xml", SLIDE_TWO),
+            ],
+        );
+
+        let read =
+            read_structured_presentation(&json!({"path": deck.to_str().unwrap()})).unwrap();
+
+        assert_eq!(read["capability"], "presentation.read");
+        assert_eq!(read["selectedProvider"], "local-structured");
+        assert_eq!(read["operationResult"]["slideCount"], 2);
+
+        let slides = read["operationResult"]["slides"].as_array().unwrap();
+
+        // Slides come out in presentation order, which the relationships decide
+        // -- not in the order the parts happen to sit in the archive.
+        assert_eq!(slides[0]["index"], 1);
+        assert_eq!(slides[0]["title"], "Alpha title");
+        // A shape's own paragraphs are separated the way the application
+        // reports them.
+        assert_eq!(slides[0]["body"], "First & second\rThird");
+        assert_eq!(slides[0]["text"], "Alpha title\nFirst & second\rThird\n");
+        assert_eq!(slides[0]["imageCount"], 1);
+        assert_eq!(slides[0]["tableCount"], 0);
+        // The placeholders are not auto shapes; the one with geometry is.
+        assert_eq!(slides[0]["basicShapeCount"], 1);
+        assert_eq!(slides[0]["tableCells"], json!([]));
+
+        assert_eq!(slides[1]["index"], 2);
+        assert_eq!(slides[1]["title"], "Bravo title");
+        assert_eq!(slides[1]["tableCount"], 1);
+        // A table has no text frame, so it does not become the slide's body.
+        assert_eq!(slides[1]["body"], "");
+        assert_eq!(slides[1]["tableCells"], json!(["A1", "B1", "A2", "B2"]));
+    }
+
+    #[test]
+    fn a_slide_the_archive_does_not_contain_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let deck = root.path().join("dangling.pptx");
+        archive_at(
+            &deck,
+            &[
+                ("ppt/presentation.xml", PRESENTATION_XML),
+                ("ppt/_rels/presentation.xml.rels", PRESENTATION_RELS),
+                ("ppt/slides/slide1.xml", SLIDE_ONE),
+            ],
+        );
+
+        let error =
+            read_structured_presentation(&json!({"path": deck.to_str().unwrap()})).unwrap_err();
+        assert!(
+            error.message.contains("slide2"),
+            "message was {}",
+            error.message
+        );
+
+        // A relationship the presentation names but the package never declares
+        // is refused for what it is, rather than silently dropping a slide.
+        let unresolved = root.path().join("unresolved.pptx");
+        archive_at(
+            &unresolved,
+            &[
+                ("ppt/presentation.xml", PRESENTATION_XML),
+                (
+                    "ppt/_rels/presentation.xml.rels",
+                    r#"<Relationships><Relationship Id="rId2" Target="slides/slide1.xml"/></Relationships>"#,
+                ),
+                ("ppt/slides/slide1.xml", SLIDE_ONE),
+            ],
+        );
+
+        let error =
+            read_structured_presentation(&json!({"path": unresolved.to_str().unwrap()})).unwrap_err();
+        assert!(
+            error.message.contains("rId3"),
+            "message was {}",
+            error.message
+        );
+    }
+
+    /// A one-pixel PNG, so an image can be inserted without shipping a picture
+    /// into the repository.
+    #[cfg(target_os = "macos")]
+    const SAFE_TEST_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5,
+        0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64,
+        0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00,
+        0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// A directory of this test's own, removed when it finishes.
+    #[cfg(target_os = "macos")]
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ai-os-structured-{label}-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// The document counterpart of the workbook agreement test: a .docx Word
+    /// itself wrote has to read the same WITHOUT Word.
+    ///
+    /// Both providers answer `document.read`, so a caller must not be able to
+    /// tell which one answered. Only Word is asked to write, so what is being
+    /// compared is a real Word document rather than one this test invented.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft Word"]
+    fn structured_and_word_agree_on_the_same_document() {
+        let root = scratch("word-agreement");
+        let source = root.join("Structured-Word-Input.docx");
+        let document = root.join("Structured-Word-Agreement.docx");
+        let image = root.join("safe-test-image.png");
+        std::fs::write(&image, SAFE_TEST_PNG).unwrap();
+
+        crate::document::word::create_word_document(&json!({
+            "path": source,
+            "title": "Structured Agreement",
+            "body": "First paragraph\nSecond paragraph\nThird paragraph"
+        }))
+        .unwrap();
+
+        // The edit is what puts a heading, an image and a table in the file, so
+        // the comparison covers more than plain text.
+        crate::document::word::edit_word_document(&json!({
+            "source": source,
+            "destination": document,
+            "paragraphIndex": 4,
+            "paragraphText": "Third paragraph changed",
+            "headingIndex": 1,
+            "headingBold": true,
+            "headingItalic": true,
+            "headingFontSize": 18.0,
+            "imagePath": image,
+            "table": {"rows": 2, "columns": 2, "cells": ["A1", "B1", "A2", "B2"]}
+        }))
+        .unwrap();
+
+        let with_word =
+            crate::document::word::read_word_document(&json!({"path": document})).unwrap();
+        let without_word =
+            read_structured_document(&json!({"path": document.to_str().unwrap()})).unwrap();
+
+        assert_eq!(with_word["capability"], without_word["capability"]);
+        assert_eq!(with_word["selectedProvider"], "microsoft-word");
+        assert_eq!(without_word["selectedProvider"], "local-structured");
+
+        let word = &with_word["operationResult"];
+        let structured = &without_word["operationResult"];
+
+        // Word's paragraph count is not the file's. It counts an end-of-row
+        // mark for every table row, and a mark of its own around an inline
+        // drawing -- neither of which the document declares as a paragraph.
+        // Rather than drop the field from the comparison or teach this layer to
+        // imitate a word processor's user interface, the difference is stated
+        // exactly and checked.
+        let (rows, drawings) = {
+            let raw = std::fs::File::open(&document).unwrap();
+            let mut package = zip::ZipArchive::new(raw).unwrap();
+            let xml = read_part(&mut package, "word/document.xml")
+                .unwrap()
+                .unwrap();
+            let body = element_bodies(&xml, "w:body")
+                .first()
+                .copied()
+                .unwrap_or(&xml)
+                .to_owned();
+
+            (
+                element_bodies(&body, "w:tr").len() as u64,
+                element_tags(&body, "w:drawing").len() as u64,
+            )
+        };
+
+        assert_eq!(
+            word["paragraphCount"].as_u64().unwrap(),
+            structured["paragraphCount"].as_u64().unwrap() + rows + drawings,
+            "Word counted {} paragraphs, the file declares {} with {rows} table rows and {drawings} drawings",
+            word["paragraphCount"],
+            structured["paragraphCount"]
+        );
+
+        for field in [
+            "tableCount",
+            "imageCount",
+            "headingBold",
+            "headingItalic",
+            "headingFontSize",
+            "tableCells",
+        ] {
+            assert_eq!(
+                word[field], structured[field],
+                "{field} disagrees: Word said {}, this layer said {}",
+                word[field], structured[field]
+            );
+        }
+
+        // Word's own text carries cell and row markers this layer does not
+        // invent, so the paragraphs are compared rather than the byte string.
+        let structured_text = structured["text"].as_str().unwrap();
+        for paragraph in [
+            "Structured Agreement",
+            "First paragraph",
+            "Second paragraph",
+            "Third paragraph changed",
+        ] {
+            assert!(
+                structured_text.contains(&format!("{paragraph}\r")),
+                "{paragraph} missing from {structured_text:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The presentation counterpart: a .pptx PowerPoint itself wrote has to
+    /// read the same WITHOUT PowerPoint.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft PowerPoint"]
+    fn structured_and_powerpoint_agree_on_the_same_presentation() {
+        let root = scratch("powerpoint-agreement");
+        let deck = root.join("Structured-PowerPoint-Agreement.pptx");
+        let image = root.join("safe-test-image.png");
+        std::fs::write(&image, SAFE_TEST_PNG).unwrap();
+
+        crate::document::powerpoint::create_powerpoint_presentation(&json!({
+            "path": deck,
+            "imagePath": image,
+            "slides": [
+                {"title": "Slide 1", "body": "Body 1"},
+                {"title": "Slide 2", "body": "Body 2"},
+                {"title": "Slide 3", "body": "Body 3"}
+            ],
+            "table": {"rows": 2, "columns": 2}
+        }))
+        .unwrap();
+
+        let with_powerpoint =
+            crate::document::powerpoint::read_powerpoint_presentation(&json!({"path": deck}))
+                .unwrap();
+        let without_powerpoint =
+            read_structured_presentation(&json!({"path": deck.to_str().unwrap()})).unwrap();
+
+        assert_eq!(
+            with_powerpoint["operationResult"]["slideCount"],
+            without_powerpoint["operationResult"]["slideCount"]
+        );
+
+        let powerpoint = with_powerpoint["operationResult"]["slides"]
+            .as_array()
+            .unwrap();
+        let structured = without_powerpoint["operationResult"]["slides"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(powerpoint.len(), structured.len());
+
+        for (from_powerpoint, from_structured) in powerpoint.iter().zip(structured) {
+            for field in ["index", "title", "body", "imageCount", "tableCount", "tableCells"] {
+                assert_eq!(
+                    from_powerpoint[field], from_structured[field],
+                    "{field} disagrees on slide {}: PowerPoint said {}, this layer said {}",
+                    from_powerpoint["index"], from_powerpoint[field], from_structured[field]
+                );
+            }
+        }
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// A directory Excel can always read from.
