@@ -42,9 +42,9 @@ const GRAPH_CAPABILITIES: &[&str] = &[
 /// a capability rather than a set of per-application integrations: when no
 /// spreadsheet application is installed, this still answers.
 ///
-/// It declares only `spreadsheet.read` because that is all that is implemented.
-/// It previously declared four capabilities with no implementation at all.
-const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &["spreadsheet.read"];
+/// It declares only what is implemented. It previously declared four
+/// capabilities with no implementation at all.
+const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &["spreadsheet.read", "spreadsheet.create"];
 
 fn app_exists(path: &str) -> bool {
     std::path::Path::new(path).exists()
@@ -183,6 +183,7 @@ mod tests {
         assert!(structured.available);
         assert!(structured.local);
         assert!(structured.supports("spreadsheet.read"));
+        assert!(structured.supports("spreadsheet.create"));
 
         // It must never outrank an installed application, which reads its own
         // format with higher fidelity.
@@ -202,12 +203,7 @@ mod tests {
         }
 
         // And it declares nothing it cannot execute.
-        for unimplemented in [
-            "document.read",
-            "document.create",
-            "spreadsheet.create",
-            "spreadsheet.edit",
-        ] {
+        for unimplemented in ["document.read", "document.create", "spreadsheet.edit"] {
             assert!(
                 !structured.supports(unimplemented),
                 "the structured layer does not implement {unimplemented} yet"

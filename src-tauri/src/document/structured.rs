@@ -85,6 +85,57 @@ fn require_existing_path<'a>(
     Ok(path)
 }
 
+fn require_new_path<'a>(
+    input: &'a Value,
+    operation: &str,
+    extension: &str,
+) -> Result<&'a str, StructuredError> {
+    let path = input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| StructuredError::invalid(format!("{operation} requires path")))?;
+
+    let target = Path::new(path);
+
+    if !target.is_absolute() {
+        return Err(StructuredError::invalid(format!(
+            "{operation} requires an absolute path"
+        )));
+    }
+
+    let actual = target
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+
+    if actual != extension {
+        return Err(StructuredError::invalid(format!(
+            "{operation} requires a .{extension} path"
+        )));
+    }
+
+    if target.exists() {
+        return Err(StructuredError::invalid(format!(
+            "{operation} refuses to overwrite an existing path"
+        )));
+    }
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| StructuredError::invalid(format!("{operation} requires an absolute path")))?;
+
+    if !parent.is_dir() {
+        return Err(StructuredError::invalid(format!(
+            "{operation} parent directory does not exist"
+        )));
+    }
+
+    Ok(path)
+}
+
 /// `B12` -> `(12, 2)`. Returns None for a reference the format does not permit.
 fn parse_cell_reference(reference: &str) -> Option<(usize, usize)> {
     let mut column = 0usize;
@@ -106,6 +157,43 @@ fn parse_cell_reference(reference: &str) -> Option<(usize, usize)> {
     }
 
     (row > 0 && column > 0).then_some((row, column))
+}
+
+fn column_letters(mut column: usize) -> String {
+    let mut letters = String::new();
+
+    while column > 0 {
+        let remainder = (column - 1) % 26;
+        letters.insert(0, (b'A' + remainder as u8) as char);
+        column = (column - 1) / 26;
+    }
+
+    letters
+}
+
+/// Text made safe to place inside an XML element.
+///
+/// Only the characters that would change the document's structure are escaped;
+/// `>` is included because a literal `]]>` sequence is not permitted in content.
+fn encode_entities(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&apos;"),
+            // Control characters other than tab, newline and carriage return
+            // are not legal XML at all, and a spreadsheet cell has no use for
+            // them.
+            character if (character as u32) < 0x20 && !matches!(character, '\t' | '\n' | '\r') => {}
+            character => output.push(character),
+        }
+    }
+
+    output
 }
 
 /// XML text with the five predefined entities resolved.
@@ -482,6 +570,194 @@ pub(crate) fn read_structured_spreadsheet(input: &Value) -> Result<Value, Struct
     }))
 }
 
+/// The parts of a minimal but conformant XLSX package.
+///
+/// Excel is strict about the package even when it is lenient about the sheet:
+/// omit the content types or the workbook relationships and it refuses the file
+/// outright rather than opening it partially. `styles.xml` is included for the
+/// same reason -- a workbook without one is rejected by some readers even
+/// though nothing in it is styled.
+fn spreadsheet_parts(rows: &[Vec<String>]) -> Vec<(&'static str, String)> {
+    let mut shared: Vec<String> = Vec::new();
+    let mut sheet = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+    );
+
+    for (row_index, row) in rows.iter().enumerate() {
+        let row_number = row_index + 1;
+        sheet.push_str(&format!("<row r=\"{row_number}\">"));
+
+        for (column_index, cell) in row.iter().enumerate() {
+            if cell.is_empty() {
+                continue;
+            }
+
+            let reference = format!("{}{row_number}", column_letters(column_index + 1));
+
+            // A value that is a number is written as one, so the file says the
+            // same thing a spreadsheet application would have written. Anything
+            // else is a shared string, which is how Excel stores text.
+            match cell.parse::<f64>() {
+                Ok(number) if number.is_finite() && !cell.trim().is_empty() => {
+                    sheet.push_str(&format!("<c r=\"{reference}\"><v>{cell}</v></c>"));
+                }
+                _ => {
+                    let index = match shared.iter().position(|existing| existing == cell) {
+                        Some(index) => index,
+                        None => {
+                            shared.push(cell.clone());
+                            shared.len() - 1
+                        }
+                    };
+                    sheet.push_str(&format!(
+                        "<c r=\"{reference}\" t=\"s\"><v>{index}</v></c>"
+                    ));
+                }
+            }
+        }
+
+        sheet.push_str("</row>");
+    }
+
+    sheet.push_str("</sheetData></worksheet>");
+
+    let mut strings = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{}" uniqueCount="{}">"#,
+        shared.len(),
+        shared.len()
+    );
+
+    for value in &shared {
+        strings.push_str(&format!(
+            "<si><t xml:space=\"preserve\">{}</t></si>",
+            encode_entities(value)
+        ));
+    }
+
+    strings.push_str("</sst>");
+
+    vec![
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#
+                .to_owned(),
+        ),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#
+                .to_owned(),
+        ),
+        (
+            "xl/workbook.xml",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#
+                .to_owned(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#
+                .to_owned(),
+        ),
+        (
+            "xl/styles.xml",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>"#
+                .to_owned(),
+        ),
+        ("xl/sharedStrings.xml", strings),
+        ("xl/worksheets/sheet1.xml", sheet),
+    ]
+}
+
+pub(crate) fn create_structured_spreadsheet(input: &Value) -> Result<Value, StructuredError> {
+    let path = require_new_path(input, "spreadsheet.create", "xlsx")?;
+
+    let content = input
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| StructuredError::invalid("spreadsheet.create requires content"))?;
+
+    if content.trim().is_empty() {
+        return Err(StructuredError::invalid("spreadsheet.create requires content"));
+    }
+
+    let rows: Vec<Vec<String>> = content
+        .trim_end_matches('\n')
+        .split('\n')
+        .map(|line| {
+            line.trim_end_matches('\r')
+                .split('\t')
+                .map(str::to_owned)
+                .collect()
+        })
+        .collect();
+
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+
+    if rows.len() > MAX_ROWS || columns > MAX_COLUMNS {
+        return Err(StructuredError::invalid(format!(
+            "spreadsheet.create supports at most {MAX_ROWS} rows and {MAX_COLUMNS} columns"
+        )));
+    }
+
+    if rows.iter().flatten().any(|cell| cell.chars().count() > MAX_CELL_CHARS) {
+        return Err(StructuredError::invalid(format!(
+            "spreadsheet.create supports at most {MAX_CELL_CHARS} characters per cell"
+        )));
+    }
+
+    // Built beside the destination and renamed into place, so a failure part way
+    // through cannot leave a half-written workbook at the path the caller asked
+    // for.
+    let staged = Path::new(path).with_extension(format!("partial-{}.xlsx", std::process::id()));
+
+    let outcome = (|| -> Result<(), StructuredError> {
+        let file = std::fs::File::create(&staged)
+            .map_err(|_| StructuredError::execution("the workbook could not be created"))?;
+        let mut archive = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        for (name, body) in spreadsheet_parts(&rows) {
+            archive
+                .start_file(name, options)
+                .map_err(|_| StructuredError::execution(format!("{name} could not be written")))?;
+            std::io::Write::write_all(&mut archive, body.as_bytes())
+                .map_err(|_| StructuredError::execution(format!("{name} could not be written")))?;
+        }
+
+        archive
+            .finish()
+            .map_err(|_| StructuredError::execution("the workbook could not be finished"))?;
+
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        let _ = std::fs::remove_file(&staged);
+        return Err(error);
+    }
+
+    std::fs::rename(&staged, path).map_err(|_| {
+        let _ = std::fs::remove_file(&staged);
+        StructuredError::execution("the finished workbook could not be moved into place")
+    })?;
+
+    Ok(json!({
+        "path": path,
+        "status": "created",
+        "rows": rows.len(),
+        "columns": columns,
+        "sheets": 1,
+        "provider": "local-structured",
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,6 +900,110 @@ mod tests {
         assert!(error.invalid_request);
     }
 
+    #[test]
+    fn column_letters_are_the_inverse_of_cell_references() {
+        for (column, letters) in [(1, "A"), (26, "Z"), (27, "AA"), (52, "AZ"), (53, "BA")] {
+            assert_eq!(column_letters(column), letters);
+            assert_eq!(
+                parse_cell_reference(&format!("{letters}1")),
+                Some((1, column))
+            );
+        }
+    }
+
+    #[test]
+    fn written_text_survives_being_read_back_by_this_same_layer() {
+        let root = tempfile::tempdir().unwrap();
+        let workbook = root.path().join("written.xlsx");
+
+        // Every character that would otherwise break the XML, plus a value that
+        // looks like a number and one that only nearly does.
+        let content = "Region\tTotal\nA & B\t42\n<tag>\t3.5\n\"quoted\"\t007-not-a-number\n\tonly-second";
+
+        let created = create_structured_spreadsheet(&json!({
+            "path": workbook.to_str().unwrap(),
+            "content": content,
+        }))
+        .unwrap();
+
+        assert_eq!(created["status"], "created");
+        assert_eq!(created["rows"], 5);
+        assert_eq!(created["columns"], 2);
+        assert!(workbook.is_file());
+
+        let read = read_structured_spreadsheet(&json!({"path": workbook.to_str().unwrap()}))
+            .unwrap();
+
+        assert_eq!(read["status"], "table");
+        assert_eq!(read["sheet"], "Sheet1");
+
+        let rows: Vec<&str> = read["content"].as_str().unwrap().split('\n').collect();
+        assert_eq!(rows[0], "Region\tTotal");
+        assert_eq!(rows[1], "A & B\t42");
+        assert_eq!(rows[2], "<tag>\t3.5");
+        // A string of digits with a leading zero is text, not the number 7.
+        assert_eq!(rows[3], "\"quoted\"\t007-not-a-number");
+        // An empty leading cell stays empty rather than shifting the row left.
+        assert_eq!(rows[4], "\tonly-second");
+    }
+
+    #[test]
+    fn writing_fails_closed_on_overwrite_bounds_and_empty_content() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("taken.xlsx");
+        std::fs::write(&existing, b"already here").unwrap();
+
+        let fresh = root.path().join("fresh.xlsx");
+        let fresh = fresh.to_str().unwrap();
+
+        // An existing file is never replaced.
+        assert!(create_structured_spreadsheet(
+            &json!({"path": existing.to_str().unwrap(), "content": "a"})
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&existing).unwrap(), b"already here");
+
+        for rejected in [
+            json!({"path": fresh}),
+            json!({"path": fresh, "content": ""}),
+            json!({"path": fresh, "content": "   "}),
+            json!({"path": "relative.xlsx", "content": "a"}),
+            json!({"path": root.path().join("wrong.numbers").to_str().unwrap(), "content": "a"}),
+            json!({"path": root.path().join("no").join("dir.xlsx").to_str().unwrap(), "content": "a"}),
+        ] {
+            assert!(
+                create_structured_spreadsheet(&rejected).is_err(),
+                "{rejected} should be rejected"
+            );
+        }
+
+        let too_many_rows = vec!["a"; MAX_ROWS + 1].join("\n");
+        assert!(
+            create_structured_spreadsheet(&json!({"path": fresh, "content": too_many_rows}))
+                .is_err()
+        );
+
+        let too_wide = vec!["a"; MAX_COLUMNS + 1].join("\t");
+        assert!(
+            create_structured_spreadsheet(&json!({"path": fresh, "content": too_wide})).is_err()
+        );
+
+        let too_long = "x".repeat(MAX_CELL_CHARS + 1);
+        assert!(
+            create_structured_spreadsheet(&json!({"path": fresh, "content": too_long})).is_err()
+        );
+
+        // Nothing was left behind by any of the refusals, including the
+        // staged part-file.
+        let leftovers: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name != "taken.xlsx")
+            .collect();
+        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+    }
+
     /// The whole point of this layer: the same workbook, read by Excel and read
     /// without Excel, has to say the same thing.
     ///
@@ -690,5 +1070,71 @@ mod tests {
             .map(|name| name.as_str().unwrap())
             .collect();
         assert!(names.contains(&"Agree"), "names were {names:?}");
+    }
+
+    /// A directory Excel can always read from.
+    ///
+    /// This file is written with no application at all, so Excel has no
+    /// implicit access to it. Opening it from a temp directory makes Excel
+    /// raise a "please locate this file" grant prompt that no automated run
+    /// can answer, and that prompt then blocks every later Excel automation
+    /// until a person dismisses it. Excel's own container is inside its
+    /// sandbox, so a workbook placed there needs no grant.
+    #[cfg(target_os = "macos")]
+    fn excel_readable_workspace(label: &str) -> std::path::PathBuf {
+        let root = std::path::Path::new(&std::env::var("HOME").unwrap())
+            .join("Library/Containers/com.microsoft.Excel/Data/Library/Caches/com.microsoft.Excel")
+            .join(format!("ai-os-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// The other direction, and the one that decides whether this layer can be
+    /// trusted to WRITE: a workbook produced with no application at all has to
+    /// open in Excel and read back as what was written.
+    ///
+    /// A file that only this reader can read would be a private format wearing
+    /// an .xlsx extension.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft Excel"]
+    fn excel_can_open_what_the_structured_layer_wrote() {
+        let root = excel_readable_workspace("structured-write");
+        let workbook = root.join("written-without-excel.xlsx");
+        let workbook_path = workbook.to_str().unwrap();
+
+        create_structured_spreadsheet(&json!({
+            "path": workbook_path,
+            "content": "Region\tTotal\nA & B\t42\n<tag>\t3.5",
+        }))
+        .unwrap();
+
+        // Read it with Excel through the existing provider-neutral read path,
+        // which is a separate osascript invocation and a separate reader.
+        let output = std::process::Command::new("/bin/bash")
+            .arg("-lc")
+            .arg(crate::runtime::openclaw_gateway_adapter::spreadsheet_read_command_for_test(
+                workbook_path,
+            ))
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+
+        assert!(
+            !text.contains("AIOS_FAILED"),
+            "Excel refused the workbook this layer wrote:\n{text}"
+        );
+
+        // Excel renders numbers with a decimal, so the labels are matched
+        // exactly and the numbers by prefix.
+        assert!(text.contains("Region\tTotal"), "Excel read:\n{text}");
+        assert!(text.contains("A & B\t42"), "Excel read:\n{text}");
+        assert!(text.contains("<tag>\t3.5"), "Excel read:\n{text}");
+
+        // The workspace lives inside Excel's container, so it is removed here
+        // rather than by a TempDir guard.
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -30,7 +30,7 @@ cargo test \
     fail "structured reader contract"
   }
 
-grep -q "running 8 tests" "$LOG" || {
+grep -q "running 12 tests" "$LOG" || {
   tail -20 "$LOG"
   fail "structured reader test count changed"
 }
@@ -40,6 +40,8 @@ echo "✅ XML entities decoded, rich-text runs joined"
 echo "✅ worksheets resolved through relationships, a dangling one refused"
 echo "✅ out-of-bounds cells truncate and say so, rather than growing the grid"
 echo "✅ a file that is not an archive is refused, not read as empty"
+echo "✅ writing escapes what would break the XML and keeps text that looks numeric"
+echo "✅ writing refuses to overwrite, and leaves no part-file behind when it refuses"
 
 cargo test \
   --manifest-path src-tauri/Cargo.toml \
@@ -88,5 +90,18 @@ grep -q "test result: ok" "$LOG" || fail "Excel agreement result marker"
 echo "✅ a workbook Excel wrote reads identically WITHOUT Excel"
 echo "✅ escaping, booleans and numbers survive the file round trip"
 echo "✅ worksheet identity agrees with what Excel reports"
+
+AI_OS_EXCEL_EDIT_FIXTURE="$FIXTURE" \
+cargo test \
+  --manifest-path src-tauri/Cargo.toml \
+  document::structured::tests::excel_can_open_what_the_structured_layer_wrote \
+  --lib -- --ignored >"$LOG" 2>&1 || {
+    tail -100 "$LOG"
+    fail "Excel opens what this layer wrote"
+  }
+
+grep -q "test result: ok" "$LOG" || fail "Excel open result marker"
+
+echo "✅ a workbook written WITHOUT Excel opens in Excel and reads back correctly"
 
 echo "PASS $NAME"

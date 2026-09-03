@@ -1554,6 +1554,21 @@ fn execute_spreadsheet_create(
         });
     }
 
+    // Same floor as the read side: Excel writes its own format with the highest
+    // fidelity, but its absence must not remove the capability. The workbook the
+    // structured layer writes is proven to open in Excel.
+    if is_format(&request.input, "path", "xlsx") && !microsoft_office_available() {
+        let output = crate::document::structured::create_structured_spreadsheet(&request.input)
+            .map_err(map_structured_error)?;
+
+        return Ok(OpenClawExecutionResult {
+            output,
+            summary: Some(
+                "AI-OS wrote the spreadsheet directly to the file, without Excel.".to_owned(),
+            ),
+        });
+    }
+
     let (path, session_key, run_id) = start_spreadsheet_create(invoker, request)?;
     finish_spreadsheet_create(invoker, &path, &session_key, &run_id)
 }
@@ -2251,6 +2266,13 @@ fn spreadsheet_create_output(history: &Value, path: &str) -> Option<Value> {
         return Some(serde_json::json!({"path": path, "status": "failed"}));
     }
     None
+}
+
+/// The Excel read command, for tests in other modules that need Excel's own
+/// answer for the same file.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn spreadsheet_read_command_for_test(path: &str) -> String {
+    spreadsheet_read_command_for_selection(path, &SpreadsheetReadSelection::First, false)
 }
 
 fn spreadsheet_read_command(path: &str) -> String {
