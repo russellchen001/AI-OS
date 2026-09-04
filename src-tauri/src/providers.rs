@@ -2618,16 +2618,35 @@ pub(crate) fn set_provider_credential(
     })
 }
 
-/// Whether a Provider instance has a stored credential, answered synchronously.
+/// Whether a Provider instance is configured and connected, from configuration
+/// alone.
 ///
-/// The Office capabilities need this to decide whether Google Workspace is a
-/// candidate at all, and they run on a synchronous path. Asking for the access
-/// token would answer the same question but requires a runtime and can perform
-/// a network refresh, which is not what a routing decision should do.
-pub(crate) fn provider_credential_present(instance_id: &str) -> bool {
-    validate_instance_id(instance_id)
-        .and_then(|account| secret_exists(account, "provider_credential_present"))
-        .unwrap_or(false)
+/// The Office capabilities need this to decide whether a cloud provider is a
+/// candidate at all, on a synchronous path, and it deliberately does NOT touch
+/// the Keychain. An earlier version asked whether the credential existed, which
+/// answered the same question and was wrong for two reasons: a routing decision
+/// should not perform a privileged read, and on macOS every Keychain read from
+/// a rebuilt binary raises an authorization panel -- so merely deciding where
+/// to send a request started prompting the person, and a run that died holding
+/// one of those panels blocked every later Keychain read on the machine
+/// invisibly.
+///
+/// Configuration says whether the account was set up. Whether the credential is
+/// still good is reported by the call that uses it, which is the only place
+/// that can actually know.
+pub(crate) fn provider_instance_connected(instance_id: &str) -> bool {
+    read_provider_instances()
+        .unwrap_or_default()
+        .into_iter()
+        .any(|instance| {
+            instance.id == instance_id
+                && matches!(
+                    instance.connection_state,
+                    ProviderConnectionState::Connected
+                        | ProviderConnectionState::RefreshRequired
+                        | ProviderConnectionState::Expired
+                )
+        })
 }
 
 #[tauri::command]

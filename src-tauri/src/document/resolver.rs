@@ -194,8 +194,17 @@ fn wps_installed() -> bool {
         .any(|path| std::path::Path::new(path).exists())
 }
 
+/// Whether the Google account is set up, from configuration rather than from
+/// the Keychain.
+///
+/// A routing decision must not perform a privileged read. Asking the Keychain
+/// answered the same question and made every rebuilt test binary raise a macOS
+/// authorization panel, which is a bad trade for a fact that configuration
+/// already records. An expired or refresh-needed account still counts as a
+/// candidate: the request is the only thing that can find out, and its error
+/// says exactly what to do.
 fn google_workspace_connected() -> bool {
-    crate::providers::provider_credential_present(crate::google_workspace::office::INSTANCE)
+    crate::providers::provider_instance_connected(crate::google_workspace::office::INSTANCE)
 }
 
 pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {

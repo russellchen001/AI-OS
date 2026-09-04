@@ -521,6 +521,50 @@ pub(crate) mod office {
             .ok_or_else(|| format!("{capability} in Google Workspace requires title"))
     }
 
+    /// A cell that Sheets will store as a number, sent as one.
+    ///
+    /// Sheets writes with USER_ENTERED, so it parses what it is given: send the
+    /// text "42" and it stores the number 42, and the write's own read-back
+    /// validation then compares a string against a number and fails. Sending a
+    /// number in the first place is both what the caller meant and what makes
+    /// the validation agree -- and it is the same rule the local structured
+    /// writer already follows for .xlsx.
+    ///
+    /// The round trip has to be faithful, not merely parseable. `007` parses as
+    /// 7 but is not the same text, so it stays a string -- which does mean
+    /// Sheets will coerce it on the way in and the read-back validation will
+    /// refuse the write. That is a real limit of USER_ENTERED and it fails
+    /// loudly rather than storing something the caller did not ask for.
+    fn cell_value(text: &str) -> Value {
+        let trimmed = text.trim();
+
+        if trimmed.is_empty() {
+            return Value::String(text.to_owned());
+        }
+
+        // Integers are tried first and separately, because serde_json prints
+        // every f64 with a trailing `.0`: going through f64 would make "42"
+        // round trip as "42.0", fail the faithfulness check, and stay a string.
+        if let Ok(whole) = trimmed.parse::<i64>() {
+            if whole.to_string() == trimmed {
+                return Value::Number(whole.into());
+            }
+        }
+
+        if let Ok(number) = trimmed.parse::<f64>() {
+            // `{}` on an f64 prints the shortest text that round trips, so
+            // comparing against it is what rejects "1e3" and "007" -- both
+            // parse, neither is the same text.
+            if number.is_finite() && format!("{number}") == trimmed {
+                if let Some(parsed) = serde_json::Number::from_f64(number) {
+                    return Value::Number(parsed);
+                }
+            }
+        }
+
+        Value::String(text.to_owned())
+    }
+
     /// Rows for Sheets, from either a grid or the tab-separated content the
     /// local spreadsheet capabilities take.
     ///
@@ -548,7 +592,7 @@ pub(crate) mod office {
                 .map(|line| {
                     line.trim_end_matches('\r')
                         .split('\t')
-                        .map(|cell| Value::String(cell.to_owned()))
+                        .map(cell_value)
                         .collect()
                 })
                 .collect(),
@@ -689,9 +733,22 @@ pub(crate) mod office {
                 from_content,
                 vec![
                     vec![json!("Region"), json!("Total")],
-                    vec![json!("North"), json!("42")]
+                    // A number, not the text "42". Sheets writes with
+                    // USER_ENTERED and would store a number either way; sending
+                    // one is what makes the write's read-back validation agree
+                    // instead of comparing a string against a number.
+                    vec![json!("North"), json!(42)]
                 ]
             );
+
+            // Text that only looks numeric stays text, because the round trip
+            // has to be faithful and 007 is not 7.
+            let careful = values_of(&json!({"content": "007\t1e3\t3.5\t-2\tnot a number"})).unwrap();
+            assert_eq!(careful[0][0], json!("007"));
+            assert_eq!(careful[0][1], json!("1e3"));
+            assert_eq!(careful[0][2], json!(3.5));
+            assert_eq!(careful[0][3], json!(-2));
+            assert_eq!(careful[0][4], json!("not a number"));
 
             // An explicit grid is passed through, numbers intact.
             let from_grid = values_of(&json!({"values": [["Region", "Total"], ["North", 42]]})).unwrap();
@@ -723,13 +780,91 @@ pub(crate) mod office {
 
 /// The live round trip, against the person's real Google account.
 ///
-/// Opt-in only. It creates a real file in their Drive and does NOT delete it:
-/// deleting someone's data to tidy up after a test is not this code's decision
-/// to make, and the title says plainly where the file came from.
+/// Opt-in only, because it creates a real file in their Drive.
+///
+/// It cleans up after itself, on the owner's instruction, by moving THAT ONE
+/// file to Drive's trash -- never by deleting it outright. Trashing is
+/// reversible and the file is recoverable for thirty days; a hard delete is
+/// not, and tidying up after a test is not a good enough reason to destroy
+/// something irreversibly in someone's account. It touches only the id this
+/// test created, so nothing else can be caught by it, and if the cleanup fails
+/// the test says so rather than passing quietly and leaving a file behind
+/// unmentioned.
 #[cfg(test)]
 mod live {
     use super::*;
     use serde_json::json;
+
+    const TITLE_PREFIX: &str = "AI-OS Office capability check";
+
+    /// Move every file this test has ever created to Drive's trash.
+    ///
+    /// Matching is by the title prefix only this test writes, so nothing else
+    /// can be caught by it, and `trashed: true` is a reversible move rather
+    /// than a hard delete.
+    ///
+    /// This runs at the START as well as the end, because the first live run
+    /// failed after the sheet was created and before the cleanup, and left an
+    /// orphan behind. A cleanup that only runs on success is not a cleanup.
+    fn trash_leftovers() -> Vec<String> {
+        // Built through the URL type so the query is encoded correctly rather
+        // than by hand: the filter contains spaces, quotes and an equals sign.
+        let mut url = reqwest::Url::parse("https://www.googleapis.com/drive/v3/files")
+            .expect("the Drive files URL is a constant");
+        url.query_pairs_mut()
+            .append_pair(
+                "q",
+                &format!("name contains '{TITLE_PREFIX}' and trashed = false"),
+            )
+            .append_pair("fields", "files(id,name)")
+            .append_pair("pageSize", "100");
+
+        // The step markers stay. This test makes several network calls and the
+        // last time one of them hung, the run sat silent for nine minutes with
+        // no way to tell which call it was stuck in. `--nocapture` shows these;
+        // an ordinary run does not.
+        eprintln!("AIOS_STEP listing the test's own files in Drive");
+
+        let listed = match tauri::async_runtime::block_on(request(
+            reqwest::Method::GET,
+            url.to_string(),
+            None,
+        )) {
+            Ok(listed) => listed,
+            Err(error) => panic!("could not list the test's own files to clean up: {error}"),
+        };
+
+        eprintln!("AIOS_STEP listed");
+
+        let mut trashed = Vec::new();
+
+        for file in listed["files"].as_array().cloned().unwrap_or_default() {
+            let (Some(id), Some(name)) = (
+                file["id"].as_str().map(str::to_owned),
+                file["name"].as_str().map(str::to_owned),
+            ) else {
+                continue;
+            };
+
+            // Belt and braces: the query said "contains", this insists on the
+            // prefix, so a file of the person's that merely mentions the phrase
+            // is never touched.
+            if !name.starts_with(TITLE_PREFIX) {
+                continue;
+            }
+
+            tauri::async_runtime::block_on(request(
+                reqwest::Method::PATCH,
+                format!("https://www.googleapis.com/drive/v3/files/{id}"),
+                Some(json!({"trashed": true})),
+            ))
+            .unwrap_or_else(|error| panic!("could not trash {name} ({id}): {error}"));
+
+            trashed.push(format!("{name} ({id})"));
+        }
+
+        trashed
+    }
 
     #[test]
     #[ignore = "requires a connected Google Workspace account and AI_OS_GOOGLE_LIVE"]
@@ -738,10 +873,16 @@ mod live {
             return;
         }
 
+        for cleaned in trash_leftovers() {
+            println!("AIOS_LIVE_SHEET cleaned up from an earlier run: {cleaned}");
+        }
+
         let title = format!(
-            "AI-OS Office capability check {}",
+            "{TITLE_PREFIX} {}",
             chrono::Utc::now().format("%Y-%m-%d %H:%M:%S")
         );
+
+        eprintln!("AIOS_STEP creating {title}");
 
         // Created through the provider-neutral entry point, with the same
         // tab-separated body a local .xlsx would be created from.
@@ -761,6 +902,8 @@ mod live {
             .to_owned();
         assert!(!file_id.is_empty());
 
+        eprintln!("AIOS_STEP created, reading back");
+
         // Read it back in a separate call, the way a caller would.
         let read = tauri::async_runtime::block_on(office::spreadsheet_read(&json!({
             "resource": {"fileId": file_id, "range": "Sheet1!A1:B2"},
@@ -775,6 +918,8 @@ mod live {
         assert_eq!(rows.len(), 2, "read back {rows:#?}");
         assert_eq!(rows[0][0], "Region");
         assert_eq!(rows[1][0], "North");
+
+        eprintln!("AIOS_STEP read back, editing");
 
         // And an edit, which validates itself by reading back inside the
         // adapter -- so this asserting the new value is a second, independent
@@ -796,8 +941,21 @@ mod live {
             .unwrap_or_default();
         assert_eq!(rows[1][0], "South", "the edit did not take: {rows:#?}");
 
-        println!(
-            "AIOS_LIVE_SHEET left in Drive on purpose: {title} ({file_id})"
+        eprintln!("AIOS_STEP edited, cleaning up");
+
+        // Clean up exactly what this test made, and nothing else.
+        //
+        // `trashed: true` is a move to Drive's trash, which the person can undo
+        // for thirty days. `files.delete` would be a hard delete, and tidying up
+        // after a test does not earn that.
+        let cleaned = trash_leftovers();
+        assert!(
+            cleaned.iter().any(|entry| entry.contains(&file_id)),
+            "the round trip worked but {title} ({file_id}) was not cleaned up"
         );
+
+        for entry in cleaned {
+            println!("AIOS_LIVE_SHEET moved to Drive trash: {entry}");
+        }
     }
 }
