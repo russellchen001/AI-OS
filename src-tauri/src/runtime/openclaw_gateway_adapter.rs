@@ -32,6 +32,15 @@ const SPREADSHEET_CONVERT_ACTION: &str = "spreadsheet.convert";
 /// iWork application here reads. macOS reads and writes it without either.
 const DOCUMENT_MERGE_ACTION: &str = "document.merge";
 const DOCUMENT_SPLIT_ACTION: &str = "document.split";
+/// Turning a page, locking a file and unlocking it again are the same kind of
+/// work as merging and splitting: they are done to the PDF itself, by the same
+/// reader, on any machine.
+const DOCUMENT_ROTATE_ACTION: &str = "document.rotate";
+const DOCUMENT_ENCRYPT_ACTION: &str = "document.encrypt";
+const DOCUMENT_DECRYPT_ACTION: &str = "document.decrypt";
+/// Marks on a document, and values in its form, are part of the document too.
+const DOCUMENT_ANNOTATE_ACTION: &str = "document.annotate";
+const DOCUMENT_FILL_ACTION: &str = "document.fill";
 const PRESENTATION_EDIT_ACTION: &str = "presentation.edit";
 const PRESENTATION_CONVERT_ACTION: &str = "presentation.convert";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
@@ -141,6 +150,51 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == DOCUMENT_SPLIT_ACTION {
         return execute_document_split(request);
+    }
+    if request.action.as_str() == DOCUMENT_ROTATE_ACTION {
+        return execute_local_pdf(
+            request,
+            DOCUMENT_ROTATE_ACTION,
+            "source",
+            crate::document::pdf::rotate_pdf_document,
+            "AI-OS turned the pages.",
+        );
+    }
+    if request.action.as_str() == DOCUMENT_ENCRYPT_ACTION {
+        return execute_local_pdf(
+            request,
+            DOCUMENT_ENCRYPT_ACTION,
+            "source",
+            crate::document::pdf::encrypt_pdf_document,
+            "AI-OS locked the PDF with a password.",
+        );
+    }
+    if request.action.as_str() == DOCUMENT_DECRYPT_ACTION {
+        return execute_local_pdf(
+            request,
+            DOCUMENT_DECRYPT_ACTION,
+            "source",
+            crate::document::pdf::decrypt_pdf_document,
+            "AI-OS removed the password from the PDF.",
+        );
+    }
+    if request.action.as_str() == DOCUMENT_ANNOTATE_ACTION {
+        return execute_local_pdf(
+            request,
+            DOCUMENT_ANNOTATE_ACTION,
+            "source",
+            crate::document::pdf::annotate_pdf_document,
+            "AI-OS left the notes on the PDF.",
+        );
+    }
+    if request.action.as_str() == DOCUMENT_FILL_ACTION {
+        return execute_local_pdf(
+            request,
+            DOCUMENT_FILL_ACTION,
+            "source",
+            crate::document::pdf::fill_pdf_form,
+            "AI-OS filled in the form.",
+        );
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -2067,6 +2121,42 @@ fn execute_presentation_convert(
             false,
         )),
     }
+}
+
+/// Run one of the PDF-only capabilities.
+///
+/// Every one of them resolves the same way and fails the same way, so the
+/// routing lives here once instead of being copied per capability -- which is
+/// how a capability ends up declared and unreachable.
+fn execute_local_pdf(
+    request: &OpenClawExecutionRequest,
+    action: &str,
+    routed_on: &str,
+    run: fn(&serde_json::Value) -> Result<serde_json::Value, crate::document::pdf::PdfError>,
+    summary: &str,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    use crate::document::resolver::OfficeApplication;
+
+    let route = office_route(action, &request.input, routed_on)
+        .ok_or_else(|| no_route(action, &request.input, routed_on))?;
+
+    if route.application != OfficeApplication::LocalPdf {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office application {:?} has no {action} adapter.",
+                route.application
+            ),
+            false,
+        ));
+    }
+
+    let output = run(&request.input).map_err(map_pdf_error)?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some(summary.to_owned()),
+    })
 }
 
 fn execute_document_merge(

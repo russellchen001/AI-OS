@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-NAME="P15 PDF (read, recognise, merge, split)"
+NAME="P15 PDF (read, recognise, merge, split, rotate, lock, annotate, fill)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$ROOT/src-tauri/Cargo.toml"
 LOG="${AIOS_RUN_DIR:-${TMPDIR:-/tmp}}/pdf.log"
@@ -18,8 +18,9 @@ echo "$NAME"
 
 # The Office skill could WRITE a PDF from every application it drives and READ
 # none, which made PDF a one-way street: hand it a PDF and it could do nothing.
-# PDFKit and Vision are part of macOS, so this needs no application and no
-# installed dependency.
+# Everything here but recognition is done in Rust, on the file itself, so it
+# needs no application AND no particular operating system -- which is why the
+# rotate and password tests below are ordinary tests rather than macOS ones.
 
 cargo test --manifest-path "$MANIFEST" --lib document::pdf::tests \
   >"$LOG" 2>&1 || {
@@ -27,7 +28,7 @@ cargo test --manifest-path "$MANIFEST" --lib document::pdf::tests \
     fail "PDF request contract"
   }
 
-grep -q "running 3 tests" "$LOG" || {
+grep -q "running 5 tests" "$LOG" || {
   tail -20 "$LOG"
   fail "PDF contract test count changed"
 }
@@ -35,6 +36,15 @@ grep -q "running 3 tests" "$LOG" || {
 echo "✅ page ranges read the way people write them, and a stray comma is tolerated"
 echo "✅ paths fail closed before anything is opened, overwrite included"
 echo "✅ a merge refuses a destination that is one of its own sources"
+echo "✅ pages turn, relatively, and keep their words -- checked in the written file"
+echo "✅ a password really locks the file: the words are gone from the bytes"
+echo "✅ the wrong password is refused, not answered with an empty document"
+echo "✅ the password is never echoed back into the result"
+echo "✅ unlocking gives back a file that opens with nothing at all"
+echo "✅ notes are left on the page asked for, and read back with their author"
+echo "✅ a form reports its fields, and a widget is not mistaken for a remark"
+echo "✅ filling sets the value AND the appearance state the document uses"
+echo "✅ one wrong field name leaves no half-filled form behind"
 
 cargo test --manifest-path "$MANIFEST" --lib \
   document::resolver::tests::every_capability_and_format_reaches_the_adapter_it_should \
@@ -43,7 +53,7 @@ cargo test --manifest-path "$MANIFEST" --lib \
     fail "PDF routing"
   }
 
-echo "✅ .pdf reaches the PDF adapter, and merge and split are PDF-only"
+echo "✅ .pdf reaches the PDF adapter, and page, lock and form work are PDF-only"
 
 cargo test --manifest-path "$MANIFEST" --lib \
   document::pdf::tests::pdf_is_read_split_merged_and_recognised_real_e2e \

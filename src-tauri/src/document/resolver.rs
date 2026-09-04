@@ -445,7 +445,16 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             authorized: true,
             executable: true,
             priority: 0,
-            capabilities: &["document.read", "document.merge", "document.split"],
+            capabilities: &[
+                "document.read",
+                "document.merge",
+                "document.split",
+                "document.rotate",
+                "document.encrypt",
+                "document.decrypt",
+                "document.annotate",
+                "document.fill",
+            ],
             native_formats: &["pdf"],
             import_formats: &[],
             export_formats: &["pdf"],
@@ -792,6 +801,11 @@ mod tests {
             ("document.read", "pdf", OfficeApplication::LocalPdf),
             ("document.merge", "pdf", OfficeApplication::LocalPdf),
             ("document.split", "pdf", OfficeApplication::LocalPdf),
+            ("document.rotate", "pdf", OfficeApplication::LocalPdf),
+            ("document.encrypt", "pdf", OfficeApplication::LocalPdf),
+            ("document.decrypt", "pdf", OfficeApplication::LocalPdf),
+            ("document.annotate", "pdf", OfficeApplication::LocalPdf),
+            ("document.fill", "pdf", OfficeApplication::LocalPdf),
         ] {
             assert_eq!(
                 route_on(&everything, capability, format),
@@ -844,9 +858,20 @@ mod tests {
             // PDF needs no application, so it survives here too.
             ("document.read", "pdf", Some(OfficeApplication::LocalPdf)),
             ("document.merge", "pdf", Some(OfficeApplication::LocalPdf)),
-            // But rearranging pages is only a PDF operation.
+            ("document.rotate", "pdf", Some(OfficeApplication::LocalPdf)),
+            ("document.encrypt", "pdf", Some(OfficeApplication::LocalPdf)),
+            ("document.decrypt", "pdf", Some(OfficeApplication::LocalPdf)),
+            ("document.annotate", "pdf", Some(OfficeApplication::LocalPdf)),
+            ("document.fill", "pdf", Some(OfficeApplication::LocalPdf)),
+            // But rearranging pages, turning them and locking the file are only
+            // PDF operations.
             ("document.merge", "docx", None),
             ("document.split", "docx", None),
+            ("document.rotate", "docx", None),
+            ("document.encrypt", "docx", None),
+            ("document.decrypt", "docx", None),
+            ("document.annotate", "docx", None),
+            ("document.fill", "docx", None),
         ] {
             assert_eq!(
                 route_on(&bare, capability, format),

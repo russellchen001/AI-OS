@@ -103,6 +103,15 @@ const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &[
     // macOS-specific conversion path.
     "document.merge",
     "document.split",
+    // Turning pages, and putting a password on a PDF or taking one off, are the
+    // same no-application work on the same file.
+    "document.rotate",
+    "document.encrypt",
+    "document.decrypt",
+    // A note in the margin and a value in a form field are written on the PDF
+    // itself, so they need no application either.
+    "document.annotate",
+    "document.fill",
     "presentation.read",
     "spreadsheet.read",
     "spreadsheet.create",
@@ -248,6 +257,23 @@ mod tests {
         assert!(structured.supports("spreadsheet.create"));
         assert!(structured.supports("document.read"));
         assert!(structured.supports("presentation.read"));
+
+        // Page work and passwords are done to the PDF itself, so they belong to
+        // the layer that needs neither an application nor a platform.
+        for pdf_only in [
+            "document.merge",
+            "document.split",
+            "document.rotate",
+            "document.encrypt",
+            "document.decrypt",
+            "document.annotate",
+            "document.fill",
+        ] {
+            assert!(
+                structured.supports(pdf_only),
+                "the structured layer implements {pdf_only}"
+            );
+        }
 
         // It must never outrank an installed application, which reads its own
         // format with higher fidelity.

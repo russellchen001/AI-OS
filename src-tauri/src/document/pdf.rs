@@ -18,10 +18,14 @@
 //! reported as an image with no text rather than silently returned empty, and
 //! everything else -- text, page counts, merging, splitting -- works regardless.
 
-use lopdf::{Document, Object, ObjectId};
+use lopdf::encryption::crypt_filters::{Aes128CryptFilter, CryptFilter};
+use lopdf::{
+    Document, EncryptionState, EncryptionVersion, Object, ObjectId, Permissions, StringFormat,
+};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
+use uuid::Uuid;
 
 /// A document far longer than anything a caller should be handed whole.
 const MAX_PAGES: usize = 500;
@@ -132,18 +136,92 @@ fn new_pdf<'a>(input: &'a Value, field: &str, operation: &str) -> Result<&'a str
 }
 
 /// Open a PDF, refusing the ones that cannot honestly be read.
-fn open(path: &str, operation: &str) -> Result<Document, PdfError> {
-    let document = Document::load(path)
-        .map_err(|error| PdfError::invalid(format!("{path} is not a readable PDF: {error}")))?;
+///
+/// A password is used if one is supplied and never appears in the result or in
+/// an error: it is the caller's secret, and a message that quotes it back would
+/// put it wherever that message ends up.
+fn open_with(path: &str, operation: &str, password: Option<&str>) -> Result<Document, PdfError> {
+    // The password has to go in at LOAD time. An encrypted PDF hands back an
+    // empty shell to a reader that has no password -- not encrypted objects
+    // waiting to be unlocked afterwards -- so decrypting a document that was
+    // already loaded without one produces a document with nothing in it, and
+    // it does so without complaining. That silent emptiness is exactly the
+    // kind of failure this module must not have.
+    let loaded = match password {
+        Some(password) => Document::load_with_password(path, password),
+        None => Document::load(path),
+    };
 
-    // An encrypted document is refused rather than reported as an empty one.
+    let mut document = loaded.map_err(|error| {
+        // A wrong password comes back from the loader as a load failure. Said
+        // as "not a readable PDF" it would send the caller looking at the file
+        // when the file is fine.
+        if password.is_some() && declares_encryption(path) {
+            PdfError::invalid(format!(
+                "{operation} could not open {path}: the password did not match"
+            ))
+        } else {
+            PdfError::invalid(format!("{path} is not a readable PDF: {error}"))
+        }
+    })?;
+
     if document.is_encrypted() {
-        return Err(PdfError::invalid(format!(
-            "{operation} cannot read {path}: it is encrypted"
-        )));
+        let Some(password) = password else {
+            return Err(PdfError::invalid(format!(
+                "{operation} cannot read {path}: it is encrypted and no password was given"
+            )));
+        };
+
+        // Asked explicitly, because a password that does not open the file
+        // leaves a document that merely LOOKS empty.
+        document.authenticate_password(password).map_err(|_| {
+            PdfError::invalid(format!(
+                "{operation} could not open {path}: the password did not match"
+            ))
+        })?;
+
+        drop_encryption(&mut document);
     }
 
     Ok(document)
+}
+
+/// Forget that a document was ever encrypted.
+///
+/// Its contents are in the clear in memory once the password has opened it, so
+/// the `/Encrypt` entry left in the trailer describes a state the document is
+/// no longer in. Written out as-is it would produce a file that claims to be
+/// encrypted and is not, which no reader can open.
+fn drop_encryption(document: &mut Document) {
+    let reference = document
+        .trailer
+        .remove(b"Encrypt")
+        .and_then(|value| value.as_reference().ok());
+
+    if let Some(id) = reference {
+        document.objects.remove(&id);
+    }
+}
+
+/// Whether a file on disk announces itself as encrypted, without reading it all.
+fn declares_encryption(path: &str) -> bool {
+    lopdf::Document::load_metadata(path)
+        .map(|metadata| metadata.encrypted)
+        .unwrap_or(false)
+}
+
+fn open(path: &str, operation: &str) -> Result<Document, PdfError> {
+    open_with(path, operation, None)
+}
+
+/// The password a request carries, if any.
+///
+/// Trimmed of nothing: a password's spaces are part of it.
+fn password_of<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
+    input
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
 }
 
 fn page_numbers(document: &Document) -> Vec<u32> {
@@ -152,7 +230,7 @@ fn page_numbers(document: &Document) -> Vec<u32> {
 
 pub(crate) fn read_pdf_document(input: &Value) -> Result<Value, PdfError> {
     let path = existing_pdf(input, "path", "document.read")?;
-    let document = open(path, "document.read")?;
+    let document = open_with(path, "document.read", password_of(input, "password"))?;
 
     let numbers = page_numbers(&document);
 
@@ -260,6 +338,12 @@ pub(crate) fn read_pdf_document(input: &Value) -> Result<Value, PdfError> {
         warnings.push("PDF text was truncated at the deterministic extraction limit.".to_owned());
     }
 
+    // What is written ON the document as well as in it. A note somebody left in
+    // the margin and a value somebody typed into a field are both part of
+    // reading the document, and returning the running text alone loses them.
+    let annotations = annotations_of(&document);
+    let fields = reported_fields(&document);
+
     Ok(json!({
         "capability": "document.read",
         "selectedProvider": "local-pdf",
@@ -271,7 +355,11 @@ pub(crate) fn read_pdf_document(input: &Value) -> Result<Value, PdfError> {
             "pages": pages,
             "recognisedPages": recognised,
             "imageOnlyPages": image_only,
-            "encrypted": false,
+            "annotations": annotations,
+            "formFields": fields,
+            // The FILE, not the copy held here: a password opened it, and
+            // saying it was never locked would be untrue about what is on disk.
+            "encrypted": declares_encryption(path),
         },
         "warnings": warnings,
         "confirmationConsumed": true,
@@ -564,11 +652,859 @@ fn assemble(sources: Vec<(Document, Vec<u32>)>, operation: &str) -> Result<Docum
 }
 
 fn write(document: &mut Document, destination: &str) -> Result<usize, PdfError> {
+    // `/Size` is the one number in the trailer a reader checks against what it
+    // actually finds, and removing an object (the encryption dictionary, say)
+    // leaves the old count behind. The writer takes it from `max_id`, so that
+    // is what has to be told the truth -- otherwise every reader opening the
+    // file warns about a count that does not match.
+    document.max_id = document.objects.keys().map(|(id, _)| *id).max().unwrap_or(0);
+
     document
         .save(destination)
         .map_err(|error| PdfError::execution(format!("the PDF could not be written: {error}")))?;
 
     Ok(document.get_pages().len())
+}
+
+/// Turn pages, clockwise, by a quarter turn at a time.
+///
+/// The turn is RELATIVE to how the page already sits, because that is what
+/// "rotate this 90 degrees" means to a person looking at it. A page that was
+/// already sideways ends up upside down, not sideways again.
+pub(crate) fn rotate_pdf_document(input: &Value) -> Result<Value, PdfError> {
+    let source = existing_pdf(input, "source", "document.rotate")?;
+    let destination = new_pdf(input, "destination", "document.rotate")?;
+
+    if source == destination {
+        return Err(PdfError::invalid(
+            "document.rotate source and destination must differ",
+        ));
+    }
+
+    let degrees = input
+        .get("degrees")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| PdfError::invalid("document.rotate requires degrees"))?;
+
+    if degrees % 90 != 0 {
+        return Err(PdfError::invalid(
+            "document.rotate turns pages in quarter turns: degrees must be a multiple of 90",
+        ));
+    }
+
+    let mut document = open_with(source, "document.rotate", password_of(input, "password"))?;
+
+    // No pages named means all of them, which is what "rotate this document"
+    // means.
+    let wanted: Vec<u32> = match input.get("pages").and_then(Value::as_str) {
+        Some(spec) if !spec.trim().is_empty() => parse_pages(spec)?
+            .into_iter()
+            .map(|page| u32::try_from(page).unwrap_or(u32::MAX))
+            .collect(),
+        _ => page_numbers(&document),
+    };
+
+    let pages = document.get_pages();
+    let mut turned = Vec::new();
+
+    for number in &wanted {
+        let id = pages.get(number).copied().ok_or_else(|| {
+            PdfError::invalid(format!(
+                "document.rotate was asked for page {number}, which the document does not have"
+            ))
+        })?;
+
+        let current = document
+            .get_dictionary(id)
+            .ok()
+            .and_then(|page| page.get(b"Rotate").ok())
+            .and_then(|value| value.as_i64().ok())
+            .unwrap_or(0);
+
+        // PDF stores rotation as 0, 90, 180 or 270, so the sum is brought back
+        // into that range -- including for a negative turn.
+        let next = (((current + degrees) % 360) + 360) % 360;
+
+        if let Ok(page) = document.get_object_mut(id) {
+            if let Ok(dictionary) = page.as_dict_mut() {
+                dictionary.set("Rotate", next);
+                turned.push(json!({"page": number, "rotation": next}));
+            }
+        }
+    }
+
+    let page_count = write(&mut document, destination)?;
+
+    Ok(json!({
+        "capability": "document.rotate",
+        "selectedProvider": "local-pdf",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "rotated",
+            "destination": destination,
+            "degrees": degrees,
+            "pages": turned,
+            "pageCount": page_count,
+        },
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "rotated",
+    }))
+}
+
+/// Give a document a file identifier if it has none.
+///
+/// The identifier is stirred into the encryption key, so a file without one
+/// cannot be encrypted at all -- and plenty of files written by simple tools
+/// have none. Refusing those would be a failure the person could do nothing
+/// about, so one is made here instead. It identifies the file; it is not a
+/// secret, and the format asks for exactly this.
+fn ensure_file_id(document: &mut Document) {
+    let present = document
+        .trailer
+        .get(b"ID")
+        .ok()
+        .and_then(|value| value.as_array().ok())
+        .is_some_and(|identifiers| !identifiers.is_empty());
+
+    if present {
+        return;
+    }
+
+    let identifier = || Object::String(Uuid::new_v4().as_bytes().to_vec(), StringFormat::Hexadecimal);
+
+    document
+        .trailer
+        .set("ID", Object::Array(vec![identifier(), identifier()]));
+}
+
+pub(crate) fn encrypt_pdf_document(input: &Value) -> Result<Value, PdfError> {
+    let source = existing_pdf(input, "source", "document.encrypt")?;
+    let destination = new_pdf(input, "destination", "document.encrypt")?;
+
+    if source == destination {
+        return Err(PdfError::invalid(
+            "document.encrypt source and destination must differ",
+        ));
+    }
+
+    let user_password = password_of(input, "password")
+        .ok_or_else(|| PdfError::invalid("document.encrypt requires password"))?;
+
+    // The owner password governs permissions rather than opening. When the
+    // caller does not set one, it is the same as the open password, which is
+    // what most tools do and what a caller who gave one password means.
+    let owner_password = password_of(input, "ownerPassword").unwrap_or(user_password);
+
+    // An already-encrypted source is not refused: opening it with its own
+    // password and writing it out under a new one is how a password gets
+    // changed, and refusing that would send the caller through a decrypted
+    // copy on disk, which is worse.
+    let mut document = open_with(source, "document.encrypt", password_of(input, "sourcePassword"))?;
+
+    ensure_file_id(&mut document);
+
+    // AES-128 through the standard security handler: widely readable, and it
+    // needs no random file key of its own, so nothing here depends on a
+    // generator this crate would have to be trusted with.
+    let filter: std::sync::Arc<dyn CryptFilter> = std::sync::Arc::new(Aes128CryptFilter);
+
+    let version = EncryptionVersion::V4 {
+        document: &document,
+        encrypt_metadata: true,
+        crypt_filters: BTreeMap::from([(b"StdCF".to_vec(), filter)]),
+        stream_filter: b"StdCF".to_vec(),
+        string_filter: b"StdCF".to_vec(),
+        owner_password,
+        user_password,
+        // The password is the protection. Printing and copying are left alone
+        // rather than quietly restricted, because a caller who wanted that
+        // would have asked for it.
+        permissions: Permissions::PRINTABLE
+            | Permissions::COPYABLE
+            | Permissions::COPYABLE_FOR_ACCESSIBILITY
+            | Permissions::PRINTABLE_IN_HIGH_QUALITY,
+    };
+
+    let state = EncryptionState::try_from(version).map_err(|error| {
+        PdfError::execution(format!("the encryption settings were refused: {error}"))
+    })?;
+
+    document
+        .encrypt(&state)
+        .map_err(|_| PdfError::execution("the PDF could not be encrypted"))?;
+
+    let page_count = write(&mut document, destination)?;
+
+    Ok(json!({
+        "capability": "document.encrypt",
+        "selectedProvider": "local-pdf",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "encrypted",
+            "destination": destination,
+            "pageCount": page_count,
+            "algorithm": "AES-128",
+        },
+        // Deliberately no echo of the password anywhere in this result.
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "encrypted",
+    }))
+}
+
+pub(crate) fn decrypt_pdf_document(input: &Value) -> Result<Value, PdfError> {
+    let source = existing_pdf(input, "source", "document.decrypt")?;
+    let destination = new_pdf(input, "destination", "document.decrypt")?;
+
+    if source == destination {
+        return Err(PdfError::invalid(
+            "document.decrypt source and destination must differ",
+        ));
+    }
+
+    let password = password_of(input, "password")
+        .ok_or_else(|| PdfError::invalid("document.decrypt requires password"))?;
+
+    if !declares_encryption(source) {
+        return Err(PdfError::invalid(format!(
+            "document.decrypt was given {source}, which is not encrypted"
+        )));
+    }
+
+    let mut document = open_with(source, "document.decrypt", Some(password))?;
+    let page_count = write(&mut document, destination)?;
+
+    Ok(json!({
+        "capability": "document.decrypt",
+        "selectedProvider": "local-pdf",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "decrypted",
+            "destination": destination,
+            "pageCount": page_count,
+        },
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "decrypted",
+    }))
+}
+
+/// A document with more marks than this on it is not being read by a person.
+const MAX_ANNOTATIONS: usize = 500;
+const MAX_FORM_FIELDS: usize = 500;
+/// Form fields nest, and a file can claim to nest them forever.
+const MAX_FIELD_DEPTH: usize = 16;
+/// The side of the sticky note a reader draws, in points.
+const NOTE_SIZE: f64 = 24.0;
+
+/// Follow a reference until it is a thing rather than a pointer to one.
+fn resolved<'a>(document: &'a Document, object: &'a Object) -> Option<&'a Object> {
+    match object {
+        Object::Reference(id) => document.get_object(*id).ok(),
+        other => Some(other),
+    }
+}
+
+/// A PDF text string as a person would read it.
+fn readable(object: &Object) -> Option<String> {
+    lopdf::decode_text_string(object).ok()
+}
+
+fn name_of(object: &Object) -> Option<String> {
+    object
+        .as_name()
+        .ok()
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+}
+
+fn rectangle_of(document: &Document, dictionary: &lopdf::Dictionary) -> Option<Vec<f64>> {
+    let value = dictionary.get(b"Rect").ok()?;
+    let array = resolved(document, value)?.as_array().ok()?;
+
+    let numbers: Vec<f64> = array
+        .iter()
+        .filter_map(|value| match value {
+            Object::Integer(number) => Some(*number as f64),
+            Object::Real(number) => Some(f64::from(*number)),
+            _ => None,
+        })
+        .collect();
+
+    (numbers.len() == 4).then_some(numbers)
+}
+
+/// What has been written ON the pages: notes, highlights, links.
+///
+/// Widgets are left out on purpose. A widget is the FACE of a form field, not a
+/// remark someone made, and reporting it in both lists would say a form has
+/// been annotated when nobody has annotated anything.
+fn annotations_of(document: &Document) -> Vec<Value> {
+    let mut annotations = Vec::new();
+
+    for (number, page_id) in document.get_pages() {
+        let Ok(page) = document.get_dictionary(page_id) else {
+            continue;
+        };
+
+        let Some(list) = page
+            .get(b"Annots")
+            .ok()
+            .and_then(|value| resolved(document, value))
+            .and_then(|value| value.as_array().ok())
+        else {
+            continue;
+        };
+
+        for entry in list {
+            if annotations.len() >= MAX_ANNOTATIONS {
+                return annotations;
+            }
+
+            let Some(annotation) = resolved(document, entry).and_then(|value| value.as_dict().ok())
+            else {
+                continue;
+            };
+
+            let kind = annotation
+                .get(b"Subtype")
+                .ok()
+                .and_then(name_of)
+                .unwrap_or_else(|| "Unknown".to_owned());
+
+            if kind == "Widget" {
+                continue;
+            }
+
+            let mut entry = json!({"page": number, "type": kind});
+
+            match annotation.get(b"Contents").ok().and_then(readable) {
+                Some(contents) if !contents.is_empty() => entry["contents"] = json!(contents),
+                _ => {}
+            }
+
+            if let Some(author) = annotation.get(b"T").ok().and_then(readable) {
+                entry["author"] = json!(author);
+            }
+
+            if let Some(modified) = annotation.get(b"M").ok().and_then(readable) {
+                entry["modified"] = json!(modified);
+            }
+
+            if let Some(rectangle) = rectangle_of(document, annotation) {
+                entry["rect"] = json!(rectangle);
+            }
+
+            annotations.push(entry);
+        }
+    }
+
+    annotations
+}
+
+/// One place in the form that holds a value.
+struct FormField {
+    id: ObjectId,
+    /// The full name, the way a form refers to its own field: parents joined
+    /// to child by a dot, which is how `/T` is meant to be read.
+    name: String,
+    kind: Option<String>,
+    value: Option<Object>,
+}
+
+/// The form's fields, in the order the document lists them.
+fn form_fields(document: &Document) -> Vec<FormField> {
+    let Some(roots) = document
+        .catalog()
+        .ok()
+        .and_then(|catalog| catalog.get(b"AcroForm").ok())
+        .and_then(|value| resolved(document, value))
+        .and_then(|value| value.as_dict().ok())
+        .and_then(|form| form.get(b"Fields").ok())
+        .and_then(|value| resolved(document, value))
+        .and_then(|value| value.as_array().ok())
+    else {
+        return Vec::new();
+    };
+
+    let mut fields = Vec::new();
+    // Walked breadth-first so the order of the answer follows the order the
+    // form declares, which is the order a person filling it in would see.
+    let mut queue: Vec<(ObjectId, String, Option<String>, Option<Object>, usize)> = roots
+        .iter()
+        .filter_map(|entry| entry.as_reference().ok())
+        .map(|id| (id, String::new(), None, None, 0))
+        .collect();
+
+    let mut index = 0;
+
+    while index < queue.len() {
+        if fields.len() >= MAX_FORM_FIELDS {
+            break;
+        }
+
+        let (id, prefix, inherited_kind, inherited_value, depth) = queue[index].clone();
+        index += 1;
+
+        let Ok(node) = document.get_dictionary(id) else {
+            continue;
+        };
+
+        let name = match node.get(b"T").ok().and_then(readable) {
+            Some(partial) if prefix.is_empty() => partial,
+            Some(partial) => format!("{prefix}.{partial}"),
+            None => prefix,
+        };
+
+        let kind = node
+            .get(b"FT")
+            .ok()
+            .and_then(name_of)
+            .or(inherited_kind);
+
+        let value = node
+            .get(b"V")
+            .ok()
+            .and_then(|value| resolved(document, value))
+            .cloned()
+            .or(inherited_value);
+
+        // A node with kids that name themselves is a branch of the form; a node
+        // whose kids are unnamed has widgets for kids, and IS the field.
+        let children: Vec<ObjectId> = node
+            .get(b"Kids")
+            .ok()
+            .and_then(|value| resolved(document, value))
+            .and_then(|value| value.as_array().ok())
+            .map(|kids| kids.iter().filter_map(|kid| kid.as_reference().ok()).collect())
+            .unwrap_or_default();
+
+        let named_children: Vec<ObjectId> = children
+            .iter()
+            .copied()
+            .filter(|kid| {
+                document
+                    .get_dictionary(*kid)
+                    .map(|kid| kid.has(b"T"))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if named_children.is_empty() {
+            if !name.is_empty() {
+                fields.push(FormField {
+                    id,
+                    name,
+                    kind,
+                    value,
+                });
+            }
+            continue;
+        }
+
+        if depth >= MAX_FIELD_DEPTH {
+            continue;
+        }
+
+        for child in named_children {
+            queue.push((child, name.clone(), kind.clone(), value.clone(), depth + 1));
+        }
+    }
+
+    fields
+}
+
+/// A field's value in the shape a caller can use without knowing PDF.
+fn field_value(value: Option<&Object>) -> Value {
+    match value {
+        None | Some(Object::Null) => Value::Null,
+        Some(Object::String(..)) => value.and_then(readable).map(Value::from).unwrap_or(Value::Null),
+        Some(object @ Object::Name(_)) => name_of(object).map(Value::from).unwrap_or(Value::Null),
+        Some(Object::Integer(number)) => json!(number),
+        Some(Object::Real(number)) => json!(number),
+        Some(Object::Boolean(flag)) => json!(flag),
+        Some(Object::Array(items)) => Value::Array(
+            items
+                .iter()
+                .map(|item| field_value(Some(item)))
+                .collect(),
+        ),
+        Some(_) => Value::Null,
+    }
+}
+
+fn reported_fields(document: &Document) -> Vec<Value> {
+    form_fields(document)
+        .into_iter()
+        .map(|field| {
+            let mut reported = json!({
+                "name": field.name,
+                "value": field_value(field.value.as_ref()),
+            });
+
+            if let Some(kind) = field.kind {
+                reported["type"] = json!(match kind.as_str() {
+                    "Tx" => "text",
+                    "Btn" => "button",
+                    "Ch" => "choice",
+                    "Sig" => "signature",
+                    other => other,
+                });
+            }
+
+            reported
+        })
+        .collect()
+}
+
+/// The state a checkbox or radio button turns ON to.
+///
+/// It is not always `/Yes`: the name is whatever the document chose, and it is
+/// written into the appearance dictionary. Guessing it produces a box that
+/// silently stays empty, so it is read out of the file instead.
+fn on_state(document: &Document, field_id: ObjectId) -> Option<String> {
+    let mut places = vec![field_id];
+
+    if let Some(kids) = document
+        .get_dictionary(field_id)
+        .ok()
+        .and_then(|node| node.get(b"Kids").ok())
+        .and_then(|value| resolved(document, value))
+        .and_then(|value| value.as_array().ok())
+    {
+        places.extend(kids.iter().filter_map(|kid| kid.as_reference().ok()));
+    }
+
+    for place in places {
+        let Ok(node) = document.get_dictionary(place) else {
+            continue;
+        };
+
+        let Some(normal) = node
+            .get(b"AP")
+            .ok()
+            .and_then(|value| resolved(document, value))
+            .and_then(|value| value.as_dict().ok())
+            .and_then(|appearance| appearance.get(b"N").ok())
+            .and_then(|value| resolved(document, value))
+            .and_then(|value| value.as_dict().ok())
+        else {
+            continue;
+        };
+
+        for (state, _) in normal.iter() {
+            if state != b"Off" {
+                return Some(String::from_utf8_lossy(state).into_owned());
+            }
+        }
+    }
+
+    None
+}
+
+/// Put a note on a page.
+///
+/// A `/Text` annotation is the one kind that needs no appearance stream of its
+/// own: every reader draws the note icon itself. Anything richer -- a
+/// highlight, a drawing -- would need an appearance built here, and one that is
+/// not built is a mark that some readers show and others do not. So this does
+/// the kind that is real everywhere, and says that is what it does.
+pub(crate) fn annotate_pdf_document(input: &Value) -> Result<Value, PdfError> {
+    let source = existing_pdf(input, "source", "document.annotate")?;
+    let destination = new_pdf(input, "destination", "document.annotate")?;
+
+    if source == destination {
+        return Err(PdfError::invalid(
+            "document.annotate source and destination must differ",
+        ));
+    }
+
+    let notes = input
+        .get("notes")
+        .and_then(Value::as_array)
+        .filter(|notes| !notes.is_empty())
+        .ok_or_else(|| PdfError::invalid("document.annotate requires notes"))?;
+
+    if notes.len() > MAX_ANNOTATIONS {
+        return Err(PdfError::invalid(format!(
+            "document.annotate accepts at most {MAX_ANNOTATIONS} notes at once"
+        )));
+    }
+
+    let mut document = open_with(source, "document.annotate", password_of(input, "password"))?;
+    let pages = document.get_pages();
+    let mut placed = Vec::new();
+
+    for note in notes {
+        let page = note
+            .get("page")
+            .and_then(Value::as_u64)
+            .and_then(|page| u32::try_from(page).ok())
+            .ok_or_else(|| PdfError::invalid("every note needs a page"))?;
+
+        let page_id = pages.get(&page).copied().ok_or_else(|| {
+            PdfError::invalid(format!(
+                "document.annotate was asked to mark page {page}, which the document does not have"
+            ))
+        })?;
+
+        let contents = note
+            .get("contents")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|contents| !contents.is_empty())
+            .ok_or_else(|| PdfError::invalid("every note needs contents"))?;
+
+        let x = note.get("x").and_then(Value::as_f64).unwrap_or(36.0);
+        let y = note.get("y").and_then(Value::as_f64).unwrap_or(36.0);
+
+        let mut annotation = lopdf::Dictionary::new();
+        annotation.set("Type", Object::Name(b"Annot".to_vec()));
+        annotation.set("Subtype", Object::Name(b"Text".to_vec()));
+        annotation.set("Name", Object::Name(b"Note".to_vec()));
+        annotation.set(
+            "Rect",
+            Object::Array(vec![
+                Object::Real(x as f32),
+                Object::Real(y as f32),
+                Object::Real((x + NOTE_SIZE) as f32),
+                Object::Real((y + NOTE_SIZE) as f32),
+            ]),
+        );
+        annotation.set("Contents", lopdf::text_string(contents));
+        // Printable, so the note is not something only one reader can see.
+        annotation.set("F", Object::Integer(4));
+
+        if let Some(author) = note
+            .get("author")
+            .and_then(Value::as_str)
+            .filter(|author| !author.is_empty())
+        {
+            annotation.set("T", lopdf::text_string(author));
+        }
+
+        annotation.set("M", Object::string_literal(pdf_now()));
+
+        let reference = Object::Reference(document.add_object(Object::Dictionary(annotation)));
+
+        // `/Annots` is sometimes the array and sometimes a pointer to it, and
+        // appending to the wrong one loses the note without complaining.
+        let indirect = document
+            .get_dictionary(page_id)
+            .ok()
+            .and_then(|page| page.get(b"Annots").ok())
+            .and_then(|value| value.as_reference().ok());
+
+        match indirect {
+            Some(id) => {
+                document
+                    .get_object_mut(id)
+                    .and_then(Object::as_array_mut)
+                    .map_err(|_| PdfError::execution("the page's annotation list is unreadable"))?
+                    .push(reference);
+            }
+            None => {
+                let page_dictionary = document
+                    .get_object_mut(page_id)
+                    .and_then(Object::as_dict_mut)
+                    .map_err(|_| PdfError::execution("the page is unreadable"))?;
+
+                match page_dictionary.get_mut(b"Annots") {
+                    Ok(Object::Array(existing)) => existing.push(reference),
+                    _ => page_dictionary.set("Annots", Object::Array(vec![reference])),
+                }
+            }
+        }
+
+        placed.push(json!({"page": page, "contents": contents}));
+    }
+
+    let page_count = write(&mut document, destination)?;
+
+    Ok(json!({
+        "capability": "document.annotate",
+        "selectedProvider": "local-pdf",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "annotated",
+            "destination": destination,
+            "pageCount": page_count,
+            "notes": placed,
+        },
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "annotated",
+    }))
+}
+
+/// Fill in a form.
+pub(crate) fn fill_pdf_form(input: &Value) -> Result<Value, PdfError> {
+    let source = existing_pdf(input, "source", "document.fill")?;
+    let destination = new_pdf(input, "destination", "document.fill")?;
+
+    if source == destination {
+        return Err(PdfError::invalid(
+            "document.fill source and destination must differ",
+        ));
+    }
+
+    let wanted = input
+        .get("fields")
+        .and_then(Value::as_object)
+        .filter(|fields| !fields.is_empty())
+        .ok_or_else(|| PdfError::invalid("document.fill requires fields"))?;
+
+    let mut document = open_with(source, "document.fill", password_of(input, "password"))?;
+    let present = form_fields(&document);
+
+    if present.is_empty() {
+        return Err(PdfError::invalid(format!(
+            "document.fill was given {source}, which has no form to fill"
+        )));
+    }
+
+    // Every name is checked before anything is written, so a request naming one
+    // field wrongly does not leave a half-filled form behind.
+    let unknown: Vec<&str> = wanted
+        .keys()
+        .filter(|name| !present.iter().any(|field| &field.name == *name))
+        .map(String::as_str)
+        .collect();
+
+    if !unknown.is_empty() {
+        return Err(PdfError::invalid(format!(
+            "document.fill was asked for fields this form does not have: {}",
+            unknown.join(", ")
+        )));
+    }
+
+    let mut filled = Vec::new();
+
+    for field in &present {
+        let Some(requested) = wanted.get(&field.name) else {
+            continue;
+        };
+
+        let button = field.kind.as_deref() == Some("Btn");
+
+        let value = match requested {
+            Value::Bool(state) => {
+                let on = on_state(&document, field.id).unwrap_or_else(|| "Yes".to_owned());
+                let chosen = if *state { on } else { "Off".to_owned() };
+                Object::Name(chosen.into_bytes())
+            }
+            Value::String(text) if button => Object::Name(text.clone().into_bytes()),
+            Value::String(text) => lopdf::text_string(text),
+            Value::Number(number) => lopdf::text_string(&number.to_string()),
+            Value::Array(choices) => Object::Array(
+                choices
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(lopdf::text_string)
+                    .collect(),
+            ),
+            Value::Null => Object::Null,
+            other => {
+                return Err(PdfError::invalid(format!(
+                    "document.fill cannot put {other} into {}",
+                    field.name
+                )));
+            }
+        };
+
+        // A button's appearance state is separate from its value, and a button
+        // whose value says on while its appearance says off looks unchecked.
+        let appearance = button.then(|| value.clone());
+
+        let node = document
+            .get_object_mut(field.id)
+            .and_then(Object::as_dict_mut)
+            .map_err(|_| PdfError::execution(format!("{} is unreadable", field.name)))?;
+
+        if matches!(value, Object::Null) {
+            node.remove(b"V");
+        } else {
+            node.set("V", value);
+        }
+
+        // The old drawing of the old value would otherwise stay on the page.
+        node.remove(b"AP");
+
+        if let Some(state) = appearance.clone() {
+            node.set("AS", state);
+        }
+
+        let kids: Vec<ObjectId> = document
+            .get_dictionary(field.id)
+            .ok()
+            .and_then(|node| node.get(b"Kids").ok())
+            .and_then(|value| value.as_array().ok())
+            .map(|kids| kids.iter().filter_map(|kid| kid.as_reference().ok()).collect())
+            .unwrap_or_default();
+
+        for kid in kids {
+            if let Ok(widget) = document.get_object_mut(kid).and_then(Object::as_dict_mut) {
+                widget.remove(b"AP");
+
+                if let Some(state) = appearance.clone() {
+                    widget.set("AS", state);
+                }
+            }
+        }
+
+        filled.push(json!({"name": field.name, "value": requested}));
+    }
+
+    // Without this the reader shows the old drawing of an empty field and the
+    // form looks untouched, which is the classic way a filled form arrives
+    // apparently blank.
+    let acroform = document
+        .catalog()
+        .ok()
+        .and_then(|catalog| catalog.get(b"AcroForm").ok())
+        .and_then(|value| value.as_reference().ok());
+
+    match acroform {
+        Some(id) => {
+            if let Ok(form) = document.get_object_mut(id).and_then(Object::as_dict_mut) {
+                form.set("NeedAppearances", Object::Boolean(true));
+            }
+        }
+        None => {
+            if let Ok(catalog) = document.catalog_mut() {
+                if let Ok(Object::Dictionary(form)) = catalog.get_mut(b"AcroForm") {
+                    form.set("NeedAppearances", Object::Boolean(true));
+                }
+            }
+        }
+    }
+
+    let page_count = write(&mut document, destination)?;
+
+    Ok(json!({
+        "capability": "document.fill",
+        "selectedProvider": "local-pdf",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "filled",
+            "destination": destination,
+            "pageCount": page_count,
+            "fields": filled,
+        },
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "filled",
+    }))
+}
+
+/// The moment, written the way a PDF date is written.
+fn pdf_now() -> String {
+    chrono::Utc::now().format("D:%Y%m%d%H%M%SZ").to_string()
 }
 
 pub(crate) fn merge_pdf_documents(input: &Value) -> Result<Value, PdfError> {
@@ -828,6 +1764,570 @@ mod tests {
         }
 
         assert_eq!(std::fs::read(&taken).unwrap(), b"placeholder");
+    }
+
+    /// A PDF carrying one known line of text per page, built here.
+    ///
+    /// Portable on purpose. The whole claim of this module is that a PDF is
+    /// read and written without an application and without a particular
+    /// operating system, and a test whose fixture could only be built on one
+    /// system could not prove that claim on any other.
+    fn build_text_fixture(destination: &std::path::Path, pages: &[&str]) {
+        use lopdf::content::{Content, Operation};
+        use lopdf::{dictionary, Stream};
+
+        let mut document = Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+        let font_id = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = document.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+
+        let kids: Vec<Object> = pages
+            .iter()
+            .map(|text| {
+                let content = Content {
+                    operations: vec![
+                        Operation::new("BT", vec![]),
+                        Operation::new("Tf", vec!["F1".into(), 24.into()]),
+                        Operation::new("Td", vec![72.into(), 700.into()]),
+                        Operation::new("Tj", vec![Object::string_literal(*text)]),
+                        Operation::new("ET", vec![]),
+                    ],
+                };
+
+                let contents_id =
+                    document.add_object(Stream::new(dictionary! {}, content.encode().unwrap()));
+
+                document
+                    .add_object(dictionary! {
+                        "Type" => "Page",
+                        "Parent" => pages_id,
+                        "Contents" => contents_id,
+                    })
+                    .into()
+            })
+            .collect();
+
+        let count = i64::try_from(kids.len()).unwrap();
+
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => kids,
+                "Count" => count,
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            }),
+        );
+
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+
+        document.trailer.set("Root", catalog_id);
+        document.save(destination).unwrap();
+    }
+
+    /// The rotation a written file actually carries, read back from the file.
+    fn rotation_of(path: &std::path::Path, page: u32) -> i64 {
+        let document = Document::load(path).unwrap();
+        let id = *document.get_pages().get(&page).unwrap();
+
+        document
+            .get_dictionary(id)
+            .unwrap()
+            .get(b"Rotate")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+    }
+
+    /// Turning pages, and locking a file, on any machine.
+    ///
+    /// Not `#[ignore]`d and not `cfg`-gated: none of this needs an application
+    /// or a platform, so the test that proves it should not need one either.
+    #[test]
+    fn pages_turn_and_a_password_really_locks_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = |name: &str| root.path().join(name);
+        let text = |name: &str| path(name).to_str().unwrap().to_owned();
+
+        build_text_fixture(
+            &path("source.pdf"),
+            &["Alpha paragraph.", "Bravo paragraph.", "Charlie paragraph."],
+        );
+
+        let words = |value: &Value| value["operationResult"]["text"].as_str().unwrap().to_owned();
+
+        // The fixture is what the rest of this test assumes it is.
+        let plain = read_pdf_document(&json!({"path": text("source.pdf")})).unwrap();
+        assert_eq!(plain["operationResult"]["pageCount"], 3);
+        assert!(words(&plain).contains("Alpha paragraph."));
+
+        // ---- turning pages -------------------------------------------------
+
+        let turned = rotate_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("turned.pdf"),
+            "degrees": 90,
+        }))
+        .unwrap();
+
+        assert_eq!(turned["operationResult"]["pageCount"], 3);
+        assert_eq!(turned["operationResult"]["pages"][0]["rotation"], 90);
+        assert_eq!(rotation_of(&path("turned.pdf"), 1), 90);
+        assert_eq!(rotation_of(&path("turned.pdf"), 3), 90);
+
+        // Turning is RELATIVE, which is what "rotate this 90 degrees" means to
+        // someone looking at a page that is already sideways.
+        rotate_pdf_document(&json!({
+            "source": text("turned.pdf"),
+            "destination": text("turned-again.pdf"),
+            "degrees": 90,
+        }))
+        .unwrap();
+        assert_eq!(rotation_of(&path("turned-again.pdf"), 1), 180);
+
+        // A negative turn lands in the range the format allows, and only the
+        // page asked for moves.
+        rotate_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("turned-one.pdf"),
+            "degrees": -90,
+            "pages": "2",
+        }))
+        .unwrap();
+        assert_eq!(rotation_of(&path("turned-one.pdf"), 2), 270);
+        assert_eq!(rotation_of(&path("turned-one.pdf"), 1), 0);
+
+        // Turning a page must not cost the document its words.
+        let after = read_pdf_document(&json!({"path": text("turned-again.pdf")})).unwrap();
+        assert!(words(&after).contains("Charlie paragraph."), "{after:#?}");
+
+        for (label, request) in [
+            (
+                "a turn that is not a quarter",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"), "degrees": 45}),
+            ),
+            (
+                "no turn at all",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf")}),
+            ),
+            (
+                "a page the document does not have",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"), "degrees": 90, "pages": "9"}),
+            ),
+            (
+                "writing over the source",
+                json!({"source": text("source.pdf"), "destination": text("source.pdf"), "degrees": 90}),
+            ),
+        ] {
+            let error = rotate_pdf_document(&request).unwrap_err();
+            assert!(error.invalid_request, "{label} should be a request problem");
+        }
+
+        // ---- locking and unlocking ----------------------------------------
+
+        // A trailing space, because a password is taken exactly as given.
+        const PASSWORD: &str = "correct horse ";
+
+        let locked = encrypt_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("locked.pdf"),
+            "password": PASSWORD,
+        }))
+        .unwrap();
+
+        assert_eq!(locked["operationResult"]["pageCount"], 3);
+        assert_eq!(locked["operationResult"]["algorithm"], "AES-128");
+
+        // The password is the caller's secret and must not come back out in
+        // the answer, where it would end up in a log or a transcript.
+        assert!(
+            !serde_json::to_string(&locked).unwrap().contains(PASSWORD),
+            "the password was echoed back: {locked:#?}"
+        );
+
+        // The lock is real, not a claim: the file says it is encrypted, and the
+        // words are no longer sitting in it.
+        assert!(Document::load(path("locked.pdf")).unwrap().is_encrypted());
+        assert!(
+            !String::from_utf8_lossy(&std::fs::read(path("locked.pdf")).unwrap())
+                .contains("Alpha paragraph."),
+            "the text is still readable in the encrypted file"
+        );
+
+        // Without the password, refused -- and refused honestly, rather than
+        // read back as an empty document.
+        let without = read_pdf_document(&json!({"path": text("locked.pdf")})).unwrap_err();
+        assert!(without.invalid_request);
+        assert!(without.message.contains("encrypted"));
+
+        let wrong =
+            read_pdf_document(&json!({"path": text("locked.pdf"), "password": "correct horse"}))
+                .unwrap_err();
+        assert!(wrong.invalid_request);
+        assert!(wrong.message.contains("password"));
+
+        // With it, the whole document is there.
+        let opened =
+            read_pdf_document(&json!({"path": text("locked.pdf"), "password": PASSWORD})).unwrap();
+        assert_eq!(opened["operationResult"]["pageCount"], 3);
+        assert!(words(&opened).contains("Bravo paragraph."), "{opened:#?}");
+
+        // Changing the password is opening it under the old one and writing it
+        // under the new one.
+        encrypt_pdf_document(&json!({
+            "source": text("locked.pdf"),
+            "destination": text("relocked.pdf"),
+            "sourcePassword": PASSWORD,
+            "password": "a different secret",
+        }))
+        .unwrap();
+
+        assert!(read_pdf_document(
+            &json!({"path": text("relocked.pdf"), "password": PASSWORD})
+        )
+        .is_err());
+        assert_eq!(
+            read_pdf_document(&json!({"path": text("relocked.pdf"), "password": "a different secret"}))
+                .unwrap()["operationResult"]["pageCount"],
+            3
+        );
+
+        // Unlocking gives back a file anything can open.
+        assert!(decrypt_pdf_document(&json!({
+            "source": text("locked.pdf"),
+            "destination": text("no.pdf"),
+            "password": "not it",
+        }))
+        .unwrap_err()
+        .invalid_request);
+
+        decrypt_pdf_document(&json!({
+            "source": text("locked.pdf"),
+            "destination": text("unlocked.pdf"),
+            "password": PASSWORD,
+        }))
+        .unwrap();
+
+        assert!(!Document::load(path("unlocked.pdf")).unwrap().is_encrypted());
+        let unlocked = read_pdf_document(&json!({"path": text("unlocked.pdf")})).unwrap();
+        assert_eq!(unlocked["operationResult"]["pageCount"], 3);
+        assert!(words(&unlocked).contains("Alpha paragraph."), "{unlocked:#?}");
+
+        // And what cannot honestly be done says so.
+        for (label, error) in [
+            (
+                "unlocking a file that is not locked",
+                decrypt_pdf_document(&json!({
+                    "source": text("source.pdf"),
+                    "destination": text("no.pdf"),
+                    "password": PASSWORD,
+                }))
+                .unwrap_err(),
+            ),
+            (
+                "locking without a password",
+                encrypt_pdf_document(&json!({
+                    "source": text("source.pdf"),
+                    "destination": text("no.pdf"),
+                }))
+                .unwrap_err(),
+            ),
+            (
+                "locking a file that is already locked, with no way in",
+                encrypt_pdf_document(&json!({
+                    "source": text("locked.pdf"),
+                    "destination": text("no.pdf"),
+                    "password": "anything",
+                }))
+                .unwrap_err(),
+            ),
+        ] {
+            assert!(error.invalid_request, "{label} should be a request problem");
+        }
+
+        assert!(!path("no.pdf").exists(), "a refused request wrote a file");
+    }
+
+    /// A one-page PDF carrying a real form: a text box and a checkbox.
+    ///
+    /// Built here rather than checked in, so what the form contains is stated
+    /// in the test that relies on it. The checkbox turns on to `/On` -- not to
+    /// `/Yes` -- on purpose: the on-state is whatever the document chose, and a
+    /// filler that guesses it produces a box that silently stays empty.
+    fn build_form_fixture(destination: &std::path::Path) {
+        use lopdf::{dictionary, Stream};
+
+        let mut document = Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+        let page_id = document.new_object_id();
+
+        let font_id = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+
+        let blank = |document: &mut Document| {
+            document.add_object(Stream::new(
+                dictionary! { "Type" => "XObject", "Subtype" => "Form",
+                              "BBox" => vec![0.into(), 0.into(), 12.into(), 12.into()] },
+                Vec::new(),
+            ))
+        };
+
+        let on_appearance = blank(&mut document);
+        let off_appearance = blank(&mut document);
+
+        let text_field = document.add_object(dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Widget",
+            "FT" => "Tx",
+            "T" => Object::string_literal("full name"),
+            "Rect" => vec![72.into(), 700.into(), 300.into(), 724.into()],
+            "P" => page_id,
+            "F" => 4,
+        });
+
+        let checkbox = document.add_object(dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Widget",
+            "FT" => "Btn",
+            "T" => Object::string_literal("agree"),
+            "Rect" => vec![72.into(), 660.into(), 84.into(), 672.into()],
+            "P" => page_id,
+            "F" => 4,
+            "V" => Object::Name(b"Off".to_vec()),
+            "AS" => Object::Name(b"Off".to_vec()),
+            "AP" => dictionary! {
+                "N" => dictionary! {
+                    "On" => on_appearance,
+                    "Off" => off_appearance,
+                },
+            },
+        });
+
+        let resources_id = document.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+
+        document.objects.insert(
+            page_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Annots" => vec![text_field.into(), checkbox.into()],
+            }),
+        );
+
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            }),
+        );
+
+        let form_id = document.add_object(dictionary! {
+            "Fields" => vec![text_field.into(), checkbox.into()],
+            "DA" => Object::string_literal("/F1 0 Tf 0 g"),
+            "DR" => dictionary! { "Font" => dictionary! { "F1" => font_id } },
+        });
+
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+            "AcroForm" => form_id,
+        });
+
+        document.trailer.set("Root", catalog_id);
+        document.save(destination).unwrap();
+    }
+
+    /// Marks on a document, and values in its form, on any machine.
+    #[test]
+    fn notes_are_left_on_pages_and_forms_are_really_filled() {
+        let root = tempfile::tempdir().unwrap();
+        let path = |name: &str| root.path().join(name);
+        let text = |name: &str| path(name).to_str().unwrap().to_owned();
+
+        // ---- notes ---------------------------------------------------------
+
+        build_text_fixture(&path("source.pdf"), &["Alpha paragraph.", "Bravo paragraph."]);
+
+        // Nothing has been written on it yet, and the answer says so rather
+        // than leaving the caller to guess.
+        let bare = read_pdf_document(&json!({"path": text("source.pdf")})).unwrap();
+        assert_eq!(bare["operationResult"]["annotations"], json!([]));
+        assert_eq!(bare["operationResult"]["formFields"], json!([]));
+
+        let marked = annotate_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("marked.pdf"),
+            "notes": [
+                {"page": 2, "x": 100, "y": 500, "contents": "Check this figure", "author": "Vanessa"},
+                {"page": 1, "contents": "And this one"},
+            ],
+        }))
+        .unwrap();
+
+        assert_eq!(marked["operationResult"]["pageCount"], 2);
+
+        let read_back = read_pdf_document(&json!({"path": text("marked.pdf")})).unwrap();
+        let notes = read_back["operationResult"]["annotations"]
+            .as_array()
+            .unwrap()
+            .clone();
+
+        assert_eq!(notes.len(), 2, "read back {notes:#?}");
+
+        // Reported in page order, whatever order they were asked for in.
+        assert_eq!(notes[0]["page"], 1);
+        assert_eq!(notes[0]["contents"], "And this one");
+        assert_eq!(notes[1]["page"], 2);
+        assert_eq!(notes[1]["type"], "Text");
+        assert_eq!(notes[1]["contents"], "Check this figure");
+        assert_eq!(notes[1]["author"], "Vanessa");
+        assert_eq!(notes[1]["rect"][0], 100.0);
+
+        // The words of the document are still its words.
+        assert!(read_back["operationResult"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Bravo paragraph."));
+
+        for (label, request) in [
+            (
+                "no notes",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf")}),
+            ),
+            (
+                "a page the document does not have",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "notes": [{"page": 9, "contents": "nowhere"}]}),
+            ),
+            (
+                "a note that says nothing",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "notes": [{"page": 1, "contents": "   "}]}),
+            ),
+        ] {
+            let error = annotate_pdf_document(&request).unwrap_err();
+            assert!(error.invalid_request, "{label} should be a request problem");
+        }
+
+        // ---- forms ---------------------------------------------------------
+
+        build_form_fixture(&path("form.pdf"));
+
+        let empty = read_pdf_document(&json!({"path": text("form.pdf")})).unwrap();
+        let declared = empty["operationResult"]["formFields"].as_array().unwrap();
+
+        assert_eq!(declared.len(), 2, "read back {declared:#?}");
+        assert_eq!(declared[0]["name"], "full name");
+        assert_eq!(declared[0]["type"], "text");
+        assert_eq!(declared[0]["value"], Value::Null);
+        assert_eq!(declared[1]["name"], "agree");
+        assert_eq!(declared[1]["type"], "button");
+        assert_eq!(declared[1]["value"], "Off");
+
+        // A widget is the face of a field, not a remark anyone made, so it must
+        // not turn up as an annotation.
+        assert_eq!(empty["operationResult"]["annotations"], json!([]));
+
+        let filled = fill_pdf_form(&json!({
+            "source": text("form.pdf"),
+            "destination": text("filled.pdf"),
+            "fields": {"full name": "Ada Lovelace", "agree": true},
+        }))
+        .unwrap();
+
+        assert_eq!(filled["operationResult"]["fields"].as_array().unwrap().len(), 2);
+
+        let after = read_pdf_document(&json!({"path": text("filled.pdf")})).unwrap();
+        let values = after["operationResult"]["formFields"].as_array().unwrap();
+
+        assert_eq!(values[0]["value"], "Ada Lovelace");
+        // Turned ON to the state this document actually uses, not to a guess.
+        assert_eq!(values[1]["value"], "On");
+
+        // Without this the reader draws the old empty box and the form arrives
+        // looking untouched, which is the classic way a filled form is lost.
+        let written = Document::load(path("filled.pdf")).unwrap();
+        let form = written
+            .catalog()
+            .unwrap()
+            .get(b"AcroForm")
+            .and_then(|value| written.get_object(value.as_reference().unwrap()))
+            .unwrap()
+            .as_dict()
+            .unwrap();
+        assert_eq!(form.get(b"NeedAppearances").unwrap().as_bool().unwrap(), true);
+
+        // Turning it back off is not the same as never setting it.
+        fill_pdf_form(&json!({
+            "source": text("filled.pdf"),
+            "destination": text("unchecked.pdf"),
+            "fields": {"agree": false},
+        }))
+        .unwrap();
+
+        let unchecked = read_pdf_document(&json!({"path": text("unchecked.pdf")})).unwrap();
+        assert_eq!(
+            unchecked["operationResult"]["formFields"][1]["value"],
+            "Off"
+        );
+        // And the other field kept what it was given.
+        assert_eq!(
+            unchecked["operationResult"]["formFields"][0]["value"],
+            "Ada Lovelace"
+        );
+
+        for (label, error) in [
+            (
+                "a field this form does not have",
+                fill_pdf_form(&json!({
+                    "source": text("form.pdf"),
+                    "destination": text("no.pdf"),
+                    "fields": {"middle name": "Byron"},
+                }))
+                .unwrap_err(),
+            ),
+            (
+                "no fields at all",
+                fill_pdf_form(&json!({
+                    "source": text("form.pdf"),
+                    "destination": text("no.pdf"),
+                    "fields": {},
+                }))
+                .unwrap_err(),
+            ),
+            (
+                "a document with no form in it",
+                fill_pdf_form(&json!({
+                    "source": text("source.pdf"),
+                    "destination": text("no.pdf"),
+                    "fields": {"full name": "Ada Lovelace"},
+                }))
+                .unwrap_err(),
+            ),
+        ] {
+            assert!(error.invalid_request, "{label} should be a request problem");
+        }
+
+        // One wrong name must not leave a half-filled form behind.
+        assert!(!path("no.pdf").exists(), "a refused request wrote a file");
     }
 
     /// A one-page PDF that is only a picture of legible words.
