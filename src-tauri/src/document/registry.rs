@@ -72,13 +72,19 @@ const GOOGLE_WORKSPACE_CAPABILITIES: &[&str] = &[
 const WPS_CAPABILITIES: &[&str] = &[];
 
 const NATIVE_CAPABILITIES: &[&str] = &["document.read", "document.create", "document.convert"];
-const GRAPH_CAPABILITIES: &[&str] = &[
-    "document.read",
-    "document.create",
-    "spreadsheet.read",
-    "spreadsheet.create",
-    "spreadsheet.update",
-];
+/// What Microsoft Graph can actually execute: nothing, yet.
+///
+/// It is a declared future provider -- an official API behind OAuth that has
+/// not been authorized and has no adapter in this build. It previously declared
+/// five capabilities, one of which, `spreadsheet.update`, is not a capability
+/// this system has at all: no entry point dispatches it and nothing else
+/// mentions the name. A provider claiming a capability that does not exist is
+/// the same mistake the iWork, LocalStructured, WPS and Google entries each
+/// made in turn, and this was the last one left.
+///
+/// Its metadata still describes what it will be. Its capability list describes
+/// what it can do today.
+const GRAPH_CAPABILITIES: &[&str] = &[];
 /// What the structured file layer can actually execute today.
 ///
 /// This provider reads the file itself -- .xlsx, .docx and .pptx are all ZIP
@@ -321,6 +327,30 @@ mod tests {
             excel.session_ownership,
             Some(SessionOwnership::ExternallyOwned)
         );
+
+        // Metadata says what Graph will be; the capability list says what it
+        // can do today, which is nothing -- it has no adapter in this build.
+        // `spreadsheet.update`, which it used to declare, is not a capability
+        // this system has anywhere.
+        let graph_provider = providers
+            .iter()
+            .find(|provider| provider.id == OfficeProviderId::MicrosoftGraph)
+            .unwrap();
+
+        assert!(!graph_provider.available);
+
+        for claimed in [
+            "document.read",
+            "document.create",
+            "spreadsheet.read",
+            "spreadsheet.create",
+            "spreadsheet.update",
+        ] {
+            assert!(
+                !graph_provider.supports(claimed),
+                "Microsoft Graph has no adapter, so it must not declare {claimed}"
+            );
+        }
     }
 
     #[test]
