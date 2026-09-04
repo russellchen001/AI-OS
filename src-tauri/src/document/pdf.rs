@@ -1,36 +1,33 @@
-//! PDF, through macOS itself.
+//! PDF, on any machine.
 //!
 //! The Office skill could write a PDF from every application it drives and read
-//! none, which made PDF a one-way street: hand it a PDF and it could do
-//! nothing. This is the other direction, and it needs no application and no
-//! installed dependency -- PDFKit and Vision are part of macOS.
+//! none, so handing it a PDF got nothing. This closes that -- and it does so in
+//! Rust, because PDF is a FORMAT, not an application.
 //!
-//! Everything here was probed against real files first
-//! (`verify/probe_pdf_native_capability.sh` and
-//! `verify/probe_pdf_ocr_capability.sh`), and three findings shape it:
+//! The first version of this module drove macOS PDFKit, which made a whole
+//! capability depend on which operating system the person happens to run. That
+//! is the same mistake as making it depend on which application they installed,
+//! and the owner rejected it for the same reason: *"你不能要求用户用什么系统"*.
+//! `structured.rs` already showed the shape -- read the file itself, in Rust,
+//! everywhere -- and this follows it.
 //!
-//!   * PDFKit reads text per page, reports the page count, and says whether a
-//!     document is encrypted or locked -- so a locked file is refused rather
-//!     than read as empty.
-//!   * A page that is only an image returns ZERO characters. That is what a
-//!     scan is, and returning empty text for it would be a silent lie. Such a
-//!     page is sent to Vision, and the result says which pages were read from
-//!     the text layer and which were recognised, because those are not the same
-//!     kind of evidence.
-//!   * Vision runs SYNCHRONOUSLY through `performRequests`, so it fits the way
-//!     every other adapter here works, with no callback plumbing and no
-//!     background queue.
+//! Recognition is the one part that genuinely cannot be portable: reading words
+//! out of a picture needs a trained model, and no such thing is guaranteed on
+//! an arbitrary machine. So it is an ENHANCEMENT, never a requirement. Where
+//! the platform provides one it is used; where it does not, the page is
+//! reported as an image with no text rather than silently returned empty, and
+//! everything else -- text, page counts, merging, splitting -- works regardless.
 
+use lopdf::{Document, Object, ObjectId};
 use serde_json::{json, Value};
-use std::io::Write;
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 /// A document far longer than anything a caller should be handed whole.
 const MAX_PAGES: usize = 500;
-/// Recognition is slow compared with reading a text layer, so it is bounded
-/// separately and the result says when the bound was reached.
-const MAX_OCR_PAGES: usize = 50;
+/// A page whose content stream decompresses past this is refused rather than
+/// expanded: a small file can otherwise claim an unbounded amount of memory.
+const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_TEXT_CHARS: usize = 256 * 1024;
 const MAX_MERGE_SOURCES: usize = 32;
 
@@ -134,243 +131,147 @@ fn new_pdf<'a>(input: &'a Value, field: &str, operation: &str) -> Result<&'a str
     Ok(path)
 }
 
-fn run_jxa(script: &str, args: &[&str]) -> Result<String, PdfError> {
-    let mut child = Command::new("/usr/bin/osascript")
-        .args(["-l", "JavaScript", "-"])
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| PdfError::execution("Unable to start the PDF reader"))?;
+/// Open a PDF, refusing the ones that cannot honestly be read.
+fn open(path: &str, operation: &str) -> Result<Document, PdfError> {
+    let document = Document::load(path)
+        .map_err(|error| PdfError::invalid(format!("{path} is not a readable PDF: {error}")))?;
 
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| PdfError::execution("Unable to open the PDF reader input"))?;
-
-        stdin
-            .write_all(script.as_bytes())
-            .map_err(|_| PdfError::execution("Unable to write the PDF script"))?;
+    // An encrypted document is refused rather than reported as an empty one.
+    if document.is_encrypted() {
+        return Err(PdfError::invalid(format!(
+            "{operation} cannot read {path}: it is encrypted"
+        )));
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|_| PdfError::execution("The PDF reader did not complete"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-
-        return Err(PdfError::execution(if stderr.is_empty() {
-            "The PDF reader failed".to_owned()
-        } else {
-            format!("The PDF reader failed: {stderr}")
-        }));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(document)
 }
 
-/// The payload every script returns: JSON, so the shape is checked once here
-/// rather than parsed out of prose.
-fn parse_payload(output: &str) -> Result<Value, PdfError> {
-    let payload: Value = serde_json::from_str(output)
-        .map_err(|_| PdfError::execution(format!("The PDF reader returned no result: {output}")))?;
-
-    if let Some(error) = payload.get("error").and_then(Value::as_str) {
-        // A locked or malformed file is the caller's problem to fix, not a
-        // failure of the machinery.
-        let invalid = payload
-            .get("invalidRequest")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-
-        return Err(if invalid {
-            PdfError::invalid(error.to_owned())
-        } else {
-            PdfError::execution(error.to_owned())
-        });
-    }
-
-    Ok(payload)
+fn page_numbers(document: &Document) -> Vec<u32> {
+    document.get_pages().keys().copied().collect()
 }
-
-const READ_SCRIPT: &str = r#"
-ObjC.import('Quartz');
-ObjC.import('AppKit');
-ObjC.import('Vision');
-
-function fail(message, invalidRequest) {
-  return JSON.stringify({ error: message, invalidRequest: !!invalidRequest });
-}
-
-// Vision runs synchronously through performRequests, which is why recognition
-// fits here at all: no callbacks, no queue, one answer per page.
-function recognise(page) {
-  const bounds = page.boundsForBox($.kPDFDisplayBoxMediaBox);
-  // Rendered above natural size: recognising a thumbnail measures the
-  // thumbnail, not the page.
-  const size = $.NSMakeSize(bounds.size.width * 3, bounds.size.height * 3);
-  const image = page.thumbnailOfSizeForBox(size, $.kPDFDisplayBoxMediaBox);
-  if (!image.js) return null;
-
-  const cg = image.CGImageForProposedRectContextHints($(), $(), $());
-  if (!cg) return null;
-
-  const request = $.VNRecognizeTextRequest.alloc.init;
-  request.recognitionLevel = 1;
-  const handler = $.VNImageRequestHandler.alloc.initWithCGImageOptions(cg, $({}));
-  if (!handler.performRequestsError($([request]), $())) return null;
-
-  const results = request.results;
-  const lines = [];
-  for (let i = 0; i < results.count; i++) {
-    const candidate = results.objectAtIndex(i).topCandidates(1).objectAtIndex(0);
-    lines.push(ObjC.unwrap(candidate.string));
-  }
-  return lines.join('\n');
-}
-
-function run(argv) {
-  const path = argv[0];
-  const maxPages = parseInt(argv[1], 10);
-  const maxOcrPages = parseInt(argv[2], 10);
-  const allowOcr = argv[3] === 'true';
-
-  const doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(path));
-  if (!doc.js) return fail('The file is not a readable PDF', true);
-
-  // A locked document is refused rather than reported as an empty one.
-  if (doc.isLocked) return fail('The PDF is locked and cannot be read without its password', true);
-
-  // Coerced, because the bridge hands back an object that JSON renders as a
-  // string: a caller doing arithmetic on pageCount would get "2" + 1 = "21".
-  const pageCount = Number(doc.pageCount);
-  if (pageCount > maxPages) {
-    return fail('The PDF has ' + pageCount + ' pages, more than this reader will return', true);
-  }
-
-  const pages = [];
-  let recognised = 0;
-  let ocrTruncated = false;
-
-  for (let i = 0; i < pageCount; i++) {
-    const page = doc.pageAtIndex(i);
-    const layer = ObjC.unwrap(page.string) || '';
-
-    if (layer.trim().length > 0) {
-      pages.push({ page: i + 1, text: layer, source: 'text-layer' });
-      continue;
-    }
-
-    // No text layer: this page is an image, which is what a scan is.
-    if (!allowOcr) {
-      pages.push({ page: i + 1, text: '', source: 'image-only' });
-      continue;
-    }
-
-    if (recognised >= maxOcrPages) {
-      ocrTruncated = true;
-      pages.push({ page: i + 1, text: '', source: 'image-only' });
-      continue;
-    }
-
-    const text = recognise(page);
-    recognised += 1;
-    pages.push({
-      page: i + 1,
-      text: text === null ? '' : text,
-      source: text === null ? 'image-only' : 'ocr',
-    });
-  }
-
-  return JSON.stringify({
-    pageCount: pageCount,
-    encrypted: !!doc.isEncrypted,
-    pages: pages,
-    recognisedPages: recognised,
-    ocrTruncated: ocrTruncated,
-  });
-}
-"#;
 
 pub(crate) fn read_pdf_document(input: &Value) -> Result<Value, PdfError> {
     let path = existing_pdf(input, "path", "document.read")?;
+    let document = open(path, "document.read")?;
+
+    let numbers = page_numbers(&document);
+
+    if numbers.len() > MAX_PAGES {
+        return Err(PdfError::invalid(format!(
+            "The PDF has {} pages, more than this reader will return",
+            numbers.len()
+        )));
+    }
 
     // Recognition is on by default, because a caller who asks to read a
     // document means the words in it, and a scan that reads as empty is the
     // most useless possible answer. It can be turned off for a caller that
     // wants only what the file itself declares.
-    let allow_ocr = input
-        .get("ocr")
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-        .to_string();
+    let allow_recognition = input.get("ocr").and_then(Value::as_bool).unwrap_or(true);
 
-    let payload = parse_payload(&run_jxa(
-        READ_SCRIPT,
-        &[
-            path,
-            &MAX_PAGES.to_string(),
-            &MAX_OCR_PAGES.to_string(),
-            &allow_ocr,
-        ],
-    )?)?;
+    let mut pages = Vec::new();
+    let mut without_text = Vec::new();
 
-    let pages = payload["pages"].as_array().cloned().unwrap_or_default();
+    for number in &numbers {
+        // Asked for one page at a time on purpose. The chunked extractor
+        // flat-maps, so a single page can produce several chunks and the
+        // results do NOT line up one-to-one with the pages asked for. Indexing
+        // into a multi-page call silently attributes one page's text to
+        // another -- which showed up as a merged page reading as empty while
+        // its content stream plainly contained the words.
+        let text = document
+            .extract_text_chunks_with_limit(&[*number], MAX_PAGE_BYTES)
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>()
+            .join("");
+        // Page layout leaves a tail of padding spaces and blank lines. They
+        // carry nothing and make every page read as mostly whitespace.
+        let text = text.trim_end().to_owned();
 
-    let full_text: String = pages
-        .iter()
-        .filter_map(|page| page["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let text: String = full_text.chars().take(MAX_TEXT_CHARS).collect();
+        if text.trim().is_empty() {
+            // No text of its own. That is what a scanned page is, and returning
+            // it as empty text would be a silent lie about the document.
+            without_text.push(*number);
+            pages.push(json!({"page": number, "text": "", "source": "image-only"}));
+        } else {
+            pages.push(json!({"page": number, "text": text, "source": "text-layer"}));
+        }
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut recognised = 0usize;
+
+    if !without_text.is_empty() && allow_recognition {
+        match recognise(path, &without_text) {
+            Recognition::Unavailable => warnings.push(format!(
+                "{} page(s) have no text of their own, which is what a scan is. Reading words \
+                 out of a picture needs recognition, which this platform does not provide.",
+                without_text.len()
+            )),
+            Recognition::Done(recognised_pages) => {
+                for (number, text) in recognised_pages {
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+
+                    if let Some(entry) = pages
+                        .iter_mut()
+                        .find(|page| page["page"].as_u64() == Some(u64::from(number)))
+                    {
+                        *entry = json!({"page": number, "text": text, "source": "ocr"});
+                        recognised += 1;
+                    }
+                }
+
+                if recognised > 0 {
+                    // Said plainly, because recognised text and text the file
+                    // declares are not the same kind of evidence.
+                    warnings.push(format!(
+                        "{recognised} page(s) had no text of their own and were read by \
+                         recognition, which can misread."
+                    ));
+                }
+            }
+        }
+    }
 
     let image_only = pages
         .iter()
         .filter(|page| page["source"] == "image-only")
         .count();
-    let recognised = payload["recognisedPages"].as_u64().unwrap_or(0);
 
-    let mut warnings: Vec<String> = Vec::new();
+    if image_only > 0 && !allow_recognition {
+        warnings.push(format!(
+            "{image_only} page(s) have no text of their own, which is what a scan is, and \
+             recognition was not run."
+        ));
+    }
+
+    let full_text: String = pages
+        .iter()
+        .filter_map(|page| page["text"].as_str())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text: String = full_text.chars().take(MAX_TEXT_CHARS).collect();
 
     if full_text.chars().count() > MAX_TEXT_CHARS {
         warnings.push("PDF text was truncated at the deterministic extraction limit.".to_owned());
     }
 
-    if recognised > 0 {
-        // Said plainly, because recognised text and text the file declares are
-        // not the same kind of evidence and a caller may care which it has.
-        warnings.push(format!(
-            "{recognised} page(s) had no text layer and were read by recognition, which can misread."
-        ));
-    }
-
-    if payload["ocrTruncated"] == json!(true) {
-        warnings.push(format!(
-            "More than {MAX_OCR_PAGES} pages needed recognition; the rest were left unread."
-        ));
-    }
-
-    if image_only > 0 && recognised == 0 {
-        warnings.push(
-            "The PDF has no text layer. It is a scan, and recognition was not run.".to_owned(),
-        );
-    }
-
     Ok(json!({
         "capability": "document.read",
-        "selectedProvider": "macos-pdf",
+        "selectedProvider": "local-pdf",
         "resourceLocation": "local",
         "inputResource": path,
         "operationResult": {
             "text": text,
-            "pageCount": payload["pageCount"],
+            "pageCount": pages.len(),
             "pages": pages,
             "recognisedPages": recognised,
             "imageOnlyPages": image_only,
-            "encrypted": payload["encrypted"],
+            "encrypted": false,
         },
         "warnings": warnings,
         "confirmationConsumed": true,
@@ -378,39 +279,297 @@ pub(crate) fn read_pdf_document(input: &Value) -> Result<Value, PdfError> {
     }))
 }
 
-const MERGE_SCRIPT: &str = r#"
-ObjC.import('Quartz');
-
-function fail(message, invalidRequest) {
-  return JSON.stringify({ error: message, invalidRequest: !!invalidRequest });
+/// Whether this build can read words out of a picture, and what it read.
+enum Recognition {
+    /// No recogniser on this platform. Not a failure -- everything else still
+    /// works, and the caller is told rather than handed a blank page.
+    Unavailable,
+    Done(Vec<(u32, String)>),
 }
+
+#[cfg(not(target_os = "macos"))]
+fn recognise(_path: &str, _pages: &[u32]) -> Recognition {
+    Recognition::Unavailable
+}
+
+/// macOS ships Vision, so a scan can be read there. This is the only
+/// platform-specific code in the module, and nothing else depends on it.
+#[cfg(target_os = "macos")]
+fn recognise(path: &str, pages: &[u32]) -> Recognition {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Vision runs synchronously through performRequests, which is why
+    // recognition fits here at all: no callbacks and no background queue.
+    const SCRIPT: &str = r#"
+ObjC.import('Quartz');
+ObjC.import('AppKit');
+ObjC.import('Vision');
 
 function run(argv) {
-  const destination = argv[0];
-  const sources = argv.slice(1);
+  const doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(argv[0]));
+  if (!doc.js) return JSON.stringify([]);
 
-  const merged = $.PDFDocument.alloc.init;
-  const contributed = [];
+  const wanted = argv[1].split(',').map(function (v) { return parseInt(v, 10); });
+  const out = [];
 
-  for (const source of sources) {
-    const doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(source));
-    if (!doc.js) return fail(source + ' is not a readable PDF', true);
-    if (doc.isLocked) return fail(source + ' is locked and cannot be merged', true);
+  for (const number of wanted) {
+    const page = doc.pageAtIndex(number - 1);
+    if (!page.js) continue;
 
-    const count = Number(doc.pageCount);
-    for (let i = 0; i < count; i++) {
-      merged.insertPageAtIndex(doc.pageAtIndex(i), merged.pageCount);
+    const bounds = page.boundsForBox($.kPDFDisplayBoxMediaBox);
+    // Rendered above natural size: recognising a thumbnail measures the
+    // thumbnail, not the page.
+    const size = $.NSMakeSize(bounds.size.width * 3, bounds.size.height * 3);
+    const image = page.thumbnailOfSizeForBox(size, $.kPDFDisplayBoxMediaBox);
+    if (!image.js) continue;
+
+    const cg = image.CGImageForProposedRectContextHints($(), $(), $());
+    if (!cg) continue;
+
+    const request = $.VNRecognizeTextRequest.alloc.init;
+    request.recognitionLevel = 1;
+    const handler = $.VNImageRequestHandler.alloc.initWithCGImageOptions(cg, $({}));
+    if (!handler.performRequestsError($([request]), $())) continue;
+
+    const lines = [];
+    for (let i = 0; i < request.results.count; i++) {
+      lines.push(ObjC.unwrap(request.results.objectAtIndex(i).topCandidates(1).objectAtIndex(0).string));
     }
-    contributed.push({ source: source, pages: count });
+    out.push({ page: number, text: lines.join('\n') });
   }
 
-  if (!merged.writeToURL($.NSURL.fileURLWithPath(destination))) {
-    return fail('The merged PDF could not be written');
-  }
-
-  return JSON.stringify({ pageCount: Number(merged.pageCount), sources: contributed });
+  return JSON.stringify(out);
 }
 "#;
+
+    let wanted = pages
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let Ok(mut child) = Command::new("/usr/bin/osascript")
+        .args(["-l", "JavaScript", "-", path, &wanted])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Recognition::Unavailable;
+    };
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        if stdin.write_all(SCRIPT.as_bytes()).is_err() {
+            return Recognition::Unavailable;
+        }
+    }
+
+    let Ok(output) = child.wait_with_output() else {
+        return Recognition::Unavailable;
+    };
+
+    if !output.status.success() {
+        return Recognition::Unavailable;
+    }
+
+    let Ok(parsed) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return Recognition::Unavailable;
+    };
+
+    Recognition::Done(
+        parsed
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                Some((
+                    u32::try_from(entry["page"].as_u64()?).ok()?,
+                    entry["text"].as_str()?.to_owned(),
+                ))
+            })
+            .collect(),
+    )
+}
+
+/// Build one document out of pages taken from others.
+///
+/// Merging and extracting are the same operation with different inputs, so they
+/// share this: renumber each source so its object ids cannot collide, collect
+/// the pages that were asked for, and hang them all under one page tree. Doing
+/// it once means a page arrives in the output the same way whichever capability
+/// asked for it.
+/// The page attributes a PDF lets a page inherit from its parent.
+///
+/// This is why a naive merge produces a document that LOOKS right and has lost
+/// its text: `Resources` -- the fonts a page draws with -- may live on the page
+/// tree node rather than on the page. Re-parent that page under a different
+/// tree and its fonts are gone, extraction returns nothing, and the failure is
+/// silent. Caught here by a merged page reading as empty when both sources read
+/// fine on their own.
+const INHERITABLE: [&[u8]; 4] = [b"Resources", b"MediaBox", b"CropBox", b"Rotate"];
+
+/// Copy anything a page was inheriting onto the page itself.
+///
+/// After this the page is self-contained and can be hung under any tree, which
+/// is exactly what assembling one document out of several requires.
+fn flatten_inherited(document: &Document, page_id: ObjectId, page: &mut lopdf::Dictionary) {
+    let mut current = page_id;
+    let mut seen = std::collections::HashSet::new();
+
+    loop {
+        let Ok(node) = document.get_dictionary(current) else {
+            break;
+        };
+
+        for key in INHERITABLE {
+            if !page.has(key) {
+                if let Ok(value) = node.get(key) {
+                    page.set(key.to_vec(), value.clone());
+                }
+            }
+        }
+
+        let Ok(parent) = node.get(b"Parent").and_then(Object::as_reference) else {
+            break;
+        };
+
+        // A malformed file can point a node at its own ancestor.
+        if !seen.insert(parent) {
+            break;
+        }
+
+        current = parent;
+    }
+}
+
+fn assemble(sources: Vec<(Document, Vec<u32>)>, operation: &str) -> Result<Document, PdfError> {
+    let mut next_id = 1u32;
+    let mut ordered_pages: Vec<ObjectId> = Vec::new();
+    let mut page_objects: BTreeMap<ObjectId, Object> = BTreeMap::new();
+    let mut other_objects: BTreeMap<ObjectId, Object> = BTreeMap::new();
+    let mut assembled = Document::with_version("1.5");
+
+    for (mut document, wanted) in sources {
+        document.renumber_objects_with(next_id);
+        next_id = document.max_id + 1;
+
+        let available = document.get_pages();
+
+        for number in wanted {
+            let id = available.get(&number).copied().ok_or_else(|| {
+                PdfError::invalid(format!(
+                    "{operation} was asked for page {number}, which the document does not have"
+                ))
+            })?;
+
+            let mut page = document
+                .get_dictionary(id)
+                .map_err(|_| PdfError::execution(format!("page {number} could not be read")))?
+                .clone();
+
+            // Before the page leaves its own document, take what it was
+            // inheriting with it.
+            flatten_inherited(&document, id, &mut page);
+
+            let object = Object::Dictionary(page);
+
+            // A page asked for twice would put the same object in the tree
+            // twice. The pages are taken in the order asked for; a repeat is
+            // ignored rather than duplicated, because one object cannot be in
+            // two places in a page tree.
+            if page_objects.insert(id, object).is_none() {
+                ordered_pages.push(id);
+            }
+        }
+
+        other_objects.extend(document.objects);
+    }
+
+    let mut catalog: Option<(ObjectId, Object)> = None;
+    let mut pages_root: Option<(ObjectId, Object)> = None;
+
+    for (id, object) in other_objects {
+        match object.type_name().unwrap_or(b"") {
+            b"Catalog" => catalog = Some((catalog.map_or(id, |(id, _)| id), object)),
+            b"Pages" => {
+                if let Ok(dictionary) = object.as_dict() {
+                    let mut dictionary = dictionary.clone();
+
+                    if let Some((_, previous)) = pages_root.as_ref() {
+                        if let Ok(previous) = previous.as_dict() {
+                            dictionary.extend(previous);
+                        }
+                    }
+
+                    pages_root = Some((
+                        pages_root.map_or(id, |(id, _)| id),
+                        Object::Dictionary(dictionary),
+                    ));
+                }
+            }
+            // Pages are placed under the single new tree below, and outlines
+            // are not carried across because they point into trees that no
+            // longer exist.
+            b"Page" | b"Outlines" | b"Outline" => {}
+            _ => {
+                assembled.objects.insert(id, object);
+            }
+        }
+    }
+
+    let (catalog_id, catalog_object) = catalog
+        .ok_or_else(|| PdfError::invalid(format!("{operation} found no catalog in the source")))?;
+    let (pages_id, pages_object) = pages_root
+        .ok_or_else(|| PdfError::invalid(format!("{operation} found no page tree in the source")))?;
+
+    for id in &ordered_pages {
+        if let Some(object) = page_objects.get(id) {
+            if let Ok(dictionary) = object.as_dict() {
+                let mut dictionary = dictionary.clone();
+                dictionary.set("Parent", pages_id);
+                assembled.objects.insert(*id, Object::Dictionary(dictionary));
+            }
+        }
+    }
+
+    if let Ok(dictionary) = pages_object.as_dict() {
+        let mut dictionary = dictionary.clone();
+        dictionary.set("Count", ordered_pages.len() as u32);
+        dictionary.set(
+            "Kids",
+            ordered_pages
+                .iter()
+                .copied()
+                .map(Object::Reference)
+                .collect::<Vec<_>>(),
+        );
+        assembled.objects.insert(pages_id, Object::Dictionary(dictionary));
+    }
+
+    if let Ok(dictionary) = catalog_object.as_dict() {
+        let mut dictionary = dictionary.clone();
+        dictionary.set("Pages", pages_id);
+        dictionary.remove(b"Outlines");
+        assembled.objects.insert(catalog_id, Object::Dictionary(dictionary));
+    }
+
+    assembled.trailer.set("Root", catalog_id);
+    assembled.max_id = assembled.objects.len() as u32;
+    assembled.renumber_objects();
+    assembled.adjust_zero_pages();
+
+    Ok(assembled)
+}
+
+fn write(document: &mut Document, destination: &str) -> Result<usize, PdfError> {
+    document
+        .save(destination)
+        .map_err(|error| PdfError::execution(format!("the PDF could not be written: {error}")))?;
+
+    Ok(document.get_pages().len())
+}
 
 pub(crate) fn merge_pdf_documents(input: &Value) -> Result<Value, PdfError> {
     let sources = input
@@ -441,65 +600,44 @@ pub(crate) fn merge_pdf_documents(input: &Value) -> Result<Value, PdfError> {
         ));
     }
 
-    let mut args: Vec<&str> = vec![destination];
-    args.extend(paths.iter().map(String::as_str));
+    let mut loaded = Vec::new();
+    let mut contributed = Vec::new();
+    let mut total = 0usize;
 
-    let payload = parse_payload(&run_jxa(MERGE_SCRIPT, &args)?)?;
+    for path in &paths {
+        let document = open(path, "document.merge")?;
+        let numbers = page_numbers(&document);
+        total += numbers.len();
 
-    if !Path::new(destination).is_file() {
-        return Err(PdfError::execution("The merged PDF was not left at the destination"));
+        if total > MAX_PAGES {
+            return Err(PdfError::invalid(format!(
+                "document.merge would produce more than {MAX_PAGES} pages"
+            )));
+        }
+
+        contributed.push(json!({"source": path, "pages": numbers.len()}));
+        loaded.push((document, numbers));
     }
+
+    let mut assembled = assemble(loaded, "document.merge")?;
+    let page_count = write(&mut assembled, destination)?;
 
     Ok(json!({
         "capability": "document.merge",
-        "selectedProvider": "macos-pdf",
+        "selectedProvider": "local-pdf",
         "resourceLocation": "local",
         "inputResource": paths,
         "operationResult": {
             "status": "merged",
             "destination": destination,
-            "pageCount": payload["pageCount"],
-            "sources": payload["sources"],
+            "pageCount": page_count,
+            "sources": contributed,
         },
         "warnings": [],
         "confirmationConsumed": true,
         "validationResult": "merged",
     }))
 }
-
-const SPLIT_SCRIPT: &str = r#"
-ObjC.import('Quartz');
-
-function fail(message, invalidRequest) {
-  return JSON.stringify({ error: message, invalidRequest: !!invalidRequest });
-}
-
-function run(argv) {
-  const source = argv[0];
-  const destination = argv[1];
-  const wanted = argv[2].split(',').map(function (value) { return parseInt(value, 10); });
-
-  const doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(source));
-  if (!doc.js) return fail(source + ' is not a readable PDF', true);
-  if (doc.isLocked) return fail(source + ' is locked and cannot be split', true);
-
-  const out = $.PDFDocument.alloc.init;
-  const sourcePageCount = Number(doc.pageCount);
-
-  for (const page of wanted) {
-    if (page < 1 || page > sourcePageCount) {
-      return fail('Page ' + page + ' is outside a document of ' + sourcePageCount + ' pages', true);
-    }
-    out.insertPageAtIndex(doc.pageAtIndex(page - 1), out.pageCount);
-  }
-
-  if (!out.writeToURL($.NSURL.fileURLWithPath(destination))) {
-    return fail('The extracted PDF could not be written');
-  }
-
-  return JSON.stringify({ pageCount: Number(out.pageCount), sourcePageCount: sourcePageCount });
-}
-"#;
 
 /// `1-3,7` becomes `[1, 2, 3, 7]`.
 ///
@@ -573,30 +711,29 @@ pub(crate) fn split_pdf_document(input: &Value) -> Result<Value, PdfError> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| PdfError::invalid("document.split requires pages"))?;
 
-    let pages = parse_pages(spec)?;
-    let encoded = pages
+    let wanted = parse_pages(spec)?;
+    let document = open(source, "document.split")?;
+    let source_page_count = page_numbers(&document).len();
+
+    let numbers: Vec<u32> = wanted
         .iter()
-        .map(usize::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+        .map(|page| u32::try_from(*page).unwrap_or(u32::MAX))
+        .collect();
 
-    let payload = parse_payload(&run_jxa(SPLIT_SCRIPT, &[source, destination, &encoded])?)?;
-
-    if !Path::new(destination).is_file() {
-        return Err(PdfError::execution("The extracted PDF was not left at the destination"));
-    }
+    let mut assembled = assemble(vec![(document, numbers)], "document.split")?;
+    let page_count = write(&mut assembled, destination)?;
 
     Ok(json!({
         "capability": "document.split",
-        "selectedProvider": "macos-pdf",
+        "selectedProvider": "local-pdf",
         "resourceLocation": "local",
         "inputResource": source,
         "operationResult": {
             "status": "split",
             "destination": destination,
-            "pages": pages,
-            "pageCount": payload["pageCount"],
-            "sourcePageCount": payload["sourcePageCount"],
+            "pages": wanted,
+            "pageCount": page_count,
+            "sourcePageCount": source_page_count,
         },
         "warnings": [],
         "confirmationConsumed": true,
@@ -693,6 +830,64 @@ mod tests {
         assert_eq!(std::fs::read(&taken).unwrap(), b"placeholder");
     }
 
+    /// A one-page PDF that is only a picture of legible words.
+    ///
+    /// Returns how much text of its own the result has, so the test can assert
+    /// that the fixture really is a scan before relying on it being one.
+    ///
+    /// This is the only macOS-specific thing in these tests, and it is here to
+    /// MAKE a scan, not to read one: the reader under test is portable, and
+    /// recognition is checked only where the platform provides it.
+    #[cfg(target_os = "macos")]
+    fn build_scan_fixture(destination: &std::path::Path) -> usize {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        const SCRIPT: &str = r#"
+ObjC.import('Quartz');
+ObjC.import('AppKit');
+
+function run(argv) {
+  const size = $.NSMakeSize(612, 792);
+  const image = $.NSImage.alloc.initWithSize(size);
+  image.lockFocus;
+  $.NSColor.whiteColor.set;
+  $.NSBezierPath.fillRect($.NSMakeRect(0, 0, size.width, size.height));
+  const attributes = $.NSDictionary.dictionaryWithObjectForKey(
+    $.NSFont.fontWithNameSize('Helvetica', 48), $.NSFontAttributeName);
+  $('Scanned heading').drawAtPointWithAttributes($.NSMakePoint(72, 600), attributes);
+  image.unlockFocus;
+
+  const doc = $.PDFDocument.alloc.init;
+  doc.insertPageAtIndex($.PDFPage.alloc.initWithImage(image), 0);
+  doc.writeToURL($.NSURL.fileURLWithPath(argv[0]));
+
+  const back = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(argv[0]));
+  return String((ObjC.unwrap(back.string) || '').trim().length);
+}
+"#;
+
+        let mut child = Command::new("/usr/bin/osascript")
+            .args(["-l", "JavaScript", "-"])
+            .arg(destination)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("osascript is part of macOS");
+
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(SCRIPT.as_bytes())
+            .unwrap();
+
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "the scan fixture could not be built");
+
+        String::from_utf8_lossy(&output.stdout).trim().parse().unwrap()
+    }
+
     /// Everything, against real PDFs, with the answer known in advance.
     ///
     /// The scan is built by rendering a text PDF to an image and rebuilding it
@@ -723,7 +918,7 @@ mod tests {
         std::fs::write(&bravo_txt, b"Bravo paragraph.\n").unwrap();
 
         for (source, target) in [(&alpha_txt, &alpha_pdf), (&bravo_txt, &bravo_pdf)] {
-            let produced = Command::new("/usr/sbin/cupsfilter")
+            let produced = std::process::Command::new("/usr/sbin/cupsfilter")
                 .arg(source)
                 .output()
                 .expect("cupsfilter is part of macOS");
@@ -731,43 +926,14 @@ mod tests {
             std::fs::write(target, produced.stdout).unwrap();
         }
 
-        let built = parse_payload(
-            &run_jxa(
-                r#"
-ObjC.import('Quartz');
-ObjC.import('AppKit');
+        // The scan: a page that is only a picture of legible words, which is
+        // what a scanned document is. Built here rather than checked in, and it
+        // asserts its own premise below before the test relies on it.
+        let scan_text_layer = build_scan_fixture(&scan_pdf);
 
-function run(argv) {
-  // A page that is only an image of legible words, which is what a scan is.
-  const size = $.NSMakeSize(612, 792);
-  const image = $.NSImage.alloc.initWithSize(size);
-  image.lockFocus;
-  $.NSColor.whiteColor.set;
-  $.NSBezierPath.fillRect($.NSMakeRect(0, 0, size.width, size.height));
-  const attributes = $.NSDictionary.dictionaryWithObjectForKey(
-    $.NSFont.fontWithNameSize('Helvetica', 48), $.NSFontAttributeName);
-  $('Scanned heading').drawAtPointWithAttributes($.NSMakePoint(72, 600), attributes);
-  image.unlockFocus;
-
-  const doc = $.PDFDocument.alloc.init;
-  doc.insertPageAtIndex($.PDFPage.alloc.initWithImage(image), 0);
-  doc.writeToURL($.NSURL.fileURLWithPath(argv[0]));
-
-  const back = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(argv[0]));
-  return JSON.stringify({
-    scanTextLayer: (ObjC.unwrap(back.string) || '').trim().length,
-  });
-}
-"#,
-                &[scan_pdf.to_str().unwrap()],
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        // The scan must genuinely have no text layer, or the recognition
+        // The scan must genuinely have no text of its own, or the recognition
         // assertion below would be proving nothing.
-        assert_eq!(built["scanTextLayer"], 0, "the scan fixture is not a scan");
+        assert_eq!(scan_text_layer, 0, "the scan fixture is not a scan");
 
         // Merge first, so the split below has something with more than one page
         // to take from -- and so merge is proven on real files rather than by
@@ -785,7 +951,7 @@ function run(argv) {
         let read = read_pdf_document(&json!({"path": text_pdf.to_str().unwrap()})).unwrap();
         let result = &read["operationResult"];
 
-        assert_eq!(read["selectedProvider"], "macos-pdf");
+        assert_eq!(read["selectedProvider"], "local-pdf");
         assert_eq!(result["pageCount"], 2);
         assert_eq!(result["recognisedPages"], 0);
         assert_eq!(result["pages"][0]["source"], "text-layer");

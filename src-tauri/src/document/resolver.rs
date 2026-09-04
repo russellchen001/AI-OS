@@ -23,8 +23,9 @@ pub(crate) enum OfficeApplication {
     GoogleSlides,
     /// Not an application: the file itself, read as the ZIP of XML it is.
     StructuredFile,
-    /// Not an application either: PDFKit and Vision, which are part of macOS.
-    MacosPdf,
+    /// Not an application either: the PDF itself, parsed in Rust. Recognition
+    /// for a scanned page is an enhancement where the platform offers one.
+    LocalPdf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -427,15 +428,20 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             import_formats: &[],
             export_formats: &[],
         },
-        // PDF, through macOS itself. The skill could write a PDF from every
-        // application it drives and read none, which made PDF a one-way
-        // street. PDFKit reads and rearranges one and Vision recognises a
-        // scanned one, both without an application and without an install.
+        // PDF. The skill could write one from every application it drives and
+        // read none, which made PDF a one-way street.
+        //
+        // It sits with the structured layer rather than with macOS conversion
+        // because it is the same kind of thing: the file read in Rust, needing
+        // no application AND no particular operating system. An earlier version
+        // drove macOS PDFKit, which made the capability depend on which system
+        // the person runs -- the same mistake as depending on what they
+        // installed.
         OfficeCandidate {
-            provider: OfficeProviderId::MacosNative,
-            application: OfficeApplication::MacosPdf,
+            provider: OfficeProviderId::LocalStructured,
+            application: OfficeApplication::LocalPdf,
             local: true,
-            available: cfg!(target_os = "macos"),
+            available: true,
             authorized: true,
             executable: true,
             priority: 0,
@@ -538,7 +544,7 @@ mod tests {
                 // things to install would misdescribe the machine.
                 let needs_no_application = matches!(
                     candidate.application,
-                    OfficeApplication::StructuredFile | OfficeApplication::MacosPdf
+                    OfficeApplication::StructuredFile | OfficeApplication::LocalPdf
                 );
 
                 candidate.available =
@@ -781,10 +787,11 @@ mod tests {
             // formats no application here claims.
             ("document.read", "rtf", OfficeApplication::MacosNative),
             // PDF is nobody else's format: no Office or iWork application here
-            // reads one, and until this existed the skill could only write them.
-            ("document.read", "pdf", OfficeApplication::MacosPdf),
-            ("document.merge", "pdf", OfficeApplication::MacosPdf),
-            ("document.split", "pdf", OfficeApplication::MacosPdf),
+            // reads one, and until this existed the skill could only write
+            // them. It needs no application and no particular platform.
+            ("document.read", "pdf", OfficeApplication::LocalPdf),
+            ("document.merge", "pdf", OfficeApplication::LocalPdf),
+            ("document.split", "pdf", OfficeApplication::LocalPdf),
         ] {
             assert_eq!(
                 route_on(&everything, capability, format),
@@ -835,8 +842,8 @@ mod tests {
             ("document.read", "pages", None),
             ("spreadsheet.read", "numbers", None),
             // PDF needs no application, so it survives here too.
-            ("document.read", "pdf", Some(OfficeApplication::MacosPdf)),
-            ("document.merge", "pdf", Some(OfficeApplication::MacosPdf)),
+            ("document.read", "pdf", Some(OfficeApplication::LocalPdf)),
+            ("document.merge", "pdf", Some(OfficeApplication::LocalPdf)),
             // But rearranging pages is only a PDF operation.
             ("document.merge", "docx", None),
             ("document.split", "docx", None),

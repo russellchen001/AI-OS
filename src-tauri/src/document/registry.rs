@@ -71,19 +71,7 @@ const GOOGLE_WORKSPACE_CAPABILITIES: &[&str] = &[
 /// through the structured layer, which is a different statement and a true one.
 const WPS_CAPABILITIES: &[&str] = &[];
 
-/// What macOS itself can execute, with no application at all.
-///
-/// `textutil` converts between the word-processing formats; PDFKit reads and
-/// rearranges a PDF and Vision recognises a scanned one. PDF is the reason
-/// merge and split are here: it is the one format no Office or iWork
-/// application on this machine reads.
-const NATIVE_CAPABILITIES: &[&str] = &[
-    "document.read",
-    "document.create",
-    "document.convert",
-    "document.merge",
-    "document.split",
-];
+const NATIVE_CAPABILITIES: &[&str] = &["document.read", "document.create", "document.convert"];
 /// What Microsoft Graph can actually execute: nothing, yet.
 ///
 /// It is a declared future provider -- an official API behind OAuth that has
@@ -100,7 +88,8 @@ const GRAPH_CAPABILITIES: &[&str] = &[];
 /// What the structured file layer can actually execute today.
 ///
 /// This provider reads the file itself -- .xlsx, .docx and .pptx are all ZIP
-/// archives of XML -- so it needs no application and is available on every
+/// archives of XML, and a PDF is parsed directly -- so it needs no application,
+/// and no particular operating system either, and is available on every
 /// machine. That is what makes Office a capability rather than a set of
 /// per-application integrations: when no Office application is installed, this
 /// still answers.
@@ -109,6 +98,11 @@ const GRAPH_CAPABILITIES: &[&str] = &[];
 /// capabilities with no implementation at all.
 const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &[
     "document.read",
+    // Rearranging pages is a PDF operation and PDF is read here in Rust, so it
+    // belongs with the rest of the no-application layer rather than with the
+    // macOS-specific conversion path.
+    "document.merge",
+    "document.split",
     "presentation.read",
     "spreadsheet.read",
     "spreadsheet.create",

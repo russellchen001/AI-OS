@@ -2079,7 +2079,7 @@ fn execute_document_merge(
     let route = office_route(DOCUMENT_MERGE_ACTION, &request.input, "destination")
         .ok_or_else(|| no_route(DOCUMENT_MERGE_ACTION, &request.input, "destination"))?;
 
-    if route.application != OfficeApplication::MacosPdf {
+    if route.application != OfficeApplication::LocalPdf {
         return Err(OpenClawExecutionError::new(
             OpenClawExecutionErrorKind::ExecutionFailed,
             format!(
@@ -2107,7 +2107,7 @@ fn execute_document_split(
     let route = office_route(DOCUMENT_SPLIT_ACTION, &request.input, "source")
         .ok_or_else(|| no_route(DOCUMENT_SPLIT_ACTION, &request.input, "source"))?;
 
-    if route.application != OfficeApplication::MacosPdf {
+    if route.application != OfficeApplication::LocalPdf {
         return Err(OpenClawExecutionError::new(
             OpenClawExecutionErrorKind::ExecutionFailed,
             format!(
@@ -3588,11 +3588,12 @@ fn execute_document_read(
                 ),
             });
         }
-        // PDF, which no Office or iWork application here reads. A scanned page
-        // has no text layer, so it is recognised rather than returned empty --
-        // and the result says which pages were recognised, because that is not
+        // PDF, which no Office or iWork application here reads, and which is
+        // read in Rust rather than by whatever the operating system ships. A
+        // page with no text of its own is recognised where the platform can,
+        // and the result says which pages those were -- recognised text is not
         // the same kind of evidence as text the file declares.
-        OfficeApplication::MacosPdf => {
+        OfficeApplication::LocalPdf => {
             let output = crate::document::pdf::read_pdf_document(&request.input)
                 .map_err(map_pdf_error)?;
 

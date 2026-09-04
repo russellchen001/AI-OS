@@ -44,6 +44,10 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 tauri-plugin-deep-link = "2.4.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# PDF is a format, not an application, so it is read in Rust on every platform
+# rather than by driving whatever the operating system happens to ship.
+lopdf = "0.44"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
 
