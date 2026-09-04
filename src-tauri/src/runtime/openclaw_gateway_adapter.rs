@@ -851,29 +851,58 @@ fn execute_document_create(
     invoker: &dyn GatewayMethodInvoker,
     request: &OpenClawExecutionRequest,
 ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
-    // document.create still routes by extension rather than through the
-    // resolver, for the reason recorded with the routing matrix: the providers
-    // do not agree on what document.convert means and the two entry points
-    // share that resolution. The cloud branch is therefore explicit here.
-    if requested_location(&request.input)
-        == crate::document::resolver::OfficeResourceLocation::GoogleCloud
-    {
-        let output = run_cloud(crate::google_workspace::office::document_create(&request.input))?;
+    use crate::document::resolver::OfficeApplication;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS created the Google document.".to_owned()),
-        });
-    }
+    let route = office_route(DOCUMENT_CREATE_ACTION, &request.input, "path")
+        .ok_or_else(|| no_route(DOCUMENT_CREATE_ACTION, &request.input, "path"))?;
 
-    if is_format(&request.input, "path", "pages") {
-        let output = crate::document::pages::create_pages_document(&request.input)
-            .map_err(map_pages_error)?;
+    match route.application {
+        OfficeApplication::GoogleDocs => {
+            let output =
+                run_cloud(crate::google_workspace::office::document_create(&request.input))?;
 
-        return Ok(OpenClawExecutionResult {
-            output,
-            summary: Some("AI-OS created the Pages document.".to_owned()),
-        });
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS created the Google document.".to_owned()),
+            });
+        }
+        OfficeApplication::ApplePages => {
+            let output = crate::document::pages::create_pages_document(&request.input)
+                .map_err(map_pages_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS created the Pages document.".to_owned()),
+            });
+        }
+        // Word writes a real Word document, so it answers for its own format
+        // whenever it is installed -- the same rule document.read follows, and
+        // the reason this route stopped handing every .docx to plain-text
+        // conversion.
+        //
+        // Only .docx. Word's create adapter saves DOCX bytes whatever the path
+        // is called, so a .doc request would get a mislabelled file; macOS
+        // conversion picks its format from the extension and genuinely writes
+        // the old binary format, so .doc is left to it rather than quietly
+        // mislabelled here.
+        OfficeApplication::MicrosoftWord if is_format(&request.input, "path", "docx") => {
+            let output = crate::document::word::create_word_document(&request.input)
+                .map_err(map_word_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS created the Word document.".to_owned()),
+            });
+        }
+        OfficeApplication::MicrosoftWord => {}
+        OfficeApplication::MacosNative => {}
+        other => {
+            return Err(OpenClawExecutionError::new(
+                OpenClawExecutionErrorKind::ExecutionFailed,
+                format!("Office application {other:?} has no document.create adapter."),
+                false,
+            ));
+        }
     }
 
     let (path, session_key, run_id) = start_document_create(invoker, request)?;
@@ -3385,10 +3414,13 @@ fn document_create_input<'a>(
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    if !matches!(format.as_str(), "doc" | "docx") {
+    // What `textutil` actually writes, which is the same set the read side
+    // accepts. This path is the floor: Word answers for .docx when it is
+    // installed, and these are the formats left to conversion.
+    if !matches!(format.as_str(), "doc" | "docx" | "rtf" | "txt") {
         return Err(OpenClawExecutionError::new(
             OpenClawExecutionErrorKind::InvalidRequest,
-            "document.create currently supports DOC and DOCX files",
+            "document.create through macOS conversion supports DOC, DOCX, RTF and TXT files",
             false,
         ));
     }
@@ -5473,6 +5505,11 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
     }
 
     #[test]
+    /// The floor, exercised on a format only it claims.
+    ///
+    /// Same reasoning as the read side: a `.docx` here would route to Word on a
+    /// machine that has Word and to plain-text conversion on one that does not,
+    /// so the assertion would depend on the machine running the test.
     fn document_create_uses_native_textutil_and_returns_created_result() {
         let history = json!({"messages": [{
             "role": "toolResult",
@@ -5494,7 +5531,7 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
             &request(
                 "document.create",
                 json!({
-                    "path": "/safe/example/new report.docx",
+                    "path": "/safe/example/new report.rtf",
                     "content": "Document body"
                 }),
             ),
@@ -5506,7 +5543,7 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
         assert_eq!(
             result.output,
             json!({
-                "path": "/safe/example/new report.docx",
+                "path": "/safe/example/new report.rtf",
                 "status": "created",
                 "bytesWritten": 2048,
             })
@@ -5517,7 +5554,7 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
         );
         let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
         assert!(message.contains("document.create is NOT an OpenClaw tool name"));
-        assert!(message.contains("/usr/bin/textutil -convert docx"));
+        assert!(message.contains("/usr/bin/textutil -convert rtf"));
         assert!(message.contains("/bin/ln"));
         assert!(message.contains("never overwrite"));
         assert!(calls.iter().all(|call| call.0 != "document.create"));
@@ -5576,10 +5613,25 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
             ("/safe/report.docx", "Document body", "/safe")
         );
 
+        for accepted in ["/safe/report.doc", "/safe/report.rtf", "/safe/report.txt"] {
+            assert!(
+                document_create_input(&request(
+                    "document.create",
+                    json!({"path": accepted, "content": "body"})
+                ))
+                .is_ok(),
+                "{accepted} should be accepted by the conversion floor"
+            );
+        }
+
         for input in [
             json!({"path": "relative.docx", "content": "body"}),
             json!({"path": "/safe/report.docx", "content": "body", "overwrite": true}),
-            json!({"path": "/safe/report.txt", "content": "body"}),
+            // .txt and .rtf are accepted now -- textutil writes them, and this
+            // path is the floor for the formats Word does not answer for. What
+            // is still refused is a format nothing here converts to.
+            json!({"path": "/safe/report.odt", "content": "body"}),
+            json!({"path": "/safe/report", "content": "body"}),
         ] {
             let error = document_create_input(&request("document.create", input)).unwrap_err();
             assert_eq!(error.kind, OpenClawExecutionErrorKind::InvalidRequest);

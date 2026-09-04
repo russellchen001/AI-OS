@@ -685,14 +685,12 @@ mod tests {
     /// from nowhere before this existed, so a table built from declarations is
     /// exactly the thing that must not be trusted.
     ///
-    /// `document.create` and `document.convert` are deliberately absent, and
-    /// their absence is the honest statement: those two entry points still
-    /// route by extension rather than through this resolver, because the
-    /// providers do not agree on what the capability means. Pages converts to
-    /// PDF, macOS conversion converts between DOC and DOCX, and Word exports
-    /// PDF; deciding which one `document.convert` is belongs to the product,
-    /// not to routing. A row must not be added here until the call path
-    /// actually reaches it.
+    /// This comment used to say `document.create` and `document.convert` were
+    /// deliberately absent because the providers disagreed about what
+    /// conversion meant. That was settled -- the destination decides -- and
+    /// both entry points route here now. The comment outliving the code is the
+    /// exact failure this table exists to prevent, so it is corrected rather
+    /// than quietly deleted.
     #[test]
     fn every_capability_and_format_reaches_the_adapter_it_should() {
         let everything = machine_with(&[
@@ -712,6 +710,10 @@ mod tests {
             ("document.read", "pages", OfficeApplication::ApplePages),
             ("spreadsheet.read", "xlsx", OfficeApplication::MicrosoftExcel),
             ("spreadsheet.read", "xls", OfficeApplication::MicrosoftExcel),
+            // Creating follows reading: Word writes a real Word document, so it
+            // answers for its own format whenever it is installed.
+            ("document.create", "docx", OfficeApplication::MicrosoftWord),
+            ("document.create", "pages", OfficeApplication::ApplePages),
             (
                 "spreadsheet.read",
                 "numbers",
@@ -786,6 +788,9 @@ mod tests {
             // And what genuinely cannot be done says so, rather than routing to
             // an adapter that would refuse the file.
             ("spreadsheet.edit", "xlsx", None),
+            // Plain-text conversion is the floor for creating too.
+            ("document.create", "docx", Some(OfficeApplication::MacosNative)),
+            ("document.create", "rtf", Some(OfficeApplication::MacosNative)),
             // Editing and PDF export need the application; the structured layer
             // reads and writes files, it does not drive a word processor.
             ("document.edit", "docx", None),
