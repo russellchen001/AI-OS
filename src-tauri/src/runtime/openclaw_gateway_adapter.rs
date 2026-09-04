@@ -28,6 +28,10 @@ const PRESENTATION_CREATE_ACTION: &str = "presentation.create";
 /// PowerPoint's edits slides and exports PDF. They are exposed here.
 const DOCUMENT_EDIT_ACTION: &str = "document.edit";
 const SPREADSHEET_CONVERT_ACTION: &str = "spreadsheet.convert";
+/// Rearranging pages is a PDF operation, and PDF is the one format no Office or
+/// iWork application here reads. macOS reads and writes it without either.
+const DOCUMENT_MERGE_ACTION: &str = "document.merge";
+const DOCUMENT_SPLIT_ACTION: &str = "document.split";
 const PRESENTATION_EDIT_ACTION: &str = "presentation.edit";
 const PRESENTATION_CONVERT_ACTION: &str = "presentation.convert";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
@@ -131,6 +135,12 @@ fn execute_with_invoker(
     }
     if request.action.as_str() == SPREADSHEET_CONVERT_ACTION {
         return execute_spreadsheet_convert(request);
+    }
+    if request.action.as_str() == DOCUMENT_MERGE_ACTION {
+        return execute_document_merge(request);
+    }
+    if request.action.as_str() == DOCUMENT_SPLIT_ACTION {
+        return execute_document_split(request);
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
@@ -1543,6 +1553,18 @@ fn map_iwork_convert_error(
     )
 }
 
+fn map_pdf_error(error: crate::document::pdf::PdfError) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
 fn map_excel_error(error: crate::document::excel::ExcelError) -> OpenClawExecutionError {
     OpenClawExecutionError::new(
         if error.invalid_request {
@@ -2045,6 +2067,64 @@ fn execute_presentation_convert(
             false,
         )),
     }
+}
+
+fn execute_document_merge(
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    use crate::document::resolver::OfficeApplication;
+
+    // Routed on the destination, because a merge has many sources and one
+    // answer, and the format they must all be is the one it writes.
+    let route = office_route(DOCUMENT_MERGE_ACTION, &request.input, "destination")
+        .ok_or_else(|| no_route(DOCUMENT_MERGE_ACTION, &request.input, "destination"))?;
+
+    if route.application != OfficeApplication::MacosPdf {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office application {:?} has no document.merge adapter.",
+                route.application
+            ),
+            false,
+        ));
+    }
+
+    let output =
+        crate::document::pdf::merge_pdf_documents(&request.input).map_err(map_pdf_error)?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some("AI-OS merged the PDFs.".to_owned()),
+    })
+}
+
+fn execute_document_split(
+    request: &OpenClawExecutionRequest,
+) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+    use crate::document::resolver::OfficeApplication;
+
+    let route = office_route(DOCUMENT_SPLIT_ACTION, &request.input, "source")
+        .ok_or_else(|| no_route(DOCUMENT_SPLIT_ACTION, &request.input, "source"))?;
+
+    if route.application != OfficeApplication::MacosPdf {
+        return Err(OpenClawExecutionError::new(
+            OpenClawExecutionErrorKind::ExecutionFailed,
+            format!(
+                "Office application {:?} has no document.split adapter.",
+                route.application
+            ),
+            false,
+        ));
+    }
+
+    let output =
+        crate::document::pdf::split_pdf_document(&request.input).map_err(map_pdf_error)?;
+
+    Ok(OpenClawExecutionResult {
+        output,
+        summary: Some("AI-OS extracted the pages into a new PDF.".to_owned()),
+    })
 }
 
 fn execute_spreadsheet_convert(
@@ -3506,6 +3586,19 @@ fn execute_document_read(
                 summary: Some(
                     "AI-OS read the document directly from the file, without Word.".to_owned(),
                 ),
+            });
+        }
+        // PDF, which no Office or iWork application here reads. A scanned page
+        // has no text layer, so it is recognised rather than returned empty --
+        // and the result says which pages were recognised, because that is not
+        // the same kind of evidence as text the file declares.
+        OfficeApplication::MacosPdf => {
+            let output = crate::document::pdf::read_pdf_document(&request.input)
+                .map_err(map_pdf_error)?;
+
+            return Ok(OpenClawExecutionResult {
+                output,
+                summary: Some("AI-OS read the PDF.".to_owned()),
             });
         }
         // The floor: the only path that reads the old binary .doc with no Word

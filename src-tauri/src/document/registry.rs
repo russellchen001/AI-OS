@@ -71,7 +71,19 @@ const GOOGLE_WORKSPACE_CAPABILITIES: &[&str] = &[
 /// through the structured layer, which is a different statement and a true one.
 const WPS_CAPABILITIES: &[&str] = &[];
 
-const NATIVE_CAPABILITIES: &[&str] = &["document.read", "document.create", "document.convert"];
+/// What macOS itself can execute, with no application at all.
+///
+/// `textutil` converts between the word-processing formats; PDFKit reads and
+/// rearranges a PDF and Vision recognises a scanned one. PDF is the reason
+/// merge and split are here: it is the one format no Office or iWork
+/// application on this machine reads.
+const NATIVE_CAPABILITIES: &[&str] = &[
+    "document.read",
+    "document.create",
+    "document.convert",
+    "document.merge",
+    "document.split",
+];
 /// What Microsoft Graph can actually execute: nothing, yet.
 ///
 /// It is a declared future provider -- an official API behind OAuth that has
