@@ -242,6 +242,7 @@ const CREATE_SCRIPT: &str = r#"
 on run argv
     set outputPath to item 1 of argv
     set documentText to item 2 of argv
+    set wantedFormat to item 3 of argv
     set createdDocument to missing value
     set beforeDocumentCount to 0
     set ownsActiveDocument to false
@@ -251,7 +252,20 @@ on run argv
             set beforeDocumentCount to count of documents
             set createdDocument to make new document
             set content of text object of createdDocument to documentText
-            save as createdDocument file name outputPath file format format document default add to recent files false
+            -- The format follows the extension. Saving every path as
+            -- `format document default` wrote DOCX bytes under a .doc name --
+            -- a file that opens, and is not what it says it is. Proven by
+            -- verify/probe_word_save_formats.sh: `format document97` writes
+            -- OLE2 (d0cf11e0a1b11ae1) and the other writes a ZIP (504b).
+            --
+            -- `format document default` is ONE enumerator name. Reading it as
+            -- `format document` plus a `default` parameter leaves a stray
+            -- identifier and the whole script fails to compile.
+            if wantedFormat is "doc" then
+                save as createdDocument file name outputPath file format format document97 add to recent files false
+            else
+                save as createdDocument file name outputPath file format format document default add to recent files false
+            end if
             if (count of documents) is not (beforeDocumentCount + 1) then error "Word create document count changed unexpectedly"
             if (posix full name of active document as text) is not outputPath then error "Word created document identity did not match the operation output"
             set ownsActiveDocument to true
@@ -507,10 +521,20 @@ pub(crate) fn create_word_document(input: &Value) -> Result<Value, WordError> {
     let extension = Path::new(path)
         .extension()
         .and_then(|value| value.to_str())
-        .unwrap_or("docx");
-    let (cache_output, cache_root) = word_cache_output(extension)?;
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "docx".to_owned());
+
+    // Word writes both, but only these two, and the file has to be what its
+    // name says. Anything else belongs to a different provider.
+    if !matches!(extension.as_str(), "doc" | "docx") {
+        return Err(WordError::invalid(
+            "document.create through Word requires a DOC or DOCX path",
+        ));
+    }
+
+    let (cache_output, cache_root) = word_cache_output(&extension)?;
     let cache_string = cache_output.to_string_lossy().to_string();
-    let create_result = run_osascript(CREATE_SCRIPT, &[&cache_string, &text]);
+    let create_result = run_osascript(CREATE_SCRIPT, &[&cache_string, &text, &extension]);
     if !cache_output.is_file() {
         let _ = fs::remove_dir_all(&cache_root);
         return Err(create_result.err().unwrap_or_else(|| {
@@ -765,6 +789,69 @@ pub(crate) fn export_word_document_pdf(input: &Value) -> Result<Value, WordError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A created document has to BE what its name says.
+    ///
+    /// Word saved every path as `format document default`, so a .doc request
+    /// produced DOCX bytes under a .doc name: a file that opens, and is a lie
+    /// about itself. The check is the magic bytes rather than the extension,
+    /// because the extension is exactly the thing that was wrong.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Microsoft Word"]
+    fn word_writes_the_format_the_extension_promises_real_e2e() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ai-os-word-format-e2e-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        for (name, magic, label) in [
+            ("modern.docx", &b"PK"[..], "a .docx is a ZIP"),
+            (
+                "legacy.doc",
+                &[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1][..],
+                "a .doc is OLE2",
+            ),
+        ] {
+            let path = root.join(name);
+
+            create_word_document(&json!({
+                "path": path.to_str().unwrap(),
+                "title": "Format contract",
+                "body": "The bytes have to match the name."
+            }))
+            .unwrap();
+
+            let bytes = fs::read(&path).unwrap();
+            assert!(
+                bytes.starts_with(magic),
+                "{label}, but {name} started with {:02x?}",
+                &bytes[..magic.len().min(bytes.len())]
+            );
+
+            // And it is still a document Word itself reads back.
+            let read = read_word_document(&json!({"path": path.to_str().unwrap()})).unwrap();
+            assert!(read["operationResult"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("The bytes have to match the name."));
+        }
+
+        // A format Word does not write is refused rather than mislabelled.
+        let refused = create_word_document(&json!({
+            "path": root.join("notes.rtf").to_str().unwrap(),
+            "body": "x"
+        }))
+        .unwrap_err();
+        assert!(refused.invalid_request);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     const SAFE_TEST_PNG: &[u8] = &[
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,

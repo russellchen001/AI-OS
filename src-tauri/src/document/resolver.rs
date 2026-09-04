@@ -713,6 +713,9 @@ mod tests {
             // Creating follows reading: Word writes a real Word document, so it
             // answers for its own format whenever it is installed.
             ("document.create", "docx", OfficeApplication::MicrosoftWord),
+            // .doc too, now that Word writes the old binary format rather than
+            // DOCX bytes under a .doc name.
+            ("document.create", "doc", OfficeApplication::MicrosoftWord),
             ("document.create", "pages", OfficeApplication::ApplePages),
             (
                 "spreadsheet.read",

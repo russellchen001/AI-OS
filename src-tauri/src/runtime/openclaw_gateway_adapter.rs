@@ -875,17 +875,16 @@ fn execute_document_create(
                 summary: Some("AI-OS created the Pages document.".to_owned()),
             });
         }
-        // Word writes a real Word document, so it answers for its own format
+        // Word writes a real Word document, so it answers for its own formats
         // whenever it is installed -- the same rule document.read follows, and
         // the reason this route stopped handing every .docx to plain-text
         // conversion.
         //
-        // Only .docx. Word's create adapter saves DOCX bytes whatever the path
-        // is called, so a .doc request would get a mislabelled file; macOS
-        // conversion picks its format from the extension and genuinely writes
-        // the old binary format, so .doc is left to it rather than quietly
-        // mislabelled here.
-        OfficeApplication::MicrosoftWord if is_format(&request.input, "path", "docx") => {
+        // Both of them. Word used to save DOCX bytes whatever the path was
+        // called, so a .doc came out mislabelled and this arm had to exclude
+        // it; the adapter now picks its format from the extension and writes
+        // genuine OLE2 for a .doc, so there is nothing left to exclude.
+        OfficeApplication::MicrosoftWord => {
             let output = crate::document::word::create_word_document(&request.input)
                 .map_err(map_word_error)?;
 
@@ -894,7 +893,6 @@ fn execute_document_create(
                 summary: Some("AI-OS created the Word document.".to_owned()),
             });
         }
-        OfficeApplication::MicrosoftWord => {}
         OfficeApplication::MacosNative => {}
         other => {
             return Err(OpenClawExecutionError::new(
