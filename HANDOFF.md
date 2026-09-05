@@ -10,60 +10,55 @@
 ### Where it is
 
 - P15 is **6 / 11**. Office is Complete.
-- Computer Control **Phase A is committed** (`80d1d01`): `system.storage`,
-  `system.cpu`, `system.memory`, `system.network`, `system.process.list`,
-  `system.process.info`. All reads, all through `sysinfo`, and therefore
-  portable — the tests pass on Linux, which is not the system they were
-  written on.
-- Computer Control **Phase B is written and NOT committed**:
+- Computer Control **Phase A is committed** (`80d1d01`):
+  `system.storage`, `system.cpu`, `system.memory`, `system.network`,
+  `system.process.list`, `system.process.info`.
+- Computer Control **Phase B is complete and committed** (`4ca692f`):
   `system.app.list`, `system.app.running`, `system.app.launch`,
   `system.app.quit`.
-- Phases C, D and E are not started.
+- Computer Control **Phase C is next**.
+- Phases D and E are not started.
 
-### What is stopping it
+### Phase B accepted state
 
-Nothing is blocked on a decision, and nothing is waiting on anyone. The Phase B
-gate has failed three times, each time on a different wrong assumption in the
-adapter, and each was fixed rather than worked around:
+Phase B passed both the Computer Control phase gate and the Office phase gate
+before commit.
 
-1. The identifier check listed the ways an input could be BAD — a slash, a
-   space — so `Safari浏览器` walked through, having neither.
-2. The `mdfind` parser split on a run of four spaces, a width that was never
-   measured. It now splits on the attribute NAMES, which is what `mdfind`
-   promises.
-3. The identifier check then required a dot, on the theory that identifiers are
-   reverse-domain names. This machine has an application whose identifier is
-   `MacNetPlayer`. That rule made a real, launchable application
-   unaddressable — and it could never have done its job anyway, because
-   `MacNetPlayer` is indistinguishable from a display name BY SHAPE.
+Application ownership remains intentionally narrow:
 
-All three are the same mistake: matching an incidental detail instead of what
-is actually guaranteed. The check now establishes only that a value is safe to
-hand to the platform, and whether anything answers to it is settled by the
-machine — `open -b` exits non-zero for an identifier nothing is installed
-under. Every one was caught by its own test on the gate, not by review.
+- listing installed/running applications belongs to Computer Control
+- launching or requesting quit of an application belongs to Computer Control
+- interacting with controls inside an application belongs to Computer Use
+- multi-step judgement and orchestration belongs to OpenClaw / Planner
 
-**Next action: run the gate again.** Nothing else is outstanding for Phase B.
+Application addressing does not infer identity from display-name shape.
+The adapter only validates that an identifier is safe to hand to the platform;
+the operating system determines whether an installed application answers to it.
+
+Launch and quit results are observation-based rather than trusting command
+success alone. User work is preserved: an application that refuses to quit
+because it has unsaved work remains running rather than being force-closed.
 
 ### What comes next
 
-1. Phase B green and committed.
-2. Phase C — clipboard, audio, power. Same subprocess shape as Phase B.
-3. Phase D — notifications and permissions. A DIFFERENT shape: both must run
-   in-process. `display notification` through osascript posts nothing and
-   reports no error on this machine, and TCC permission state is per-binary, so
-   a shell reads the shell's permissions and says nothing about AI-OS's.
-   `check_macos_mail_calendar_permissions()` is currently a stub returning a
-   hardcoded `NotDetermined`, so there is no precedent to copy.
-4. Phase E — `system.process.terminate` and a workflow crossing several
-   capabilities. Destructive, so it is last.
-5. Then the rest of P15: Vehicle Control v1, local generative media, cognitive
-   distillation foundation, NAS (hardware-blocked).
+1. Phase C — clipboard, audio, power.
+2. Phase D — notifications and permissions. These require in-process platform
+   handling rather than copying the Phase B subprocess implementation.
+3. Phase E — `system.process.terminate` plus the final cross-capability workflow.
+   Destructive process termination remains last.
+4. Then Vehicle Control v1.
+5. Then local generative media.
+6. Then cognitive distillation foundation.
+7. NAS remains hardware-blocked.
 
-Outstanding outside Computer Control: the v1.0 release itself — signing and
-notarisation, and an install on a clean machine. Cross-platform support is
-deliberately deferred past v1.0; the gap is recorded in
-`the_gap_between_macos_and_everywhere_else_is_written_down`.
+Computer Control must remain complementary to the other execution layers:
+
+- Computer Use owns visual GUI interaction
+- OpenClaw owns general Agent execution
+- Computer Control owns deterministic system state and direct system operations
+
+Nothing in Computer Control should become a second general-purpose Agent or a
+screen-driving automation layer.
 
 <!-- COMPUTER_CONTROL_STATE_END -->
 
