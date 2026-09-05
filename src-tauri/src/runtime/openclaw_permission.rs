@@ -5,6 +5,51 @@ use super::openclaw_execution::{
 use std::sync::Arc;
 use std::{collections::HashSet, iter::IntoIterator};
 
+/// What a person can authorise once, in the moment, for a single run.
+///
+/// A capability that is not on this list is DENIED no matter what else in the
+/// build supports it. That is how twelve capabilities -- implemented, routed
+/// through the resolver, covered by the gate -- turned out to be uncallable in
+/// production: everything about them was right except that nobody could say
+/// yes to them. It is the sixth time in this work that a working adapter has
+/// been reachable from nowhere, and the first five were each found by hand.
+///
+/// `every_capability_the_resolver_can_route_is_one_a_person_can_authorise` is
+/// what makes a seventh impossible: declaring a capability the resolver can
+/// route now fails the suite until a person can also permit it.
+pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
+    "filesystem.scan",
+    "filesystem.read",
+    "filesystem.write",
+    "filesystem.move",
+    "download.start",
+    "document.read",
+    "document.create",
+    "document.edit",
+    "document.convert",
+    // Work done to a PDF itself, in Rust, on any machine. Every one of these
+    // writes a file, so every one of them is something a person says yes to.
+    "document.merge",
+    "document.split",
+    "document.rotate",
+    "document.encrypt",
+    "document.decrypt",
+    "document.annotate",
+    "document.fill",
+    "document.redact",
+    "document.stamp",
+    "document.replace",
+    "spreadsheet.read",
+    "spreadsheet.create",
+    "spreadsheet.edit",
+    "spreadsheet.convert",
+    "presentation.read",
+    "presentation.create",
+    "presentation.edit",
+    "presentation.export",
+    "presentation.convert",
+];
+
 const APPROVAL_REQUIRED_MESSAGE: &str = "OpenClaw action requires explicit approval.";
 const PERMISSION_DENIED_MESSAGE: &str = "OpenClaw action is not permitted.";
 const PERMISSION_UNDETERMINED_MESSAGE: &str = "OpenClaw permission could not be determined.";
@@ -51,25 +96,8 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
     ) -> Result<OpenClawPermissionDecision, OpenClawPermissionCheckError> {
         Ok(
             if self.allowed_capabilities.contains(request.action.as_str())
-                || (matches!(
-                    request.action.as_str(),
-                    "filesystem.scan"
-                        | "filesystem.read"
-                        | "document.read"
-                        | "document.create"
-                        | "document.edit"
-                        | "document.convert"
-                        | "spreadsheet.read"
-                        | "spreadsheet.create"
-                        | "spreadsheet.edit"
-                        | "presentation.read"
-                        | "presentation.create"
-                        | "presentation.edit"
-                        | "presentation.export"
-                        | "filesystem.write"
-                        | "filesystem.move"
-                        | "download.start"
-                ) && request.user_confirmed)
+                || (CONFIRMABLE_CAPABILITIES.contains(&request.action.as_str())
+                    && request.user_confirmed)
             {
                 OpenClawPermissionDecision::Allowed
             } else {
@@ -129,6 +157,42 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Mutex;
+
+    /// A capability the resolver can route must be one a person can allow.
+    ///
+    /// Everything else about a capability can be right -- an adapter that
+    /// works, a route that reaches it, a gate step that proves it -- and it
+    /// can still be dead, because the permission gate denies whatever is not
+    /// named here. Twelve were, and none of the existing tests could see it:
+    /// they exercise the adapters and the routing, and the answer to "may
+    /// this run at all" is asked somewhere else entirely.
+    ///
+    /// The check is one-directional on purpose. This list also carries
+    /// capabilities the Office resolver knows nothing about -- filesystem and
+    /// download work -- and requiring the two to match exactly would be a
+    /// different, false claim.
+    #[test]
+    fn every_capability_the_resolver_can_route_is_one_a_person_can_authorise() {
+        let mut declared: Vec<&'static str> = crate::document::resolver::office_candidates()
+            .iter()
+            .flat_map(|candidate| candidate.capabilities.iter().copied())
+            .collect();
+
+        declared.sort_unstable();
+        declared.dedup();
+
+        let unreachable: Vec<&str> = declared
+            .into_iter()
+            .filter(|capability| !CONFIRMABLE_CAPABILITIES.contains(capability))
+            .collect();
+
+        assert!(
+            unreachable.is_empty(),
+            "these capabilities can be routed and cannot be permitted, so nothing \
+             can call them: {unreachable:?}. Add them to CONFIRMABLE_CAPABILITIES, \
+             or stop declaring them."
+        );
+    }
 
     type PermissionOutcome = Result<OpenClawPermissionDecision, OpenClawPermissionCheckError>;
 
