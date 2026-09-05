@@ -417,6 +417,54 @@ on run argv
 end run
 "#;
 
+const CONVERT_SCRIPT: &str = r#"
+on run argv
+    set stagedPath to item 1 of argv
+    set outputPath to item 2 of argv
+    set wantedFormat to item 3 of argv
+    set identityMatters to (item 4 of argv is "strict")
+    set stagedAlias to POSIX file stagedPath as alias
+    set beforeDocumentCount to 0
+    set ownsActiveDocument to false
+    tell application id "com.microsoft.Word"
+        activate
+        try
+            set beforeDocumentCount to count of documents
+            open stagedAlias confirm conversions false add to recent files false
+            repeat 200 times
+                if (count of documents) > beforeDocumentCount then exit repeat
+                delay 0.1
+            end repeat
+            if (count of documents) is not (beforeDocumentCount + 1) then error "Word conversion document count did not increase deterministically"
+            if identityMatters then
+                if (posix full name of active document as text) is not stagedPath then error "Word conversion active document identity did not match the operation copy"
+            end if
+            set ownsActiveDocument to true
+            if wantedFormat is "pdf" then
+                save as active document file name outputPath file format format PDF add to recent files false
+            else
+                save as active document file name outputPath file format format document default add to recent files false
+            end if
+            close active document saving no
+            set ownsActiveDocument to false
+            repeat 100 times
+                if (count of documents) is beforeDocumentCount then exit repeat
+                delay 0.1
+            end repeat
+            if (count of documents) is not beforeDocumentCount then error "Word conversion document count was not restored after close"
+            return "AIOS_WORD_CONVERTED"
+        on error errorMessage number errorNumber
+            if ownsActiveDocument then
+                try
+                    close active document saving no
+                end try
+            end if
+            error errorMessage number errorNumber
+        end try
+    end tell
+end run
+"#;
+
 fn parse_read(path: &str, output: &str) -> Result<Value, WordError> {
     let marker = "AIOS_TEXT=";
     let text_start = output
@@ -723,7 +771,23 @@ pub(crate) fn edit_word_document(input: &Value) -> Result<Value, WordError> {
     }))
 }
 
-pub(crate) fn export_word_document_pdf(input: &Value) -> Result<Value, WordError> {
+/// Convert a document with Word, in every direction Word can actually do it.
+///
+/// Word reads a PDF and writes Word format, which is the ONE thing on this
+/// machine that can turn a PDF back into something editable. Nothing else here
+/// can: a PDF has no paragraphs to reflow, so changing its layout means laying
+/// the page out again, and only a word processor does that.
+///
+/// It writes PDF as well, and converts the old binary `.doc` into `.docx`. All
+/// four are in one adapter on purpose. An application must implement every
+/// conversion it declares, or the resolver routes work to something that then
+/// refuses it -- this repository has already had to remove six adapters that
+/// were declared and unreachable, and the mirror-image mistake is just as bad.
+///
+/// Converting OUT of PDF is lossy and says so. The page comes back as text and
+/// approximate boxes, not as the document it was printed from, and a caller
+/// who is not told that will believe the layout survived.
+pub(crate) fn convert_word_document(input: &Value) -> Result<Value, WordError> {
     let source = require_path(input, "source", true)?;
     let destination = require_path(input, "destination", false)?;
     let source_extension = Path::new(source)
@@ -736,19 +800,46 @@ pub(crate) fn export_word_document_pdf(input: &Value) -> Result<Value, WordError
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if !matches!(source_extension.as_str(), "doc" | "docx") || destination_extension != "pdf" {
+
+    let direction = (source_extension.as_str(), destination_extension.as_str());
+
+    if !matches!(
+        direction,
+        ("doc", "pdf") | ("docx", "pdf") | ("pdf", "docx") | ("doc", "docx")
+    ) {
         return Err(WordError::invalid(
-            "document.convert requires a DOC/DOCX source and PDF destination",
+            "Word converts DOC or DOCX to PDF, DOC to DOCX, and PDF to DOCX -- nothing else",
         ));
     }
 
     let (staged_input, input_root) = word_cache_output(&source_extension)?;
-    let (cache_output, output_root) = word_cache_output("pdf")?;
+    let (cache_output, output_root) = word_cache_output(&destination_extension)?;
     fs::copy(source, &staged_input)
-        .map_err(|_| WordError::execution("Unable to stage the Word document for PDF export"))?;
+        .map_err(|_| WordError::execution("Unable to stage the document for conversion"))?;
     let staged_string = staged_input.to_string_lossy().to_string();
     let cache_string = cache_output.to_string_lossy().to_string();
-    let export_result = run_osascript(EXPORT_PDF_SCRIPT, &[&staged_string, &cache_string]);
+
+    // Word renames a document it converted FROM a PDF, so the copy it opened is
+    // no longer identifiable by path. The identity check is what stops the
+    // adapter from saving over whatever else the person had open, so it is
+    // dropped only where it cannot hold, and the document count still has to
+    // move by exactly one.
+    let identity = if source_extension == "pdf" {
+        "loose"
+    } else {
+        "strict"
+    };
+
+    let converted = run_osascript(
+        CONVERT_SCRIPT,
+        &[
+            &staged_string,
+            &cache_string,
+            &destination_extension,
+            identity,
+        ],
+    );
+
     for _ in 0..100 {
         if cache_output
             .metadata()
@@ -759,6 +850,7 @@ pub(crate) fn export_word_document_pdf(input: &Value) -> Result<Value, WordError
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+
     if !cache_output
         .metadata()
         .map(|metadata| metadata.len() > 0)
@@ -766,24 +858,72 @@ pub(crate) fn export_word_document_pdf(input: &Value) -> Result<Value, WordError
     {
         let _ = fs::remove_dir_all(&input_root);
         let _ = fs::remove_dir_all(&output_root);
-        return Err(export_result.err().unwrap_or_else(|| {
-            WordError::execution("Word PDF export did not produce a non-empty output")
+        return Err(converted.err().unwrap_or_else(|| {
+            WordError::execution("Word conversion did not produce a non-empty output")
         }));
     }
+
     publish_cache_output(&cache_output, Path::new(destination))?;
     let _ = fs::remove_dir_all(&input_root);
     let _ = fs::remove_dir_all(&output_root);
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    if source_extension == "pdf" {
+        warnings.push(
+            "A PDF has no paragraphs to reflow, so converting one back into a document \
+             rebuilds the layout by guesswork. The words come back; the page does not."
+                .to_owned(),
+        );
+    }
+
     Ok(json!({
         "capability": "document.convert",
         "selectedProvider": "microsoft-word",
         "resourceLocation": "local",
         "inputResource": source,
         "outputResource": destination,
-        "operationResult": "exported-pdf",
-        "warnings": [],
+        "operationResult": match direction {
+            (_, "pdf") => "exported-pdf",
+            ("pdf", _) => "imported-pdf",
+            _ => "converted-document",
+        },
+        "warnings": warnings,
         "confirmationConsumed": true,
-        "validationResult": "non-empty-pdf"
+        "validationResult": format!("non-empty-{destination_extension}")
     }))
+}
+
+/// The PDF half, kept under its own name because that is what its own tests and
+/// the gate step already call.
+pub(crate) fn export_word_document_pdf(input: &Value) -> Result<Value, WordError> {
+    let destination = require_path(input, "destination", false)?;
+    let destination_extension = Path::new(destination)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if destination_extension != "pdf" {
+        return Err(WordError::invalid(
+            "document.convert requires a DOC/DOCX source and PDF destination",
+        ));
+    }
+
+    let source = require_path(input, "source", true)?;
+    let source_extension = Path::new(source)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if !matches!(source_extension.as_str(), "doc" | "docx") {
+        return Err(WordError::invalid(
+            "document.convert requires a DOC/DOCX source and PDF destination",
+        ));
+    }
+
+    convert_word_document(input)
 }
 
 #[cfg(test)]
@@ -1084,6 +1224,94 @@ mod tests {
             .unwrap(),
             before_state
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A PDF, back into an editable document, with the words intact.
+    ///
+    /// The only conversion on this machine that no amount of Rust can do: a PDF
+    /// has no paragraphs to reflow, so the page has to be laid out again. What
+    /// is asserted is the part that must be true -- a real .docx landed, and the
+    /// sentence that went in comes back out -- and NOT that the layout survived,
+    /// because it does not and the adapter says so.
+    #[test]
+    #[ignore = "requires Microsoft Word and macOS Automation authorization"]
+    fn word_converts_a_pdf_back_into_a_document_real_e2e() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("ai-os-word-import-e2e-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+
+        let word_document = root.join("Word-Import-Source.docx");
+        let pdf = root.join("Word-Import-Source.pdf");
+        let back = root.join("Word-Import-Result.docx");
+
+        let before_state = run_osascript(
+            "tell application id \"com.microsoft.Word\" to return (count of documents) as text",
+            &[],
+        )
+        .unwrap();
+
+        // The fixture is made by this same adapter going the other way, so the
+        // sentence that has to survive the round trip is known exactly rather
+        // than judged by eye.
+        create_word_document(&json!({
+            "path": word_document,
+            "title": "AI-OS Word Import",
+            "body": "Paragraph that must survive the round trip."
+        }))
+        .unwrap();
+
+        convert_word_document(&json!({
+            "source": word_document,
+            "destination": pdf
+        }))
+        .unwrap();
+
+        let imported = convert_word_document(&json!({
+            "source": pdf,
+            "destination": back
+        }))
+        .unwrap();
+
+        assert_eq!(imported["operationResult"], "imported-pdf");
+
+        // Lossy, and it has to say so -- a caller who is not told will believe
+        // the layout came back with the words.
+        assert!(
+            imported["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| warning.as_str().unwrap().contains("reflow")),
+            "converting out of a PDF must admit what it loses: {:#?}",
+            imported["warnings"]
+        );
+
+        // A real .docx is a ZIP, whatever the file is called.
+        let head = fs::read(&back).unwrap();
+        assert_eq!(&head[..2], b"PK", "what landed was not a .docx");
+
+        // And the words came back.
+        let read = read_word_document(&json!({"path": back})).unwrap();
+        let text = read["operationResult"]["text"].as_str().unwrap_or_default();
+        assert!(
+            text.contains("must survive the round trip"),
+            "the words did not come back: {text:?}"
+        );
+
+        assert_eq!(
+            run_osascript(
+                "tell application id \"com.microsoft.Word\" to return (count of documents) as text",
+                &[],
+            )
+            .unwrap(),
+            before_state
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 

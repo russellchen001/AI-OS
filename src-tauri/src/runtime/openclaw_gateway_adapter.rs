@@ -1200,15 +1200,16 @@ fn execute_document_convert(
                 summary: Some("AI-OS converted the document with Pages.".to_owned()),
             });
         }
-        // Word's adapter exports PDF. It does not convert DOC to DOCX, which is
-        // why it does not claim to write those formats and does not win here.
+        // Word converts in every direction it declares: to PDF, the old .doc to
+        // .docx, and -- the one thing on this machine that can do it -- a PDF
+        // back into an editable document.
         OfficeApplication::MicrosoftWord => {
-            let output = crate::document::word::export_word_document_pdf(&request.input)
+            let output = crate::document::word::convert_word_document(&request.input)
                 .map_err(map_word_error)?;
 
             return Ok(OpenClawExecutionResult {
                 output,
-                summary: Some("AI-OS exported the document to PDF with Word.".to_owned()),
+                summary: Some("AI-OS converted the document with Word.".to_owned()),
             });
         }
         // Conversion between the Microsoft word-processing formats, which needs
@@ -5585,6 +5586,10 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
 
     #[test]
     fn document_convert_uses_native_textutil_and_returns_converted_result() {
+        // .docx to .doc, not .doc to .docx. Word's adapter now performs the
+        // forward direction and therefore wins it; it does not write the old
+        // binary format, so coming back is still macOS's own conversion, which
+        // is what this test is about.
         let history = json!({"messages": [{
             "role": "toolResult",
             "toolName": "exec",
@@ -5605,8 +5610,8 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
             &request(
                 "document.convert",
                 json!({
-                    "source": "/safe/source file.doc",
-                    "destination": "/safe/result file.docx"
+                    "source": "/safe/source file.docx",
+                    "destination": "/safe/result file.doc"
                 }),
             ),
             &mut |_| {},
@@ -5617,8 +5622,8 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
         assert_eq!(
             result.output,
             json!({
-                "source": "/safe/source file.doc",
-                "destination": "/safe/result file.docx",
+                "source": "/safe/source file.docx",
+                "destination": "/safe/result file.doc",
                 "status": "converted",
                 "bytesWritten": 3072,
             })
@@ -5629,7 +5634,7 @@ AIOS_TRUNCATED=false\nAIOS_CONTENT_BEGIN\nName\nAIOS_SHEET_END";
         );
         let message = calls[0].1.as_ref().unwrap()["message"].as_str().unwrap();
         assert!(message.contains("document.convert is NOT an OpenClaw tool name"));
-        assert!(message.contains("/usr/bin/textutil -convert docx"));
+        assert!(message.contains("/usr/bin/textutil -convert doc"));
         assert!(message.contains("/bin/ln"));
         assert!(message.contains("never overwrite"));
         assert!(calls.iter().all(|call| call.0 != "document.convert"));

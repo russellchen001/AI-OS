@@ -280,11 +280,17 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             priority: 10,
             capabilities: WORD,
             native_formats: &["doc", "docx"],
-            import_formats: &[],
-            // Word's adapter exports PDF. It does NOT convert DOC to DOCX, so
-            // it must not claim to write them for a conversion even though it
-            // reads both natively.
-            export_formats: &["pdf"],
+            // Word reads a PDF, and it is the only thing on this machine that
+            // can turn one back into an editable document -- nothing else can
+            // lay a page out again. Declared as an IMPORT rather than a native
+            // format, which is the truth: the words come back and the layout is
+            // rebuilt by guesswork, and the resolver attaches its fidelity
+            // warning to exactly that.
+            import_formats: &["pdf"],
+            // Every one of these has an adapter behind it. Declaring a format
+            // an application cannot actually write is how work gets routed to
+            // something that then refuses it.
+            export_formats: &["pdf", "docx"],
         },
         OfficeCandidate {
             provider: OfficeProviderId::MicrosoftOffice,
@@ -660,12 +666,20 @@ mod tests {
             ),
             ("presentation.convert", "pptx", "key", OfficeApplication::AppleKeynote),
             ("presentation.convert", "key", "pptx", OfficeApplication::AppleKeynote),
-            // And conversion between the Microsoft word-processing formats
-            // needs no application. Word reads both natively but its adapter
-            // only exports PDF, so it must not win this row -- which is the
-            // whole reason a candidate declares what it can WRITE separately
-            // from what it can read.
-            ("document.convert", "doc", "docx", OfficeApplication::MacosNative),
+            // Turning a PDF back into an editable document is the one
+            // conversion that genuinely needs an application: a PDF has no
+            // paragraphs to reflow, so the page has to be laid out again, and
+            // only a word processor does that. Word is the only thing here that
+            // reads a PDF at all.
+            ("document.convert", "pdf", "docx", OfficeApplication::MicrosoftWord),
+            // Word owns .doc to .docx as well, now that its adapter does it.
+            // The rule this row exists to protect is unchanged -- an
+            // application must not win a conversion it cannot perform -- but
+            // Word now performs this one, so it is allowed to.
+            ("document.convert", "doc", "docx", OfficeApplication::MicrosoftWord),
+            // Backwards into the old binary format, and out of RTF, are still
+            // nobody's application work: Word's adapter does not write .doc,
+            // and it does not read RTF.
             ("document.convert", "docx", "doc", OfficeApplication::MacosNative),
             ("document.convert", "rtf", "docx", OfficeApplication::MacosNative),
         ] {
@@ -680,6 +694,10 @@ mod tests {
         // an application that would refuse the file.
         for (capability, from, to) in [
             ("document.convert", "pages", "key"),
+            // Word reads a PDF; nothing here writes one back into the old
+            // binary format, and no application reads a PDF into iWork.
+            ("document.convert", "pdf", "doc"),
+            ("document.convert", "pdf", "pages"),
             ("spreadsheet.convert", "numbers", "docx"),
             ("presentation.convert", "key", "xlsx"),
             ("document.convert", "docx", "epub"),
@@ -708,6 +726,10 @@ mod tests {
 
         for (capability, from, to) in [
             ("document.convert", "docx", "pdf"),
+            // Without Word there is nothing on the machine that reads a PDF
+            // into an editable document, and the honest answer is no route --
+            // not a route to something that would refuse the file.
+            ("document.convert", "pdf", "docx"),
             ("document.convert", "docx", "pages"),
             ("spreadsheet.convert", "xlsx", "pdf"),
             ("spreadsheet.convert", "xlsx", "numbers"),

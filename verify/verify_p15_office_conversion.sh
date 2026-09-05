@@ -53,7 +53,9 @@ grep -q "running 2 tests" "$LOG" || {
 }
 
 echo "✅ every (source, destination) pair reaches the adapter that can do it"
-echo "✅ DOC to DOCX does not route to Word, whose adapter only exports PDF"
+echo "✅ Word wins only the conversions it performs, and .docx to .doc is still macOS's"
+echo "✅ PDF back into a document routes to Word -- the only thing here that reads one"
+echo "✅ without Word there is NO route out of a PDF, rather than one that would refuse"
 echo "✅ what no installed application can do says so, rather than routing anyway"
 
 # Everything above needs no application. Everything below is the real evidence.
@@ -100,6 +102,20 @@ if have "Keynote"; then
   echo "✅ proven without PowerPoint installed anywhere in the path"
 else
   echo "SKIP $NAME: Keynote unavailable"
+fi
+
+if have "Microsoft Word"; then
+  cargo test --manifest-path "$MANIFEST" --lib \
+    document::word::tests::word_converts_a_pdf_back_into_a_document_real_e2e \
+    -- --ignored >"$LOG" 2>&1 || {
+      tail -60 "$LOG"
+      fail "Word PDF import"
+    }
+  grep -q "test result: ok" "$LOG" || fail "Word PDF import result marker"
+  echo "✅ Word turns a PDF back into a real .docx -- proven by its ZIP magic bytes"
+  echo "✅ the sentence that went in comes back out, and the layout loss is admitted"
+else
+  echo "SKIP $NAME: Word unavailable"
 fi
 
 if have "Microsoft Excel"; then
