@@ -64,6 +64,10 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     "system.app.running",
     "system.app.launch",
     "system.app.quit",
+    // Clipboard contents may contain private material, and writing changes system
+    // state, so both operations require the same one-time user confirmation.
+    "system.clipboard.read",
+    "system.clipboard.write",
 ];
 
 const APPROVAL_REQUIRED_MESSAGE: &str = "OpenClaw action requires explicit approval.";

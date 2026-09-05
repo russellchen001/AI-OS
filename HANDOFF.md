@@ -16,7 +16,7 @@
 - Computer Control **Phase B is complete and committed** (`4ca692f`):
   `system.app.list`, `system.app.running`, `system.app.launch`,
   `system.app.quit`.
-- Computer Control **Phase C is next**.
+- Computer Control **Phase C is in progress**. C1 clipboard is complete.
 - Phases D and E are not started.
 
 ### Phase B accepted state
@@ -39,9 +39,27 @@ Launch and quit results are observation-based rather than trusting command
 success alone. User work is preserved: an application that refuses to quit
 because it has unsaved work remains running rather than being force-closed.
 
+### Phase C accepted state
+
+C1 clipboard is complete:
+
+- `system.clipboard.read`
+- `system.clipboard.write`
+- plain UTF-8 text only
+- bounded to 65,536 bytes
+- macOS uses `pbpaste` / `pbcopy`
+- write data is passed through stdin, never through a shell
+- no screen reading, keystrokes, GUI automation or application control
+- both operations remain behind one-time user confirmation
+- non-macOS builds fail closed until a platform adapter exists
+
+Clipboard ownership remains narrow: Computer Control can read or replace the
+clipboard value. Deciding where to paste it or interacting with a destination
+application remains Computer Use / Planner work.
+
 ### What comes next
 
-1. Phase C — clipboard, audio, power.
+1. Phase C — C1 clipboard complete; next C2 audio, then C3 power.
 2. Phase D — notifications and permissions. These require in-process platform
    handling rather than copying the Phase B subprocess implementation.
 3. Phase E — `system.process.terminate` plus the final cross-capability workflow.

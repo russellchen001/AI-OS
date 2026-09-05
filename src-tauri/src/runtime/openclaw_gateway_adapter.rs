@@ -2178,7 +2178,7 @@ fn execute_presentation_convert(
 fn execute_system_capability(
     request: &OpenClawExecutionRequest,
 ) -> Option<Result<OpenClawExecutionResult, OpenClawExecutionError>> {
-    use crate::system::{apps, inspect};
+    use crate::system::{apps, clipboard, inspect};
 
     let (run, summary): (
         fn(&Value) -> Result<Value, crate::system::SystemError>,
@@ -2209,6 +2209,14 @@ fn execute_system_capability(
         ),
         "system.app.launch" => (apps::launch_application, "AI-OS started the application."),
         "system.app.quit" => (apps::quit_application, "AI-OS asked the application to stop."),
+        "system.clipboard.read" => (
+            clipboard::read_clipboard,
+            "AI-OS read plain text from the clipboard.",
+        ),
+        "system.clipboard.write" => (
+            clipboard::write_clipboard,
+            "AI-OS wrote plain text to the clipboard.",
+        ),
         _ => return None,
     };
 
