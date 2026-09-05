@@ -214,12 +214,57 @@ fn resolve_outcome(
     )))
 }
 
+fn ensure_iwork_ready(application: IworkApplication) -> Result<(), IworkConvertError> {
+    let bundle_id = application.bundle_id();
+    let name = application.name();
+
+    let launch = Command::new("/usr/bin/open")
+        .args(["-gj", "-b", bundle_id])
+        .output()
+        .map_err(|error| {
+            IworkConvertError::execution(format!(
+                "Unable to launch {name} before AppleScript automation: {error}"
+            ))
+        })?;
+
+    if !launch.status.success() {
+        let stderr = String::from_utf8_lossy(&launch.stderr).trim().to_owned();
+
+        return Err(IworkConvertError::execution(if stderr.is_empty() {
+            format!("{name} could not be launched")
+        } else {
+            format!("{name} could not be launched: {stderr}")
+        }));
+    }
+
+    let readiness_script =
+        format!(r#"tell application id "{bundle_id}" to count documents"#);
+
+    for _ in 0..120 {
+        let ready = Command::new("/usr/bin/osascript")
+            .args(["-e", readiness_script.as_str()])
+            .output();
+
+        if ready.is_ok_and(|output| output.status.success()) {
+            return Ok(());
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+
+    Err(IworkConvertError::execution(format!(
+        "{name} launched but did not become ready for AppleScript automation"
+    )))
+}
+
 fn run_osascript(
     application: IworkApplication,
     script: &str,
     args: &[&str],
 ) -> Result<String, IworkConvertError> {
     let name = application.name();
+
+    ensure_iwork_ready(application)?;
 
     let mut child = Command::new("/usr/bin/osascript")
         .arg("-")
