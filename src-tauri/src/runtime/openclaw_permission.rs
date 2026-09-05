@@ -68,6 +68,12 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     // state, so both operations require the same one-time user confirmation.
     "system.clipboard.read",
     "system.clipboard.write",
+    // System output audio state is explicit machine state. Reads expose it
+    // and writes alter it, so all C2 operations remain confirmable.
+    "system.audio.volume.get",
+    "system.audio.volume.set",
+    "system.audio.mute.get",
+    "system.audio.mute.set",
 ];
 
 const APPROVAL_REQUIRED_MESSAGE: &str = "OpenClaw action requires explicit approval.";

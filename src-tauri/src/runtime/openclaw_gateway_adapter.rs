@@ -2178,7 +2178,7 @@ fn execute_presentation_convert(
 fn execute_system_capability(
     request: &OpenClawExecutionRequest,
 ) -> Option<Result<OpenClawExecutionResult, OpenClawExecutionError>> {
-    use crate::system::{apps, clipboard, inspect};
+    use crate::system::{apps, audio, clipboard, inspect};
 
     let (run, summary): (
         fn(&Value) -> Result<Value, crate::system::SystemError>,
@@ -2216,6 +2216,22 @@ fn execute_system_capability(
         "system.clipboard.write" => (
             clipboard::write_clipboard,
             "AI-OS wrote plain text to the clipboard.",
+        ),
+        "system.audio.volume.get" => (
+            audio::get_output_volume,
+            "AI-OS read the machine's output volume.",
+        ),
+        "system.audio.volume.set" => (
+            audio::set_output_volume,
+            "AI-OS set the machine's output volume.",
+        ),
+        "system.audio.mute.get" => (
+            audio::get_output_mute,
+            "AI-OS read the machine's output mute state.",
+        ),
+        "system.audio.mute.set" => (
+            audio::set_output_mute,
+            "AI-OS set the machine's output mute state.",
         ),
         _ => return None,
     };

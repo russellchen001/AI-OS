@@ -15,6 +15,7 @@
 //! Nothing in this module reads the screen, and nothing in it loops.
 
 pub(crate) mod apps;
+pub(crate) mod audio;
 pub(crate) mod clipboard;
 pub(crate) mod inspect;
 
@@ -37,6 +38,10 @@ pub(crate) const CAPABILITIES: &[&str] = &[
     "system.app.quit",
     "system.clipboard.read",
     "system.clipboard.write",
+    "system.audio.volume.get",
+    "system.audio.volume.set",
+    "system.audio.mute.get",
+    "system.audio.mute.set",
 ];
 
 #[derive(Debug)]

@@ -2,7 +2,7 @@
 
 <!-- COMPUTER_CONTROL_STATE_START -->
 
-## CURRENT COMPUTER CONTROL STATE — 2026-09-05
+## CURRENT COMPUTER CONTROL STATE — 2026-09-06
 
 > Authoritative for Computer Control. Where it is, what is stopping it, and what
 > comes next.
@@ -16,7 +16,7 @@
 - Computer Control **Phase B is complete and committed** (`4ca692f`):
   `system.app.list`, `system.app.running`, `system.app.launch`,
   `system.app.quit`.
-- Computer Control **Phase C is in progress**. C1 clipboard is complete.
+- Computer Control **Phase C is in progress**. C1 clipboard and C2 audio are complete.
 - Phases D and E are not started.
 
 ### Phase B accepted state
@@ -57,9 +57,30 @@ Clipboard ownership remains narrow: Computer Control can read or replace the
 clipboard value. Deciding where to paste it or interacting with a destination
 application remains Computer Use / Planner work.
 
+C2 audio is complete:
+
+- `system.audio.volume.get`
+- `system.audio.volume.set`
+- `system.audio.mute.get`
+- `system.audio.mute.set`
+- output volume is an integer from 0 through 100
+- mute state is an explicit boolean
+- macOS uses deterministic Standard Additions through `/usr/bin/osascript`
+- no shell, screen driving, keystrokes, media-player control, recording or
+  speech interpretation
+- real E2E changes system state, observes the change and restores the person's
+  exact original output volume and mute state
+- all four operations remain behind one-time user confirmation
+- non-macOS builds fail closed until a platform adapter exists
+
+Audio ownership remains narrow: Computer Control can read or directly set
+system output volume and mute state. Media selection/control, recording,
+speech interpretation and deciding what state is appropriate remain outside
+Computer Control.
+
 ### What comes next
 
-1. Phase C — C1 clipboard complete; next C2 audio, then C3 power.
+1. Phase C — C1 clipboard and C2 audio complete; next C3 power.
 2. Phase D — notifications and permissions. These require in-process platform
    handling rather than copying the Phase B subprocess implementation.
 3. Phase E — `system.process.terminate` plus the final cross-capability workflow.
