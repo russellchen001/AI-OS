@@ -228,6 +228,13 @@ fn execute_with_invoker(
             "AI-OS changed the words in the PDF.",
         );
     }
+    // Computer Control: deterministic, system-level, directly callable. Matched
+    // from the module's own capability list rather than from another chain of
+    // comparisons, so "what exists" and "what can be reached" cannot drift
+    // apart the way they did for Office.
+    if let Some(result) = execute_system_capability(request) {
+        return result;
+    }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
         return execute_filesystem_write(invoker, request);
     }
@@ -2161,6 +2168,62 @@ fn execute_presentation_convert(
 /// Every one of them resolves the same way and fails the same way, so the
 /// routing lives here once instead of being copied per capability -- which is
 /// how a capability ends up declared and unreachable.
+/// Run a Computer Control capability, or say this is not one.
+///
+/// Returns `None` for anything that is not a Computer Control capability, so
+/// the caller falls through to the rest of the dispatcher. The pairing here is
+/// the ONLY place an action name is turned into a system operation, and
+/// `every_declared_system_capability_is_dispatched` asserts it covers the
+/// module's whole list.
+fn execute_system_capability(
+    request: &OpenClawExecutionRequest,
+) -> Option<Result<OpenClawExecutionResult, OpenClawExecutionError>> {
+    use crate::system::inspect;
+
+    let (run, summary): (
+        fn(&Value) -> Result<Value, crate::system::SystemError>,
+        &str,
+    ) = match request.action.as_str() {
+        "system.storage" => (inspect::read_storage, "AI-OS read the machine's storage."),
+        "system.cpu" => (inspect::read_cpu, "AI-OS read the machine's processor use."),
+        "system.memory" => (inspect::read_memory, "AI-OS read the machine's memory."),
+        "system.network" => (
+            inspect::read_network,
+            "AI-OS read the machine's network interfaces.",
+        ),
+        "system.process.list" => (
+            inspect::list_processes,
+            "AI-OS listed what is running on the machine.",
+        ),
+        "system.process.info" => (
+            inspect::read_process,
+            "AI-OS read one process on the machine.",
+        ),
+        _ => return None,
+    };
+
+    Some(
+        run(&request.input)
+            .map(|output| OpenClawExecutionResult {
+                output,
+                summary: Some(summary.to_owned()),
+            })
+            .map_err(map_system_error),
+    )
+}
+
+fn map_system_error(error: crate::system::SystemError) -> OpenClawExecutionError {
+    OpenClawExecutionError::new(
+        if error.invalid_request {
+            OpenClawExecutionErrorKind::InvalidRequest
+        } else {
+            OpenClawExecutionErrorKind::ExecutionFailed
+        },
+        error.message,
+        false,
+    )
+}
+
 fn execute_local_pdf(
     request: &OpenClawExecutionRequest,
     action: &str,
@@ -4329,6 +4392,30 @@ fn map_gateway_failure(failure: ActiveGatewayMethodFailure) -> OpenClawExecution
 
 #[cfg(test)]
 mod tests {
+    /// Every Computer Control capability the module declares can be reached.
+    ///
+    /// The list and the dispatcher are two different places, and the last time
+    /// two places had to agree about a capability, twelve of them were declared
+    /// and unreachable for days. This asserts the pairing directly, and the
+    /// second half asserts the reverse mistake: a name matched here that the
+    /// module never declared would be a capability nothing else knows about.
+    #[test]
+    fn every_declared_system_capability_is_dispatched() {
+        for capability in crate::system::CAPABILITIES {
+            let dispatched = execute_system_capability(&request(capability, json!({})));
+
+            assert!(
+                dispatched.is_some(),
+                "{capability} is declared and the dispatcher does not know it"
+            );
+        }
+
+        assert!(
+            execute_system_capability(&request("system.not.a.capability", json!({}))).is_none(),
+            "the dispatcher answered for something no module declares"
+        );
+    }
+
     use super::*;
     use crate::runtime::openclaw_execution::OpenClawExecutionRequest;
     use serde_json::json;

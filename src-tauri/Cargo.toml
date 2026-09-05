@@ -44,6 +44,12 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 tauri-plugin-deep-link = "2.4.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# Computer Control reads the machine through one pure-Rust crate that supports
+# macOS, Windows and Linux -- and so HarmonyOS, which is Linux underneath. The
+# observation half of that capability is therefore portable from the day it is
+# written, unlike the Office adapters, which drive applications.
+sysinfo = "0.39"
+
 # PDF is a format, not an application, so it is read in Rust on every platform
 # rather than by driving whatever the operating system happens to ship.
 # `embed_image` is what lets a signature or a seal be stamped onto a page. It

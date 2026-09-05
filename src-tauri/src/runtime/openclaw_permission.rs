@@ -48,6 +48,15 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     "presentation.edit",
     "presentation.export",
     "presentation.convert",
+    // Computer Control. Reading what the machine is doing is still something a
+    // person says yes to: it is their machine, and a process list says what
+    // they are running.
+    "system.storage",
+    "system.cpu",
+    "system.memory",
+    "system.network",
+    "system.process.list",
+    "system.process.info",
 ];
 
 const APPROVAL_REQUIRED_MESSAGE: &str = "OpenClaw action requires explicit approval.";
@@ -176,6 +185,7 @@ mod tests {
         let mut declared: Vec<&'static str> = crate::document::resolver::office_candidates()
             .iter()
             .flat_map(|candidate| candidate.capabilities.iter().copied())
+            .chain(crate::system::CAPABILITIES.iter().copied())
             .collect();
 
         declared.sort_unstable();
