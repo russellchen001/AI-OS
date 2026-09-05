@@ -14,6 +14,7 @@
 //!
 //! Nothing in this module reads the screen, and nothing in it loops.
 
+pub(crate) mod apps;
 pub(crate) mod inspect;
 
 /// Every capability this module answers.
@@ -29,6 +30,10 @@ pub(crate) const CAPABILITIES: &[&str] = &[
     "system.network",
     "system.process.list",
     "system.process.info",
+    "system.app.list",
+    "system.app.running",
+    "system.app.launch",
+    "system.app.quit",
 ];
 
 #[derive(Debug)]

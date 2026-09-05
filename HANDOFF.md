@@ -1,5 +1,72 @@
 # AI-OS — Current State
 
+<!-- COMPUTER_CONTROL_STATE_START -->
+
+## CURRENT COMPUTER CONTROL STATE — 2026-09-05
+
+> Authoritative for Computer Control. Where it is, what is stopping it, and what
+> comes next.
+
+### Where it is
+
+- P15 is **6 / 11**. Office is Complete.
+- Computer Control **Phase A is committed** (`80d1d01`): `system.storage`,
+  `system.cpu`, `system.memory`, `system.network`, `system.process.list`,
+  `system.process.info`. All reads, all through `sysinfo`, and therefore
+  portable — the tests pass on Linux, which is not the system they were
+  written on.
+- Computer Control **Phase B is written and NOT committed**:
+  `system.app.list`, `system.app.running`, `system.app.launch`,
+  `system.app.quit`.
+- Phases C, D and E are not started.
+
+### What is stopping it
+
+Nothing is blocked on a decision, and nothing is waiting on anyone. The Phase B
+gate has failed three times, each time on a different wrong assumption in the
+adapter, and each was fixed rather than worked around:
+
+1. The identifier check listed the ways an input could be BAD — a slash, a
+   space — so `Safari浏览器` walked through, having neither.
+2. The `mdfind` parser split on a run of four spaces, a width that was never
+   measured. It now splits on the attribute NAMES, which is what `mdfind`
+   promises.
+3. The identifier check then required a dot, on the theory that identifiers are
+   reverse-domain names. This machine has an application whose identifier is
+   `MacNetPlayer`. That rule made a real, launchable application
+   unaddressable — and it could never have done its job anyway, because
+   `MacNetPlayer` is indistinguishable from a display name BY SHAPE.
+
+All three are the same mistake: matching an incidental detail instead of what
+is actually guaranteed. The check now establishes only that a value is safe to
+hand to the platform, and whether anything answers to it is settled by the
+machine — `open -b` exits non-zero for an identifier nothing is installed
+under. Every one was caught by its own test on the gate, not by review.
+
+**Next action: run the gate again.** Nothing else is outstanding for Phase B.
+
+### What comes next
+
+1. Phase B green and committed.
+2. Phase C — clipboard, audio, power. Same subprocess shape as Phase B.
+3. Phase D — notifications and permissions. A DIFFERENT shape: both must run
+   in-process. `display notification` through osascript posts nothing and
+   reports no error on this machine, and TCC permission state is per-binary, so
+   a shell reads the shell's permissions and says nothing about AI-OS's.
+   `check_macos_mail_calendar_permissions()` is currently a stub returning a
+   hardcoded `NotDetermined`, so there is no precedent to copy.
+4. Phase E — `system.process.terminate` and a workflow crossing several
+   capabilities. Destructive, so it is last.
+5. Then the rest of P15: Vehicle Control v1, local generative media, cognitive
+   distillation foundation, NAS (hardware-blocked).
+
+Outstanding outside Computer Control: the v1.0 release itself — signing and
+notarisation, and an install on a clean machine. Cross-platform support is
+deliberately deferred past v1.0; the gap is recorded in
+`the_gap_between_macos_and_everywhere_else_is_written_down`.
+
+<!-- COMPUTER_CONTROL_STATE_END -->
+
 <!-- OFFICE_TAKEOVER_2026-09-02_START -->
 
 ## CURRENT P15 OFFICE TAKEOVER STATE — 2026-09-02
@@ -2256,6 +2323,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-05  Computer Control Phase B: applications, addressed rather than operated. `system.app.list`, `system.app.running`, `system.app.launch` and `system.app.quit`. Nothing in the module sends a keystroke or looks at a window, so starting an application belongs to it and pressing a button inside one does not. THREE defects in this phase were the same mistake wearing different clothes, and that is the lesson worth keeping: each matched an incidental detail instead of what is actually guaranteed. The identifier check listed the ways an input could be BAD -- a slash, a space -- and `Safari浏览器` walked through, having neither. The `mdfind` parser split on a run of four spaces, a width nobody had measured; it now splits on the attribute NAMES, which is the part `mdfind` promises. And the identifier check then required a dot, on the theory that identifiers are reverse-domain names -- until this machine turned out to have an application whose identifier is `MacNetPlayer`, which made a real, launchable application unaddressable. That last one is the instructive one: shape CANNOT tell an identifier from a display name, because `MacNetPlayer` is both shapes at once. The check now establishes only that a value is safe to hand to the platform -- ASCII, no whitespace, no slash, no leading or trailing dot -- and whether anything answers to it is settled by the machine, which `open -b` does by exiting non-zero for an identifier nothing is installed under. All three were caught by their own tests on the gate rather than by review. Two probes were needed for the same reason: the FIRST measured its own bugs on the two questions that mattered most -- an exit status read at the end of a pipeline, so it was `sed`'s and not `open`'s, and an AppleScript with a C-style ternary that failed to compile and said nothing about permission. What they established: `open -b` exits 0 and prints nothing when the application was ALREADY running, so a launch cannot say whether it started anything, and `alreadyRunning` comes from looking before and after; and `quit` REPORTS SUCCESS for an application that is not running at all, so its return value is worth nothing and every outcome is decided by observation instead -- exactly the rule the Office adapters follow when they count documents. Quitting something not running is refused rather than reported as a successful quit. Quit ASKS: an application showing a "save your changes?" sheet is left showing it and reported as still running, because unsaved work is the person's. Listing running applications has two paths: System Events is documented and needs Accessibility, which this machine grants and another will not, while `lsappinfo` needs nothing and is undocumented. Preferring the first and falling back to the second means the capability does not vanish on an ungranted machine, and refusing only when both fail means it never reports an empty desktop that is not empty. The documented permission-free route is `NSWorkspace.runningApplications`, in-process work belonging to Phase D; the contract will not change when the implementation does. Seven of this machine's 499 installed bundles declare no identifier at all -- counted in the warnings rather than listed, because nothing could address them.
 - 2026-09-05  Computer Control begun, Phase A: reading the machine. The owner's boundary is what the module is written against and it is sharper than it sounds -- Computer Use owns the screen, OpenClaw owns agency, and Computer Control owns neither: each capability takes a defined input, does ONE thing, and returns a defined result. "Set the output volume to 30" belongs here; "put the machine into a state suitable for a meeting" is a plan and does not. Listing running applications belongs here; pressing a button inside one does not, whatever it would accomplish. Nothing in the module reads the screen and nothing in it loops. Phase A is `system.storage`, `system.cpu`, `system.memory`, `system.network`, `system.process.list` and `system.process.info`, all reads, all through `sysinfo` -- one pure-Rust crate covering macOS, Windows and Linux, and therefore HarmonyOS, which is Linux underneath. So this capability area starts on the right side of the release rule rather than owing the gap list a line, and the tests prove it by passing on Linux, which is not the system they were written on. `verify/probe_computer_control_semantics.sh` was run before any of it was written and found four things that would have shaped it wrongly. First, APFS reports one container through several volumes: this machine lists `/` and `/System/Volumes/Data` at 460 GiB EACH, so adding them claims 920 GiB of disk that does not exist -- figures are reported per mount point, never summed, and `sharesContainerWith` names the mounts a volume's numbers are indistinguishable from. Second, a mounted installer volume reported zero total space, so `measured` is a field and an unmeasured volume carries NO size numbers at all rather than a zero it never had. Third, `sysinfo` on an unsupported system does not fail -- it returns empty values, a machine with no disks and no memory -- so every entry point refuses outright rather than passing that off as a reading. Fourth, processor use is a difference between two samples, so the capability takes both itself and says so, and is deliberately the slow one. The probe also settled two things NOT in Phase A. `display notification` through osascript posted nothing and reported no error on this machine: a silent failure, so notifications will be posted by the application itself, which also fixes the identity a person would see. And TCC permissions cannot be read this way at all -- `CGPreflightScreenCaptureAccess` is a C function the JXA bridge does not expose and `AVCaptureDevice` did not load -- but the deeper problem is that TCC is per-binary, so a shell probe reads the SHELL's permissions and says nothing about AI-OS's. That area must be in-process Rust. Worth knowing while it is: `check_macos_mail_calendar_permissions()` currently returns a hardcoded `NotDetermined` while describing itself as a detection foundation, so there is no working precedent to copy. One structural decision, taken because of what the Office work cost: the capability list, the dispatcher and the permission gate are wired together by tests from the first commit rather than after the sixth accident -- `every_declared_system_capability_is_dispatched` walks the module's own list, and the authorisation guard now walks it too.
 - 2026-09-05  Office marked Complete and P15 moved to 6 / 11 -- but only after checking the twenty written completion requirements one at a time, which is the whole reason to have written them down. Nineteen were already accepted. The twentieth, "permission / confirmation behavior", was not, and finding out how it was not is the entry worth reading. `ConfiguredCapabilityPermissionGate` carries a hardcoded list of what a person may authorise for a single run; anything absent from it is DENIED, and the configurable allow-list beside it defaults to empty. TWELVE capabilities the resolver could route were missing from that list: `document.merge`, `document.split`, `document.rotate`, `document.encrypt`, `document.decrypt`, `document.annotate`, `document.fill`, `document.redact`, `document.stamp`, `document.replace`, `spreadsheet.convert` and `presentation.convert`. Every one of them had a working adapter, a route through the resolver, a row in the traced matrix and a passing gate step -- and none of them could run, because nothing could say yes to them. That is the SIXTH time in this work that a working adapter has been reachable from nowhere, and the first five were each found by hand. Ten of the twelve were added in the past few days by the author of this entry, who wired them into the gateway, the resolver, the registry, the matrix and the gate, and not into the one place that decides whether a thing may run at all. The existing tests could not see it: they exercise adapters and routing, and "may this run" is asked somewhere else entirely. The list is now a named constant and `every_capability_the_resolver_can_route_is_one_a_person_can_authorise` walks every capability the candidate table declares and fails if the gate would deny it -- verified to actually fail by removing one entry and watching it go red, because a test that has never been red has proven nothing. The check is deliberately one-directional: the permission list also carries filesystem and download capabilities the Office resolver knows nothing about, and demanding an exact match would assert something false. The general lesson, now instrumented rather than remembered: a capability is not reachable because its adapter works, or because it routes, or because a gate step passes. It is reachable when every layer between the caller and the adapter admits it exists, and the only cheap way to know that is a test that walks the layers rather than a person who remembers them all.
 - 2026-09-05  A test that had been passing on luck for weeks brought the gate down, and it was this repository's own documented trap. `word_realistic_workflow_real_e2e` wrote its image fixture into `std::env::temp_dir()` and handed that path to Word. A sandboxed Office application has implicit access to what it wrote itself and to its own container and to NOTHING else, so a file passed to it from a temp directory raises a "grant access to this file" panel that no automated run can answer -- and that panel then blocks every later automation of that application until a person dismisses it. `structured.rs` carries a comment saying exactly this, written when the same trap cost an Excel timeout and a PowerPoint crash; the Word test simply never got moved. It surfaced as `AppleEvent timed out (-1712)` after 123 seconds, on the run immediately after three green ones, which is the useful part: three passes proved nothing, because the failure needs the panel to actually appear rather than the grant to be remembered. Both fixtures now live in their application's own container, the one place that never asks -- Word's through `word_cache_output`, PowerPoint's through `cache_path`, the same helpers the real inputs already use. PowerPoint's was the same latent bomb and was still passing; it is fixed in the same pass rather than left to go off later. If a run has already raised the panel, quitting the application clears it -- the code change stops it being raised again, it cannot dismiss one that is already up.

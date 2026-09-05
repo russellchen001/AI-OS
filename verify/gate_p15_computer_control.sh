@@ -29,6 +29,7 @@ step() {
 }
 
 step "Phase A reading"    bash verify/verify_p15_computer_control_phase_a.sh
+step "Phase B applications" bash verify/verify_p15_computer_control_phase_b.sh
 step "Full Rust tests"    cargo test --manifest-path src-tauri/Cargo.toml
 step "Verifier file modes" bash verify/verify_verifiers_are_executable.sh
 step "Whitespace"         git diff --check

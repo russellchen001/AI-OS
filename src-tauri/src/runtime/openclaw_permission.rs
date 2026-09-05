@@ -57,6 +57,13 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     "system.network",
     "system.process.list",
     "system.process.info",
+    // Starting and stopping an application is doing something on a person's
+    // machine, so it is something they say yes to -- and so is asking what
+    // they have installed.
+    "system.app.list",
+    "system.app.running",
+    "system.app.launch",
+    "system.app.quit",
 ];
 
 const APPROVAL_REQUIRED_MESSAGE: &str = "OpenClaw action requires explicit approval.";

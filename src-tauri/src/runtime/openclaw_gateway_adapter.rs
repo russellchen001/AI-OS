@@ -2178,7 +2178,7 @@ fn execute_presentation_convert(
 fn execute_system_capability(
     request: &OpenClawExecutionRequest,
 ) -> Option<Result<OpenClawExecutionResult, OpenClawExecutionError>> {
-    use crate::system::inspect;
+    use crate::system::{apps, inspect};
 
     let (run, summary): (
         fn(&Value) -> Result<Value, crate::system::SystemError>,
@@ -2199,6 +2199,16 @@ fn execute_system_capability(
             inspect::read_process,
             "AI-OS read one process on the machine.",
         ),
+        "system.app.list" => (
+            apps::list_applications,
+            "AI-OS listed the applications on the machine.",
+        ),
+        "system.app.running" => (
+            apps::list_running_applications,
+            "AI-OS listed the applications that are running.",
+        ),
+        "system.app.launch" => (apps::launch_application, "AI-OS started the application."),
+        "system.app.quit" => (apps::quit_application, "AI-OS asked the application to stop."),
         _ => return None,
     };
 
