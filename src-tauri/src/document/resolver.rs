@@ -6,6 +6,64 @@ pub(crate) enum OfficeResourceLocation {
     GoogleCloud,
 }
 
+/// The systems this product is meant to run on.
+///
+/// Declared rather than inferred. Today a candidate's reach is hidden inside
+/// checks like `app_exists("/Applications/Microsoft Word.app")`, which is false
+/// on Windows for the same reason it is false on a Mac with no Word -- and
+/// those are not the same fact. Telling them apart is what lets a Windows build
+/// add its own adapter as one more row rather than as surgery, and it is what
+/// lets a test ask which capabilities have nothing at all behind them once you
+/// leave macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Platform {
+    Macos,
+    Windows,
+    Linux,
+    HarmonyOs,
+}
+
+impl Platform {
+    /// The system this build is FOR.
+    ///
+    /// HarmonyOS reports `target_os = "linux"` with `target_env = "ohos"`, so
+    /// it cannot be told from Linux by the operating system alone -- checked
+    /// with `rustc --print cfg`, not assumed. Getting that wrong would hand a
+    /// HarmonyOS build whatever Linux is allowed to do.
+    ///
+    /// Anything unrecognised is treated as Linux, which is the floor: no
+    /// candidate is Linux-only, so an unknown system gets exactly the
+    /// candidates that need no system at all.
+    pub(crate) const fn current() -> Platform {
+        if cfg!(all(target_os = "linux", target_env = "ohos")) {
+            Platform::HarmonyOs
+        } else if cfg!(target_os = "macos") {
+            Platform::Macos
+        } else if cfg!(target_os = "windows") {
+            Platform::Windows
+        } else {
+            Platform::Linux
+        }
+    }
+}
+
+/// Needs no particular operating system, because it needs none at all: the file
+/// itself, read and written in Rust.
+pub(crate) const EVERY_SYSTEM: &[Platform] = &[
+    Platform::Macos,
+    Platform::Windows,
+    Platform::Linux,
+    Platform::HarmonyOs,
+];
+
+/// Driven through AppleScript, or through a tool that ships with macOS.
+///
+/// Not a defect in itself. Some of these are naturally exclusive -- iWork
+/// exists nowhere else -- and some are an adapter that a second system will
+/// want its own version of. What matters is that the ones in the second group
+/// do not leave a capability with nothing behind it elsewhere.
+pub(crate) const MACOS_ONLY: &[Platform] = &[Platform::Macos];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OfficeApplication {
     MacosNative,
@@ -59,6 +117,12 @@ pub(crate) struct OfficeCandidate {
     pub available: bool,
     pub authorized: bool,
     pub executable: bool,
+    /// The systems this candidate can run on at all.
+    ///
+    /// Separate from `available`, which is whether the thing is installed on
+    /// THIS machine, and from `executable`, which is whether this build has an
+    /// adapter for it. Three different questions that used to be one.
+    pub platforms: &'static [Platform],
     pub priority: u16,
     pub capabilities: &'static [&'static str],
     pub native_formats: &'static [&'static str],
@@ -73,6 +137,21 @@ pub(crate) struct OfficeCandidate {
 }
 
 impl OfficeCandidate {
+    /// Whether this candidate can exist on the system this build is for.
+    fn runs_here(&self) -> bool {
+        self.platforms.contains(&Platform::current())
+    }
+
+    /// Whether it needs no operating system in particular.
+    ///
+    /// This is the floor the product stands on. A capability with none of
+    /// these behind it simply does not exist off macOS today.
+    pub(crate) fn runs_anywhere(&self) -> bool {
+        EVERY_SYSTEM
+            .iter()
+            .all(|system| self.platforms.contains(system))
+    }
+
     fn supports(&self, capability: &str) -> bool {
         self.capabilities.contains(&capability)
     }
@@ -139,7 +218,8 @@ pub(crate) fn resolve_office_route(
     candidates
         .iter()
         .filter(|candidate| {
-            candidate.available
+            candidate.runs_here()
+                && candidate.available
                 && candidate.authorized
                 && candidate.executable
                 && candidate.supports(capability)
@@ -259,6 +339,8 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::LocalStructured,
             application: OfficeApplication::StructuredFile,
             local: true,
+            // Reads and writes the file itself, so it needs no system.
+            platforms: EVERY_SYSTEM,
             available: true,
             authorized: true,
             executable: true,
@@ -274,6 +356,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::MicrosoftOffice,
             application: OfficeApplication::MicrosoftWord,
             local: true,
+            platforms: MACOS_ONLY,
             available: microsoft("/Applications/Microsoft Word.app"),
             authorized: true,
             executable: true,
@@ -296,6 +379,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::MicrosoftOffice,
             application: OfficeApplication::MicrosoftExcel,
             local: true,
+            platforms: MACOS_ONLY,
             available: microsoft("/Applications/Microsoft Excel.app"),
             authorized: true,
             executable: true,
@@ -309,6 +393,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::MicrosoftOffice,
             application: OfficeApplication::MicrosoftPowerPoint,
             local: true,
+            platforms: MACOS_ONLY,
             available: microsoft("/Applications/Microsoft PowerPoint.app"),
             authorized: true,
             executable: true,
@@ -324,6 +409,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::AppleIwork,
             application: OfficeApplication::ApplePages,
             local: true,
+            platforms: MACOS_ONLY,
             available: installed("pages"),
             authorized: true,
             executable: true,
@@ -339,6 +425,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::AppleIwork,
             application: OfficeApplication::AppleNumbers,
             local: true,
+            platforms: MACOS_ONLY,
             available: installed("numbers"),
             authorized: true,
             executable: true,
@@ -352,6 +439,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::AppleIwork,
             application: OfficeApplication::AppleKeynote,
             local: true,
+            platforms: MACOS_ONLY,
             available: installed("keynote"),
             authorized: true,
             executable: true,
@@ -369,6 +457,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::MacosNative,
             application: OfficeApplication::MacosNative,
             local: true,
+            platforms: MACOS_ONLY,
             available: cfg!(target_os = "macos"),
             authorized: true,
             executable: true,
@@ -393,6 +482,8 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::GoogleWorkspace,
             application: OfficeApplication::GoogleDocs,
             local: false,
+            // The work happens on Google's machines; ours only asks.
+            platforms: EVERY_SYSTEM,
             available: google_workspace_connected(),
             authorized: true,
             executable: true,
@@ -408,6 +499,8 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::GoogleWorkspace,
             application: OfficeApplication::GoogleSheets,
             local: false,
+            // The work happens on Google's machines; ours only asks.
+            platforms: EVERY_SYSTEM,
             available: google_workspace_connected(),
             authorized: true,
             executable: true,
@@ -425,6 +518,8 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::GoogleWorkspace,
             application: OfficeApplication::GoogleSlides,
             local: false,
+            // The work happens on Google's machines; ours only asks.
+            platforms: EVERY_SYSTEM,
             available: google_workspace_connected(),
             authorized: true,
             executable: true,
@@ -447,6 +542,8 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::LocalStructured,
             application: OfficeApplication::LocalPdf,
             local: true,
+            // Reads and writes the file itself, so it needs no system.
+            platforms: EVERY_SYSTEM,
             available: true,
             authorized: true,
             executable: true,
@@ -477,6 +574,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::WpsOffice,
             application: OfficeApplication::WpsWriter,
             local: true,
+            platforms: MACOS_ONLY,
             available: wps_installed(),
             authorized: true,
             executable: false,
@@ -490,6 +588,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::WpsOffice,
             application: OfficeApplication::WpsSpreadsheet,
             local: true,
+            platforms: MACOS_ONLY,
             available: wps_installed(),
             authorized: true,
             executable: false,
@@ -503,6 +602,7 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
             provider: OfficeProviderId::WpsOffice,
             application: OfficeApplication::WpsPresentation,
             local: true,
+            platforms: MACOS_ONLY,
             available: wps_installed(),
             authorized: true,
             executable: false,
@@ -538,6 +638,9 @@ mod tests {
             provider,
             application,
             local: !matches!(provider, OfficeProviderId::GoogleWorkspace),
+            // A hand-built candidate exists to test ranking, not reach, so it
+            // is placed on whatever system the test is running on.
+            platforms: EVERY_SYSTEM,
             available: true,
             authorized: true,
             executable: true,
@@ -567,9 +670,168 @@ mod tests {
 
                 candidate.available =
                     needs_no_application || installed.contains(&candidate.application);
+
+                // These tables are about which FORMAT and CAPABILITY reach
+                // which adapter, so they describe a machine where the listed
+                // applications exist -- which on a build host that is not macOS
+                // they otherwise could not. Which systems a candidate really
+                // runs on is asserted on its own, below, against the real
+                // table rather than against a simulated machine.
+                candidate.platforms = EVERY_SYSTEM;
                 candidate
             })
             .collect()
+    }
+
+    /// Every capability anything here claims, with no list to drift.
+    fn every_capability() -> Vec<&'static str> {
+        let mut capabilities: Vec<&'static str> = office_candidates()
+            .iter()
+            .flat_map(|candidate| candidate.capabilities.iter().copied())
+            .collect();
+
+        capabilities.sort_unstable();
+        capabilities.dedup();
+        capabilities
+    }
+
+    /// What this product cannot do once you leave macOS.
+    ///
+    /// The owner intends to release on macOS, Windows, Linux and HarmonyOS, and
+    /// v1.0 ships macOS only -- deliberately, with the interfaces shaped so the
+    /// rest is a later version rather than a rewrite. This test is what keeps
+    /// that promise honest.
+    ///
+    /// It is NOT "assert everything is portable", because today most of it is
+    /// not, and a test that fails from the day it is written teaches nobody
+    /// anything. It is the gap, written down in code: adding a capability with
+    /// nothing behind it off macOS means deliberately adding a line here, and
+    /// building the portable floor for one means DELETING its line. The list is
+    /// the outstanding work, kept where it cannot be forgotten.
+    ///
+    /// On Linux and HarmonyOS there is no office application to drive at all,
+    /// so for those systems this list is not a fidelity question -- it is the
+    /// difference between the capability existing and not.
+    #[test]
+    fn the_gap_between_macos_and_everywhere_else_is_written_down() {
+        const NO_PORTABLE_FLOOR: &[&str] = &[
+            // Writing a .docx or a .pptx from nothing. The format is a ZIP of
+            // XML this repository already READS, so this is the cheapest of
+            // them and the first thing a later version should take.
+            "document.create",
+            "presentation.create",
+            // Editing one in place. Same format knowledge, more of it.
+            "document.edit",
+            "presentation.edit",
+            "spreadsheet.edit",
+            // Conversion, including export to PDF -- the hardest of the lot,
+            // because writing a PDF from a document means laying the page out
+            // again: fonts, line breaking, pagination. There is no cheap
+            // portable answer to this one and it should not be pretended
+            // otherwise.
+            "document.convert",
+            "presentation.convert",
+            "spreadsheet.convert",
+        ];
+
+        let anywhere: Vec<OfficeCandidate> = office_candidates()
+            .into_iter()
+            // Local on purpose: Google runs everywhere, but it is an account
+            // and a network, not a floor to stand on.
+            .filter(|candidate| candidate.local && candidate.runs_anywhere())
+            .collect();
+
+        assert!(
+            !anywhere.is_empty(),
+            "nothing at all works without an operating system's help"
+        );
+
+        for capability in every_capability() {
+            let has_floor = anywhere
+                .iter()
+                .any(|candidate| candidate.supports(capability));
+
+            if NO_PORTABLE_FLOOR.contains(&capability) {
+                assert!(
+                    !has_floor,
+                    "{capability} has a portable floor now -- delete it from \
+                     NO_PORTABLE_FLOOR, that is the point of the list"
+                );
+            } else {
+                assert!(
+                    has_floor,
+                    "{capability} just lost its portable floor. Either put one \
+                     back, or add it to NO_PORTABLE_FLOOR and mean it."
+                );
+            }
+        }
+    }
+
+    /// Which systems each candidate claims, checked against what it is.
+    #[test]
+    fn platform_claims_match_what_the_candidate_actually_needs() {
+        for candidate in office_candidates() {
+            assert!(
+                !candidate.platforms.is_empty(),
+                "{:?} runs nowhere at all",
+                candidate.application
+            );
+
+            // The two that read the file themselves must never become
+            // macOS-only: they are the floor everything else stands on.
+            if matches!(
+                candidate.application,
+                OfficeApplication::StructuredFile | OfficeApplication::LocalPdf
+            ) {
+                assert!(
+                    candidate.runs_anywhere(),
+                    "{:?} is the portable floor and must stay portable",
+                    candidate.application
+                );
+            }
+
+            // An application driven through AppleScript cannot claim a system
+            // that has no AppleScript.
+            if matches!(
+                candidate.application,
+                OfficeApplication::ApplePages
+                    | OfficeApplication::AppleNumbers
+                    | OfficeApplication::AppleKeynote
+                    | OfficeApplication::MacosNative
+            ) {
+                assert_eq!(
+                    candidate.platforms,
+                    MACOS_ONLY,
+                    "{:?} exists only on macOS",
+                    candidate.application
+                );
+            }
+        }
+    }
+
+    /// A build for another system keeps exactly the floor, and nothing else.
+    ///
+    /// Asserted against the real table with the platform swapped rather than
+    /// against a simulated machine, because this is the question a Windows or
+    /// HarmonyOS build actually asks.
+    #[test]
+    fn off_macos_only_the_portable_candidates_survive() {
+        let elsewhere: Vec<OfficeCandidate> = office_candidates()
+            .into_iter()
+            .filter(|candidate| candidate.local && !candidate.platforms.contains(&Platform::Macos))
+            .collect();
+
+        // Nothing is Linux-only or Windows-only yet. When the first Windows
+        // adapter arrives this stops being true, and this test is where that
+        // gets noticed and described.
+        assert!(
+            elsewhere.is_empty(),
+            "a candidate exists that macOS cannot run -- describe it here: {:?}",
+            elsewhere
+                .iter()
+                .map(|candidate| candidate.application)
+                .collect::<Vec<_>>()
+        );
     }
 
     fn route_on(

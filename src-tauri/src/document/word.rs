@@ -1152,7 +1152,17 @@ mod tests {
         let source = root.join("Word-Edit-Input.docx");
         let destination = root.join("Word-Edit-Output.docx");
         let pdf_destination = root.join("Word-Edit-Output.pdf");
-        let image = root.join("safe-test-image.png");
+        // The image goes in WORD'S OWN container, not in a temp directory.
+        //
+        // A sandboxed Office application has implicit access to what it wrote
+        // itself and to its container, and to nothing else. Handing it a file
+        // from a temp directory raises a "grant access" panel that no automated
+        // run can answer -- and that panel then blocks every later automation of
+        // that application until a person dismisses it. This module already
+        // stages its real inputs that way; this fixture did not, which is why
+        // it eventually hung the whole gate with an AppleEvent timeout after
+        // passing for weeks.
+        let (image, image_root) = word_cache_output("png").unwrap();
         fs::write(&image, SAFE_TEST_PNG).unwrap();
         let before_state = run_osascript(
             "tell application id \"com.microsoft.Word\" to return (count of documents) as text",
@@ -1224,6 +1234,7 @@ mod tests {
             .unwrap(),
             before_state
         );
+        let _ = fs::remove_dir_all(image_root);
         fs::remove_dir_all(root).unwrap();
     }
 

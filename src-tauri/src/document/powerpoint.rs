@@ -838,7 +838,12 @@ mod tests {
         let source = root.join("Input.pptx");
         let output = root.join("Output.pptx");
         let pdf = root.join("Output.pdf");
-        let image = root.join("safe.png");
+        // PowerPoint's own container, for the same reason Word's test uses
+        // Word's: a file handed to a sandboxed application from a temp
+        // directory raises a grant panel that no automated run can answer, and
+        // it then blocks every later automation of that application. This one
+        // has been passing on luck.
+        let (image, image_root) = cache_path("png").unwrap();
         fs::write(&image, SAFE_TEST_PNG).unwrap();
         let before = run_osascript("tell application id \"com.microsoft.Powerpoint\" to return (count of presentations) as text", &[]).unwrap();
         create_powerpoint_presentation(&json!({"path":source,"imagePath":image,"slides":slides(),"table":{"rows":2,"columns":2}}))
@@ -849,6 +854,7 @@ mod tests {
         export_powerpoint_pdf(&json!({"source":output,"destination":pdf})).unwrap();
         assert!(fs::metadata(root.join("Output.pdf")).unwrap().len() > 0);
         assert_eq!(run_osascript("tell application id \"com.microsoft.Powerpoint\" to return (count of presentations) as text", &[]).unwrap(), before);
+        let _ = fs::remove_dir_all(image_root);
         fs::remove_dir_all(root).unwrap();
     }
 }

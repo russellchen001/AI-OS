@@ -1191,7 +1191,7 @@ on run argv
             set duringWindows to count of windows
 
             if duringBooks is not (beforeBooks + 1) then
-                error "Workbook count did not increase deterministically"
+                error "Workbook count did not increase deterministically -- Excel accepted the open and never finished it, which is what it does while a prompt is waiting for an answer. Look at Excel's window for a bar such as the recovered-workbook one, answer it, and run again."
             end if
 
             set freshWorkbook to active workbook
