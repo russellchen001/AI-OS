@@ -454,6 +454,9 @@ pub(crate) fn office_candidates() -> Vec<OfficeCandidate> {
                 "document.decrypt",
                 "document.annotate",
                 "document.fill",
+                "document.redact",
+                "document.stamp",
+                "document.replace",
             ],
             native_formats: &["pdf"],
             import_formats: &[],
@@ -806,6 +809,9 @@ mod tests {
             ("document.decrypt", "pdf", OfficeApplication::LocalPdf),
             ("document.annotate", "pdf", OfficeApplication::LocalPdf),
             ("document.fill", "pdf", OfficeApplication::LocalPdf),
+            ("document.redact", "pdf", OfficeApplication::LocalPdf),
+            ("document.stamp", "pdf", OfficeApplication::LocalPdf),
+            ("document.replace", "pdf", OfficeApplication::LocalPdf),
         ] {
             assert_eq!(
                 route_on(&everything, capability, format),
@@ -863,6 +869,9 @@ mod tests {
             ("document.decrypt", "pdf", Some(OfficeApplication::LocalPdf)),
             ("document.annotate", "pdf", Some(OfficeApplication::LocalPdf)),
             ("document.fill", "pdf", Some(OfficeApplication::LocalPdf)),
+            ("document.redact", "pdf", Some(OfficeApplication::LocalPdf)),
+            ("document.stamp", "pdf", Some(OfficeApplication::LocalPdf)),
+            ("document.replace", "pdf", Some(OfficeApplication::LocalPdf)),
             // But rearranging pages, turning them and locking the file are only
             // PDF operations.
             ("document.merge", "docx", None),
@@ -872,6 +881,8 @@ mod tests {
             ("document.decrypt", "docx", None),
             ("document.annotate", "docx", None),
             ("document.fill", "docx", None),
+            ("document.redact", "docx", None),
+            ("document.replace", "docx", None),
         ] {
             assert_eq!(
                 route_on(&bare, capability, format),

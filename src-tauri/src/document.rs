@@ -3,6 +3,7 @@ pub(crate) mod iwork_convert;
 pub(crate) mod keynote;
 pub(crate) mod numbers;
 pub(crate) mod pdf;
+pub(crate) mod pdf_layout;
 pub(crate) mod pages;
 pub(crate) mod powerpoint;
 pub(crate) mod provider;

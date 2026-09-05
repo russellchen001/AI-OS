@@ -697,7 +697,7 @@ pub(crate) fn rotate_pdf_document(input: &Value) -> Result<Value, PdfError> {
     // No pages named means all of them, which is what "rotate this document"
     // means.
     let wanted: Vec<u32> = match input.get("pages").and_then(Value::as_str) {
-        Some(spec) if !spec.trim().is_empty() => parse_pages(spec)?
+        Some(spec) if !spec.trim().is_empty() => parse_pages(spec, "document.rotate")?
             .into_iter()
             .map(|page| u32::try_from(page).unwrap_or(u32::MAX))
             .collect(),
@@ -890,6 +890,1164 @@ pub(crate) fn decrypt_pdf_document(input: &Value) -> Result<Value, PdfError> {
         "warnings": [],
         "confirmationConsumed": true,
         "validationResult": "decrypted",
+    }))
+}
+
+/// Replacing more than this in one pass is a rewrite, not an edit.
+const MAX_REPLACEMENTS: usize = 200;
+
+/// What to do when the new words are wider than the ones they replace.
+///
+/// A PDF does not reflow. Text sits at fixed places, so longer text has to
+/// take that space from somewhere, and there is no answer that is right for
+/// every document -- which is why this is the caller's choice and the default
+/// is to do nothing and say so.
+#[derive(Clone, Copy, PartialEq)]
+enum WhenLonger {
+    /// Refuse, and say by how much it did not fit.
+    Refuse,
+    /// Draw the replacement smaller so it occupies exactly the old space.
+    Shrink,
+    /// Let it be wider, and let the rest of the line move right.
+    Push,
+}
+
+/// Change words on a page, in place.
+///
+/// This is NOT a word processor: a PDF has no paragraphs to reflow, so what
+/// happens here is that specific glyphs are taken out and other glyphs are put
+/// where they were. That makes it right for the things people actually need --
+/// a date, a name, a number, a wrong figure -- and wrong for rewriting a
+/// paragraph, which needs the page laid out again.
+///
+/// The replacement is drawn with the SAME font the old words used, so it looks
+/// like the document rather than like a patch. That font is usually a subset
+/// carrying only the glyphs the document already used, so a character it does
+/// not have cannot be drawn at all -- and that is refused by name rather than
+/// silently dropped.
+pub(crate) fn replace_in_pdf_document(input: &Value) -> Result<Value, PdfError> {
+    use crate::document::pdf_layout::{metrics_of, text_runs, writable_codes};
+    use lopdf::content::{Content, Operation};
+
+    let source = existing_pdf(input, "source", "document.replace")?;
+    let destination = new_pdf(input, "destination", "document.replace")?;
+
+    if source == destination {
+        return Err(PdfError::invalid(
+            "document.replace source and destination must differ",
+        ));
+    }
+
+    let requested = input
+        .get("replacements")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| PdfError::invalid("document.replace requires replacements"))?;
+
+    if requested.len() > MAX_REPLACEMENTS {
+        return Err(PdfError::invalid(format!(
+            "document.replace accepts at most {MAX_REPLACEMENTS} replacements at once"
+        )));
+    }
+
+    let when_longer = match input.get("whenLonger").and_then(Value::as_str) {
+        None | Some("refuse") => WhenLonger::Refuse,
+        Some("shrink") => WhenLonger::Shrink,
+        Some("push") => WhenLonger::Push,
+        Some(other) => {
+            return Err(PdfError::invalid(format!(
+                "whenLonger is refuse, shrink or push -- not {other:?}"
+            )));
+        }
+    };
+
+    let mut wanted: Vec<(String, String, Option<Vec<u32>>)> = Vec::new();
+
+    for item in requested {
+        let find = item
+            .get("find")
+            .and_then(Value::as_str)
+            .filter(|find| !find.is_empty())
+            .ok_or_else(|| PdfError::invalid("every replacement needs find"))?;
+
+        let with = item
+            .get("with")
+            .and_then(Value::as_str)
+            .ok_or_else(|| PdfError::invalid("every replacement needs with"))?;
+
+        let pages = match item.get("pages").and_then(Value::as_str) {
+            Some(spec) if !spec.trim().is_empty() => Some(
+                parse_pages(spec, "document.replace")?
+                    .into_iter()
+                    .map(|page| u32::try_from(page).unwrap_or(u32::MAX))
+                    .collect(),
+            ),
+            _ => None,
+        };
+
+        wanted.push((find.to_owned(), with.to_owned(), pages));
+    }
+
+    let mut document = open_with(source, "document.replace", password_of(input, "password"))?;
+    let pages = document.get_pages();
+    let mut changed = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    for (number, page_id) in pages {
+        let runs = text_runs(&document, page_id);
+
+        // What each font on this page can spell, and how wide it draws things.
+        let fonts = document.get_page_fonts(page_id).unwrap_or_default();
+        let spellable: BTreeMap<Vec<u8>, BTreeMap<String, Vec<u8>>> = fonts
+            .iter()
+            .map(|(name, font)| (name.clone(), writable_codes(&document, font)))
+            .collect();
+        let measures: BTreeMap<Vec<u8>, _> = fonts
+            .iter()
+            .map(|(name, font)| (name.clone(), metrics_of(&document, font)))
+            .collect();
+
+        // operation -> the edits inside it, as (first glyph, last glyph, new codes, new size)
+        let mut edits: BTreeMap<usize, Vec<(usize, usize, Vec<u8>, f64)>> = BTreeMap::new();
+
+        for run in &runs {
+            for (find, with, only) in &wanted {
+                if let Some(only) = only {
+                    if !only.contains(&number) {
+                        continue;
+                    }
+                }
+
+                let spans = run.find_all(find);
+
+                if spans.is_empty() {
+                    continue;
+                }
+
+                if !run.measured {
+                    return Err(PdfError::invalid(format!(
+                        "document.replace cannot rewrite page {number}: its font declares no \
+                         glyph widths, so nothing could be put back in the right place"
+                    )));
+                }
+
+                let (Some(codes), Some(metric)) =
+                    (spellable.get(&run.font), measures.get(&run.font))
+                else {
+                    return Err(PdfError::execution(format!(
+                        "page {number} uses a font this reader could not open"
+                    )));
+                };
+
+                // The replacement is drawn in the font the old words used. An
+                // embedded subset carries only what the document already used,
+                // so a missing character is refused by name -- drawing it as a
+                // blank box is the failure this check exists to prevent.
+                let mut encoded = Vec::new();
+
+                for letter in with.chars() {
+                    let Some(code) = codes.get(&letter.to_string()) else {
+                        return Err(PdfError::invalid(format!(
+                            "document.replace cannot write {letter:?} on page {number}: the font \
+                             those words are set in does not carry that character"
+                        )));
+                    };
+
+                    encoded.extend_from_slice(code);
+                }
+
+                for (first, last) in spans {
+                    let old_advance: f64 = run.glyphs[first..last]
+                        .iter()
+                        .map(|glyph| glyph.advance)
+                        .sum();
+
+                    let new_advance = metric.advance(
+                        &encoded,
+                        run.size,
+                        run.char_spacing,
+                        run.word_spacing,
+                        run.horizontal,
+                    );
+
+                    let mut size = run.size;
+
+                    if new_advance > old_advance + 0.01 {
+                        match when_longer {
+                            WhenLonger::Refuse => {
+                                return Err(PdfError::invalid(format!(
+                                    "document.replace will not put {with:?} where {find:?} was on \
+                                     page {number}: it is {:.1} points wider than the space it \
+                                     has. A PDF does not reflow, so ask for whenLonger \"shrink\" \
+                                     to fit it, or \"push\" to move the rest of the line.",
+                                    new_advance - old_advance
+                                )));
+                            }
+                            WhenLonger::Shrink => {
+                                // Exactly the old width, by drawing smaller.
+                                size = run.size * (old_advance / new_advance.max(f64::EPSILON));
+                                warnings.push(format!(
+                                    "{with:?} was drawn smaller on page {number} so it would fit \
+                                     the space {find:?} occupied."
+                                ));
+                            }
+                            WhenLonger::Push => {
+                                warnings.push(format!(
+                                    "{with:?} is wider than {find:?} on page {number}, so the rest \
+                                     of that line moved right."
+                                ));
+                            }
+                        }
+                    }
+
+                    edits
+                        .entry(run.operation)
+                        .or_default()
+                        .push((first, last, encoded.clone(), size));
+
+                    changed.push(json!({"page": number, "from": find, "to": with}));
+                }
+            }
+        }
+
+        if edits.is_empty() {
+            continue;
+        }
+
+        let Ok(content) = document.get_and_decode_page_content(page_id) else {
+            return Err(PdfError::execution(format!(
+                "page {number} could not be read to change it"
+            )));
+        };
+
+        let mut rebuilt: Vec<Operation> = vec![Operation::new("q", vec![])];
+
+        for (index, operation) in content.operations.iter().enumerate() {
+            let (Some(here), Some(run)) = (
+                edits.get(&index),
+                runs.iter().find(|run| run.operation == index),
+            ) else {
+                rebuilt.push(operation.clone());
+                continue;
+            };
+
+            match operation.operator.as_str() {
+                "'" => rebuilt.push(Operation::new("T*", vec![])),
+                "\"" => {
+                    if let Some(spacing) = operation.operands.first() {
+                        rebuilt.push(Operation::new("Tw", vec![spacing.clone()]));
+                    }
+                    if let Some(spacing) = operation.operands.get(1) {
+                        rebuilt.push(Operation::new("Tc", vec![spacing.clone()]));
+                    }
+                    rebuilt.push(Operation::new("T*", vec![]));
+                }
+                _ => {}
+            }
+
+            let scaled = run.size * run.horizontal;
+            let mut array: Vec<Object> = Vec::new();
+            let mut kept: Vec<u8> = Vec::new();
+            let mut position = 0usize;
+
+            let flush = |array: &mut Vec<Object>, kept: &mut Vec<u8>| {
+                if !kept.is_empty() {
+                    array.push(Object::String(
+                        std::mem::take(kept),
+                        lopdf::StringFormat::Literal,
+                    ));
+                }
+            };
+
+            let emit = |rebuilt: &mut Vec<Operation>, array: &mut Vec<Object>| {
+                if !array.is_empty() {
+                    rebuilt.push(Operation::new("TJ", vec![Object::Array(std::mem::take(array))]));
+                }
+            };
+
+            while position < run.glyphs.len() {
+                if let Some((first, last, encoded, size)) =
+                    here.iter().find(|(first, ..)| *first == position)
+                {
+                    flush(&mut array, &mut kept);
+
+                    let old_advance: f64 = run.glyphs[*first..*last]
+                        .iter()
+                        .map(|glyph| glyph.advance)
+                        .sum();
+
+                    // Drawing at a different size needs its own instruction,
+                    // and an instruction ends the run of text. A reader then
+                    // sees two runs with a gap and puts a SPACE between them,
+                    // so the page reads "Invoice  2026" and a search for
+                    // "Invoice 2026" no longer finds it. At the same size --
+                    // which is every replacement that fits -- the new letters
+                    // go into the run that is already being built, and the
+                    // text layer stays one continuous line.
+                    let resized = (size - run.size).abs() > f64::EPSILON;
+
+                    if resized {
+                        emit(&mut rebuilt, &mut array);
+
+                        rebuilt.push(Operation::new(
+                            "Tf",
+                            vec![
+                                Object::Name(run.font.clone()),
+                                Object::Real(*size as f32),
+                            ],
+                        ));
+
+                        rebuilt.push(Operation::new(
+                            "TJ",
+                            vec![Object::Array(vec![Object::String(
+                                encoded.clone(),
+                                lopdf::StringFormat::Literal,
+                            )])],
+                        ));
+
+                        rebuilt.push(Operation::new(
+                            "Tf",
+                            vec![
+                                Object::Name(run.font.clone()),
+                                Object::Real(run.size as f32),
+                            ],
+                        ));
+                    } else {
+                        array.push(Object::String(
+                            encoded.clone(),
+                            lopdf::StringFormat::Literal,
+                        ));
+                    }
+
+                    let Some(metric) = measures.get(&run.font) else {
+                        return Err(PdfError::execution(format!(
+                            "page {number} lost track of its own font"
+                        )));
+                    };
+
+                    let new_advance = metric.advance(
+                        encoded,
+                        *size,
+                        run.char_spacing,
+                        run.word_spacing,
+                        run.horizontal,
+                    );
+
+                    // Take back exactly the difference, so every letter after
+                    // this one stays where the document put it. When the caller
+                    // asked to push, the difference is left in place instead.
+                    let leftover = old_advance - new_advance;
+
+                    if when_longer != WhenLonger::Push || leftover > 0.0 {
+                        if scaled.abs() > f64::EPSILON && leftover.abs() > 0.001 {
+                            array.push(Object::Real((-leftover * 1000.0 / scaled) as f32));
+                        }
+                    }
+
+                    position = *last;
+                    continue;
+                }
+
+                let glyph = &run.glyphs[position];
+
+                if glyph.kern_before != 0.0 {
+                    flush(&mut array, &mut kept);
+                    array.push(Object::Real(glyph.kern_before as f32));
+                }
+
+                kept.extend_from_slice(&glyph.codes);
+                position += 1;
+            }
+
+            flush(&mut array, &mut kept);
+            emit(&mut rebuilt, &mut array);
+        }
+
+        rebuilt.push(Operation::new("Q", vec![]));
+
+        let encoded = Content { operations: rebuilt }
+            .encode()
+            .map_err(|error| {
+                PdfError::execution(format!("page {number} could not be rewritten: {error}"))
+            })?;
+
+        document
+            .change_page_content(page_id, encoded)
+            .map_err(|error| {
+                PdfError::execution(format!("page {number} could not be replaced: {error}"))
+            })?;
+    }
+
+    if changed.is_empty() {
+        return Err(PdfError::invalid(
+            "document.replace found none of the words it was asked to change; nothing was written",
+        ));
+    }
+
+    let page_count = write(&mut document, destination)?;
+
+    Ok(json!({
+        "capability": "document.replace",
+        "selectedProvider": "local-pdf",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "replaced",
+            "destination": destination,
+            "pageCount": page_count,
+            "replaced": changed,
+        },
+        "warnings": warnings,
+        "confirmationConsumed": true,
+        "validationResult": "replaced",
+    }))
+}
+
+/// More marks than this on one page is not a stamp, it is a second document.
+const MAX_STAMPS: usize = 100;
+
+/// One thing to put on a page.
+struct Stamp {
+    pages: Option<Vec<u32>>,
+    what: StampContent,
+    x: f64,
+    y: f64,
+    size: f64,
+    width: Option<f64>,
+    height: Option<f64>,
+    colour: [f64; 3],
+    opacity: f64,
+    rotate: f64,
+}
+
+enum StampContent {
+    Words(String),
+    Picture(String),
+}
+
+fn stamp_number(value: Option<&Value>, fallback: f64) -> f64 {
+    value.and_then(Value::as_f64).unwrap_or(fallback)
+}
+
+/// Put something on top of a page: a watermark, a page number, a signature.
+///
+/// This adds to a page rather than changing it, which is why it is separate
+/// from redaction and replacement -- nothing underneath is touched, so nothing
+/// underneath can be broken.
+///
+/// Words are drawn with a font the page ALREADY has whenever one of them can
+/// spell them, so the stamp matches the document and needs nothing embedded.
+/// Where no such font exists, plain Latin falls back to Helvetica, which every
+/// reader has. Anything else is refused, naming the character that cannot be
+/// drawn, because a stamp that comes out as blank boxes is worse than one that
+/// was not applied.
+pub(crate) fn stamp_pdf_document(input: &Value) -> Result<Value, PdfError> {
+    use crate::document::pdf_layout::writable_codes;
+    use lopdf::content::{Content, Operation};
+    use lopdf::dictionary;
+
+    let source = existing_pdf(input, "source", "document.stamp")?;
+    let destination = new_pdf(input, "destination", "document.stamp")?;
+
+    if source == destination {
+        return Err(PdfError::invalid(
+            "document.stamp source and destination must differ",
+        ));
+    }
+
+    let requested = input
+        .get("stamps")
+        .and_then(Value::as_array)
+        .filter(|stamps| !stamps.is_empty())
+        .ok_or_else(|| PdfError::invalid("document.stamp requires stamps"))?;
+
+    if requested.len() > MAX_STAMPS {
+        return Err(PdfError::invalid(format!(
+            "document.stamp accepts at most {MAX_STAMPS} stamps at once"
+        )));
+    }
+
+    let mut stamps = Vec::new();
+
+    for stamp in requested {
+        let words = stamp.get("text").and_then(Value::as_str);
+        let picture = stamp.get("image").and_then(Value::as_str);
+
+        let what = match (words, picture) {
+            (Some(words), None) if !words.is_empty() => StampContent::Words(words.to_owned()),
+            (None, Some(picture)) => {
+                if !Path::new(picture).is_absolute() {
+                    return Err(PdfError::invalid(format!(
+                        "document.stamp needs a full path to the image, not {picture}"
+                    )));
+                }
+
+                if !Path::new(picture).is_file() {
+                    return Err(PdfError::invalid(format!(
+                        "document.stamp cannot find the image {picture}"
+                    )));
+                }
+
+                StampContent::Picture(picture.to_owned())
+            }
+            (Some(_), Some(_)) => {
+                return Err(PdfError::invalid(
+                    "a stamp is either words or a picture, not both",
+                ));
+            }
+            _ => {
+                return Err(PdfError::invalid("every stamp needs text or an image"));
+            }
+        };
+
+        let pages = match stamp.get("pages").and_then(Value::as_str) {
+            Some(spec) if !spec.trim().is_empty() => Some(
+                parse_pages(spec, "document.stamp")?
+                    .into_iter()
+                    .map(|page| u32::try_from(page).unwrap_or(u32::MAX))
+                    .collect(),
+            ),
+            _ => None,
+        };
+
+        let colour = stamp
+            .get("color")
+            .and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(Value::as_f64).collect::<Vec<f64>>())
+            .filter(|values| values.len() == 3)
+            .map(|values| [values[0], values[1], values[2]])
+            // Mid grey, because a watermark that is black competes with the
+            // document it is marking.
+            .unwrap_or([0.5, 0.5, 0.5]);
+
+        stamps.push(Stamp {
+            pages,
+            what,
+            x: stamp_number(stamp.get("x"), 72.0),
+            y: stamp_number(stamp.get("y"), 72.0),
+            size: stamp_number(stamp.get("size"), 24.0),
+            width: stamp.get("width").and_then(Value::as_f64),
+            height: stamp.get("height").and_then(Value::as_f64),
+            colour,
+            opacity: stamp_number(stamp.get("opacity"), 1.0).clamp(0.0, 1.0),
+            rotate: stamp_number(stamp.get("rotate"), 0.0),
+        });
+    }
+
+    let mut document = open_with(source, "document.stamp", password_of(input, "password"))?;
+    let pages = document.get_pages();
+    let mut applied = Vec::new();
+
+    for (number, page_id) in pages {
+        let mine: Vec<&Stamp> = stamps
+            .iter()
+            .filter(|stamp| {
+                stamp
+                    .pages
+                    .as_ref()
+                    .map(|pages| pages.contains(&number))
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        if mine.is_empty() {
+            continue;
+        }
+
+        // What this page can already spell, and with which font.
+        let spellable: Vec<(Vec<u8>, BTreeMap<String, Vec<u8>>)> = document
+            .get_page_fonts(page_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, font)| (name, writable_codes(&document, font)))
+            .collect();
+
+        let mut additions: Vec<Operation> = Vec::new();
+        let mut resources: Vec<(&str, Vec<u8>, ObjectId)> = Vec::new();
+
+        for stamp in mine {
+            let angle = stamp.rotate.to_radians();
+            let (sin, cos) = (angle.sin(), angle.cos());
+
+            additions.push(Operation::new("q", vec![]));
+
+            if stamp.opacity < 1.0 {
+                let state = document.add_object(Object::Dictionary(dictionary! {
+                    "Type" => "ExtGState",
+                    "ca" => Object::Real(stamp.opacity as f32),
+                    "CA" => Object::Real(stamp.opacity as f32),
+                }));
+                let name = format!("AiosGS{}", state.0).into_bytes();
+                additions.push(Operation::new(
+                    "gs",
+                    vec![Object::Name(name.clone())],
+                ));
+                resources.push(("ExtGState", name, state));
+            }
+
+            match &stamp.what {
+                StampContent::Words(words) => {
+                    // A font the page already carries is preferred: it matches
+                    // the document, and it needs nothing embedded.
+                    let chosen = spellable.iter().find(|(_, codes)| {
+                        words
+                            .chars()
+                            .all(|letter| codes.contains_key(&letter.to_string()))
+                    });
+
+                    let (font_name, encoded) = match chosen {
+                        Some((name, codes)) => {
+                            let mut encoded = Vec::new();
+                            for letter in words.chars() {
+                                encoded.extend_from_slice(&codes[&letter.to_string()]);
+                            }
+                            (name.clone(), encoded)
+                        }
+                        None => {
+                            // Helvetica is in every reader, and covers Latin.
+                            // Anything it cannot spell is refused by name.
+                            if let Some(letter) =
+                                words.chars().find(|letter| !letter.is_ascii_graphic() && *letter != ' ')
+                            {
+                                return Err(PdfError::invalid(format!(
+                                    "document.stamp cannot draw {letter:?} on page {number}: no \
+                                     font on that page can spell it, and the fallback font covers \
+                                     only Latin"
+                                )));
+                            }
+
+                            let helvetica = document.add_object(Object::Dictionary(
+                                dictionary! {
+                                    "Type" => "Font",
+                                    "Subtype" => "Type1",
+                                    "BaseFont" => "Helvetica",
+                                    "Encoding" => "WinAnsiEncoding",
+                                },
+                            ));
+
+                            let name = format!("AiosF{}", helvetica.0).into_bytes();
+                            resources.push(("Font", name.clone(), helvetica));
+                            (name, words.as_bytes().to_vec())
+                        }
+                    };
+
+                    additions.push(Operation::new(
+                        "rg",
+                        vec![
+                            Object::Real(stamp.colour[0] as f32),
+                            Object::Real(stamp.colour[1] as f32),
+                            Object::Real(stamp.colour[2] as f32),
+                        ],
+                    ));
+                    additions.push(Operation::new("BT", vec![]));
+                    additions.push(Operation::new(
+                        "Tf",
+                        vec![
+                            Object::Name(font_name),
+                            Object::Real(stamp.size as f32),
+                        ],
+                    ));
+                    // Position and turn in one matrix, so a diagonal watermark
+                    // is one instruction rather than a stack of them.
+                    additions.push(Operation::new(
+                        "Tm",
+                        vec![
+                            Object::Real(cos as f32),
+                            Object::Real(sin as f32),
+                            Object::Real(-sin as f32),
+                            Object::Real(cos as f32),
+                            Object::Real(stamp.x as f32),
+                            Object::Real(stamp.y as f32),
+                        ],
+                    ));
+                    additions.push(Operation::new(
+                        "Tj",
+                        vec![Object::String(encoded, lopdf::StringFormat::Literal)],
+                    ));
+                    additions.push(Operation::new("ET", vec![]));
+                }
+                StampContent::Picture(picture) => {
+                    let image = lopdf::xobject::image(picture).map_err(|error| {
+                        PdfError::invalid(format!("{picture} could not be read as an image: {error}"))
+                    })?;
+
+                    let natural = |key: &[u8]| {
+                        image
+                            .dict
+                            .get(key)
+                            .ok()
+                            .and_then(|value| value.as_i64().ok())
+                            .unwrap_or(1) as f64
+                    };
+
+                    // Given one side, the other follows the picture's own
+                    // shape. Given neither, it is drawn at its own size.
+                    let (natural_width, natural_height) = (natural(b"Width"), natural(b"Height"));
+                    let ratio = natural_height / natural_width.max(1.0);
+
+                    let (width, height) = match (stamp.width, stamp.height) {
+                        (Some(width), Some(height)) => (width, height),
+                        (Some(width), None) => (width, width * ratio),
+                        (None, Some(height)) => (height / ratio.max(f64::EPSILON), height),
+                        (None, None) => (natural_width, natural_height),
+                    };
+
+                    let drawn = document.add_object(image);
+                    let name = format!("AiosX{}", drawn.0).into_bytes();
+                    resources.push(("XObject", name.clone(), drawn));
+
+                    additions.push(Operation::new(
+                        "cm",
+                        vec![
+                            Object::Real((width * cos) as f32),
+                            Object::Real((width * sin) as f32),
+                            Object::Real((-height * sin) as f32),
+                            Object::Real((height * cos) as f32),
+                            Object::Real(stamp.x as f32),
+                            Object::Real(stamp.y as f32),
+                        ],
+                    ));
+                    additions.push(Operation::new("Do", vec![Object::Name(name)]));
+                }
+            }
+
+            additions.push(Operation::new("Q", vec![]));
+
+            applied.push(json!({
+                "page": number,
+                "what": match &stamp.what {
+                    StampContent::Words(words) => words.clone(),
+                    StampContent::Picture(picture) => picture.clone(),
+                },
+            }));
+        }
+
+        for (kind, name, id) in resources {
+            let added = match kind {
+                "Font" => {
+                    // There is no add_font-by-name, so the page's own font
+                    // dictionary is reached the same way the others are.
+                    add_page_resource(&mut document, page_id, b"Font", &name, id)
+                }
+                "XObject" => document.add_xobject(page_id, name.clone(), id).map_err(|_| ()),
+                _ => document
+                    .add_graphics_state(page_id, name.clone(), id)
+                    .map_err(|_| ()),
+            };
+
+            added.map_err(|_| {
+                PdfError::execution(format!("page {number} would not take the stamp's resources"))
+            })?;
+        }
+
+        let Ok(content) = document.get_and_decode_page_content(page_id) else {
+            return Err(PdfError::execution(format!(
+                "page {number} could not be read to stamp it"
+            )));
+        };
+
+        // Wrapped, so the stamp is placed in page coordinates whatever state
+        // the page's own drawing finished in.
+        let mut rebuilt = vec![Operation::new("q", vec![])];
+        rebuilt.extend(content.operations);
+        rebuilt.push(Operation::new("Q", vec![]));
+        rebuilt.extend(additions);
+
+        let encoded = Content { operations: rebuilt }
+            .encode()
+            .map_err(|error| PdfError::execution(format!("page {number} could not be rewritten: {error}")))?;
+
+        document
+            .change_page_content(page_id, encoded)
+            .map_err(|error| PdfError::execution(format!("page {number} could not be replaced: {error}")))?;
+    }
+
+    if applied.is_empty() {
+        return Err(PdfError::invalid(
+            "document.stamp put nothing anywhere; check the pages asked for",
+        ));
+    }
+
+    let page_count = write(&mut document, destination)?;
+
+    Ok(json!({
+        "capability": "document.stamp",
+        "selectedProvider": "local-pdf",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "stamped",
+            "destination": destination,
+            "pageCount": page_count,
+            "stamps": applied,
+        },
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "stamped",
+    }))
+}
+
+/// Add one named entry to a page's resource dictionary of the given kind.
+fn add_page_resource(
+    document: &mut Document,
+    page_id: ObjectId,
+    kind: &[u8],
+    name: &[u8],
+    id: ObjectId,
+) -> Result<(), ()> {
+    let resources = document
+        .get_or_create_resources(page_id)
+        .and_then(Object::as_dict_mut)
+        .map_err(|_| ())?;
+
+    if !resources.has(kind) {
+        resources.set(kind, lopdf::Dictionary::new());
+    }
+
+    // The entry can be the dictionary or a pointer to it, and writing to the
+    // wrong one loses the resource without complaining.
+    let indirect = resources
+        .get(kind)
+        .ok()
+        .and_then(|value| value.as_reference().ok());
+
+    match indirect {
+        Some(target) => document
+            .get_object_mut(target)
+            .and_then(Object::as_dict_mut)
+            .map_err(|_| ())?
+            .set(name.to_vec(), Object::Reference(id)),
+        None => document
+            .get_or_create_resources(page_id)
+            .and_then(Object::as_dict_mut)
+            .map_err(|_| ())?
+            .get_mut(kind)
+            .and_then(Object::as_dict_mut)
+            .map_err(|_| ())?
+            .set(name.to_vec(), Object::Reference(id)),
+    }
+
+    Ok(())
+}
+
+/// A page cannot be asked to lose more than this many pieces at once.
+const MAX_REDACTIONS: usize = 500;
+
+/// Take words off a page so they are GONE, not hidden.
+///
+/// The usual way this is done wrong is to draw a black box over the text. The
+/// text is still in the file underneath: any reader can select it, and
+/// `pdftotext` prints it. That is not a redaction, it is a picture of one, and
+/// it has leaked real documents. So the drawing instructions for those glyphs
+/// are removed from the content stream first, and the box goes on afterwards
+/// only so the page does not have a hole in it.
+///
+/// The letters that stay must not move. A removed glyph is replaced by a
+/// kerning step of exactly its own width, so everything after it sits where it
+/// always sat -- and any kerning the run already carried is put back with it.
+pub(crate) fn redact_pdf_document(input: &Value) -> Result<Value, PdfError> {
+    use crate::document::pdf_layout::text_runs;
+    use lopdf::content::{Content, Operation};
+
+    let source = existing_pdf(input, "source", "document.redact")?;
+    let destination = new_pdf(input, "destination", "document.redact")?;
+
+    if source == destination {
+        return Err(PdfError::invalid(
+            "document.redact source and destination must differ",
+        ));
+    }
+
+    let wanted: Vec<&str> = input
+        .get("text")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let areas = input.get("areas").and_then(Value::as_array);
+
+    if wanted.is_empty() && areas.map(|areas| areas.is_empty()).unwrap_or(true) {
+        return Err(PdfError::invalid(
+            "document.redact requires text or areas to remove",
+        ));
+    }
+
+    // A caller who names nothing that is there has almost certainly mistyped
+    // the thing they wanted gone, and telling them "done" would be the worst
+    // possible answer.
+    let must_find = input
+        .get("requireMatch")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    let mut document = open_with(source, "document.redact", password_of(input, "password"))?;
+    let pages = document.get_pages();
+    let mut removed = Vec::new();
+
+    for (number, page_id) in pages {
+        let runs = text_runs(&document, page_id);
+
+        // Which glyphs of which operation have to go.
+        let mut doomed: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        let mut covers: Vec<(f64, f64, f64, f64)> = Vec::new();
+
+        for run in &runs {
+            let mut spans: Vec<(usize, usize)> = Vec::new();
+
+            for text in &wanted {
+                for span in run.find_all(text) {
+                    spans.push(span);
+                }
+            }
+
+            if let Some(areas) = areas {
+                for area in areas {
+                    let on_page = area
+                        .get("page")
+                        .and_then(Value::as_u64)
+                        .map(|page| u32::try_from(page).unwrap_or(u32::MAX) == number)
+                        .unwrap_or(true);
+
+                    if !on_page {
+                        continue;
+                    }
+
+                    let Some(rectangle) = area
+                        .get("rect")
+                        .and_then(Value::as_array)
+                        .map(|values| {
+                            values.iter().filter_map(Value::as_f64).collect::<Vec<f64>>()
+                        })
+                        .filter(|values| values.len() == 4)
+                    else {
+                        return Err(PdfError::invalid(
+                            "every area needs a rect of four numbers",
+                        ));
+                    };
+
+                    let (left, bottom) = (rectangle[0].min(rectangle[2]), rectangle[1].min(rectangle[3]));
+                    let (right, top) = (rectangle[0].max(rectangle[2]), rectangle[1].max(rectangle[3]));
+
+                    // A glyph counts as inside when its own box overlaps the
+                    // area, so a word half in the region still goes.
+                    let mut first: Option<usize> = None;
+
+                    for (index, glyph) in run.glyphs.iter().enumerate() {
+                        let overlaps = glyph.x < right
+                            && glyph.x + glyph.advance > left
+                            && run.y < top
+                            && run.y + run.height > bottom;
+
+                        match (overlaps, first) {
+                            (true, None) => first = Some(index),
+                            (false, Some(start)) => {
+                                spans.push((start, index));
+                                first = None;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(start) = first {
+                        spans.push((start, run.glyphs.len()));
+                    }
+                }
+            }
+
+            if !spans.is_empty() && !run.measured {
+                // Rewriting a line means stepping over exactly the space the
+                // removed letters took. This file never said how wide they
+                // are, so that step would be a guess, and a guess here moves
+                // every letter that stays. Refused rather than quietly
+                // rearranged.
+                return Err(PdfError::invalid(format!(
+                    "document.redact cannot rewrite page {number}: its font \
+                     declares no glyph widths, so the letters that stay could \
+                     not be kept in place"
+                )));
+            }
+
+            for (first, last) in spans {
+                if removed.len() + doomed.len() > MAX_REDACTIONS {
+                    return Err(PdfError::invalid(format!(
+                        "document.redact removes at most {MAX_REDACTIONS} pieces at once"
+                    )));
+                }
+
+                let entry = doomed.entry(run.operation).or_default();
+                entry.extend(first..last);
+
+                let Some(head) = run.glyphs.get(first) else {
+                    continue;
+                };
+                let Some(tail) = run.glyphs.get(last.saturating_sub(1)) else {
+                    continue;
+                };
+
+                let text: String = run.glyphs[first..last]
+                    .iter()
+                    .map(|glyph| glyph.text.as_str())
+                    .collect();
+
+                covers.push((
+                    head.x,
+                    run.y,
+                    tail.x + tail.advance - head.x,
+                    run.height,
+                ));
+
+                removed.push(json!({"page": number, "text": text}));
+            }
+        }
+
+        if doomed.is_empty() {
+            continue;
+        }
+
+        let Ok(content) = document.get_and_decode_page_content(page_id) else {
+            return Err(PdfError::execution(format!(
+                "page {number} could not be read to change it"
+            )));
+        };
+
+        let mut rebuilt: Vec<Operation> = Vec::new();
+
+        // Wrapped so that whatever the page left the graphics state in, the
+        // covers below are drawn in the same coordinates the runs were measured
+        // in. An unbalanced stream would otherwise put them somewhere else.
+        rebuilt.push(Operation::new("q", vec![]));
+
+        for (index, operation) in content.operations.iter().enumerate() {
+            let Some(gone) = doomed.get(&index) else {
+                rebuilt.push(operation.clone());
+                continue;
+            };
+
+            let Some(run) = runs.iter().find(|run| run.operation == index) else {
+                rebuilt.push(operation.clone());
+                continue;
+            };
+
+            // The quote operators move to the next line as a side effect. That
+            // has to survive being rewritten, or the rest of the page moves up.
+            match operation.operator.as_str() {
+                "'" => rebuilt.push(Operation::new("T*", vec![])),
+                "\"" => {
+                    if let Some(spacing) = operation.operands.first() {
+                        rebuilt.push(Operation::new("Tw", vec![spacing.clone()]));
+                    }
+                    if let Some(spacing) = operation.operands.get(1) {
+                        rebuilt.push(Operation::new("Tc", vec![spacing.clone()]));
+                    }
+                    rebuilt.push(Operation::new("T*", vec![]));
+                }
+                _ => {}
+            }
+
+            let mut array: Vec<Object> = Vec::new();
+            let mut kept: Vec<u8> = Vec::new();
+
+            let flush = |array: &mut Vec<Object>, kept: &mut Vec<u8>| {
+                if !kept.is_empty() {
+                    array.push(Object::String(
+                        std::mem::take(kept),
+                        lopdf::StringFormat::Literal,
+                    ));
+                }
+            };
+
+            for (position, glyph) in run.glyphs.iter().enumerate() {
+                if glyph.kern_before != 0.0 {
+                    flush(&mut array, &mut kept);
+                    array.push(Object::Real(glyph.kern_before as f32));
+                }
+
+                if gone.contains(&position) {
+                    flush(&mut array, &mut kept);
+
+                    // Step over exactly the space the glyph occupied, so the
+                    // letters that stay do not move.
+                    let scaled = run.size * run.horizontal;
+                    if scaled.abs() > f64::EPSILON {
+                        let step = -glyph.advance * 1000.0 / scaled;
+                        array.push(Object::Real(step as f32));
+                    }
+                } else {
+                    kept.extend_from_slice(&glyph.codes);
+                }
+            }
+
+            flush(&mut array, &mut kept);
+            rebuilt.push(Operation::new("TJ", vec![Object::Array(array)]));
+        }
+
+        rebuilt.push(Operation::new("Q", vec![]));
+
+        // The cover. It goes on last, over a place that no longer has anything
+        // under it -- which is the whole point.
+        rebuilt.push(Operation::new("q", vec![]));
+        rebuilt.push(Operation::new("0 g", vec![]));
+
+        for (x, y, width, height) in covers {
+            // A little below the baseline, because letters have descenders.
+            let bottom = y - height * 0.25;
+            rebuilt.push(Operation::new(
+                "re",
+                vec![
+                    Object::Real(x as f32),
+                    Object::Real(bottom as f32),
+                    Object::Real(width as f32),
+                    Object::Real(height as f32),
+                ],
+            ));
+        }
+
+        rebuilt.push(Operation::new("f", vec![]));
+        rebuilt.push(Operation::new("Q", vec![]));
+
+        let encoded = Content {
+            operations: rebuilt,
+        }
+        .encode()
+        .map_err(|error| {
+            PdfError::execution(format!("page {number} could not be rewritten: {error}"))
+        })?;
+
+        document
+            .change_page_content(page_id, encoded)
+            .map_err(|error| {
+                PdfError::execution(format!("page {number} could not be replaced: {error}"))
+            })?;
+    }
+
+    if removed.is_empty() && must_find {
+        return Err(PdfError::invalid(
+            "document.redact found nothing to remove; nothing was written",
+        ));
+    }
+
+    let page_count = write(&mut document, destination)?;
+
+    Ok(json!({
+        "capability": "document.redact",
+        "selectedProvider": "local-pdf",
+        "resourceLocation": "local",
+        "inputResource": source,
+        "operationResult": {
+            "status": "redacted",
+            "destination": destination,
+            "pageCount": page_count,
+            "removed": removed,
+        },
+        "warnings": [],
+        "confirmationConsumed": true,
+        "validationResult": "redacted",
     }))
 }
 
@@ -1579,7 +2737,7 @@ pub(crate) fn merge_pdf_documents(input: &Value) -> Result<Value, PdfError> {
 ///
 /// Ranges are how people describe pages, and rejecting anything but a bare list
 /// would push that parsing onto every caller.
-fn parse_pages(spec: &str) -> Result<Vec<usize>, PdfError> {
+fn parse_pages(spec: &str, operation: &str) -> Result<Vec<usize>, PdfError> {
     let mut pages = Vec::new();
 
     for part in spec.split(',').map(str::trim).filter(|part| !part.is_empty()) {
@@ -1618,12 +2776,12 @@ fn parse_pages(spec: &str) -> Result<Vec<usize>, PdfError> {
     }
 
     if pages.is_empty() {
-        return Err(PdfError::invalid("document.split requires pages"));
+        return Err(PdfError::invalid(format!("{operation} requires pages")));
     }
 
     if pages.len() > MAX_PAGES {
         return Err(PdfError::invalid(format!(
-            "document.split accepts at most {MAX_PAGES} pages"
+            "{operation} accepts at most {MAX_PAGES} pages"
         )));
     }
 
@@ -1647,7 +2805,7 @@ pub(crate) fn split_pdf_document(input: &Value) -> Result<Value, PdfError> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| PdfError::invalid("document.split requires pages"))?;
 
-    let wanted = parse_pages(spec)?;
+    let wanted = parse_pages(spec, "document.split")?;
     let document = open(source, "document.split")?;
     let source_page_count = page_numbers(&document).len();
 
@@ -1683,25 +2841,25 @@ mod tests {
 
     #[test]
     fn page_ranges_are_read_the_way_people_write_them() {
-        assert_eq!(parse_pages("1").unwrap(), vec![1]);
-        assert_eq!(parse_pages("1-3").unwrap(), vec![1, 2, 3]);
-        assert_eq!(parse_pages("1-3,7").unwrap(), vec![1, 2, 3, 7]);
-        assert_eq!(parse_pages(" 2 , 4 - 5 ").unwrap(), vec![2, 4, 5]);
+        assert_eq!(parse_pages("1", "document.split").unwrap(), vec![1]);
+        assert_eq!(parse_pages("1-3", "document.split").unwrap(), vec![1, 2, 3]);
+        assert_eq!(parse_pages("1-3,7", "document.split").unwrap(), vec![1, 2, 3, 7]);
+        assert_eq!(parse_pages(" 2 , 4 - 5 ", "document.split").unwrap(), vec![2, 4, 5]);
         // Order and repetition are the caller's business: extracting page 3
         // twice, or 3 before 1, are both things people mean to do.
-        assert_eq!(parse_pages("3,1,3").unwrap(), vec![3, 1, 3]);
+        assert_eq!(parse_pages("3,1,3", "document.split").unwrap(), vec![3, 1, 3]);
 
         // A stray separator is sloppy but unambiguous, so it is tolerated
         // rather than refused: "1,," can only mean page 1, and rejecting it
         // would be strictness that costs the caller something and buys nothing.
-        assert_eq!(parse_pages("1,,").unwrap(), vec![1]);
-        assert_eq!(parse_pages(",2,").unwrap(), vec![2]);
+        assert_eq!(parse_pages("1,,", "document.split").unwrap(), vec![1]);
+        assert_eq!(parse_pages(",2,", "document.split").unwrap(), vec![2]);
 
         // What is refused is what cannot be read as pages at all, or names a
         // page that cannot exist.
         for rejected in ["", "   ", ",", "0", "0-2", "3-1", "a", "1-b", "-", "1-"] {
             assert!(
-                parse_pages(rejected).is_err(),
+                parse_pages(rejected, "document.split").is_err(),
                 "{rejected:?} should not parse as pages"
             );
         }
@@ -1778,10 +2936,22 @@ mod tests {
 
         let mut document = Document::with_version("1.5");
         let pages_id = document.new_object_id();
+        // Every glyph half an em wide, declared rather than assumed.
+        //
+        // A base-14 font normally carries no `/Widths` at all -- the reader is
+        // expected to know Helvetica -- and code that REWRITES a line cannot
+        // work from metrics it does not have. Declaring them makes the fixture
+        // behave like a real document and, checked against `pdftotext`, real
+        // readers honour the declaration over their own idea of Helvetica.
+        let widths: Vec<Object> = (32..=126).map(|_| Object::Integer(500)).collect();
+
         let font_id = document.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "Type1",
             "BaseFont" => "Helvetica",
+            "FirstChar" => 32,
+            "LastChar" => 126,
+            "Widths" => widths,
         });
         let resources_id = document.add_object(dictionary! {
             "Font" => dictionary! { "F1" => font_id },
@@ -2055,6 +3225,622 @@ mod tests {
         }
 
         assert!(!path("no.pdf").exists(), "a refused request wrote a file");
+    }
+
+    /// Where every letter of a page sits, for comparing before with after.
+    fn letter_positions(path: &std::path::Path, page: u32) -> Vec<(String, f64)> {
+        use crate::document::pdf_layout::text_runs;
+
+        let document = Document::load(path).unwrap();
+        let page_id = *document.get_pages().get(&page).unwrap();
+
+        text_runs(&document, page_id)
+            .into_iter()
+            .flat_map(|run| {
+                run.glyphs
+                    .into_iter()
+                    .map(|glyph| (glyph.text, glyph.x))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Changing words in place, without moving the ones around them.
+    #[test]
+    fn words_are_replaced_in_the_font_they_were_set_in() {
+        let root = tempfile::tempdir().unwrap();
+        let path = |name: &str| root.path().join(name);
+        let text = |name: &str| path(name).to_str().unwrap().to_owned();
+
+        build_text_fixture(
+            &path("source.pdf"),
+            &["Invoice 2024 for Ada Lovelace", "Second page untouched"],
+        );
+
+        let before = letter_positions(&path("source.pdf"), 1);
+
+        // Same width, so nothing anywhere can move.
+        let done = replace_in_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("fixed.pdf"),
+            "replacements": [{"find": "2024", "with": "2026"}],
+        }))
+        .unwrap();
+
+        assert_eq!(done["operationResult"]["replaced"][0]["to"], "2026");
+        assert!(done["warnings"].as_array().unwrap().is_empty());
+
+        let after = words_left(&path("fixed.pdf"));
+        assert!(after.contains("Invoice 2026 for Ada Lovelace"), "{after:?}");
+        assert!(!after.contains("2024"));
+        assert!(after.contains("Second page untouched"));
+
+        // Letter for letter, in the same places.
+        let moved = letter_positions(&path("fixed.pdf"), 1);
+        assert_eq!(moved.len(), before.len());
+
+        for ((letter, x), (was, at)) in moved.iter().zip(&before) {
+            assert!(
+                (at - x).abs() < 0.01,
+                "{letter:?} (was {was:?}) moved from {at} to {x}"
+            );
+        }
+
+        // Longer words do not fit, and a PDF cannot reflow, so the default is
+        // to say so rather than to overlap the line.
+        let refused = replace_in_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("no.pdf"),
+            "replacements": [{"find": "Ada", "with": "Augusta Ada"}],
+        }))
+        .unwrap_err();
+
+        assert!(refused.invalid_request);
+        assert!(refused.message.contains("wider"), "{}", refused.message);
+        assert!(!path("no.pdf").exists());
+
+        // Asked to fit, it is drawn smaller and says that it was.
+        let shrunk = replace_in_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("shrunk.pdf"),
+            "whenLonger": "shrink",
+            "replacements": [{"find": "Ada", "with": "Augusta Ada"}],
+        }))
+        .unwrap();
+
+        assert!(
+            shrunk["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| warning.as_str().unwrap().contains("smaller")),
+            "shrinking must be reported: {:#?}",
+            shrunk["warnings"]
+        );
+        // Drawn at a smaller size, so the text layer is split by the size
+        // instruction and a reader shows a space at the seam. The words are all
+        // there; they are not one uninterrupted run any more, and that is the
+        // price of making longer text fit a fixed space.
+        let shrunk_text = words_left(&path("shrunk.pdf"));
+        assert!(shrunk_text.contains("Augusta Ada"), "{shrunk_text:?}");
+        assert!(shrunk_text.contains("Lovelace"), "{shrunk_text:?}");
+
+        // And the line still ends where it ended, because the replacement was
+        // made to occupy exactly the old space.
+        let ends = |glyphs: &[(String, f64)]| glyphs.last().map(|(_, x)| *x).unwrap_or_default();
+        assert!(
+            (ends(&letter_positions(&path("shrunk.pdf"), 1)) - ends(&before)).abs() < 0.05,
+            "shrinking to fit must leave the line ending where it was"
+        );
+
+        // Asked to push, it is allowed to be wider and says the line moved.
+        let pushed = replace_in_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("pushed.pdf"),
+            "whenLonger": "push",
+            "replacements": [{"find": "Ada", "with": "Augusta Ada"}],
+        }))
+        .unwrap();
+
+        assert!(pushed["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains("moved right")));
+        assert!(
+            ends(&letter_positions(&path("pushed.pdf"), 1)) > ends(&before) + 1.0,
+            "pushing must actually move the rest of the line"
+        );
+
+        // Chinese, in the page's own font.
+        build_chinese_fixture(&path("chinese.pdf"));
+
+        replace_in_pdf_document(&json!({
+            "source": text("chinese.pdf"),
+            "destination": text("chinese-fixed.pdf"),
+            "replacements": [{"find": "陈志明", "with": "明志陈"}],
+        }))
+        .unwrap();
+
+        assert_eq!(words_left(&path("chinese-fixed.pdf")), "身份证号明志陈");
+
+        // A character the document's own font never carried cannot be drawn in
+        // it, and saying which character is the difference between a fix and a
+        // page of blank boxes.
+        let cannot = replace_in_pdf_document(&json!({
+            "source": text("chinese.pdf"),
+            "destination": text("no.pdf"),
+            "replacements": [{"find": "陈志明", "with": "王小二"}],
+        }))
+        .unwrap_err();
+
+        assert!(cannot.invalid_request);
+        assert!(cannot.message.contains('王'), "{}", cannot.message);
+
+        for (label, request) in [
+            (
+                "nothing to replace",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf")}),
+            ),
+            (
+                "words that are not there",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "replacements": [{"find": "not in this document", "with": "x"}]}),
+            ),
+            (
+                "no find",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "replacements": [{"with": "x"}]}),
+            ),
+            (
+                "an unknown answer to being too long",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "whenLonger": "guess",
+                       "replacements": [{"find": "2024", "with": "2026"}]}),
+            ),
+        ] {
+            let error = replace_in_pdf_document(&request).unwrap_err();
+            assert!(error.invalid_request, "{label} should be a request problem");
+        }
+
+        assert!(!path("no.pdf").exists(), "a refused request wrote a file");
+    }
+
+    /// A two-pixel PNG, written out here so the test needs no file beside it.
+    ///
+    /// Small on purpose: what is under test is that a picture reaches the page
+    /// and can be found in it again, not the decoder.
+    const RED_PIXELS: [u8; 73] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x02, 0x00, 0x00, 0x00, 0xfd,
+        0xd4, 0x9a, 0x73, 0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xcf, 0x00, 0x04, 0xff, 0x19, 0x20, 0x14, 0x00, 0x1b, 0xf2, 0x03, 0xfd, 0xd6, 0x96, 0xf2,
+        0x2b, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// Marks put ON a page, without disturbing what was already on it.
+    #[test]
+    fn stamps_land_on_the_pages_asked_for_and_say_when_they_cannot() {
+        let root = tempfile::tempdir().unwrap();
+        let path = |name: &str| root.path().join(name);
+        let text = |name: &str| path(name).to_str().unwrap().to_owned();
+
+        build_text_fixture(
+            &path("source.pdf"),
+            &["First page body.", "Second page body.", "Third page body."],
+        );
+
+        let stamped = stamp_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("stamped.pdf"),
+            "stamps": [
+                {"text": "DRAFT", "pages": "1,3", "x": 200, "y": 400,
+                 "size": 48, "rotate": 45, "opacity": 0.3},
+                {"text": "page 2 only", "pages": "2", "x": 72, "y": 40},
+            ],
+        }))
+        .unwrap();
+
+        assert_eq!(stamped["operationResult"]["pageCount"], 3);
+        assert_eq!(stamped["operationResult"]["stamps"].as_array().unwrap().len(), 3);
+
+        let read = read_pdf_document(&json!({"path": text("stamped.pdf")})).unwrap();
+        let pages = read["operationResult"]["pages"].as_array().unwrap().clone();
+
+        // On the pages asked for, and nowhere else.
+        assert!(pages[0]["text"].as_str().unwrap().contains("DRAFT"));
+        assert!(pages[2]["text"].as_str().unwrap().contains("DRAFT"));
+        assert!(!pages[1]["text"].as_str().unwrap().contains("DRAFT"));
+        assert!(pages[1]["text"].as_str().unwrap().contains("page 2 only"));
+
+        // And the page keeps everything it already had.
+        for (index, body) in ["First page body.", "Second page body.", "Third page body."]
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                pages[index]["text"].as_str().unwrap().contains(body),
+                "stamping page {} lost its own text: {:?}",
+                index + 1,
+                pages[index]["text"]
+            );
+        }
+
+        // A picture goes on as a picture, and the page is still a valid PDF.
+        std::fs::write(path("seal.png"), RED_PIXELS).unwrap();
+
+        stamp_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("sealed.pdf"),
+            "stamps": [{"image": path("seal.png").to_str().unwrap(),
+                        "pages": "1", "x": 400, "y": 60, "width": 120}],
+        }))
+        .unwrap();
+
+        {
+            let sealed = Document::load(path("sealed.pdf")).unwrap();
+            let page = *sealed.get_pages().get(&1).unwrap();
+            let resources = sealed.get_dictionary(page).ok().and_then(|page| {
+                page.get(b"Resources")
+                    .ok()
+                    .and_then(|value| value.as_dict().ok())
+            });
+
+            let has_picture = resources
+                .and_then(|resources| resources.get(b"XObject").ok())
+                .and_then(|value| value.as_dict().ok())
+                .map(|xobjects| xobjects.len() > 0)
+                .unwrap_or(false);
+
+            assert!(has_picture, "the seal never reached the page");
+        }
+
+        // Chinese: drawn with the page's OWN font when that font can spell it.
+        build_chinese_fixture(&path("chinese.pdf"));
+
+        stamp_pdf_document(&json!({
+            "source": text("chinese.pdf"),
+            "destination": text("chinese-stamped.pdf"),
+            "stamps": [{"text": "陈志明", "x": 300, "y": 300, "size": 36}],
+        }))
+        .unwrap();
+
+        assert!(
+            words_left(&path("chinese-stamped.pdf")).contains("陈志明"),
+            "the stamp did not reach the page"
+        );
+
+        // And a character no font on the page can spell is refused BY NAME,
+        // rather than drawn as empty boxes the caller only sees later.
+        let refused = stamp_pdf_document(&json!({
+            "source": text("chinese.pdf"),
+            "destination": text("no.pdf"),
+            "stamps": [{"text": "机密", "x": 100, "y": 100}],
+        }))
+        .unwrap_err();
+
+        assert!(refused.invalid_request);
+        assert!(
+            refused.message.contains('机'),
+            "the refusal must name the character: {}",
+            refused.message
+        );
+
+        for (label, request) in [
+            (
+                "no stamps",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf")}),
+            ),
+            (
+                "neither words nor a picture",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "stamps": [{"x": 10, "y": 10}]}),
+            ),
+            (
+                "both at once",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "stamps": [{"text": "a", "image": "/tmp/none.png"}]}),
+            ),
+            (
+                "a picture that is not there",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "stamps": [{"image": "/tmp/definitely-not-here.png"}]}),
+            ),
+            (
+                "a relative path to a picture",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "stamps": [{"image": "seal.png"}]}),
+            ),
+            (
+                "pages the document does not have",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "stamps": [{"text": "x", "pages": "9"}]}),
+            ),
+        ] {
+            let error = stamp_pdf_document(&request).unwrap_err();
+            assert!(error.invalid_request, "{label} should be a request problem");
+        }
+
+        assert!(!path("no.pdf").exists(), "a refused request wrote a file");
+    }
+
+    /// A page whose text layer is Chinese.
+    ///
+    /// The glyphs are Helvetica's and will not draw Chinese, which does not
+    /// matter: what is under test is the text layer, the encoding and the
+    /// geometry, and those are real. It exists because the first Chinese
+    /// document crashed a scan that advanced through the text one BYTE at a
+    /// time -- a bug an English-only fixture can never reach.
+    fn build_chinese_fixture(destination: &std::path::Path) {
+        use lopdf::{dictionary, Stream};
+
+        // code 1..=7 -> 身 份 证 号 陈 志 明
+        const LETTERS: [(u8, u16); 7] = [
+            (1, 0x8EAB),
+            (2, 0x4EFD),
+            (3, 0x8BC1),
+            (4, 0x53F7),
+            (5, 0x9648),
+            (6, 0x5FD7),
+            (7, 0x660E),
+        ];
+
+        let mut cmap = String::from(
+            "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+             /CMapName /Fixture def\n/CMapType 2 def\n\
+             1 begincodespacerange\n<01> <07>\nendcodespacerange\n",
+        );
+        cmap.push_str(&format!("{} beginbfchar\n", LETTERS.len()));
+        for (code, letter) in LETTERS {
+            cmap.push_str(&format!("<{code:02x}> <{letter:04X}>\n"));
+        }
+        // The closing lines are not decoration: a CMap parser looks for exactly
+        // this shape, and without them the fixture's text decodes to nothing.
+        // The assertion below, that the fixture reads back as the Chinese it
+        // was built from, is what caught that.
+        cmap.push_str(
+            "endbfchar\nendcmap\n\
+             CMapName currentdict /CMap defineresource pop\nend\nend\n",
+        );
+
+        let mut document = Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+
+        let to_unicode = document.add_object(Stream::new(dictionary! {}, cmap.into_bytes()));
+        let widths: Vec<Object> = (1..=7).map(|_| Object::Integer(1000)).collect();
+
+        let font_id = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+            "FirstChar" => 1,
+            "LastChar" => 7,
+            "Widths" => widths,
+            "ToUnicode" => to_unicode,
+        });
+
+        let resources_id = document.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+
+        // 身份证号陈志明 -- the name sits in the middle on purpose, so removing
+        // it has to leave text on both sides untouched.
+        let line: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7];
+        let mut stream = Vec::new();
+        stream.extend_from_slice(b"BT /F1 24 Tf 72 700 Td (");
+        for code in &line {
+            stream.push(*code);
+        }
+        stream.extend_from_slice(b") Tj ET");
+
+        let contents_id = document.add_object(Stream::new(dictionary! {}, stream));
+
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => contents_id,
+        });
+
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            }),
+        );
+
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+
+        document.trailer.set("Root", catalog_id);
+        document.save(destination).unwrap();
+    }
+
+    /// The text a page still has, as an outside reader sees it.
+    ///
+    /// Uses this module's own reader, which is the point: a redaction that only
+    /// looks removed is exactly the failure being tested for, and the text
+    /// layer is where it would still be found.
+    fn words_left(path: &std::path::Path) -> String {
+        read_pdf_document(&json!({"path": path.to_str().unwrap()})).unwrap()["operationResult"]
+            ["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// Removing words has to remove them, and leave the rest where it was.
+    #[test]
+    fn redaction_takes_the_words_out_of_the_file_not_just_out_of_sight() {
+        use crate::document::pdf_layout::text_runs;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = |name: &str| root.path().join(name);
+        let text = |name: &str| path(name).to_str().unwrap().to_owned();
+
+        build_text_fixture(
+            &path("source.pdf"),
+            &[
+                "Account 6011 1234 for Ada Lovelace",
+                "Second page says nothing secret",
+            ],
+        );
+
+        // Where every word sat before, so "the rest did not move" can be
+        // checked against measurement rather than asserted.
+        let before: Vec<(String, f64)> = {
+            let document = Document::load(path("source.pdf")).unwrap();
+            let page = *document.get_pages().get(&1).unwrap();
+            text_runs(&document, page)
+                .into_iter()
+                .flat_map(|run| {
+                    run.glyphs
+                        .into_iter()
+                        .map(|glyph| (glyph.text, glyph.x))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+
+        let done = redact_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("clean.pdf"),
+            "text": ["6011 1234"],
+        }))
+        .unwrap();
+
+        assert_eq!(done["operationResult"]["removed"][0]["text"], "6011 1234");
+
+        // The words are GONE from the file, not covered up. This is the whole
+        // capability: a black box over live text has leaked real documents.
+        let left = words_left(&path("clean.pdf"));
+        assert!(!left.contains("6011"), "the account number survived: {left:?}");
+        assert!(!left.contains("1234"), "the account number survived: {left:?}");
+        assert!(left.contains("Ada Lovelace"), "too much was removed: {left:?}");
+        assert!(
+            left.contains("Second page says nothing secret"),
+            "another page was damaged: {left:?}"
+        );
+
+        // And every letter that stayed is exactly where it was.
+        let after: Vec<(String, f64)> = {
+            let document = Document::load(path("clean.pdf")).unwrap();
+            let page = *document.get_pages().get(&1).unwrap();
+            text_runs(&document, page)
+                .into_iter()
+                .flat_map(|run| {
+                    run.glyphs
+                        .into_iter()
+                        .map(|glyph| (glyph.text, glyph.x))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+
+        // Compared one for one against the glyphs that SHOULD have survived,
+        // rather than by searching for each letter in the old list. A page is
+        // mostly spaces and repeated letters, and a search happily matches the
+        // wrong one -- which is a test that passes while the page is wrong.
+        let joined: String = before.iter().map(|(letter, _)| letter.as_str()).collect();
+        let at = joined.find("6011 1234").expect("the fixture lost its own text");
+
+        let survivors: Vec<(String, f64)> = before
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !(at..at + "6011 1234".len()).contains(index))
+            .map(|(_, glyph)| glyph.clone())
+            .collect();
+
+        assert_eq!(
+            after.len(),
+            survivors.len(),
+            "the page kept {} letters and should have kept {}",
+            after.len(),
+            survivors.len()
+        );
+
+        for ((letter, x), (was, expected_x)) in after.iter().zip(&survivors) {
+            assert_eq!(letter, was, "the letters that stayed are not the right ones");
+            assert!(
+                (expected_x - x).abs() < 0.01,
+                "{letter:?} moved from {expected_x} to {x} -- a redaction must not shift the line"
+            );
+        }
+
+        // An area takes whatever sits in it, which is how a caller redacts
+        // something they can point at but cannot name.
+        let by_area = redact_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("area.pdf"),
+            "areas": [{"page": 1, "rect": [72, 690, 130, 720]}],
+        }))
+        .unwrap();
+
+        assert!(!by_area["operationResult"]["removed"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(!words_left(&path("area.pdf")).contains("Account"));
+
+        // Asking for something that is not there is a mistake worth reporting,
+        // not a file quietly written unchanged.
+        let missing = redact_pdf_document(&json!({
+            "source": text("source.pdf"),
+            "destination": text("no.pdf"),
+            "text": ["a phrase this document does not contain"],
+        }))
+        .unwrap_err();
+
+        assert!(missing.invalid_request);
+        assert!(!path("no.pdf").exists(), "a refused request wrote a file");
+
+        // Chinese, because a page is not always English and the code that
+        // walks its text must not step into the middle of a character.
+        build_chinese_fixture(&path("chinese.pdf"));
+        assert_eq!(words_left(&path("chinese.pdf")), "身份证号陈志明");
+
+        redact_pdf_document(&json!({
+            "source": text("chinese.pdf"),
+            "destination": text("chinese-clean.pdf"),
+            "text": ["陈志明"],
+        }))
+        .unwrap();
+
+        assert_eq!(words_left(&path("chinese-clean.pdf")), "身份证号");
+
+        {
+            // And what stayed did not move: the four characters before the name
+            // are still at 24 points apart from 72, as they were.
+            let document = Document::load(path("chinese-clean.pdf")).unwrap();
+            let page = *document.get_pages().get(&1).unwrap();
+            let runs = text_runs(&document, page);
+            let kept: Vec<f64> = runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.x))
+                .collect();
+
+            assert_eq!(kept, vec![72.0, 96.0, 120.0, 144.0], "the line shifted");
+        }
+
+        for (label, request) in [
+            (
+                "nothing named at all",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf")}),
+            ),
+            (
+                "an area with no rectangle",
+                json!({"source": text("source.pdf"), "destination": text("no.pdf"),
+                       "areas": [{"page": 1}]}),
+            ),
+        ] {
+            let error = redact_pdf_document(&request).unwrap_err();
+            assert!(error.invalid_request, "{label} should be a request problem");
+        }
     }
 
     /// A one-page PDF carrying a real form: a text box and a checkbox.

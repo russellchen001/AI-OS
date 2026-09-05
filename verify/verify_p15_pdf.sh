@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-NAME="P15 PDF (read, recognise, merge, split, rotate, lock, annotate, fill)"
+NAME="P15 PDF (read, recognise, page work, lock, annotate, fill, redact, stamp, replace)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$ROOT/src-tauri/Cargo.toml"
 LOG="${AIOS_RUN_DIR:-${TMPDIR:-/tmp}}/pdf.log"
@@ -28,7 +28,7 @@ cargo test --manifest-path "$MANIFEST" --lib document::pdf::tests \
     fail "PDF request contract"
   }
 
-grep -q "running 5 tests" "$LOG" || {
+grep -q "running 8 tests" "$LOG" || {
   tail -20 "$LOG"
   fail "PDF contract test count changed"
 }
@@ -45,6 +45,13 @@ echo "✅ notes are left on the page asked for, and read back with their author"
 echo "✅ a form reports its fields, and a widget is not mistaken for a remark"
 echo "✅ filling sets the value AND the appearance state the document uses"
 echo "✅ one wrong field name leaves no half-filled form behind"
+echo "✅ redaction removes the words from the FILE, not just from sight"
+echo "✅ every letter that stays keeps its exact position, Chinese included"
+echo "✅ an area takes what sits in it, and asking for absent text is refused"
+echo "✅ stamps land on the pages asked for and nowhere else"
+echo "✅ a stamp uses the page's own font, and names the character it cannot draw"
+echo "✅ replacement is set in the font the old words were, and does not move them"
+echo "✅ longer replacements are refused, or shrunk to fit, or push -- never silently overlap"
 
 cargo test --manifest-path "$MANIFEST" --lib \
   document::resolver::tests::every_capability_and_format_reaches_the_adapter_it_should \
@@ -53,7 +60,7 @@ cargo test --manifest-path "$MANIFEST" --lib \
     fail "PDF routing"
   }
 
-echo "✅ .pdf reaches the PDF adapter, and page, lock and form work are PDF-only"
+echo "✅ .pdf reaches the PDF adapter, and page, lock, form and text work are PDF-only"
 
 cargo test --manifest-path "$MANIFEST" --lib \
   document::pdf::tests::pdf_is_read_split_merged_and_recognised_real_e2e \

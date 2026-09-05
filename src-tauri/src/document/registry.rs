@@ -112,6 +112,11 @@ const LOCAL_STRUCTURED_CAPABILITIES: &[&str] = &[
     // itself, so they need no application either.
     "document.annotate",
     "document.fill",
+    // Taking words off a page, putting marks on it and changing what it says
+    // are done to the PDF itself, by the same reader.
+    "document.redact",
+    "document.stamp",
+    "document.replace",
     "presentation.read",
     "spreadsheet.read",
     "spreadsheet.create",
@@ -268,6 +273,9 @@ mod tests {
             "document.decrypt",
             "document.annotate",
             "document.fill",
+            "document.redact",
+            "document.stamp",
+            "document.replace",
         ] {
             assert!(
                 structured.supports(pdf_only),

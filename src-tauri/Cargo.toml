@@ -46,7 +46,10 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # PDF is a format, not an application, so it is read in Rust on every platform
 # rather than by driving whatever the operating system happens to ship.
-lopdf = "0.44"
+# `embed_image` is what lets a signature or a seal be stamped onto a page. It
+# brings a pure-Rust decoder, which is the same trade as `zip` and `lopdf`
+# themselves: a dependency taken on so a capability does not need a platform.
+lopdf = { version = "0.44", features = ["embed_image"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"

@@ -41,6 +41,11 @@ const DOCUMENT_DECRYPT_ACTION: &str = "document.decrypt";
 /// Marks on a document, and values in its form, are part of the document too.
 const DOCUMENT_ANNOTATE_ACTION: &str = "document.annotate";
 const DOCUMENT_FILL_ACTION: &str = "document.fill";
+/// Changing what a page says, and what it no longer says. Same layer again:
+/// the file itself, read and written in Rust, on any machine.
+const DOCUMENT_REDACT_ACTION: &str = "document.redact";
+const DOCUMENT_STAMP_ACTION: &str = "document.stamp";
+const DOCUMENT_REPLACE_ACTION: &str = "document.replace";
 const PRESENTATION_EDIT_ACTION: &str = "presentation.edit";
 const PRESENTATION_CONVERT_ACTION: &str = "presentation.convert";
 const FILESYSTEM_WRITE_ACTION: &str = "filesystem.write";
@@ -194,6 +199,33 @@ fn execute_with_invoker(
             "source",
             crate::document::pdf::fill_pdf_form,
             "AI-OS filled in the form.",
+        );
+    }
+    if request.action.as_str() == DOCUMENT_REDACT_ACTION {
+        return execute_local_pdf(
+            request,
+            DOCUMENT_REDACT_ACTION,
+            "source",
+            crate::document::pdf::redact_pdf_document,
+            "AI-OS took the words out of the PDF.",
+        );
+    }
+    if request.action.as_str() == DOCUMENT_STAMP_ACTION {
+        return execute_local_pdf(
+            request,
+            DOCUMENT_STAMP_ACTION,
+            "source",
+            crate::document::pdf::stamp_pdf_document,
+            "AI-OS stamped the PDF.",
+        );
+    }
+    if request.action.as_str() == DOCUMENT_REPLACE_ACTION {
+        return execute_local_pdf(
+            request,
+            DOCUMENT_REPLACE_ACTION,
+            "source",
+            crate::document::pdf::replace_in_pdf_document,
+            "AI-OS changed the words in the PDF.",
         );
     }
     if request.action.as_str() == FILESYSTEM_WRITE_ACTION {
