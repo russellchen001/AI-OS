@@ -18,7 +18,7 @@
   `system.app.quit`.
 - Computer Control **Phase C is complete**. C1 clipboard, C2 audio, and C3 power are complete.
 - Computer Control **Phase D is complete**. D1 native notifications and D2 permissions are complete.
-- Phase E is not started.
+- Computer Control **Phase E is in progress**. E1 confirmed process termination is complete; the final cross-capability workflow remains.
 
 ### Phase B accepted state
 
@@ -158,14 +158,47 @@ authorization state and take the person to the correct settings pane. The
 person grants or revokes permission; AI-OS does not make that decision or
 operate the System Settings UI.
 
+### Phase E accepted state
+
+E1 confirmed process termination is complete:
+
+- `system.process.terminate`
+- request requires exactly `pid` and `expectedStartTimeUnixSeconds`
+- the expected start time comes from the existing detailed
+  `system.process.info` result
+- a PID alone is never treated as process identity because operating systems
+  reuse PIDs
+- immediately before signalling, AI-OS refreshes the PID and requires its
+  current `start_time()` to equal the previously observed value
+- a changed identity fails closed before any signal is sent
+- PID 0, PID 1, and the AI-OS process executing the request are refused
+- no caller-selectable signal, force flag, or delay exists
+- v1 sends only `sysinfo::Signal::Term`; there is no `Signal::Kill`, SIGKILL,
+  shell command, `pkill`, `killall`, or force escalation
+- successful signal delivery alone is not completion; AI-OS observes that the
+  original process became absent, reached a terminal state, or that the PID was
+  reused by a different process identity
+- a process that remains active after the bounded observation window reports
+  failure and is not force-killed
+- process termination is in `ALWAYS_CONFIRM_CAPABILITIES`: current
+  `user_confirmed` is mandatory and Trusted Automation cannot bypass it
+- the real E2E spawns its own disposable `/bin/sleep` child, proves a stale
+  start-time identity does not signal it, terminates it with the exact identity,
+  observes termination, and reaps only that test-owned child
+
+Process-control ownership remains narrow: Computer Control may terminate one
+explicitly identified process after current user confirmation. Selecting which
+process should be terminated, deciding whether termination is appropriate, and
+multi-step recovery remain Planner / OpenClaw work.
+
 ### What comes next
 
-1. Phase E — `system.process.terminate` plus the final cross-capability workflow.
-   Destructive process termination remains last.
-3. Then Vehicle Control v1.
-4. Then local generative media.
-5. Then cognitive distillation foundation.
-6. NAS remains hardware-blocked.
+1. Phase E — E1 confirmed process termination complete; next and final is the
+   cross-capability workflow.
+2. Then Vehicle Control v1.
+3. Then local generative media.
+4. Then cognitive distillation foundation.
+5. NAS remains hardware-blocked.
 
 Computer Control must remain complementary to the other execution layers:
 

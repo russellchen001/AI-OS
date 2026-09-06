@@ -21,6 +21,7 @@ pub(crate) mod inspect;
 pub(crate) mod notification;
 pub(crate) mod permissions;
 pub(crate) mod power;
+pub(crate) mod process_control;
 
 /// Every capability this module answers.
 ///
@@ -35,6 +36,7 @@ pub(crate) const CAPABILITIES: &[&str] = &[
     "system.network",
     "system.process.list",
     "system.process.info",
+    "system.process.terminate",
     "system.app.list",
     "system.app.running",
     "system.app.launch",

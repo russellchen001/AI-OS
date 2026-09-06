@@ -57,6 +57,9 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     "system.network",
     "system.process.list",
     "system.process.info",
+    // Process termination is destructive and additionally appears in
+    // ALWAYS_CONFIRM_CAPABILITIES below.
+    "system.process.terminate",
     // Starting and stopping an application is doing something on a person's
     // machine, so it is something they say yes to -- and so is asking what
     // they have installed.
@@ -91,6 +94,7 @@ const APPROVAL_REQUIRED_MESSAGE: &str = "OpenClaw action requires explicit appro
 /// Persistent Trusted Automation approval therefore never substitutes for
 /// confirmation attached to the current execution request.
 const ALWAYS_CONFIRM_CAPABILITIES: &[&str] = &[
+    "system.process.terminate",
     "system.power.sleep",
     "system.power.restart",
     "system.power.shutdown",
@@ -966,6 +970,49 @@ mod tests {
             assert_eq!(
                 gate.authorize(&request(json!({}))).unwrap(),
                 OpenClawPermissionDecision::Denied
+            );
+        }
+    }
+
+    #[test]
+    fn process_termination_always_requires_current_confirmation() {
+        let input = json!({
+            "pid": 1234,
+            "expectedStartTimeUnixSeconds": 5678
+        });
+
+        let unconfirmed = OpenClawExecutionRequest::new(
+            "execution-process-terminate-unconfirmed",
+            "system.process.terminate",
+            input.clone(),
+        )
+        .unwrap();
+
+        let confirmed = OpenClawExecutionRequest::new(
+            "execution-process-terminate-confirmed",
+            "system.process.terminate",
+            input,
+        )
+        .unwrap()
+        .with_user_confirmation(true);
+
+        let empty =
+            ConfiguredCapabilityPermissionGate::new(Vec::new());
+
+        let trusted = ConfiguredCapabilityPermissionGate::new([
+            "system.process.terminate".to_owned()
+        ]);
+
+        for gate in [&empty, &trusted] {
+            assert_eq!(
+                gate.authorize(&unconfirmed).unwrap(),
+                OpenClawPermissionDecision::RequiresApproval,
+                "Trusted Automation must never substitute for current confirmation"
+            );
+
+            assert_eq!(
+                gate.authorize(&confirmed).unwrap(),
+                OpenClawPermissionDecision::Allowed
             );
         }
     }

@@ -2181,7 +2181,9 @@ type SystemCapabilityRunner =
 fn resolve_system_capability(
     action: &str,
 ) -> Option<(SystemCapabilityRunner, &'static str)> {
-    use crate::system::{apps, audio, clipboard, inspect, notification, permissions, power};
+    use crate::system::{
+        apps, audio, clipboard, inspect, notification, permissions, power, process_control,
+    };
 
     match action {
         "system.storage" => Some((
@@ -2207,6 +2209,10 @@ fn resolve_system_capability(
         "system.process.info" => Some((
             inspect::read_process,
             "AI-OS read one process on the machine.",
+        )),
+        "system.process.terminate" => Some((
+            process_control::terminate_process,
+            "AI-OS requested normal termination of the confirmed process.",
         )),
         "system.app.list" => Some((
             apps::list_applications,
