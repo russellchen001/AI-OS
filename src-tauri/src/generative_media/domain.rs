@@ -42,6 +42,25 @@ pub(crate) enum MediaRouteMode {
     Manual,
 }
 
+/// The execution environment requested by the user-facing flow.
+///
+/// `LocalFirst` is the default. If a compatible local provider exists but
+/// is not Ready, routing stops for setup/repair instead of silently spending
+/// money through a cloud provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MediaExecutionTarget {
+    LocalFirst,
+    Local,
+    Cloud,
+}
+
+impl Default for MediaExecutionTarget {
+    fn default() -> Self {
+        Self::LocalFirst
+    }
+}
+
 /// Provider policy metadata used for recommendation and disclosure.
 ///
 /// This is not an instruction to bypass a provider policy rejection.
@@ -103,6 +122,8 @@ pub(crate) struct MediaRequest {
     pub capability: MediaCapability,
     pub intent: CreativeIntent,
     pub route_mode: MediaRouteMode,
+    #[serde(default)]
+    pub execution_target: MediaExecutionTarget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manual_provider: Option<MediaProviderSelection>,
 }
@@ -196,6 +217,7 @@ mod tests {
             capability: MediaCapability::TextToImage,
             intent: intent(),
             route_mode: MediaRouteMode::Auto,
+            execution_target: MediaExecutionTarget::LocalFirst,
             manual_provider: None,
         };
 
@@ -204,6 +226,7 @@ mod tests {
         assert_eq!(json["capability"], "text-to-image");
         assert_eq!(json["intent"]["mediaKind"], "image");
         assert_eq!(json["routeMode"], "auto");
+        assert_eq!(json["executionTarget"], "local-first");
         assert!(json.get("manualProvider").is_none());
 
         let serialized = serde_json::to_string(&json).unwrap();
@@ -217,6 +240,7 @@ mod tests {
             capability: MediaCapability::ImageEdit,
             intent: intent(),
             route_mode: MediaRouteMode::Manual,
+            execution_target: MediaExecutionTarget::LocalFirst,
             manual_provider: Some(MediaProviderSelection {
                 provider_id: "openai".to_owned(),
                 provider_instance_id: Some("openai-primary".to_owned()),
