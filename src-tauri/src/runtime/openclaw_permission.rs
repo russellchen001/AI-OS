@@ -1,9 +1,10 @@
+pub(crate) use super::capability_permission::ConfiguredCapabilityPermissionGate;
+use super::capability_permission::CapabilityPermissionDecision;
 use super::openclaw_execution::{
     OpenClawExecutionAdapter, OpenClawExecutionError, OpenClawExecutionErrorKind,
     OpenClawExecutionProgress, OpenClawExecutionRequest, OpenClawExecutionResult,
 };
 use std::sync::Arc;
-use std::{collections::HashSet, iter::IntoIterator};
 
 /// What a person can authorise once, in the moment, for a single run.
 ///
@@ -121,47 +122,29 @@ pub(crate) trait OpenClawPermissionGate: Send + Sync {
     ) -> Result<OpenClawPermissionDecision, OpenClawPermissionCheckError>;
 }
 
-pub(crate) struct ConfiguredCapabilityPermissionGate {
-    allowed_capabilities: HashSet<String>,
-}
-
-impl ConfiguredCapabilityPermissionGate {
-    pub(crate) fn new(allowed_capabilities: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            allowed_capabilities: allowed_capabilities
-                .into_iter()
-                .map(|capability| capability.trim().to_owned())
-                .filter(|capability| !capability.is_empty())
-                .collect(),
-        }
-    }
-}
-
 impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
     fn authorize(
         &self,
         request: &OpenClawExecutionRequest,
     ) -> Result<OpenClawPermissionDecision, OpenClawPermissionCheckError> {
-        let action = request.action.as_str();
+        let decision = self.authorize_with_policy(
+            request.action.as_str(),
+            request.user_confirmed,
+            CONFIRMABLE_CAPABILITIES,
+            ALWAYS_CONFIRM_CAPABILITIES,
+        );
 
-        if ALWAYS_CONFIRM_CAPABILITIES.contains(&action) {
-            return Ok(if request.user_confirmed {
+        Ok(match decision {
+            CapabilityPermissionDecision::Allowed => {
                 OpenClawPermissionDecision::Allowed
-            } else {
+            }
+            CapabilityPermissionDecision::RequiresApproval => {
                 OpenClawPermissionDecision::RequiresApproval
-            });
-        }
-
-        Ok(
-            if self.allowed_capabilities.contains(action)
-                || (CONFIRMABLE_CAPABILITIES.contains(&action)
-                    && request.user_confirmed)
-            {
-                OpenClawPermissionDecision::Allowed
-            } else {
+            }
+            CapabilityPermissionDecision::Denied => {
                 OpenClawPermissionDecision::Denied
-            },
-        )
+            }
+        })
     }
 }
 

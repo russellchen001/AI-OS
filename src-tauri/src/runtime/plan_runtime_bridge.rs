@@ -1,4 +1,8 @@
 use super::{
+    capability_permission::{
+        CapabilityPermissionDecision, ConfiguredCapabilityPermissionGate,
+        GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
+    },
     executor::{
         execute_generative_media_runtime_task, execute_local_model_runtime_task,
         execute_mcp_runtime_task, execute_runtime_task,
@@ -9,7 +13,7 @@ use super::{
     openclaw_execution::OpenClawExecutionAdapter,
     openclaw_gateway_adapter::OpenClawGatewayExecutionAdapter,
     openclaw_permission::{
-        ConfiguredCapabilityPermissionGate, PermissionEnforcingOpenClawExecutionAdapter,
+        OpenClawPermissionGate, PermissionEnforcingOpenClawExecutionAdapter,
     },
     skills,
     trusted_automation::{load_trusted_automation_settings, TrustedAutomationConfigError},
@@ -98,6 +102,7 @@ pub(crate) struct RuntimeBackedPlanExecutor {
     runtime: RuntimeExecutionState,
     emitter: Arc<dyn OperationEventEmitter>,
     adapter: Arc<dyn OpenClawExecutionAdapter>,
+    permission_gate: Arc<ConfiguredCapabilityPermissionGate>,
 }
 
 impl RuntimeBackedPlanExecutor {
@@ -109,15 +114,17 @@ impl RuntimeBackedPlanExecutor {
         let gate = Arc::new(ConfiguredCapabilityPermissionGate::new(
             settings.allowed_capabilities(),
         ));
+        let openclaw_gate: Arc<dyn OpenClawPermissionGate> = gate.clone();
         let downstream: Arc<dyn OpenClawExecutionAdapter> =
             Arc::new(OpenClawGatewayExecutionAdapter);
         let adapter: Arc<dyn OpenClawExecutionAdapter> = Arc::new(
-            PermissionEnforcingOpenClawExecutionAdapter::new(gate, downstream),
+            PermissionEnforcingOpenClawExecutionAdapter::new(openclaw_gate, downstream),
         );
         Ok(Self {
             runtime,
             emitter,
             adapter,
+            permission_gate: gate,
         })
     }
 
@@ -126,15 +133,17 @@ impl RuntimeBackedPlanExecutor {
         emitter: Arc<dyn OperationEventEmitter>,
     ) -> Self {
         let gate = Arc::new(ConfiguredCapabilityPermissionGate::new(Vec::new()));
+        let openclaw_gate: Arc<dyn OpenClawPermissionGate> = gate.clone();
         let downstream: Arc<dyn OpenClawExecutionAdapter> =
             Arc::new(OpenClawGatewayExecutionAdapter);
         let adapter: Arc<dyn OpenClawExecutionAdapter> = Arc::new(
-            PermissionEnforcingOpenClawExecutionAdapter::new(gate, downstream),
+            PermissionEnforcingOpenClawExecutionAdapter::new(openclaw_gate, downstream),
         );
         Self {
             runtime,
             emitter,
             adapter,
+            permission_gate: gate,
         }
     }
 
@@ -148,6 +157,9 @@ impl RuntimeBackedPlanExecutor {
             runtime,
             emitter,
             adapter,
+            permission_gate: Arc::new(
+                ConfiguredCapabilityPermissionGate::new(Vec::new()),
+            ),
         }
     }
 }
@@ -197,6 +209,19 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
             ),
 
             "media" if handler == "generative-media" => {
+                match self.permission_gate.authorize_with_policy(
+                    &capability,
+                    runtime_request.user_confirmed,
+                    GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
+                    GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
+                ) {
+                    CapabilityPermissionDecision::Allowed => {}
+                    CapabilityPermissionDecision::RequiresApproval
+                    | CapabilityPermissionDecision::Denied => {
+                        return Err(PlanRuntimeExecutionError::PermissionDenied);
+                    }
+                }
+
                 execute_generative_media_runtime_task(
                     self.runtime.manager(),
                     self.runtime.scheduler(),
@@ -558,4 +583,31 @@ mod tests {
         assert_eq!(received[0].input, json!({"path": "/safe"}));
         assert!(received[0].user_confirmed);
     }
+    #[test]
+    fn unconfirmed_generative_media_is_rejected_before_runtime_execution() {
+        let adapter = Arc::new(RecordingAdapter {
+            requests: Mutex::new(Vec::new()),
+            outcome: Ok(OpenClawExecutionResult {
+                output: json!({"unexpected": true}),
+                summary: None,
+            }),
+        });
+
+        let bridge = bridge(adapter.clone());
+        let mut media = request("plan-media", "step-media");
+
+        media.capability = "media.text-to-image".to_owned();
+        media.user_confirmed = false;
+
+        assert_eq!(
+            bridge.execute_step(media).unwrap_err(),
+            PlanRuntimeExecutionError::PermissionDenied
+        );
+
+        assert!(
+            adapter.requests.lock().unwrap().is_empty(),
+            "media denial must not enter OpenClaw execution"
+        );
+    }
+
 }

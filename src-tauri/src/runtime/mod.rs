@@ -1,5 +1,6 @@
 mod adapters;
 pub(crate) mod bulk;
+pub(crate) mod capability_permission;
 pub(crate) mod executor;
 pub(crate) mod ipc;
 pub(crate) mod lifecycle;
