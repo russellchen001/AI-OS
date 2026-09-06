@@ -2811,10 +2811,10 @@ Calendar has no equivalent question: EventKit is the correct supported interface
 | | |
 |---|---|
 | Branch | `feature/p15-core-skills` |
-| HEAD | P15 Office workflows complete — native iWork and Google Workspace real E2E verified |
-| Latest tag | `p13-m5-complete` |
+| HEAD | `3520e4e` — Generative Media GM-1 complete: Core Domain, execution target, Provider Registry, routing, Runtime bridge, capability-boundary repair, and Shared Runtime Permission Admission |
+| Latest tag | `p15-computer-control-v1-complete` |
 | Baseline state | Working tree was clean at the stable baseline before this handoff update |
-| Active phase | P15 Core Skills — 6 of 11 complete; Office is done. Cross-platform support is deliberately deferred past v1.0. |
+| Active phase | P15 Core Skills — 7 of 10 active capability areas complete. Generative Media — Local First is In Progress; GM-1 is complete and GM-2 is next. Vehicle Control is Deferred / out of v1. |
 
 ---
 
@@ -2853,6 +2853,8 @@ Calendar has no equivalent question: EventKit is the correct supported interface
 | P15 Filesystem move | Explicit source/destination selection and one-time confirmation, real OpenClaw move execution, no-overwrite behavior, absolute/different-path validation, fail-closed source/destination checks, and readable Chat rendering | `verify/verify_p15_file_move.sh`; isolated real OpenClaw smoke and real UI E2E passed 2026-08-15 moving `/private/tmp/ai-os-p15-ui-write-20260815.txt` to `/private/tmp/ai-os-p15-ui-move-20260815.txt` |
 | P15 Local Model Core Skill | Ollama local model management through Runtime, including model list, inspect, pull, delete capabilities, Chat execution flow, My AI management UI, and unified Dialog interaction | `verify_p15_local_model_core_skill.sh`, `verify_p15_local_model_step1.sh`, `verify_p15_local_model_step2.sh`, `verify_p15_local_model_step3.sh`, `verify_p15_local_model_step4.sh`; completed 2026-08-16 |
 | P15 Download Skill | Task/Plan/Runtime/OpenClaw execution; Direct HTTP, Web page, Thunder submission, aria2 tool routing, cloud-drive extension point, destination verification, safe errors, and readable Chat results | `verify/verify_p15_download_complete.sh`; real OpenClaw E2E passed 2026-08-21 |
+| P15 Computer Control v1 | Deterministic system reads, application lifecycle, clipboard, output audio, native permission inspection/settings handoff, always-confirmed power actions, and PID-reuse-safe process termination. Native notification delivery Deferred / out of v1 after feasibility acceptance. | `f010543`, `96979b9`, tag `p15-computer-control-v1-complete` |
+| P15 Generative Media GM-1 | Provider-neutral Generative Media foundation: CreativeIntent/MediaRequest domain, execution targets, replaceable MediaProvider Registry, Local First routing, Runtime-owned execution bridge, stable media capability IDs, restored Download/Media Skill boundary, and Shared Runtime Permission Admission. Production provider registry intentionally remains empty until GM-2. | `346a684`, `a649a83`, `b40467d`, `ffd396e`, `2b2035c`, `00d97ab`, `5f9a6a5`, `3520e4e` |
 
 P14 General Memory Policy behavioral QA passed:
 
@@ -2892,49 +2894,78 @@ config, or the repository.
 
 ## In progress
 
-P15 Core Skills remains active. File management, Local Model Management, and
-Download Skill are complete. Download execution now remains inside the v1.0
-Agent boundary: Task Engine → Planner → Runtime → Skill → OpenClaw → tool/Web.
+P15 Core Skills remains active at **7 / 10 active capability areas complete**.
 
-All four Filesystem capabilities enter through Task Engine and Planner, resolve through the
-Skill registry, execute through Runtime and the dedicated `ai-os-files`
-OpenClaw worker, enforce one-time confirmation where required, normalize real
-tool results, and render readable Chat output without exposing raw Gateway
-history.
+Current capability area:
+
+**Generative Media — Local First**
+
+GM-1 is complete. The stable execution architecture is:
+
+`Planner → Skill Resolver → Shared Runtime Permission Admission → Generative Media Executor → MediaRouter → MediaProvider`
+
+Generative Media is a **Runtime-owned Core Skill**. It does not execute inside
+`OpenClawGatewayExecutionAdapter`, and OpenClaw is not the Generative Media
+Provider abstraction.
+
+GM-1 establishes the execution foundation only. The production
+`MediaProviderRegistry` intentionally contains no real ComfyUI or cloud
+Provider yet, so GM-1 does not claim working image/video generation.
+
+Current Generative Media milestone status:
+
+- GM-0 — Product Contract: Complete
+- GM-1A — Core Domain: Complete
+- GM-1B1 — Execution Target: Complete
+- GM-1B2 — Provider Contract + Registry: Complete
+- GM-1B3 — Routing Policy: Complete
+- GM-1C — Runtime / execution bridge: Complete
+- GM-1C1 — Download / Generative Media capability-boundary repair: Complete
+- GM-1D — Shared Runtime Permission Admission: Complete
+- GM-2 — ComfyUI Ready Detection + Local Provider: Next
+
+Vehicle Control remains Deferred / out of v1 after its feasibility gate.
+NAS Management foundation remains hardware-blocked for real hardware E2E.
 
 ---
 
 ## Next
 
-P15 Core Skills implementation order:
+P15 active capability status:
 
 Completed:
 1. File Management Skill
-2. Local Model Management Skill
-3. Download Skill
+2. Browser / Search
+3. Local Model Management Skill
+4. Download Skill
+5. Email and Calendar
+6. Office workflows
+7. Computer Control v1
 
-Download Skill architecture:
-- Chat supplies only `source` and `destination`; it never selects a provider.
-- Skill registry resolves Download to the common OpenClaw executor.
-- Direct HTTP files use an OpenClaw `exec` tool workflow.
-- HTML download pages use an OpenClaw Web workflow that reads the page, resolves
-  its download link, and downloads the linked file.
-- Thunder/ED2K use OpenClaw to submit to the installed Thunder application by
-  bundle identity and URL scheme; submission does not imply completion.
-- Magnet uses Thunder when available and otherwise routes to aria2; torrent and
-  FTP route to the aria2 tool adapter. qBittorrent is not installed or required.
-- Baidu links route through OpenClaw to the installed Baidu Netdisk application.
-  Future cloud tools extend Download routing, not Task Engine or Planner.
-- AI-OS verifies new files in the selected destination before reporting completed.
+Deferred / removed from active v1 scope:
+- Vehicle Control v1 — Deferred after feasibility gate; no adapter implemented
 
-Next capability order:
-1. Computer Control v1
-2. Vehicle Control v1 — Tesla Provider
-3. Local Generative Media Skill
-4. Cognitive Distillation Foundation
-5. NAS Management foundation — hardware E2E remains blocked until storage is installed
+In Progress:
+- Generative Media — Local First
+  - GM-1 complete
+  - **Next: GM-2 — ComfyUI Ready Detection + Local Provider**
 
-Do not begin P16 until P15 capability foundations are implemented or explicitly deferred.
+After Generative Media:
+1. Cognitive Distillation Foundation
+2. NAS Management foundation — real hardware E2E remains blocked until NAS storage is installed
+
+Generative Media implementation order:
+
+1. GM-0 — Product Contract — Complete
+2. GM-1 — Core / Provider Router / Runtime Permission Foundation — Complete
+3. GM-2 — ComfyUI Ready Detection + Local Provider
+4. GM-3 — One-click Install / Configure / Repair
+5. GM-4 — Cloud Providers, credentials, entitlement and budget enforcement
+6. GM-5 — Prompt Intelligence + OSS Reference Analysis
+7. GM-6 — Self-correction / Quality Loop
+
+Do not begin P16 until the remaining P15 capability foundations are implemented
+or explicitly deferred.
 
 ---
 
@@ -3090,8 +3121,8 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 
 **P15 Core Skills**
 
-- Explicit Core Skill actions enter through Task Engine and Planner, resolve through the existing Skill registry, and execute through Runtime and OpenClaw
-- One-time user confirmation is PlanStep-scoped and permits only the exact implemented `filesystem.scan`, `filesystem.read`, `filesystem.write`, `filesystem.move`, and `download.start` actions; it does not modify trusted automation
+- Explicit Core Skill actions enter through Task Engine and Planner and resolve through the existing Skill Registry. OpenClaw-backed skills continue through Runtime → OpenClaw, while Generative Media is a Runtime-owned Core Skill and executes through its own Generative Media Executor / MediaRouter path without entering OpenClaw Gateway.
+- PlanStep `user_confirmed` remains current-execution approval and does not modify Trusted Automation. Runtime now owns the shared capability-permission decision used by both OpenClaw-backed skills and Generative Media. Existing configured Trusted Automation capability strings preserve their previous behavior; Generative Media `media.*` capabilities are always-confirm during GM-1 and cannot be silently authorized by persistent Trusted Automation.
 - Work/Core Skill errors use safe OpenClaw/Runtime reporting, while ASK errors retain AI Center/provider semantics
 - `filesystem.scan` is an AI-OS capability identifier, not an OpenClaw Gateway RPC or tool id; the adapter translates it to the official `agent` / `agent.wait` path and reads the resulting session history
 - Real `filesystem.scan` E2E passed through Task, Planner, Runtime, permission, OpenClaw agent, read-only `exec`, normalized output, and Chat UI on 2026-08-15
@@ -3102,6 +3133,42 @@ Do not begin P16 until P15 capability foundations are implemented or explicitly 
 - Real `filesystem.move` E2E passed through Task, Planner, Runtime, permission, OpenClaw agent, `exec`, normalized output, and Chat UI on 2026-08-15
 - File execution uses the dedicated `ai-os-files` OpenClaw worker with no inherited skills or workspace bootstrap context and an isolated Ollama provider; `main` remains the default personal agent
 - OpenClaw permission and confirmation remain authoritative; the dedicated worker does not enable trusted automation or bypass tool policy
+
+**Generative Media — GM-1**
+
+- Product identity is **Generative Media — Local First**. AI-OS is a Generative Media Orchestrator, not a ComfyUI controller and not a single-provider integration.
+- v1.0 product support remains macOS-only. Shared Generative Media contracts remain platform-neutral for future Windows, Linux and HarmonyOS adapters. Architecture-ready does not mean Product-supported.
+- Stable execution boundary: `Planner → Skill Resolver → Shared Runtime Permission Admission → Generative Media Executor → MediaRouter → MediaProvider`.
+- Generative Media is Runtime-owned and must not be implemented inside `OpenClawGatewayExecutionAdapter`.
+- Provider identity/authentication infrastructure may be shared where appropriate, but media execution routing remains separate from ordinary AI Center LLM routing: account identity may be shared; execution is not shared.
+- Stable external capability IDs:
+  - `media.text-to-image`
+  - `media.image-edit`
+  - `media.text-to-video`
+  - `media.image-to-video`
+  - `media.reference.image.analyze`
+  - `media.reference.video.analyze`
+  - `media.reference.generate`
+- Generative Media Skill id is `generative-media`; executor kind is `media`; handler is `generative-media`.
+- `SkillManifest.permissions` remains descriptive metadata in the current architecture. Real execution admission is enforced by the Runtime capability-permission boundary, not by merely declaring `permissions: ["media.execute"]`.
+- GM-1 media capabilities are always-confirm. Persistent `trustedAutomationCapabilities` cannot silently authorize them even if a media capability string is present. GM-4 owns later paid-cloud budget and spending authorization semantics.
+- Permission denial occurs before Generative Media execution admission. Unknown media capabilities fail closed.
+- Manual Provider selection is exact and has no fallback. Local First does not silently fall from local to paid cloud. A Provider policy rejection terminates that route and must not trigger automatic Provider switching to evade policy.
+- Local First routing and provider selection live in the Generative Media domain.
+- The production `MediaProviderRegistry` is intentionally empty at GM-1 completion. The first real local Provider belongs to GM-2.
+- Output and reference handles remain opaque and path-neutral. Shared contracts do not expose Unix-only absolute-path assumptions.
+- Download and Generative Media namespaces are separated by regression coverage: Downloads owns `download.*`; Generative Media owns `media.*`.
+- GM-1 closure commits:
+  - GM-0 Contract: `346a684`
+  - GM-1A Core Domain: `a649a83`
+  - GM-1B1 Execution Target: `b40467d`
+  - GM-1B2 Provider Registry: `ffd396e`
+  - GM-1B3 Routing Policy: `2b2035c`
+  - GM-1C Runtime Bridge: `00d97ab`
+  - GM-1C1 capability-boundary repair: `5f9a6a5`
+  - GM-1D Shared Runtime Permission Admission: `3520e4e`
+- Next milestone is **GM-2 — ComfyUI Ready Detection + Local Provider**. GM-2 implements Ready First state detection and the first real local execution Provider; GM-3 owns one-click installation/configuration/repair and GM-4 owns cloud execution.
+
 
 **Migration**
 
@@ -3192,6 +3259,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-06  Generative Media GM-1 formally completed at `3520e4e`. GM-1 establishes the provider-neutral media domain, execution targets, replaceable Provider Registry, Local First routing, Runtime-owned execution bridge, stable `media.*` capabilities, Download/Media namespace separation, and Shared Runtime Permission Admission. Generative Media remains outside OpenClaw Gateway. `SkillManifest.permissions` remains descriptive metadata; real admission is enforced by the Runtime capability-permission boundary. All seven media capabilities require confirmation attached to the current execution during GM-1, and persistent Trusted Automation cannot silently authorize them. The production MediaProviderRegistry intentionally remains empty, so this milestone does not claim real image/video generation. P15 remains 7/10 active capability areas complete; Generative Media remains In Progress. Next is GM-2 — ComfyUI Ready Detection + Local Provider.
 - 2026-09-06  Generative Media GM-0 product contract established. AI-OS v1.0 remains macOS-only while shared Generative Media contracts are required to stay cross-platform-safe for future Windows, Linux and HarmonyOS adapters. Generative Media is Local First / Ready First with ComfyUI as the default local execution engine but not a hardcoded product dependency. Local readiness requires a usable API, compatible workflow and assets, integrity checks and successful smoke output rather than mere installation. AI-OS owns one-click install/configure/repair plus model, LoRA, node and workflow management for ordinary users. Cloud generation uses a replaceable Provider Registry and the user's own provider credentials, with current recommendation metadata allowed to prefer xAI while preserving explicit user selection. Prompt engineering is an implementation detail; CreativeIntent and provider-specific Prompt Compilers sit above execution. Reference analysis is adapter-based and should reuse strong OSS rather than reimplement mature reverse-prompt systems. Local refinement follows user retry limits; cloud refinement follows hard user-defined budget. Implementation order is GM-0 Contract -> GM-1 Core Router -> GM-2 ComfyUI Ready/Provider -> GM-3 One-click Setup/Repair -> GM-4 Cloud Providers -> GM-5 Prompt/Reference Intelligence -> GM-6 Quality Loop.
 - 2026-09-06  Vehicle Control v1 feasibility gate completed before implementation. Tesla Fleet API is rejected as a v1 dependency under the zero-cost / zero-owner-admin rule; the official local BLE path was also not selected because its nearby-control subset does not provide enough incremental AI-OS product value over the Tesla app to justify a full Vehicle skill. Vehicle Control is Deferred / out of v1 with no adapter code written. P15 active scope changes from 11 capability areas to 10, so current progress is 7/10. Local Generative Media is next.
 - 2026-09-06  Computer Control v1 formally closed at `f010543`. Final scope: deterministic machine/process reads, application lifecycle, clipboard, output audio, always-confirmed Power, native permission inspection/settings handoff, always-confirmed PID-reuse-safe process termination, and final cross-capability Runtime workflow. Native notification delivery is Deferred / out of v1 after real acceptance exposed developer-side signing/certificate administration outside the owner's product constraints. P15 was 7/11 at Computer Control closure; Vehicle Control was subsequently removed from v1 scope, making the active P15 scope 7/10. Standing admission rule: new capabilities must pass a zero-cost / zero-owner-admin feasibility gate before implementation; paid developer/API dependencies, owner-managed certificates/signing, and specialist OS administration are not acceptable v1 requirements. Vehicle Control subsequently completed that feasibility gate and was Deferred / out of v1 before adapter implementation; Local Generative Media is next.
