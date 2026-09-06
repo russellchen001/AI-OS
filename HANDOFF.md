@@ -316,6 +316,609 @@ The safety boundary remains permanent if Vehicle Control is revisited:
 Removing Vehicle Control from P15 v1 reduces the active P15 scope from eleven
 capability areas to ten. Current completion is therefore **7 / 10**.
 
+### Generative Media v1 product contract — GM-0
+
+Generative Media is an **AI-OS Generative Media Orchestrator**, not a
+ComfyUI controller and not a single-provider image-generation feature.
+
+Its job is to turn user intent and references into generated media while
+hiding implementation complexity such as models, LoRAs, workflow graphs,
+samplers, nodes, provider-specific prompt syntax and local runtime setup.
+
+The standing product principles are:
+
+- Local First, but not Local Only.
+- Local availability is based on **Ready**, not merely Installed.
+- ComfyUI is the default local execution engine.
+- Cloud providers are interchangeable through a Provider Registry.
+- No cloud provider or model is hardcoded as the permanent backend.
+- Prompt engineering is an implementation detail, not a user prerequisite.
+- Reference / reverse-prompt analysis should reuse strong OSS components rather
+  than reimplementing mature visual-analysis systems.
+- AI-OS manages local models, LoRAs, nodes and workflows for ordinary users.
+- Cloud generation uses the user's own provider account / credential; AI-OS
+  does not resell generation credits or provide a unified paid quota.
+- Local automatic refinement is controlled by user-selected retry limits.
+- Cloud automatic refinement is controlled by a hard user-defined budget.
+- Provider policy rejection must not trigger an automatic provider switch for
+  the purpose of bypassing that provider's policy.
+- Every provider, model, workflow and dependency remains replaceable.
+
+#### Platform scope — macOS v1, cross-platform-safe architecture
+
+AI-OS v1.0 supports **macOS only**.
+
+Windows, Linux and HarmonyOS are future target platforms. v1.0 must not
+implement, validate or claim production support for those platforms.
+
+The architecture must nevertheless remain safe for future cross-platform
+implementation.
+
+The standing platform rule is:
+
+**Mac-first implementation, cross-platform-safe architecture.**
+
+Shared Generative Media core contracts must not encode macOS-specific
+assumptions that would force a later rewrite for Windows, Linux or HarmonyOS.
+
+Platform-neutral core boundaries include:
+
+- provider contracts
+- media capability contracts
+- `CreativeIntent`
+- `ReferenceSpec`
+- Generation Profile metadata
+- asset identity and provenance
+- workflow identity
+- provider health
+- local-engine state
+- normalized output/result contracts
+- retry / budget policy
+- cancellation semantics
+
+Platform-specific details belong behind platform adapters, including:
+
+- local application discovery
+- application installation
+- local engine launch / stop
+- filesystem paths
+- executable locations
+- OS package format
+- GPU / acceleration detection
+- environment preparation
+- platform process behavior
+- local security / permission handling
+
+The platform model must reserve at least:
+
+- macOS
+- Windows
+- Linux
+- HarmonyOS
+
+Only macOS receives a real v1 implementation.
+
+Windows, Linux and HarmonyOS may have reserved enum values, interfaces,
+capability declarations or explicit unsupported states, but v1 must not contain
+fake implementations that claim those platforms work.
+
+**Architecture-ready is not Product-supported.**
+
+ComfyUI execution over its local API should remain as platform-independent as
+practical. Platform-specific discovery, installation, startup and filesystem
+handling must not leak into the shared ComfyUI Provider contract.
+
+Hardware profiling must also remain platform-neutral.
+
+A common `HardwareProfile` should be able to represent fields such as:
+
+- operating system
+- CPU architecture
+- system memory
+- GPU vendor
+- GPU model
+- GPU memory
+- unified-memory availability
+- acceleration backend
+- supported numeric precision
+- available disk space
+
+The macOS v1 adapter may currently map this to Apple Silicon, Metal / MPS and
+Unified Memory.
+
+Future Windows and Linux adapters may map the same core fields to CUDA, ROCm,
+DirectML or other backends as appropriate.
+
+HarmonyOS implementation details are intentionally not assumed in v1. Only the
+platform boundary is reserved; actual runtime, packaging, hardware acceleration
+and local-model strategy must be determined when HarmonyOS work begins.
+
+Core asset and output contracts must not expose Unix-only absolute-path
+semantics.
+
+Use platform-neutral asset / output location abstractions in shared contracts,
+with the macOS adapter resolving them to actual macOS paths.
+
+#### Local environment state — Ready First
+
+AI-OS must not treat the existence of a ComfyUI application or folder as proof
+that local generation is usable.
+
+The local environment has at least these stable states:
+
+- `not_installed`
+- `installed_not_configured`
+- `installed_broken`
+- `ready`
+
+Transient setup states may include:
+
+- `installing`
+- `configuring`
+- `repairing`
+- `starting`
+- `testing`
+
+A local ComfyUI environment is `ready` only when all requirements needed for
+the requested generation profile have passed:
+
+- ComfyUI exists
+- ComfyUI can start or is already running
+- the local API is reachable
+- the required workflow exists and is compatible
+- required models are present and complete
+- required VAE / text encoders / auxiliary model assets are present
+- required custom nodes are present and version-compatible
+- managed assets pass integrity checks
+- a minimal smoke-generation path succeeds
+- AI-OS can retrieve the produced output file
+
+**Installed is not Ready.**
+
+If local generation is not `ready`, AI-OS must not silently execute against an
+incomplete environment.
+
+#### First-use local / cloud decision
+
+When the requested local environment is `ready`, Local First means AI-OS uses
+it directly unless the user explicitly selected another provider.
+
+When ComfyUI is `not_installed`, the user receives two product-level choices:
+
+1. Set up free local generation.
+2. Use a cloud provider.
+
+When ComfyUI is `installed_not_configured`, the choices are:
+
+1. Complete local setup automatically.
+2. Use a cloud provider.
+
+When ComfyUI is `installed_broken`, the choices are:
+
+1. Repair the local environment automatically.
+2. Use a cloud provider.
+
+The user must not be turned into the ComfyUI administrator.
+
+#### One-click local setup
+
+"Set up local generation" means delivery of a usable generation capability,
+not merely installation of an empty ComfyUI application.
+
+AI-OS owns the setup chain:
+
+1. inspect OS, GPU, VRAM / unified memory, RAM and available disk space
+2. select a compatible Generation Profile
+3. download and install ComfyUI when needed
+4. prepare required model assets
+5. prepare required VAE / encoders / auxiliary assets
+6. prepare only the necessary custom nodes
+7. install a verified workflow
+8. configure all paths and bindings
+9. start the local runtime
+10. run health checks
+11. run a minimal smoke generation
+12. declare the profile `ready` only after output retrieval succeeds
+
+Ordinary users should not need to understand checkpoints, diffusion models,
+LoRAs, VAE, CLIP / text encoders, samplers, schedulers, CFG, steps, custom
+nodes or workflow JSON.
+
+Advanced users may later opt into direct model / workflow control, but this is
+not the default product path.
+
+#### Generation Profile Registry
+
+Local capability is represented by stable user-facing profiles rather than
+specific model names.
+
+Initial profile classes may include:
+
+- `image.general.standard`
+- `image.general.quality`
+- `image.photorealistic`
+- `image.anime`
+- `image.reference`
+- `video.t2v.standard`
+- `video.t2v.quality`
+- `video.i2v.standard`
+- `video.i2v.quality`
+
+A profile manifest owns implementation metadata such as:
+
+- current recommended model
+- precision / quantization
+- asset source
+- checksum
+- license
+- minimum hardware
+- recommended hardware
+- required disk space
+- workflow
+- required nodes
+- capabilities
+- content compatibility
+- last verified version / date
+
+Model names are implementation choices beneath the profile and may change
+without changing the Generative Media product contract.
+
+The selection rule is:
+
+**stable completion on the user's hardware is more important than theoretical
+maximum model quality.**
+
+#### Verified assets and nodes
+
+Automatic installation uses controlled asset provenance.
+
+Preferred asset tiers:
+
+1. AI-OS Verified
+2. Trusted upstream
+3. Community / user-requested
+
+AI-OS Verified assets must have known source, version, checksum, license,
+hardware requirements and tested workflow compatibility.
+
+Trusted upstream assets originate from official model / project publishers and
+must still be validated before managed installation.
+
+Community assets such as Civitai models and LoRAs may be supported when useful,
+but AI-OS must not silently download arbitrary community artifacts without
+provenance and compatibility checks.
+
+Custom nodes follow the same rule through a Verified Node Registry containing
+repository, version / commit, license, dependencies, supported ComfyUI version,
+security / compatibility status and last verification.
+
+Default workflows should prefer ComfyUI core nodes where practical.
+
+Managed profiles are version-pinned by default; AI-OS must not blindly follow
+latest model or node releases and destabilize a working environment.
+
+#### Cloud Provider Registry
+
+Cloud generation uses a replaceable Provider Registry.
+
+Initial provider classes may include:
+
+- xAI
+- OpenAI
+- Google
+- future providers
+
+The currently recommended cloud provider may be xAI Imagine when current
+capability, cost, availability and lawful-content compatibility make it the
+best default, but this is recommendation metadata, not a hardcoded routing
+dependency.
+
+A user who explicitly selects a provider must have that choice respected.
+
+Provider metadata should describe capability rather than fame, including:
+
+- image generation
+- image editing
+- text-to-video
+- image-to-video
+- reference support
+- resolution / duration limits
+- latency
+- price
+- regional availability
+- lawful-content compatibility
+- real-person restrictions
+- health / availability
+- last policy verification
+
+Ordinary users should receive a sensible recommended provider instead of being
+required to research provider moderation systems themselves.
+
+Recommendation metadata may change as providers, policies, prices and model
+capabilities change.
+
+#### Cloud credentials and cost
+
+AI-OS does not provide a unified paid generation balance and does not resell
+cloud generation credits.
+
+Generative Media reuses the user's configured provider identity / credential
+where that credential actually grants media API access.
+
+Before cloud execution AI-OS must validate, as applicable:
+
+- provider credential exists
+- requested media capability exists
+- requested model is available
+- required API entitlement exists
+- billing / quota state permits the request
+
+A chat-model login or configured LLM provider must not be assumed to imply
+media-generation entitlement.
+
+Cloud cost belongs directly to the user's provider account.
+
+#### Cloud budget
+
+Paid automatic generation / refinement is bounded by user-defined budget.
+
+AI-OS should support:
+
+- task budget
+- optional default per-task cloud budget
+
+Before every paid generation or retry, AI-OS must estimate whether the next
+operation fits inside the remaining budget.
+
+If it would exceed the remaining budget, AI-OS stops before issuing the
+request.
+
+Budget protection is proactive, not post-spend reporting.
+
+#### Prompt intelligence
+
+Prompt engineering is not a prerequisite for using Generative Media.
+
+AI-OS first represents the user's goal as a provider-neutral
+`CreativeIntent`, which may include:
+
+- subject
+- scene
+- style
+- composition
+- camera
+- lighting
+- colour
+- mood
+- motion
+- constraints
+- references
+
+A provider / model-specific Prompt Compiler then translates that intent into
+the representation appropriate for the selected local model or cloud provider.
+
+A prompt supplied by an advanced user is accepted, but ordinary users may
+express only the desired result.
+
+#### Reference Analysis / reverse prompting
+
+AI-OS should not reimplement mature reverse-prompt and visual-analysis models
+when strong open-source implementations already exist.
+
+Reference understanding is exposed through a replaceable
+Reference Analysis Adapter Registry.
+
+Initial OSS candidates include classes represented by:
+
+- JoyCaption for diffusion-oriented image caption / prompt reconstruction
+- Florence2-style structured visual analysis / PromptGen
+- Qwen2.5-VL / ShotVL-class video understanding for motion and shot analysis
+
+The exact OSS dependency remains replaceable and must be reviewed for license,
+maintenance, hardware compatibility and integration safety before adoption.
+
+The product-level result is a normalized `ReferenceSpec`, not a promise to
+recover the unknowable original generation prompt.
+
+`ReferenceSpec` may include:
+
+- subject
+- scene
+- composition
+- camera
+- lighting
+- palette
+- style
+- pose
+- objects
+- motion
+- shot structure
+- constraints
+- confidence
+
+Supported user intents include:
+
+- analyze a reference
+- generate something visually similar
+- preserve selected reference characteristics while changing others
+- use provider-native reference conditioning when available
+
+When provider-native reference conditioning is available, AI-OS may combine
+the original reference with the generated prompt / intent rather than relying
+only on textual reconstruction.
+
+#### Local automatic refinement
+
+Local result inspection and automatic refinement may be enabled by the user.
+
+The user controls the maximum local retry count.
+
+Suggested UI choices may include:
+
+- Off
+- 1 retry
+- 2 retries
+- 3 retries
+
+A reasonable initial default is 1 retry, but the setting belongs to the user.
+
+Local retries remain bounded because they consume time, electricity and
+machine resources even when they have no API charge.
+
+#### Cloud automatic refinement
+
+Cloud refinement is budget-controlled rather than merely retry-count
+controlled.
+
+The loop may continue only while:
+
+- the user has enabled paid automatic refinement
+- the next estimated request remains inside the remaining task budget
+- provider policy permits the request
+- retry / time / cancellation limits have not been reached
+
+A provider content-policy rejection must not automatically route the same
+request to another provider to evade that provider's policy.
+
+The user may explicitly choose a different provider afterward.
+
+#### Self-correction / quality loop
+
+Generative Media v1 includes bounded quality inspection.
+
+The intended loop is:
+
+`Generate`
+→ inspect generated result
+→ compare against `CreativeIntent`
+→ identify material mismatch
+→ adjust prompt / parameters / workflow where appropriate
+→ retry within the user's local retry or cloud budget limits
+
+This is a bounded execution loop, not an autonomous unlimited search.
+
+#### Generative Media v1 capability target
+
+The v1 product target includes:
+
+Generation:
+- Text → Image
+- Image Edit
+- Text → Video
+- Image → Video
+
+Reference:
+- Image Analysis
+- Video Analysis
+- Similar Image
+- Similar Video
+- Reference-conditioned generation where the provider supports it
+
+Intelligence:
+- intent interpretation
+- automatic prompt composition
+- provider / model-specific prompt compilation
+- result inspection
+- bounded automatic refinement
+
+Infrastructure:
+- provider discovery
+- local Ready detection
+- one-click install / configure / repair
+- Generation Profile management
+- model / LoRA / node / workflow management
+- cloud Provider Registry
+- budget enforcement
+- cancellation
+- output-file handling
+
+#### Generative Media implementation roadmap
+
+Generative Media is developed in this order:
+
+**GM-0 — Product Contract**
+
+- product boundary
+- platform boundary
+- Ready First state model
+- local / cloud first-use flow
+- profile / asset / provider rules
+- prompt / reference contract
+- retry / budget contract
+
+**GM-1 — Core / Provider Router**
+
+- provider-neutral media capability contract
+- `CreativeIntent`
+- normalized media request / result
+- provider discovery / health
+- Runtime / permission integration
+- replaceable Provider adapters
+- platform-neutral core interfaces
+
+**GM-2 — ComfyUI Ready Detection + Local Provider**
+
+- detect all Ready states, not merely installation
+- platform-neutral ComfyUI execution contract
+- macOS discovery / start implementation
+- ComfyUI health / API execution
+- workflow submission
+- progress
+- cancellation
+- history
+- output retrieval
+- local failure normalization
+
+**GM-3 — One-click Install / Configure / Repair**
+
+- platform-neutral installer interface
+- macOS installer implementation
+- hardware profiling
+- Generation Profile selection
+- ComfyUI installation
+- model / LoRA / asset management
+- verified node management
+- workflow installation
+- automatic repair
+- smoke generation
+- Ready promotion only after successful output
+
+**GM-4 — Cloud Providers**
+
+- xAI provider
+- OpenAI provider
+- additional providers through the same registry
+- provider capability / policy metadata
+- credential reuse
+- price estimation
+- task budget enforcement
+- async result handling
+
+**GM-5 — Prompt Intelligence + OSS Reference Analysis**
+
+- CreativeIntent interpreter
+- provider / model-specific Prompt Compiler
+- Reference Analysis Adapter Registry
+- OSS image / video reference analysis
+- normalized ReferenceSpec
+- similar / reference-conditioned generation
+
+**GM-6 — Self-correction / Quality Loop**
+
+- generated-result inspection
+- intent comparison
+- bounded prompt / workflow refinement
+- user-controlled local retry
+- budget-controlled cloud retry
+- cancellation / time limits
+- no automatic policy-refusal provider bypass
+
+GM phases are implemented in this order unless a later acceptance result proves
+the sequence wrong.
+
+GM-0 is a product-contract phase and does not itself install ComfyUI, download
+models, invoke a cloud provider or add a production media capability.
+
 ### What comes next
 
 1. Local generative media.
@@ -2589,6 +3192,7 @@ Constraints carried into the migration:
 ## Change log
 
 <!-- ./done.sh appends here automatically -->
+- 2026-09-06  Generative Media GM-0 product contract established. AI-OS v1.0 remains macOS-only while shared Generative Media contracts are required to stay cross-platform-safe for future Windows, Linux and HarmonyOS adapters. Generative Media is Local First / Ready First with ComfyUI as the default local execution engine but not a hardcoded product dependency. Local readiness requires a usable API, compatible workflow and assets, integrity checks and successful smoke output rather than mere installation. AI-OS owns one-click install/configure/repair plus model, LoRA, node and workflow management for ordinary users. Cloud generation uses a replaceable Provider Registry and the user's own provider credentials, with current recommendation metadata allowed to prefer xAI while preserving explicit user selection. Prompt engineering is an implementation detail; CreativeIntent and provider-specific Prompt Compilers sit above execution. Reference analysis is adapter-based and should reuse strong OSS rather than reimplement mature reverse-prompt systems. Local refinement follows user retry limits; cloud refinement follows hard user-defined budget. Implementation order is GM-0 Contract -> GM-1 Core Router -> GM-2 ComfyUI Ready/Provider -> GM-3 One-click Setup/Repair -> GM-4 Cloud Providers -> GM-5 Prompt/Reference Intelligence -> GM-6 Quality Loop.
 - 2026-09-06  Vehicle Control v1 feasibility gate completed before implementation. Tesla Fleet API is rejected as a v1 dependency under the zero-cost / zero-owner-admin rule; the official local BLE path was also not selected because its nearby-control subset does not provide enough incremental AI-OS product value over the Tesla app to justify a full Vehicle skill. Vehicle Control is Deferred / out of v1 with no adapter code written. P15 active scope changes from 11 capability areas to 10, so current progress is 7/10. Local Generative Media is next.
 - 2026-09-06  Computer Control v1 formally closed at `f010543`. Final scope: deterministic machine/process reads, application lifecycle, clipboard, output audio, always-confirmed Power, native permission inspection/settings handoff, always-confirmed PID-reuse-safe process termination, and final cross-capability Runtime workflow. Native notification delivery is Deferred / out of v1 after real acceptance exposed developer-side signing/certificate administration outside the owner's product constraints. P15 was 7/11 at Computer Control closure; Vehicle Control was subsequently removed from v1 scope, making the active P15 scope 7/10. Standing admission rule: new capabilities must pass a zero-cost / zero-owner-admin feasibility gate before implementation; paid developer/API dependencies, owner-managed certificates/signing, and specialist OS administration are not acceptable v1 requirements. Vehicle Control subsequently completed that feasibility gate and was Deferred / out of v1 before adapter implementation; Local Generative Media is next.
 - 2026-09-05  Computer Control Phase B: applications, addressed rather than operated. `system.app.list`, `system.app.running`, `system.app.launch` and `system.app.quit`. Nothing in the module sends a keystroke or looks at a window, so starting an application belongs to it and pressing a button inside one does not. THREE defects in this phase were the same mistake wearing different clothes, and that is the lesson worth keeping: each matched an incidental detail instead of what is actually guaranteed. The identifier check listed the ways an input could be BAD -- a slash, a space -- and `Safari浏览器` walked through, having neither. The `mdfind` parser split on a run of four spaces, a width nobody had measured; it now splits on the attribute NAMES, which is the part `mdfind` promises. And the identifier check then required a dot, on the theory that identifiers are reverse-domain names -- until this machine turned out to have an application whose identifier is `MacNetPlayer`, which made a real, launchable application unaddressable. That last one is the instructive one: shape CANNOT tell an identifier from a display name, because `MacNetPlayer` is both shapes at once. The check now establishes only that a value is safe to hand to the platform -- ASCII, no whitespace, no slash, no leading or trailing dot -- and whether anything answers to it is settled by the machine, which `open -b` does by exiting non-zero for an identifier nothing is installed under. All three were caught by their own tests on the gate rather than by review. Two probes were needed for the same reason: the FIRST measured its own bugs on the two questions that mattered most -- an exit status read at the end of a pipeline, so it was `sed`'s and not `open`'s, and an AppleScript with a C-style ternary that failed to compile and said nothing about permission. What they established: `open -b` exits 0 and prints nothing when the application was ALREADY running, so a launch cannot say whether it started anything, and `alreadyRunning` comes from looking before and after; and `quit` REPORTS SUCCESS for an application that is not running at all, so its return value is worth nothing and every outcome is decided by observation instead -- exactly the rule the Office adapters follow when they count documents. Quitting something not running is refused rather than reported as a successful quit. Quit ASKS: an application showing a "save your changes?" sheet is left showing it and reported as still running, because unsaved work is the person's. Listing running applications has two paths: System Events is documented and needs Accessibility, which this machine grants and another will not, while `lsappinfo` needs nothing and is undocumented. Preferring the first and falling back to the second means the capability does not vanish on an ungranted machine, and refusing only when both fail means it never reports an empty desktop that is not empty. The documented permission-free route is `NSWorkspace.runningApplications`, in-process work belonging to Phase D; the contract will not change when the implementation does. Seven of this machine's 499 installed bundles declare no identifier at all -- counted in the warnings rather than listed, because nothing could address them.
