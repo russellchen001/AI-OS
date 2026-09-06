@@ -128,14 +128,7 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "network",
             "Manage downloads through approved download providers including HTTP, FTP, torrents and cloud storage.",
             &[
-                "media.text-to-image",
-            "media.image-edit",
-            "media.text-to-video",
-            "media.image-to-video",
-            "media.reference.image.analyze",
-            "media.reference.video.analyze",
-            "media.reference.generate",
-            "download.start",
+                "download.start",
                 "download.pause",
                 "download.resume",
                 "download.cancel",
@@ -267,6 +260,32 @@ mod tests {
             assert_eq!(skill.executor.kind, "media");
             assert_eq!(skill.executor.handler, "generative-media");
         }
+    }
+
+    #[test]
+    fn generative_media_and_download_capability_boundaries_do_not_overlap() {
+        let media = get_by_id("generative-media").expect("Generative Media skill");
+        let downloads = get_by_id("downloads").expect("Downloads skill");
+
+        assert!(media
+            .capabilities
+            .iter()
+            .all(|capability| capability.starts_with("media.")));
+
+        assert!(downloads
+            .capabilities
+            .iter()
+            .all(|capability| capability.starts_with("download.")));
+
+        assert!(media
+            .capabilities
+            .iter()
+            .all(|capability| !downloads.capabilities.contains(capability)));
+
+        assert!(downloads
+            .capabilities
+            .iter()
+            .all(|capability| !media.capabilities.contains(capability)));
     }
 
     #[test]
