@@ -68,6 +68,13 @@ block2 = "0.6"
 objc2-foundation = "0.3.2"
 objc2-user-notifications = "0.3.2"
 
+# Computer Control Phase D2 reads public macOS permission state through the
+# native frameworks that own those states. It never edits TCC.
+objc2-app-kit = "0.3.2"
+objc2-application-services = "0.3.2"
+objc2-av-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+
 [profile.dev]
 incremental = true
 debug = true

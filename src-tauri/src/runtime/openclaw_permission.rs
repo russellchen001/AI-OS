@@ -77,6 +77,10 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     // Notifications change visible system state, but unlike Power they may
     // be intentionally enabled for Trusted Automation.
     "system.notification.send",
+    // D2 may read public permission state or hand the person to the correct
+    // System Settings pane. It never grants or edits TCC authorization.
+    "system.permission.list",
+    "system.permission.open_settings",
     "system.power.sleep",
     "system.power.restart",
     "system.power.shutdown",

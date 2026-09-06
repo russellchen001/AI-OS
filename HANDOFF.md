@@ -17,7 +17,7 @@
   `system.app.list`, `system.app.running`, `system.app.launch`,
   `system.app.quit`.
 - Computer Control **Phase C is complete**. C1 clipboard, C2 audio, and C3 power are complete.
-- Computer Control **Phase D is in progress**. D1 native notifications are complete; D2 permissions is next.
+- Computer Control **Phase D is complete**. D1 native notifications and D2 permissions are complete.
 - Phase E is not started.
 
 ### Phase B accepted state
@@ -126,11 +126,41 @@ Notification ownership remains narrow: Computer Control can submit one native
 AI-OS notification. Deciding when notification is useful remains Planner work;
 reminders and calendar events remain their own domain capabilities.
 
+D2 permissions are complete:
+
+- `system.permission.list`
+- `system.permission.open_settings`
+- permission state is read through native macOS framework APIs in-process
+- Notifications preserve Apple's not-determined, denied, authorized,
+  provisional, ephemeral, and unknown distinctions
+- Camera and Microphone preserve AVFoundation not-determined, restricted,
+  denied, authorized, and unknown distinctions
+- Accessibility and Screen Recording use Apple's boolean preflight APIs; when
+  false AI-OS reports `notGranted` rather than inventing whether the state is
+  denied or never requested
+- Automation is reported as `unavailable` as a global state because macOS
+  authorization is target-application-specific
+- Full Disk Access is reported as `unavailable` because macOS exposes no public
+  global authorization-status API
+- `system.permission.open_settings` uses native NSWorkspace and a fixed
+  allowlist of System Settings destinations
+- settings handoff is supported for Notifications, Accessibility, Screen
+  Recording, Camera, Microphone, Automation, Calendar, and Full Disk Access
+- D2 never calls permission-request APIs, never modifies TCC, never edits a TCC
+  database, and never clicks an authorization UI
+- no shell, AppleScript, System Events, or Computer Use is used
+- the existing `macos_permissions.rs` Mail/Calendar command remains a legacy
+  domain-specific compatibility surface and is not the Computer Control D2
+  permission authority
+
+Permission ownership remains narrow: Computer Control can observe public
+authorization state and take the person to the correct settings pane. The
+person grants or revokes permission; AI-OS does not make that decision or
+operate the System Settings UI.
+
 ### What comes next
 
-1. Phase D — D1 native notifications complete; next D2 permission state and
-   System Settings handoff.
-2. Phase E — `system.process.terminate` plus the final cross-capability workflow.
+1. Phase E — `system.process.terminate` plus the final cross-capability workflow.
    Destructive process termination remains last.
 3. Then Vehicle Control v1.
 4. Then local generative media.

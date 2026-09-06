@@ -2181,7 +2181,7 @@ type SystemCapabilityRunner =
 fn resolve_system_capability(
     action: &str,
 ) -> Option<(SystemCapabilityRunner, &'static str)> {
-    use crate::system::{apps, audio, clipboard, inspect, notification, power};
+    use crate::system::{apps, audio, clipboard, inspect, notification, permissions, power};
 
     match action {
         "system.storage" => Some((
@@ -2251,6 +2251,14 @@ fn resolve_system_capability(
         "system.notification.send" => Some((
             notification::send_notification,
             "AI-OS submitted a native system notification.",
+        )),
+        "system.permission.list" => Some((
+            permissions::list_permissions,
+            "AI-OS read native system permission state.",
+        )),
+        "system.permission.open_settings" => Some((
+            permissions::open_permission_settings,
+            "AI-OS opened the requested System Settings permission pane.",
         )),
         "system.power.sleep" => Some((
             power::sleep,
