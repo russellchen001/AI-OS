@@ -74,6 +74,9 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     "system.audio.volume.set",
     "system.audio.mute.get",
     "system.audio.mute.set",
+    // Notifications change visible system state, but unlike Power they may
+    // be intentionally enabled for Trusted Automation.
+    "system.notification.send",
     "system.power.sleep",
     "system.power.restart",
     "system.power.shutdown",

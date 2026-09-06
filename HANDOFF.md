@@ -17,7 +17,8 @@
   `system.app.list`, `system.app.running`, `system.app.launch`,
   `system.app.quit`.
 - Computer Control **Phase C is complete**. C1 clipboard, C2 audio, and C3 power are complete.
-- Phases D and E are not started.
+- Computer Control **Phase D is in progress**. D1 native notifications are complete; D2 permissions is next.
+- Phase E is not started.
 
 ### Phase B accepted state
 
@@ -100,10 +101,35 @@ Power ownership remains narrow: Computer Control may request a normal OS sleep,
 restart, or shutdown only after current user confirmation. If macOS refuses,
 AI-OS reports the refusal and does not escalate to a force path.
 
+D1 native notifications are complete:
+
+- `system.notification.send`
+- macOS uses UserNotifications.framework directly in the AI-OS process
+- title is required and bounded to 128 characters
+- body is optional and bounded to 4,096 characters
+- unknown input fields are rejected
+- the native authorization state is read before submission
+- a first explicit send may invoke Apple's own notification authorization
+  prompt only while the state is `notDetermined`
+- denied or unknown authorization fails closed
+- authorized, provisional, and ephemeral states may submit notifications
+- no AppleScript, shell, keyboard event, Notification Center GUI automation,
+  or alternate application-identity shim is used
+- D1 is confirmable through the normal Runtime permission gate; unlike Power,
+  it may intentionally be enabled in Trusted Automation
+- automated acceptance does not post a real notification from a Rust test
+  binary because that would validate the test binary's identity rather than
+  the AI-OS application identity; real app identity is validated in the final
+  Computer Control workflow
+
+Notification ownership remains narrow: Computer Control can submit one native
+AI-OS notification. Deciding when notification is useful remains Planner work;
+reminders and calendar events remain their own domain capabilities.
+
 ### What comes next
 
-1. Phase D — notifications and permissions. These require in-process platform
-   handling rather than copying the Phase B subprocess implementation.
+1. Phase D — D1 native notifications complete; next D2 permission state and
+   System Settings handoff.
 2. Phase E — `system.process.terminate` plus the final cross-capability workflow.
    Destructive process termination remains last.
 3. Then Vehicle Control v1.

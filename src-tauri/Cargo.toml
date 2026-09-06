@@ -60,6 +60,14 @@ lopdf = { version = "0.44", features = ["embed_image"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
 
+# Computer Control Phase D uses Apple's native UserNotifications framework
+# directly inside the AI-OS process. These are platform bindings, not another
+# Agent or GUI-automation layer.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3.2"
+objc2-user-notifications = "0.3.2"
+
 [profile.dev]
 incremental = true
 debug = true

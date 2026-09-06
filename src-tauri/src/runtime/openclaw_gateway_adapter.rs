@@ -2181,7 +2181,7 @@ type SystemCapabilityRunner =
 fn resolve_system_capability(
     action: &str,
 ) -> Option<(SystemCapabilityRunner, &'static str)> {
-    use crate::system::{apps, audio, clipboard, inspect, power};
+    use crate::system::{apps, audio, clipboard, inspect, notification, power};
 
     match action {
         "system.storage" => Some((
@@ -2247,6 +2247,10 @@ fn resolve_system_capability(
         "system.audio.mute.set" => Some((
             audio::set_output_mute,
             "AI-OS set the machine's output mute state.",
+        )),
+        "system.notification.send" => Some((
+            notification::send_notification,
+            "AI-OS submitted a native system notification.",
         )),
         "system.power.sleep" => Some((
             power::sleep,
