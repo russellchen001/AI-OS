@@ -2175,66 +2175,104 @@ fn execute_presentation_convert(
 /// the ONLY place an action name is turned into a system operation, and
 /// `every_declared_system_capability_is_dispatched` asserts it covers the
 /// module's whole list.
+type SystemCapabilityRunner =
+    fn(&Value) -> Result<Value, crate::system::SystemError>;
+
+fn resolve_system_capability(
+    action: &str,
+) -> Option<(SystemCapabilityRunner, &'static str)> {
+    use crate::system::{apps, audio, clipboard, inspect, power};
+
+    match action {
+        "system.storage" => Some((
+            inspect::read_storage,
+            "AI-OS read the machine's storage.",
+        )),
+        "system.cpu" => Some((
+            inspect::read_cpu,
+            "AI-OS read the machine's processor use.",
+        )),
+        "system.memory" => Some((
+            inspect::read_memory,
+            "AI-OS read the machine's memory.",
+        )),
+        "system.network" => Some((
+            inspect::read_network,
+            "AI-OS read the machine's network interfaces.",
+        )),
+        "system.process.list" => Some((
+            inspect::list_processes,
+            "AI-OS listed what is running on the machine.",
+        )),
+        "system.process.info" => Some((
+            inspect::read_process,
+            "AI-OS read one process on the machine.",
+        )),
+        "system.app.list" => Some((
+            apps::list_applications,
+            "AI-OS listed the applications on the machine.",
+        )),
+        "system.app.running" => Some((
+            apps::list_running_applications,
+            "AI-OS listed the applications that are running.",
+        )),
+        "system.app.launch" => Some((
+            apps::launch_application,
+            "AI-OS started the application.",
+        )),
+        "system.app.quit" => Some((
+            apps::quit_application,
+            "AI-OS asked the application to stop.",
+        )),
+        "system.clipboard.read" => Some((
+            clipboard::read_clipboard,
+            "AI-OS read plain text from the clipboard.",
+        )),
+        "system.clipboard.write" => Some((
+            clipboard::write_clipboard,
+            "AI-OS wrote plain text to the clipboard.",
+        )),
+        "system.audio.volume.get" => Some((
+            audio::get_output_volume,
+            "AI-OS read the machine's output volume.",
+        )),
+        "system.audio.volume.set" => Some((
+            audio::set_output_volume,
+            "AI-OS set the machine's output volume.",
+        )),
+        "system.audio.mute.get" => Some((
+            audio::get_output_mute,
+            "AI-OS read the machine's output mute state.",
+        )),
+        "system.audio.mute.set" => Some((
+            audio::set_output_mute,
+            "AI-OS set the machine's output mute state.",
+        )),
+        "system.power.sleep" => Some((
+            power::sleep,
+            "AI-OS requested system sleep.",
+        )),
+        "system.power.restart" => Some((
+            power::restart,
+            "AI-OS requested a normal system restart.",
+        )),
+        "system.power.shutdown" => Some((
+            power::shutdown,
+            "AI-OS requested a normal system shutdown.",
+        )),
+        _ => None,
+    }
+}
+
+/// Run a Computer Control capability, or say this is not one.
+///
+/// Resolution is separate from execution so coverage tests can prove routing
+/// without invoking machine-changing operations.
 fn execute_system_capability(
     request: &OpenClawExecutionRequest,
 ) -> Option<Result<OpenClawExecutionResult, OpenClawExecutionError>> {
-    use crate::system::{apps, audio, clipboard, inspect};
-
-    let (run, summary): (
-        fn(&Value) -> Result<Value, crate::system::SystemError>,
-        &str,
-    ) = match request.action.as_str() {
-        "system.storage" => (inspect::read_storage, "AI-OS read the machine's storage."),
-        "system.cpu" => (inspect::read_cpu, "AI-OS read the machine's processor use."),
-        "system.memory" => (inspect::read_memory, "AI-OS read the machine's memory."),
-        "system.network" => (
-            inspect::read_network,
-            "AI-OS read the machine's network interfaces.",
-        ),
-        "system.process.list" => (
-            inspect::list_processes,
-            "AI-OS listed what is running on the machine.",
-        ),
-        "system.process.info" => (
-            inspect::read_process,
-            "AI-OS read one process on the machine.",
-        ),
-        "system.app.list" => (
-            apps::list_applications,
-            "AI-OS listed the applications on the machine.",
-        ),
-        "system.app.running" => (
-            apps::list_running_applications,
-            "AI-OS listed the applications that are running.",
-        ),
-        "system.app.launch" => (apps::launch_application, "AI-OS started the application."),
-        "system.app.quit" => (apps::quit_application, "AI-OS asked the application to stop."),
-        "system.clipboard.read" => (
-            clipboard::read_clipboard,
-            "AI-OS read plain text from the clipboard.",
-        ),
-        "system.clipboard.write" => (
-            clipboard::write_clipboard,
-            "AI-OS wrote plain text to the clipboard.",
-        ),
-        "system.audio.volume.get" => (
-            audio::get_output_volume,
-            "AI-OS read the machine's output volume.",
-        ),
-        "system.audio.volume.set" => (
-            audio::set_output_volume,
-            "AI-OS set the machine's output volume.",
-        ),
-        "system.audio.mute.get" => (
-            audio::get_output_mute,
-            "AI-OS read the machine's output mute state.",
-        ),
-        "system.audio.mute.set" => (
-            audio::set_output_mute,
-            "AI-OS set the machine's output mute state.",
-        ),
-        _ => return None,
-    };
+    let (run, summary) =
+        resolve_system_capability(request.action.as_str())?;
 
     Some(
         run(&request.input)
@@ -4436,16 +4474,14 @@ mod tests {
     #[test]
     fn every_declared_system_capability_is_dispatched() {
         for capability in crate::system::CAPABILITIES {
-            let dispatched = execute_system_capability(&request(capability, json!({})));
-
             assert!(
-                dispatched.is_some(),
+                resolve_system_capability(capability).is_some(),
                 "{capability} is declared and the dispatcher does not know it"
             );
         }
 
         assert!(
-            execute_system_capability(&request("system.not.a.capability", json!({}))).is_none(),
+            resolve_system_capability("system.not.a.capability").is_none(),
             "the dispatcher answered for something no module declares"
         );
     }

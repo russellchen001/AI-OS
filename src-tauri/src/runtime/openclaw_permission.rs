@@ -74,9 +74,21 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     "system.audio.volume.set",
     "system.audio.mute.get",
     "system.audio.mute.set",
+    "system.power.sleep",
+    "system.power.restart",
+    "system.power.shutdown",
 ];
 
 const APPROVAL_REQUIRED_MESSAGE: &str = "OpenClaw action requires explicit approval.";
+/// These operations can suspend or terminate the person's current session.
+/// Persistent Trusted Automation approval therefore never substitutes for
+/// confirmation attached to the current execution request.
+const ALWAYS_CONFIRM_CAPABILITIES: &[&str] = &[
+    "system.power.sleep",
+    "system.power.restart",
+    "system.power.shutdown",
+];
+
 const PERMISSION_DENIED_MESSAGE: &str = "OpenClaw action is not permitted.";
 const PERMISSION_UNDETERMINED_MESSAGE: &str = "OpenClaw permission could not be determined.";
 
@@ -120,9 +132,19 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
         &self,
         request: &OpenClawExecutionRequest,
     ) -> Result<OpenClawPermissionDecision, OpenClawPermissionCheckError> {
+        let action = request.action.as_str();
+
+        if ALWAYS_CONFIRM_CAPABILITIES.contains(&action) {
+            return Ok(if request.user_confirmed {
+                OpenClawPermissionDecision::Allowed
+            } else {
+                OpenClawPermissionDecision::RequiresApproval
+            });
+        }
+
         Ok(
-            if self.allowed_capabilities.contains(request.action.as_str())
-                || (CONFIRMABLE_CAPABILITIES.contains(&request.action.as_str())
+            if self.allowed_capabilities.contains(action)
+                || (CONFIRMABLE_CAPABILITIES.contains(&action)
                     && request.user_confirmed)
             {
                 OpenClawPermissionDecision::Allowed
@@ -495,6 +517,54 @@ mod tests {
                 .unwrap_err();
             assert!(!error.retryable);
         }
+    }
+
+    #[test]
+    fn power_capabilities_require_current_confirmation_even_when_trusted() {
+        for action in [
+            "system.power.sleep",
+            "system.power.restart",
+            "system.power.shutdown",
+        ] {
+            let gate =
+                ConfiguredCapabilityPermissionGate::new([action.to_owned()]);
+
+            let unconfirmed =
+                OpenClawExecutionRequest::new(
+                    "execution-power-unconfirmed",
+                    action,
+                    json!({}),
+                )
+                .unwrap();
+
+            assert_eq!(
+                gate.authorize(&unconfirmed).unwrap(),
+                OpenClawPermissionDecision::RequiresApproval,
+                "{action} must not inherit Trusted Automation approval"
+            );
+
+            assert_eq!(
+                gate.authorize(
+                    &unconfirmed.with_user_confirmation(true)
+                )
+                .unwrap(),
+                OpenClawPermissionDecision::Allowed,
+                "{action} should run after current user confirmation"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_trusted_automation_behavior_is_unchanged() {
+        let gate =
+            ConfiguredCapabilityPermissionGate::new([
+                "filesystem.scan".to_owned()
+            ]);
+
+        assert_eq!(
+            gate.authorize(&request(json!({}))).unwrap(),
+            OpenClawPermissionDecision::Allowed
+        );
     }
 
     #[test]

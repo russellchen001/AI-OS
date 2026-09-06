@@ -32,6 +32,7 @@ step "Phase A reading"    bash verify/verify_p15_computer_control_phase_a.sh
 step "Phase B applications" bash verify/verify_p15_computer_control_phase_b.sh
 step "Phase C1 clipboard"   bash verify/verify_p15_computer_control_phase_c1.sh
 step "Phase C2 audio"       bash verify/verify_p15_computer_control_phase_c2.sh
+step "Phase C3 power"       bash verify/verify_p15_computer_control_phase_c3.sh
 step "Full Rust tests"    cargo test --manifest-path src-tauri/Cargo.toml
 step "Verifier file modes" bash verify/verify_verifiers_are_executable.sh
 step "Whitespace"         git diff --check

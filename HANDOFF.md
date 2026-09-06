@@ -16,7 +16,7 @@
 - Computer Control **Phase B is complete and committed** (`4ca692f`):
   `system.app.list`, `system.app.running`, `system.app.launch`,
   `system.app.quit`.
-- Computer Control **Phase C is in progress**. C1 clipboard and C2 audio are complete.
+- Computer Control **Phase C is complete**. C1 clipboard, C2 audio, and C3 power are complete.
 - Phases D and E are not started.
 
 ### Phase B accepted state
@@ -78,17 +78,38 @@ system output volume and mute state. Media selection/control, recording,
 speech interpretation and deciding what state is appropriate remain outside
 Computer Control.
 
+C3 power is complete:
+
+- `system.power.sleep`
+- `system.power.restart`
+- `system.power.shutdown`
+- all three require confirmation on the current execution request
+- Trusted Automation cannot bypass Power confirmation
+- unconfirmed Power returns `PermissionRequired`
+- macOS uses normal System Events AppleScript power requests
+- no privilege escalation, forced power path, process kill, GUI click, or
+  keyboard simulation is used
+- Power accepts no force, delay, or other behavior parameters
+- restart/shutdown are deliberately not real-E2E tested because successful
+  execution would terminate the test runner and may interrupt user work
+- acceptance compile-checks the exact AppleScript without executing it
+- System capability discovery is now separated from execution, so generic
+  routing tests cannot accidentally invoke destructive capabilities
+
+Power ownership remains narrow: Computer Control may request a normal OS sleep,
+restart, or shutdown only after current user confirmation. If macOS refuses,
+AI-OS reports the refusal and does not escalate to a force path.
+
 ### What comes next
 
-1. Phase C — C1 clipboard and C2 audio complete; next C3 power.
-2. Phase D — notifications and permissions. These require in-process platform
+1. Phase D — notifications and permissions. These require in-process platform
    handling rather than copying the Phase B subprocess implementation.
-3. Phase E — `system.process.terminate` plus the final cross-capability workflow.
+2. Phase E — `system.process.terminate` plus the final cross-capability workflow.
    Destructive process termination remains last.
-4. Then Vehicle Control v1.
-5. Then local generative media.
-6. Then cognitive distillation foundation.
-7. NAS remains hardware-blocked.
+3. Then Vehicle Control v1.
+4. Then local generative media.
+5. Then cognitive distillation foundation.
+6. NAS remains hardware-blocked.
 
 Computer Control must remain complementary to the other execution layers:
 

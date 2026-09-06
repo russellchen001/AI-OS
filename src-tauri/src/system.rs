@@ -18,6 +18,7 @@ pub(crate) mod apps;
 pub(crate) mod audio;
 pub(crate) mod clipboard;
 pub(crate) mod inspect;
+pub(crate) mod power;
 
 /// Every capability this module answers.
 ///
@@ -42,6 +43,9 @@ pub(crate) const CAPABILITIES: &[&str] = &[
     "system.audio.volume.set",
     "system.audio.mute.get",
     "system.audio.mute.set",
+    "system.power.sleep",
+    "system.power.restart",
+    "system.power.shutdown",
 ];
 
 #[derive(Debug)]
