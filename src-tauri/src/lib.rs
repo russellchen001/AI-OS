@@ -11,6 +11,7 @@ mod download;
 mod email_calendar;
 mod external_connector;
 mod filesystem;
+mod generative_media;
 mod google_workspace;
 mod keychain_trace;
 mod health;
