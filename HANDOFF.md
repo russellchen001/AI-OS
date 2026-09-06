@@ -9,7 +9,7 @@
 
 ### Where it is
 
-- P15 is **6 / 11**. Office is Complete.
+- P15 is **7 / 11**. Office and Computer Control v1 are Complete.
 - Computer Control **Phase A is committed** (`80d1d01`):
   `system.storage`, `system.cpu`, `system.memory`, `system.network`,
   `system.process.list`, `system.process.info`.
@@ -17,8 +17,9 @@
   `system.app.list`, `system.app.running`, `system.app.launch`,
   `system.app.quit`.
 - Computer Control **Phase C is complete**. C1 clipboard, C2 audio, and C3 power are complete.
-- Computer Control **Phase D is complete**. D1 native notifications and D2 permissions are complete.
-- Computer Control **Phase E is in progress**. E1 confirmed process termination is complete; the final cross-capability workflow remains.
+- Computer Control **Phase D is complete for v1**. Native notification delivery is Deferred / out of v1; D2 permission inspection is complete.
+- Computer Control **Phase E is complete**. E1 confirmed process termination and E2 final cross-capability workflow are complete.
+- **Computer Control v1 is Complete.**
 
 ### Phase B accepted state
 
@@ -191,14 +192,97 @@ explicitly identified process after current user confirmation. Selecting which
 process should be terminated, deciding whether termination is appropriate, and
 multi-step recovery remain Planner / OpenClaw work.
 
+### Computer Control v1 scope correction — native notification deferred
+
+This section supersedes the earlier D1 completion record for current v1 scope.
+
+`system.notification.send` is removed from Computer Control v1. Its earlier
+implementation remains historical engineering evidence, but the capability is
+no longer declared, routed, authorisable or part of the v1 acceptance gate.
+
+Real acceptance exposed platform-side developer administration outside the
+owner's accepted product boundary. The correct product decision is to defer
+the capability rather than require the owner to administer that platform
+infrastructure or pay for access.
+
+D2 permission inspection remains in v1.
+
+### Phase E2 final workflow accepted state
+
+Phase E2 adds no new capability.
+
+The final workflow crosses the real permission-enforcing Runtime and Gateway
+for:
+
+- `system.storage`
+- `system.app.running`
+- `system.audio.volume.get`
+- `system.process.info`
+- `system.process.terminate`
+
+It proves unconfirmed `system.power.shutdown` returns `PermissionRequired`
+before destructive execution.
+
+The only process modified by E2 is a disposable `/bin/sleep` child created by
+the verifier. AI-OS reads its PID and `startedAtUnixSeconds`, proves an
+unconfirmed termination leaves it alive, then confirms the exact same process
+identity, observes normal termination and reaps only that verifier-owned child.
+
+E2 does not change clipboard or audio state, open System Settings, execute
+sleep/restart/shutdown or terminate user-owned processes.
+
+Computer Control v1 is Complete with this scope:
+
+- Phase A — machine/process reads
+- Phase B — applications
+- Phase C — clipboard, output audio and always-confirmed Power
+- Phase D — native permission inspection and settings handoff
+- Phase E — always-confirmed process termination and final workflow
+- Native notification delivery — Deferred / out of v1
+
+### Capability admission rule — zero cost / zero owner-admin
+
+Standing rule for P15 and later capability development:
+
+Every new capability must pass a feasibility gate BEFORE implementation.
+
+A v1 path is not admitted when developing or normally using it requires the
+owner to:
+
+- purchase developer membership, API access, API credits, an extra
+  subscription or dedicated paid infrastructure
+- manually manage signing certificates, private keys, provisioning profiles or
+  application-signing identities
+- manually modify Keychain, TCC/security databases or perform specialist
+  operating-system administration
+- maintain developer-only infrastructure an ordinary AI-OS user would not
+  reasonably possess
+
+If such a requirement is discovered later, stop and defer that path instead of
+asking the owner to solve the platform administration.
+
+Normal operating-system APIs remain acceptable when AI-OS can use them without
+imposing that administration on the owner.
+
+This rule applies explicitly to Vehicle Control v1:
+
+- Tesla only
+- feasibility gate BEFORE writing an adapter
+- official and safe interfaces only
+- no reverse-engineered/private Tesla API
+- no vehicle-motion, driving or FSD control
+- paid developer access, paid API use, owner-managed signing/certificates or
+  comparable specialist setup makes that route Deferred
+- free official handoff/integration paths may be used when they satisfy the
+  capability and safety boundary
+
 ### What comes next
 
-1. Phase E — E1 confirmed process termination complete; next and final is the
-   cross-capability workflow.
-2. Then Vehicle Control v1.
-3. Then local generative media.
-4. Then cognitive distillation foundation.
-5. NAS remains hardware-blocked.
+1. Vehicle Control v1 — Tesla only; first run the zero-cost /
+   zero-owner-admin feasibility gate.
+2. Local generative media.
+3. Cognitive distillation foundation.
+4. NAS foundation remains hardware-blocked for real hardware E2E.
 
 Computer Control must remain complementary to the other execution layers:
 

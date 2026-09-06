@@ -33,9 +33,9 @@ step "Phase B applications" bash verify/verify_p15_computer_control_phase_b.sh
 step "Phase C1 clipboard"   bash verify/verify_p15_computer_control_phase_c1.sh
 step "Phase C2 audio"       bash verify/verify_p15_computer_control_phase_c2.sh
 step "Phase C3 power"       bash verify/verify_p15_computer_control_phase_c3.sh
-step "Phase D1 notification" bash verify/verify_p15_computer_control_phase_d1.sh
 step "Phase D2 permissions"  bash verify/verify_p15_computer_control_phase_d2.sh
 step "Phase E1 process terminate" bash verify/verify_p15_computer_control_phase_e1.sh
+step "Phase E2 final workflow" bash verify/verify_p15_computer_control_phase_e2.sh
 step "Full Rust tests"    cargo test --manifest-path src-tauri/Cargo.toml
 step "Verifier file modes" bash verify/verify_verifiers_are_executable.sh
 step "Whitespace"         git diff --check

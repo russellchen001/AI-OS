@@ -3,6 +3,8 @@ mod browser;
 mod claude_code;
 mod commerce_provider;
 mod connections;
+#[cfg(test)]
+mod computer_control_acceptance;
 mod conversations;
 mod document;
 mod download;

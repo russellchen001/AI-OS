@@ -2182,8 +2182,7 @@ fn resolve_system_capability(
     action: &str,
 ) -> Option<(SystemCapabilityRunner, &'static str)> {
     use crate::system::{
-        apps, audio, clipboard, inspect, notification, permissions, power, process_control,
-    };
+        apps, audio, clipboard, inspect, permissions, power, process_control};
 
     match action {
         "system.storage" => Some((
@@ -2253,10 +2252,6 @@ fn resolve_system_capability(
         "system.audio.mute.set" => Some((
             audio::set_output_mute,
             "AI-OS set the machine's output mute state.",
-        )),
-        "system.notification.send" => Some((
-            notification::send_notification,
-            "AI-OS submitted a native system notification.",
         )),
         "system.permission.list" => Some((
             permissions::list_permissions,
