@@ -105,12 +105,37 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "ollama",
         ),
         skill(
+            "generative-media",
+            "Generative Media",
+            "media",
+            "Generate, transform and analyze images and videos through replaceable Local First media providers.",
+            &[
+                "media.text-to-image",
+                "media.image-edit",
+                "media.text-to-video",
+                "media.image-to-video",
+                "media.reference.image.analyze",
+                "media.reference.video.analyze",
+                "media.reference.generate",
+            ],
+            &["media.execute"],
+            "media",
+            "generative-media",
+        ),
+        skill(
             "downloads",
             "Downloads",
             "network",
             "Manage downloads through approved download providers including HTTP, FTP, torrents and cloud storage.",
             &[
-                "download.start",
+                "media.text-to-image",
+            "media.image-edit",
+            "media.text-to-video",
+            "media.image-to-video",
+            "media.reference.image.analyze",
+            "media.reference.video.analyze",
+            "media.reference.generate",
+            "download.start",
                 "download.pause",
                 "download.resume",
                 "download.cancel",
@@ -225,6 +250,26 @@ mod tests {
     }
 
     #[test]
+    fn generative_media_capabilities_resolve_to_media_executor() {
+        for capability in [
+            "media.text-to-image",
+            "media.image-edit",
+            "media.text-to-video",
+            "media.image-to-video",
+            "media.reference.image.analyze",
+            "media.reference.video.analyze",
+            "media.reference.generate",
+        ] {
+            let skill = find_by_capability(capability)
+                .expect("Generative Media capability should resolve");
+
+            assert_eq!(skill.id, "generative-media");
+            assert_eq!(skill.executor.kind, "media");
+            assert_eq!(skill.executor.handler, "generative-media");
+        }
+    }
+
+    #[test]
     fn capability_matching_is_exact() {
         assert!(find_by_capability("filesystem.scan").is_some());
         assert!(find_by_capability("Filesystem.Scan").is_none());
@@ -243,7 +288,7 @@ mod tests {
     fn list_command_returns_canonical_registry() {
         let skills = list_skills();
 
-        assert_eq!(skills.len(), 6);
+        assert_eq!(skills.len(), 7);
 
         assert_eq!(skills[0].id, "document");
         assert_eq!(skills[0].executor.kind, "openclaw");
@@ -257,9 +302,13 @@ mod tests {
         assert_eq!(skills[4].executor.kind, "local");
         assert_eq!(skills[4].executor.handler, "ollama");
 
-        assert_eq!(skills[5].id, "downloads");
-        assert_eq!(skills[5].executor.kind, "openclaw");
-        assert_eq!(skills[5].executor.handler, "downloads");
+        assert_eq!(skills[5].id, "generative-media");
+        assert_eq!(skills[5].executor.kind, "media");
+        assert_eq!(skills[5].executor.handler, "generative-media");
+
+        assert_eq!(skills[6].id, "downloads");
+        assert_eq!(skills[6].executor.kind, "openclaw");
+        assert_eq!(skills[6].executor.handler, "downloads");
     }
 
     #[test]

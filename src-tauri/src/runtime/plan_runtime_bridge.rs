@@ -1,6 +1,7 @@
 use super::{
     executor::{
-        execute_local_model_runtime_task, execute_mcp_runtime_task, execute_runtime_task,
+        execute_generative_media_runtime_task, execute_local_model_runtime_task,
+        execute_mcp_runtime_task, execute_runtime_task,
         OperationEventEmitter, RuntimeExecutionState, RuntimeTaskExecutionRequest,
         RuntimeTaskExecutionResult,
     },
@@ -194,6 +195,18 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
                 Arc::clone(&self.emitter),
                 runtime_request,
             ),
+
+            "media" if handler == "generative-media" => {
+                execute_generative_media_runtime_task(
+                    self.runtime.manager(),
+                    self.runtime.scheduler(),
+                    Arc::clone(&self.emitter),
+                    runtime_request,
+                    Arc::new(
+                        crate::generative_media::registry::MediaProviderRegistry::new(),
+                    ),
+                )
+            }
 
             "mcp" => execute_mcp_runtime_task(
                 self.runtime.manager(),

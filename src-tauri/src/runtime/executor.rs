@@ -280,6 +280,206 @@ pub(crate) struct RuntimeTaskExecutionResult {
     pub output: Option<Value>,
 }
 
+struct GenerativeMediaPreparedOperation {
+    registry: std::sync::Arc<
+        crate::generative_media::registry::MediaProviderRegistry,
+    >,
+    request: crate::generative_media::domain::MediaRequest,
+}
+
+impl PreparedOperation for GenerativeMediaPreparedOperation {
+    fn execute(
+        self: Box<Self>,
+        report: &mut dyn FnMut(RuntimeOperationProgress),
+    ) -> Result<Option<Value>, NormalizedRuntimeError> {
+        let result = crate::generative_media::executor::execute_media_request(
+            self.registry.as_ref(),
+            &self.request,
+            &mut |progress| {
+                report(RuntimeOperationProgress {
+                    phase: progress.phase,
+                    completed_units: progress
+                        .completed_units
+                        .map(|value| u32::try_from(value).unwrap_or(u32::MAX)),
+                    total_units: progress
+                        .total_units
+                        .map(|value| u32::try_from(value).unwrap_or(u32::MAX)),
+                    message: progress.message,
+                });
+            },
+        )
+        .map_err(normalize_media_error)?;
+
+        serde_json::to_value(result)
+            .map(Some)
+            .map_err(|_| NormalizedRuntimeError {
+                code: RuntimeErrorCode::OperationFailed,
+                message: "Generative Media result could not be serialized.".to_owned(),
+                retryable: false,
+            })
+    }
+}
+
+fn normalize_media_error(
+    error: crate::generative_media::domain::MediaError,
+) -> NormalizedRuntimeError {
+    use crate::generative_media::domain::MediaErrorCode;
+
+    let code = match error.code {
+        MediaErrorCode::InvalidRequest | MediaErrorCode::UnsupportedCapability => {
+            RuntimeErrorCode::InvalidRequest
+        }
+        _ => RuntimeErrorCode::OperationFailed,
+    };
+
+    NormalizedRuntimeError {
+        code,
+        message: error.message,
+        retryable: error.retryable,
+    }
+}
+
+fn runtime_media_capability(
+    capability: &str,
+) -> Option<crate::generative_media::domain::MediaCapability> {
+    use crate::generative_media::domain::MediaCapability;
+
+    match capability {
+        "media.text-to-image" => Some(MediaCapability::TextToImage),
+        "media.image-edit" => Some(MediaCapability::ImageEdit),
+        "media.text-to-video" => Some(MediaCapability::TextToVideo),
+        "media.image-to-video" => Some(MediaCapability::ImageToVideo),
+        "media.reference.image.analyze" => {
+            Some(MediaCapability::AnalyzeImageReference)
+        }
+        "media.reference.video.analyze" => {
+            Some(MediaCapability::AnalyzeVideoReference)
+        }
+        "media.reference.generate" => {
+            Some(MediaCapability::ReferenceConditionedGeneration)
+        }
+        _ => None,
+    }
+}
+
+fn runtime_media_request(
+    capability: &str,
+    input: &Value,
+) -> Result<crate::generative_media::domain::MediaRequest, NormalizedRuntimeError> {
+    let capability = runtime_media_capability(capability).ok_or_else(|| {
+        NormalizedRuntimeError {
+            code: RuntimeErrorCode::InvalidRequest,
+            message: "Generative Media capability is not recognized.".to_owned(),
+            retryable: false,
+        }
+    })?;
+
+    let mut value = input.clone();
+
+    let object = value.as_object_mut().ok_or_else(|| NormalizedRuntimeError {
+        code: RuntimeErrorCode::InvalidRequest,
+        message: "Generative Media input must be an object.".to_owned(),
+        retryable: false,
+    })?;
+
+    object.insert(
+        "capability".to_owned(),
+        serde_json::to_value(capability)
+            .expect("MediaCapability serialization is infallible"),
+    );
+
+    serde_json::from_value(value).map_err(|_| NormalizedRuntimeError {
+        code: RuntimeErrorCode::InvalidRequest,
+        message: "Generative Media request does not match the canonical media contract."
+            .to_owned(),
+        retryable: false,
+    })
+}
+
+pub(crate) fn execute_generative_media_runtime_task(
+    manager: Arc<RuntimeOperationManager>,
+    scheduler: RuntimeScheduler,
+    emitter: Arc<dyn OperationEventEmitter>,
+    request: RuntimeTaskExecutionRequest,
+    registry: Arc<crate::generative_media::registry::MediaProviderRegistry>,
+) -> Result<RuntimeTaskExecutionResult, NormalizedRuntimeError> {
+    let request = request.validate()?;
+    let media_request =
+        runtime_media_request(&request.capability, &request.input)?;
+
+    let admission = manager.admit_identified_operation(
+        &request.operation_id,
+        "generative-media",
+        super::models::RuntimeOperationAction::Execute,
+        false,
+    )?;
+
+    let operation = match admission {
+        RuntimeOperationAdmission::Accepted { operation } => operation,
+        RuntimeOperationAdmission::Conflict { .. } => {
+            return Err(NormalizedRuntimeError {
+                code: RuntimeErrorCode::OperationConflict,
+                message: "A Generative Media operation with this identifier already exists."
+                    .to_owned(),
+                retryable: false,
+            })
+        }
+        RuntimeOperationAdmission::Rejected { error } => return Err(error),
+    };
+
+    emit_best_effort(emitter.as_ref(), operation);
+
+    let prepared: Box<dyn PreparedOperation> =
+        Box::new(GenerativeMediaPreparedOperation {
+            registry,
+            request: media_request,
+        });
+
+    let operation_id = request.operation_id.clone();
+    let task_manager = Arc::clone(&manager);
+    let task_emitter = Arc::clone(&emitter);
+    let (result_sender, result_receiver) = mpsc::sync_channel(1);
+
+    let task = Box::new(move || {
+        let result = run_supervised_prepared_operation(
+            task_manager,
+            operation_id,
+            task_emitter,
+            prepared,
+            None,
+        );
+
+        let _ = result_sender.send(result);
+    });
+
+    let scheduled = catch_unwind(AssertUnwindSafe(|| scheduler.enqueue(task)))
+        .ok()
+        .and_then(Result::ok)
+        .is_some();
+
+    if !scheduled {
+        let error = operation_task_failed();
+
+        let _ = fail_operation(
+            manager.as_ref(),
+            &request.operation_id,
+            error.clone(),
+            emitter.as_ref(),
+        );
+
+        return Err(error);
+    }
+
+    let output = result_receiver
+        .recv()
+        .map_err(|_| operation_task_failed())??;
+
+    Ok(RuntimeTaskExecutionResult {
+        operation_id: request.operation_id,
+        output,
+    })
+}
+
 pub(crate) fn execute_runtime_task(
     manager: Arc<RuntimeOperationManager>,
     scheduler: RuntimeScheduler,
