@@ -800,6 +800,139 @@ pub(crate) fn select_usable_desktop_installation() -> Result<ComfyUiMacOsInstall
         .ok_or_else(|| "No usable local ComfyUI installation was found".to_owned())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComfyUiMacOsExecutionValidationReport {
+    pub instance_id: String,
+    pub profile_id: String,
+    pub evidence: crate::generative_media::provider::LocalMediaReadinessEvidence,
+    pub smoke_generation_checked: bool,
+    pub output_retrieval_checked: bool,
+    pub cancellation_ok: bool,
+    pub output: crate::generative_media::comfyui_execution::ComfyUiExecutionOutput,
+    pub validation_path: PathBuf,
+}
+
+impl ComfyUiMacOsExecutionValidationReport {
+    pub(crate) fn readiness(&self) -> crate::generative_media::provider::LocalMediaReadiness {
+        self.evidence.classify()
+    }
+}
+
+pub(crate) fn validate_managed_profile_execution(
+    startup_timeout: std::time::Duration,
+) -> Result<ComfyUiMacOsExecutionValidationReport, String> {
+    use crate::generative_media::{
+        comfyui_execution::{persist_execution_validation, run_execution_validation},
+        comfyui_profile::{
+            probe_core_text_to_image_profile, ManagedProfileManifest, CORE_TEXT_TO_IMAGE_PROFILE_ID,
+        },
+        provider::LocalMediaReadiness,
+    };
+
+    let installation = select_usable_desktop_installation()?;
+
+    let mut backend = start_comfyui_backend_and_wait(&installation, startup_timeout)?;
+
+    let result = (|| {
+        let model_root = resolve_desktop_model_root(&installation.instance_id)?
+            .ok_or_else(|| "Comfy Desktop models root is not configured".to_owned())?;
+
+        let manifest_path = managed_profile_manifest_path()?;
+
+        let profile =
+            probe_core_text_to_image_profile(&backend.endpoint, Some(&model_root), &manifest_path)?;
+
+        if !profile.workflow_ready {
+            return Err("Managed ComfyUI workflow is not ready for execution".to_owned());
+        }
+
+        if !profile.required_assets_ready {
+            return Err("Managed ComfyUI checkpoint is not ready for execution".to_owned());
+        }
+
+        if !profile.custom_nodes_ready {
+            return Err("Required ComfyUI nodes are not ready for execution".to_owned());
+        }
+
+        if !profile.integrity_ok {
+            return Err("Managed ComfyUI profile failed integrity before execution".to_owned());
+        }
+
+        let manifest_bytes = fs::read(&manifest_path)
+            .map_err(|_| "Managed ComfyUI profile manifest could not be read".to_owned())?;
+
+        let manifest: ManagedProfileManifest = serde_json::from_slice(&manifest_bytes)
+            .map_err(|_| "Managed ComfyUI profile manifest is invalid".to_owned())?;
+
+        if manifest.profile_id != CORE_TEXT_TO_IMAGE_PROFILE_ID {
+            return Err("Managed ComfyUI profile identity changed before execution".to_owned());
+        }
+
+        let checkpoint = manifest
+            .checkpoint
+            .relative_path
+            .strip_prefix("checkpoints/")
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "Managed checkpoint path cannot be used by CheckpointLoaderSimple".to_owned()
+            })?;
+
+        let probe = run_execution_validation(&backend.endpoint, checkpoint)?;
+
+        if !probe.cancellation_ok {
+            return Err("Managed ComfyUI cancellation validation failed".to_owned());
+        }
+
+        if !probe.smoke_generation_ok {
+            return Err("Managed ComfyUI smoke generation validation failed".to_owned());
+        }
+
+        if !probe.output_retrieval_ok {
+            return Err("Managed ComfyUI output retrieval validation failed".to_owned());
+        }
+
+        let base = runtime_readiness_report(
+            Some(installation.instance_id.clone()),
+            true,
+            true,
+            true,
+            None,
+        );
+
+        let mut evidence = profile.apply_to_evidence(&base.evidence);
+
+        evidence.smoke_generation_ok = true;
+        evidence.output_retrieval_ok = true;
+
+        if evidence.classify() != LocalMediaReadiness::Ready {
+            return Err("Complete ComfyUI execution evidence did not classify Ready".to_owned());
+        }
+
+        let validation_path = persist_execution_validation(
+            &manifest_path,
+            &manifest.profile_id,
+            manifest.profile_version,
+            &manifest.checkpoint.sha256,
+            &probe,
+        )?;
+
+        Ok(ComfyUiMacOsExecutionValidationReport {
+            instance_id: installation.instance_id.clone(),
+            profile_id: manifest.profile_id,
+            evidence,
+            smoke_generation_checked: true,
+            output_retrieval_checked: true,
+            cancellation_ok: probe.cancellation_ok,
+            output: probe.output,
+            validation_path,
+        })
+    })();
+
+    backend.stop();
+
+    result
+}
+
 #[cfg(test)]
 mod profile_readiness_tests {
     use super::*;

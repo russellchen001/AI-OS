@@ -1,4 +1,5 @@
 pub(crate) mod comfyui;
+pub(crate) mod comfyui_execution;
 #[cfg(target_os = "macos")]
 pub(crate) mod comfyui_macos;
 pub(crate) mod comfyui_profile;

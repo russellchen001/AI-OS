@@ -6193,3 +6193,141 @@ Only real execution and retrieved output may satisfy the remaining Ready First
 evidence. After GM-2C, GM-2 Final Provider Integration can register the local
 ComfyUI provider only when the entire Ready contract passes.
 - 2026-09-07 22:39  P15 GM-3 One-click Setup Repair complete
+
+### GM-2C — Execution — Completed
+
+GM-2C adds the first real local ComfyUI generation, cancellation and output
+retrieval evidence on top of the managed profile configured by GM-3.
+
+Real execution path:
+
+`POST /prompt -> queue/running -> history -> SaveImage -> GET /view`
+
+Real cancellation path:
+
+`running prompt -> POST /interrupt -> leaves execution queue`
+
+Technical decisions:
+
+- Local execution continues to use the direct ComfyUI Local API.
+- `comfy-cli` remains optional management infrastructure and is not required
+  for generation.
+- `comfyui-mcp` remains outside the core execution path.
+- GM-2C uses bounded HTTP polling for v1 rather than making WebSocket a hard
+  execution dependency.
+- `/prompt` must return a real non-empty prompt ID.
+- Execution history has a hard deadline and fails closed on malformed,
+  failed, interrupted, incomplete or output-less results.
+- Successful history is not sufficient by itself. AI-OS must locate a real
+  image produced by `SaveImage`.
+- Output retrieval is verified through ComfyUI `/view`; a filename in history
+  is not treated as proof that usable output exists.
+- `/view` parameters are encoded through the existing `url` crate. No
+  additional reqwest query feature is required.
+- Retrieved image bytes are bounded and must have a supported PNG, JPEG or
+  WebP signature.
+- Running-job cancellation is validated through `/interrupt`.
+- Cancellation acceptance executes only against the isolated backend started
+  and owned by AI-OS for that operation.
+- Smoke generation uses the same GM-2B workflow contract and GM-3 managed
+  checkpoint rather than a hidden test-only model.
+- The smoke workload is intentionally small; it validates execution and output
+  retrieval, not image quality.
+- Successful execution evidence is persisted atomically in an AI-OS-owned
+  profile execution-validation record tied to profile version, checkpoint
+  SHA-256, execution-contract version and observed ComfyUI version.
+- GM-2C proves complete Ready evidence for this execution report but does not
+  yet register the production MediaProvider. Registry ownership remains
+  GM-2 Final Provider Integration.
+
+Real-machine acceptance:
+
+- workflow ready = true
+- required assets ready = true
+- custom nodes ready = true
+- integrity = true
+- real `/prompt` submission = passed
+- running queue observation = passed
+- real `/interrupt` cancellation = passed
+- real smoke generation = passed
+- real history completion = passed
+- SaveImage metadata = passed
+- real `/view` retrieval = passed
+- non-empty valid image bytes = passed
+- smoke generation checked = true
+- smoke generation ok = true
+- output retrieval checked = true
+- output retrieval ok = true
+- complete GM-2C execution report = `Ready`
+
+Final acceptance:
+
+`verify/verify_p15_gm_2c_execution.sh`
+
+Next milestone:
+
+**GM-2 Final — Provider Integration**
+
+GM-2 Final must consume durable GM-2C execution evidence only while it still
+matches the managed profile, checkpoint, execution contract and relevant
+ComfyUI runtime identity.
+
+It must then register local ComfyUI only when the complete Ready First contract
+passes and prove the production path:
+
+`media.text-to-image -> Runtime -> MediaRouter -> MediaProvider -> ComfyUI`
+
+The production result must return a normalized local image asset and preserve
+Local First with no silent cloud fallback.
+
+### GM-2C closeout — Core / External verification boundary corrected
+
+The GM-2C product implementation and its real ComfyUI acceptance passed before
+the repository-wide gate exposed an unrelated verification-infrastructure
+regression.
+
+Observed accepted GM-2C evidence:
+
+- real `/prompt` submission: passed
+- real running queue observation: passed
+- real `/interrupt`: passed
+- retrieved output bytes: 39637
+- output MIME: `image/png`
+- smoke generation: true
+- output retrieval: true
+- complete execution validation: `Ready`
+
+The later `done.sh` failure was not a Generative Media failure. Pages and
+PowerPoint returned AppleEvent timeout `-1712` while unrelated Office verifiers
+were incorrectly still classified as Core.
+
+Verification boundary correction:
+
+- Core verification remains deterministic and does not drive mutable external
+  Office/iWork GUI application state.
+- Pages Core now contains only path/parser contracts.
+- Numbers Core now contains only path/grid/parser contracts.
+- PowerPoint Core now contains only bounded validation, routing and permission
+  contracts.
+- Office Conversion Core now contains only conversion semantics and routing
+  contracts.
+- Real Pages, Numbers, PowerPoint and cross-suite conversion tests have explicit
+  `*_real_e2e.sh` wrappers and are classified by root `verify_all.sh` as
+  External E2E.
+- Existing iWork availability and Keynote Presentation real E2E probes now
+  treat unavailable or temporarily unresponsive AppleEvent automation as
+  External `SKIP`.
+- External AppleEvent timeout `-1712` is environment unavailability and is
+  reported as `SKIP`.
+- Once the real application environment is usable, assertion/capability
+  failures remain `FAIL`; the wrappers do not convert arbitrary failures into
+  skips.
+- This correction does not weaken GM-2C acceptance and does not modify the
+  Generative Media execution implementation.
+
+The standing rule remains:
+
+`deterministic product contract -> Core`
+
+`mutable real application/account environment -> External E2E`
+- 2026-09-08 00:40  P15 GM-2C ComfyUI Execution complete
