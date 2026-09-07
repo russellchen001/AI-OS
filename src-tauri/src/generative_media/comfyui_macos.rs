@@ -548,3 +548,286 @@ mod final_readiness_tests {
         );
     }
 }
+
+// GM-2B profile-aware readiness.
+//
+// HTTP/workflow/model semantics remain in the platform-neutral ComfyUI profile
+// module. This adapter only resolves Comfy Desktop filesystem state and owns
+// the local backend lifecycle.
+fn parse_desktop_model_base_path(contents: &str) -> Option<PathBuf> {
+    contents.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("base_path:")?.trim();
+
+        let value = value
+            .strip_prefix('\'')
+            .and_then(|value| value.strip_suffix('\''))
+            .or_else(|| {
+                value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+            })
+            .unwrap_or(value);
+
+        (!value.is_empty()).then(|| PathBuf::from(value))
+    })
+}
+
+fn resolve_desktop_model_root(instance_id: &str) -> Result<Option<PathBuf>, String> {
+    if instance_id.is_empty()
+        || !instance_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("ComfyUI instance id is invalid".to_owned());
+    }
+
+    let home = dirs::home_dir().ok_or_else(|| "Home directory is unavailable".to_owned())?;
+
+    let config = home
+        .join("Library/Application Support/Comfy Desktop/instance-model-paths")
+        .join(format!("{instance_id}.yaml"));
+
+    if !config.is_file() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&config)
+        .map_err(|_| "Unable to read Comfy Desktop model-path configuration".to_owned())?;
+
+    Ok(parse_desktop_model_base_path(&contents))
+}
+
+fn managed_profile_manifest_path() -> Result<PathBuf, String> {
+    let data_root =
+        dirs::data_dir().ok_or_else(|| "Application data directory is unavailable".to_owned())?;
+
+    Ok(data_root
+        .join("AI-OS")
+        .join("generative-media")
+        .join("comfyui")
+        .join("profiles")
+        .join(format!(
+            "{}.json",
+            crate::generative_media::comfyui_profile::CORE_TEXT_TO_IMAGE_PROFILE_ID
+        )))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComfyUiMacOsProfileReadinessReport {
+    pub instance_id: Option<String>,
+    pub profile_id: String,
+    pub evidence: crate::generative_media::provider::LocalMediaReadinessEvidence,
+    pub diagnostics: Vec<String>,
+}
+
+impl ComfyUiMacOsProfileReadinessReport {
+    pub(crate) fn readiness(&self) -> crate::generative_media::provider::LocalMediaReadiness {
+        self.evidence.classify()
+    }
+}
+
+fn empty_profile_readiness_report(
+    instance_id: Option<String>,
+    engine_installed: bool,
+    engine_startable: bool,
+    api_reachable: bool,
+    diagnostic: Option<&str>,
+) -> ComfyUiMacOsProfileReadinessReport {
+    let base = runtime_readiness_report(
+        instance_id.clone(),
+        engine_installed,
+        engine_startable,
+        api_reachable,
+        None,
+    );
+
+    ComfyUiMacOsProfileReadinessReport {
+        instance_id,
+        profile_id: crate::generative_media::comfyui_profile::CORE_TEXT_TO_IMAGE_PROFILE_ID
+            .to_owned(),
+        evidence: base.evidence,
+        diagnostics: diagnostic.into_iter().map(str::to_owned).collect(),
+    }
+}
+
+pub(crate) fn probe_comfyui_installation_profile_readiness(
+    installation: &ComfyUiMacOsInstallation,
+    timeout: std::time::Duration,
+) -> ComfyUiMacOsProfileReadinessReport {
+    if !installation.python_present || !installation.main_py_present {
+        return empty_profile_readiness_report(
+            Some(installation.instance_id.clone()),
+            true,
+            false,
+            false,
+            Some("runtime-incomplete"),
+        );
+    }
+
+    let mut backend = match start_comfyui_backend_and_wait(installation, timeout) {
+        Ok(backend) => backend,
+        Err(_) => {
+            return empty_profile_readiness_report(
+                Some(installation.instance_id.clone()),
+                true,
+                false,
+                false,
+                Some("backend-start-failed"),
+            );
+        }
+    };
+
+    let base = runtime_readiness_report(
+        Some(installation.instance_id.clone()),
+        true,
+        true,
+        true,
+        None,
+    );
+
+    let model_root = match resolve_desktop_model_root(&installation.instance_id) {
+        Ok(root) => root,
+        Err(_) => {
+            backend.stop();
+
+            return empty_profile_readiness_report(
+                Some(installation.instance_id.clone()),
+                true,
+                true,
+                true,
+                Some("desktop-model-root-invalid"),
+            );
+        }
+    };
+
+    let manifest_path = match managed_profile_manifest_path() {
+        Ok(path) => path,
+        Err(_) => {
+            backend.stop();
+
+            return empty_profile_readiness_report(
+                Some(installation.instance_id.clone()),
+                true,
+                true,
+                true,
+                Some("managed-profile-location-unavailable"),
+            );
+        }
+    };
+
+    let profile = crate::generative_media::comfyui_profile::probe_core_text_to_image_profile(
+        &backend.endpoint,
+        model_root.as_deref(),
+        &manifest_path,
+    );
+
+    backend.stop();
+
+    match profile {
+        Ok(profile) => ComfyUiMacOsProfileReadinessReport {
+            instance_id: Some(installation.instance_id.clone()),
+            profile_id: profile.profile_id.clone(),
+            evidence: profile.apply_to_evidence(&base.evidence),
+            diagnostics: profile.diagnostics,
+        },
+        Err(_) => empty_profile_readiness_report(
+            Some(installation.instance_id.clone()),
+            true,
+            true,
+            true,
+            Some("profile-probe-failed"),
+        ),
+    }
+}
+
+pub(crate) fn probe_desktop_profile_readiness(
+    timeout: std::time::Duration,
+) -> Result<Vec<ComfyUiMacOsProfileReadinessReport>, String> {
+    let installations = discover_desktop_installations()?;
+
+    if installations.is_empty() {
+        return Ok(vec![empty_profile_readiness_report(
+            None,
+            false,
+            false,
+            false,
+            Some("engine-not-installed"),
+        )]);
+    }
+
+    Ok(installations
+        .iter()
+        .map(|installation| probe_comfyui_installation_profile_readiness(installation, timeout))
+        .collect())
+}
+
+#[cfg(test)]
+mod profile_readiness_tests {
+    use super::*;
+    use crate::generative_media::provider::LocalMediaReadiness;
+
+    #[test]
+    fn desktop_model_root_parser_reads_generated_yaml() {
+        let contents = r#"
+comfy.desktop_0:
+  base_path: '/Users/example/ComfyUI-Shared/models'
+  is_default: true
+  'checkpoints': 'checkpoints/'
+"#;
+
+        assert_eq!(
+            parse_desktop_model_base_path(contents),
+            Some(PathBuf::from("/Users/example/ComfyUI-Shared/models"))
+        );
+    }
+
+    #[test]
+    fn desktop_model_root_parser_refuses_missing_base_path() {
+        let contents = "comfy.desktop_0:\n  is_default: true\n";
+        assert_eq!(parse_desktop_model_base_path(contents), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "starts a real local ComfyUI backend"]
+    fn live_desktop_profile_readiness_reflects_real_inventory() {
+        let reports = probe_desktop_profile_readiness(std::time::Duration::from_secs(150))
+            .expect("real Comfy Desktop profile readiness probe");
+
+        let report = reports
+            .iter()
+            .find(|report| {
+                report.instance_id.is_some()
+                    && report.evidence.engine_installed
+                    && report.evidence.engine_startable
+                    && report.evidence.api_reachable
+            })
+            .expect("expected a healthy installed local ComfyUI runtime");
+
+        assert_eq!(
+            report.profile_id,
+            crate::generative_media::comfyui_profile::CORE_TEXT_TO_IMAGE_PROFILE_ID
+        );
+
+        assert!(report.evidence.workflow_ready);
+        assert!(report.evidence.custom_nodes_ready);
+
+        // GM-2B intentionally does not perform generation or output retrieval.
+        assert!(!report.evidence.smoke_generation_ok);
+        assert!(!report.evidence.output_retrieval_ok);
+        assert_ne!(report.readiness(), LocalMediaReadiness::Ready);
+
+        eprintln!(
+            "LIVE_PROFILE_READINESS instance={} profile={} state={:?} workflow={} assets={} custom_nodes={} integrity={} smoke={} output={} ready=false",
+            report.instance_id.as_deref().unwrap_or("none"),
+            report.profile_id,
+            report.readiness(),
+            report.evidence.workflow_ready,
+            report.evidence.required_assets_ready,
+            report.evidence.custom_nodes_ready,
+            report.evidence.integrity_ok,
+            report.evidence.smoke_generation_ok,
+            report.evidence.output_retrieval_ok,
+        );
+    }
+}

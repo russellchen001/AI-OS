@@ -6041,3 +6041,76 @@ Technical decision:
 - Once an External E2E environment is usable, genuine capability/assertion failures remain `FAIL`.
 - `done.sh` therefore continues to gate on real product failures without allowing unrelated account expiry or GUI automation availability to invalidate an unrelated feature checkpoint.
 - 2026-09-07 19:36  P15 GM-2A Local ComfyUI Ready Detection complete
+
+### GM-2B — Workflow / Model / Node Readiness — Completed
+
+GM-2B adds profile-aware readiness on top of the healthy local ComfyUI
+runtime established by GM-2A.
+
+First managed local profile:
+
+`comfyui-checkpoint-t2i-v1`
+
+Technical decisions:
+
+- AI-OS owns the first API-format text-to-image workflow rather than requiring
+  an ordinary user to create or save a ComfyUI workflow JSON manually.
+- The first profile deliberately uses only ComfyUI core nodes:
+  `CheckpointLoaderSimple`, `CLIPTextEncode`, `EmptyLatentImage`, `KSampler`,
+  `VAEDecode`, and `SaveImage`.
+- Therefore the first profile requires no custom nodes. Custom-node support
+  remains part of the profile contract for future profiles rather than a
+  prerequisite for the simplest local generation path.
+- `/object_info` is the runtime authority for workflow node/input compatibility
+  and checkpoint advertisement. Source-code presence alone is not readiness.
+- A model becomes an AI-OS managed asset only through a profile manifest.
+  The manifest pins profile ID/version, checkpoint path, byte size and SHA-256.
+- Managed checkpoint paths are relative to the ComfyUI models root, must stay
+  under `checkpoints/`, cannot traverse outside that root, and symlinks are
+  refused for the managed profile.
+- A checkpoint that exists on disk but is not advertised by the running ComfyUI
+  instance is not considered usable.
+- A checkpoint whose size or SHA-256 differs from the managed manifest fails
+  integrity and cannot contribute to Ready.
+- Arbitrary user-downloaded models are not silently promoted to trusted managed
+  assets merely because ComfyUI can see them.
+- Platform-neutral workflow/model/node/integrity logic lives in
+  `generative_media/comfyui_profile.rs`.
+- macOS-specific Comfy Desktop model-path discovery and backend lifecycle remain
+  isolated in `generative_media/comfyui_macos.rs`.
+
+Real-machine acceptance:
+
+- ComfyUI installation: present
+- backend start: passed
+- Local API: passed
+- first profile workflow compatibility: passed
+- required core nodes: passed
+- custom-node requirement: passed; this profile requires none
+- current shared model inventory: no usable managed checkpoint
+- managed profile manifest: not installed yet
+- asset readiness: false
+- integrity readiness: false
+- smoke generation: intentionally not performed in GM-2B
+- output retrieval: intentionally not performed in GM-2B
+- final state remains `InstalledNotConfigured`; GM-2B does not fabricate Ready
+
+Final acceptance:
+
+`verify/verify_p15_gm_2b_profile_readiness.sh`
+
+Roadmap adjustment from real-machine evidence:
+
+The acceptance Mac currently has no generation model or managed profile asset.
+A real GM-2C `/prompt` execution acceptance therefore cannot be completed
+without first configuring a profile. Installation/configuration/repair belongs
+to GM-3, not GM-2C.
+
+The execution order is therefore:
+
+`GM-2B -> GM-3 One-click Setup/Repair -> GM-2C Execution -> GM-2 Final Provider Integration`
+
+This is an ownership-preserving reorder, not a scope expansion. GM-3 must make
+the managed profile usable; GM-2C must then prove real prompt submission,
+progress/history/cancellation and output retrieval against that profile.
+- 2026-09-07 20:53  P15 GM-2B Workflow Model Node Readiness complete
