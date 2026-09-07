@@ -572,7 +572,7 @@ fn parse_desktop_model_base_path(contents: &str) -> Option<PathBuf> {
     })
 }
 
-fn resolve_desktop_model_root(instance_id: &str) -> Result<Option<PathBuf>, String> {
+pub(crate) fn resolve_desktop_model_root(instance_id: &str) -> Result<Option<PathBuf>, String> {
     if instance_id.is_empty()
         || !instance_id
             .chars()
@@ -597,7 +597,7 @@ fn resolve_desktop_model_root(instance_id: &str) -> Result<Option<PathBuf>, Stri
     Ok(parse_desktop_model_base_path(&contents))
 }
 
-fn managed_profile_manifest_path() -> Result<PathBuf, String> {
+pub(crate) fn managed_profile_manifest_path() -> Result<PathBuf, String> {
     let data_root =
         dirs::data_dir().ok_or_else(|| "Application data directory is unavailable".to_owned())?;
 
@@ -617,11 +617,35 @@ pub(crate) struct ComfyUiMacOsProfileReadinessReport {
     pub instance_id: Option<String>,
     pub profile_id: String,
     pub evidence: crate::generative_media::provider::LocalMediaReadinessEvidence,
+    pub smoke_generation_checked: bool,
+    pub output_retrieval_checked: bool,
     pub diagnostics: Vec<String>,
 }
 
 impl ComfyUiMacOsProfileReadinessReport {
     pub(crate) fn readiness(&self) -> crate::generative_media::provider::LocalMediaReadiness {
+        use crate::generative_media::provider::LocalMediaReadiness;
+
+        if self.smoke_generation_checked && !self.evidence.smoke_generation_ok {
+            return LocalMediaReadiness::InstalledBroken;
+        }
+
+        if self.output_retrieval_checked && !self.evidence.output_retrieval_ok {
+            return LocalMediaReadiness::InstalledBroken;
+        }
+
+        let configured = self.evidence.engine_installed
+            && self.evidence.engine_startable
+            && self.evidence.api_reachable
+            && self.evidence.workflow_ready
+            && self.evidence.required_assets_ready
+            && self.evidence.custom_nodes_ready
+            && self.evidence.integrity_ok;
+
+        if configured && (!self.smoke_generation_checked || !self.output_retrieval_checked) {
+            return LocalMediaReadiness::InstalledNotConfigured;
+        }
+
         self.evidence.classify()
     }
 }
@@ -646,6 +670,8 @@ fn empty_profile_readiness_report(
         profile_id: crate::generative_media::comfyui_profile::CORE_TEXT_TO_IMAGE_PROFILE_ID
             .to_owned(),
         evidence: base.evidence,
+        smoke_generation_checked: false,
+        output_retrieval_checked: false,
         diagnostics: diagnostic.into_iter().map(str::to_owned).collect(),
     }
 }
@@ -728,6 +754,8 @@ pub(crate) fn probe_comfyui_installation_profile_readiness(
             instance_id: Some(installation.instance_id.clone()),
             profile_id: profile.profile_id.clone(),
             evidence: profile.apply_to_evidence(&base.evidence),
+            smoke_generation_checked: false,
+            output_retrieval_checked: false,
             diagnostics: profile.diagnostics,
         },
         Err(_) => empty_profile_readiness_report(
@@ -759,6 +787,17 @@ pub(crate) fn probe_desktop_profile_readiness(
         .iter()
         .map(|installation| probe_comfyui_installation_profile_readiness(installation, timeout))
         .collect())
+}
+
+pub(crate) fn select_usable_desktop_installation() -> Result<ComfyUiMacOsInstallation, String> {
+    discover_desktop_installations()?
+        .into_iter()
+        .find(|installation| {
+            installation.install_path.is_dir()
+                && installation.python_present
+                && installation.main_py_present
+        })
+        .ok_or_else(|| "No usable local ComfyUI installation was found".to_owned())
 }
 
 #[cfg(test)]

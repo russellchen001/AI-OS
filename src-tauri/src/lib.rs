@@ -2,9 +2,9 @@ mod backup;
 mod browser;
 mod claude_code;
 mod commerce_provider;
-mod connections;
 #[cfg(test)]
 mod computer_control_acceptance;
+mod connections;
 mod conversations;
 mod document;
 mod download;
@@ -13,8 +13,8 @@ mod external_connector;
 mod filesystem;
 mod generative_media;
 mod google_workspace;
-mod keychain_trace;
 mod health;
+mod keychain_trace;
 mod logs;
 mod macos_permissions;
 mod mcp;
@@ -214,6 +214,7 @@ pub fn run() {
             models::run_ollama_model,
             models::show_ollama_model,
             models::show_ollama_model_in_finder,
+            generative_media::comfyui_setup::setup_comfyui_managed_profile,
             multillm::start_multillm_stream,
             multillm::cancel_multillm_stream,
             mcp::list_mcp_servers,

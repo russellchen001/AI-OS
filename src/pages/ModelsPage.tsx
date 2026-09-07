@@ -1,3 +1,4 @@
+import ComfyUiSetupCard from "../components/ComfyUiSetupCard";
 import {
   useMemo,
   useState,
@@ -287,7 +288,9 @@ function ModelsPage({
         </button>
       </div>
 
-      <div className="models-summary-grid">
+      <ComfyUiSetupCard />
+
+    <div className="models-summary-grid">
         <div
           className="models-summary-card"
           style={cardStyle}

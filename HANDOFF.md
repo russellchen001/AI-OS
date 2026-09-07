@@ -6114,3 +6114,82 @@ This is an ownership-preserving reorder, not a scope expansion. GM-3 must make
 the managed profile usable; GM-2C must then prove real prompt submission,
 progress/history/cancellation and output retrieval against that profile.
 - 2026-09-07 20:53  P15 GM-2B Workflow Model Node Readiness complete
+
+### GM-3 — One-click Setup / Repair — Completed
+
+GM-3 converts the first profile-aware ComfyUI configuration into an
+AI-OS-managed, reproducible local generation setup.
+
+Managed profile:
+
+`comfyui-checkpoint-t2i-v1`
+
+Bootstrap checkpoint:
+
+`v1-5-pruned-emaonly-fp16.safetensors`
+
+Technical decisions:
+
+- The Stable Diffusion v1.5 FP16 checkpoint is a bootstrap compatibility model,
+  not the long-term AI-OS quality recommendation.
+- Setup / Repair is an explicit user-confirmed operation.
+- The managed asset is pinned by relative path, exact byte size and SHA-256.
+- Downloads use an AI-OS-owned `.part` file and support HTTP Range resume.
+- A completed `.part` whose hash is wrong is treated as corrupted AI-OS staging
+  data, removed and downloaded again; it cannot permanently poison retries.
+- Network retries are bounded. The real large-file request window is also
+  bounded and is not a background infinite retry loop.
+- An exact pre-existing checkpoint may be adopted only after explicit Setup /
+  Repair and complete size/hash verification.
+- An unrelated unmanaged file with the bootstrap filename is never overwritten.
+- A damaged checkpoint already owned by the AI-OS managed profile is backed up
+  before replacement.
+- Verified staging bytes are atomically renamed into the ComfyUI checkpoint
+  directory.
+- The private managed profile manifest is persisted atomically.
+- A fresh ComfyUI backend must advertise the checkpoint before setup succeeds.
+- Unrelated user checkpoints, LoRAs, workflows and custom nodes are untouched.
+- Setup / Repair is idempotent; an already verified managed checkpoint is not
+  downloaded again.
+
+Readiness semantics:
+
+- `smoke_generation_ok=false` or `output_retrieval_ok=false` does not mean
+  Broken until that check has actually been attempted.
+- The readiness report therefore separately records
+  `smoke_generation_checked` and `output_retrieval_checked`.
+- After GM-3, workflow/assets/nodes/integrity may all be true while execution
+  validation is still pending; that state remains `InstalledNotConfigured`.
+- GM-2C owns the transition produced by real execution/output evidence.
+
+Real-machine GM-3 acceptance verifies:
+
+- local ComfyUI runtime
+- managed checkpoint installation/adoption/repair
+- resumed-download contract
+- pinned SHA-256 integrity
+- fresh checkpoint advertisement
+- workflow readiness = true
+- asset readiness = true
+- custom-node readiness = true
+- integrity readiness = true
+- smoke generation not yet checked
+- output retrieval not yet checked
+- stable state remains `InstalledNotConfigured`
+
+Final acceptance:
+
+`verify/verify_p15_gm_3_setup_repair.sh`
+
+Next milestone:
+
+**GM-2C — Execution**
+
+GM-2C now owns the real:
+
+`/prompt -> queue/progress -> history -> cancellation -> output retrieval`
+
+Only real execution and retrieved output may satisfy the remaining Ready First
+evidence. After GM-2C, GM-2 Final Provider Integration can register the local
+ComfyUI provider only when the entire Ready contract passes.
+- 2026-09-07 22:39  P15 GM-3 One-click Setup Repair complete
