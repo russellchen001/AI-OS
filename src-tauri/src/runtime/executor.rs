@@ -281,9 +281,7 @@ pub(crate) struct RuntimeTaskExecutionResult {
 }
 
 struct GenerativeMediaPreparedOperation {
-    registry: std::sync::Arc<
-        crate::generative_media::registry::MediaProviderRegistry,
-    >,
+    registry: std::sync::Arc<crate::generative_media::registry::MediaProviderRegistry>,
     request: crate::generative_media::domain::MediaRequest,
 }
 
@@ -349,15 +347,9 @@ fn runtime_media_capability(
         "media.image-edit" => Some(MediaCapability::ImageEdit),
         "media.text-to-video" => Some(MediaCapability::TextToVideo),
         "media.image-to-video" => Some(MediaCapability::ImageToVideo),
-        "media.reference.image.analyze" => {
-            Some(MediaCapability::AnalyzeImageReference)
-        }
-        "media.reference.video.analyze" => {
-            Some(MediaCapability::AnalyzeVideoReference)
-        }
-        "media.reference.generate" => {
-            Some(MediaCapability::ReferenceConditionedGeneration)
-        }
+        "media.reference.image.analyze" => Some(MediaCapability::AnalyzeImageReference),
+        "media.reference.video.analyze" => Some(MediaCapability::AnalyzeVideoReference),
+        "media.reference.generate" => Some(MediaCapability::ReferenceConditionedGeneration),
         _ => None,
     }
 }
@@ -366,32 +358,31 @@ fn runtime_media_request(
     capability: &str,
     input: &Value,
 ) -> Result<crate::generative_media::domain::MediaRequest, NormalizedRuntimeError> {
-    let capability = runtime_media_capability(capability).ok_or_else(|| {
-        NormalizedRuntimeError {
+    let capability =
+        runtime_media_capability(capability).ok_or_else(|| NormalizedRuntimeError {
             code: RuntimeErrorCode::InvalidRequest,
             message: "Generative Media capability is not recognized.".to_owned(),
             retryable: false,
-        }
-    })?;
+        })?;
 
     let mut value = input.clone();
 
-    let object = value.as_object_mut().ok_or_else(|| NormalizedRuntimeError {
-        code: RuntimeErrorCode::InvalidRequest,
-        message: "Generative Media input must be an object.".to_owned(),
-        retryable: false,
-    })?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| NormalizedRuntimeError {
+            code: RuntimeErrorCode::InvalidRequest,
+            message: "Generative Media input must be an object.".to_owned(),
+            retryable: false,
+        })?;
 
     object.insert(
         "capability".to_owned(),
-        serde_json::to_value(capability)
-            .expect("MediaCapability serialization is infallible"),
+        serde_json::to_value(capability).expect("MediaCapability serialization is infallible"),
     );
 
     serde_json::from_value(value).map_err(|_| NormalizedRuntimeError {
         code: RuntimeErrorCode::InvalidRequest,
-        message: "Generative Media request does not match the canonical media contract."
-            .to_owned(),
+        message: "Generative Media request does not match the canonical media contract.".to_owned(),
         retryable: false,
     })
 }
@@ -404,8 +395,7 @@ pub(crate) fn execute_generative_media_runtime_task(
     registry: Arc<crate::generative_media::registry::MediaProviderRegistry>,
 ) -> Result<RuntimeTaskExecutionResult, NormalizedRuntimeError> {
     let request = request.validate()?;
-    let media_request =
-        runtime_media_request(&request.capability, &request.input)?;
+    let media_request = runtime_media_request(&request.capability, &request.input)?;
 
     let admission = manager.admit_identified_operation(
         &request.operation_id,
@@ -429,11 +419,10 @@ pub(crate) fn execute_generative_media_runtime_task(
 
     emit_best_effort(emitter.as_ref(), operation);
 
-    let prepared: Box<dyn PreparedOperation> =
-        Box::new(GenerativeMediaPreparedOperation {
-            registry,
-            request: media_request,
-        });
+    let prepared: Box<dyn PreparedOperation> = Box::new(GenerativeMediaPreparedOperation {
+        registry,
+        request: media_request,
+    });
 
     let operation_id = request.operation_id.clone();
     let task_manager = Arc::clone(&manager);
@@ -2006,6 +1995,104 @@ mod tests {
                 .unwrap_err()
                 .code,
             RuntimeErrorCode::OperationNotFound
+        );
+    }
+}
+
+#[cfg(test)]
+mod gm2_final_provider_integration_tests {
+    use super::*;
+    use crate::generative_media::{
+        comfyui_provider::{resolve_local_asset_handle, COMFYUI_LOCAL_PROVIDER_ID},
+        executor::execute_media_request,
+        registry::MediaProviderRegistry,
+    };
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "runs one real production Generative Media image request"]
+    fn runtime_media_text_to_image_reaches_production_comfyui_real_e2e() {
+        let input = serde_json::json!({
+            "intent": {
+                "request": "a small blue ceramic cup on a plain white studio background",
+                "mediaKind": "image",
+                "references": [],
+                "constraints": [],
+                "preferences": []
+            },
+            "routeMode": "auto",
+            "executionTarget": "local-first"
+        });
+
+        let request = runtime_media_request("media.text-to-image", &input)
+            .expect("Runtime should normalize the canonical media request");
+
+        let registry = MediaProviderRegistry::production();
+
+        let metadata = registry.metadata();
+
+        assert_eq!(
+            metadata.len(),
+            1,
+            "production registry should contain exactly the Ready local provider"
+        );
+
+        assert_eq!(metadata[0].provider_id, COMFYUI_LOCAL_PROVIDER_ID);
+
+        assert!(
+            metadata[0].is_local_ready(),
+            "production registry may only expose Ready local ComfyUI"
+        );
+
+        let mut progress = Vec::new();
+
+        let result =
+            execute_media_request(&registry, &request, &mut |update| progress.push(update))
+                .expect("production media request should execute");
+
+        assert_eq!(result.provider_id, COMFYUI_LOCAL_PROVIDER_ID);
+
+        assert_eq!(result.outputs.len(), 1);
+
+        let output = &result.outputs[0];
+
+        assert_eq!(
+            output.kind,
+            crate::generative_media::domain::MediaKind::Image
+        );
+        assert!(
+            matches!(
+                output.mime_type.as_str(),
+                "image/png" | "image/jpeg" | "image/webp"
+            ),
+            "production output must be a supported image"
+        );
+
+        assert!(
+            output.handle.starts_with("asset://generative-media/"),
+            "shared result must return an opaque AI-OS asset handle"
+        );
+
+        let path = resolve_local_asset_handle(&output.handle)
+            .expect("opaque asset handle should resolve internally");
+
+        let metadata = std::fs::metadata(&path).expect("generated AI-OS asset should exist");
+
+        assert!(
+            metadata.len() > 0,
+            "generated AI-OS asset must contain real bytes"
+        );
+
+        assert!(progress.iter().any(|update| update.phase == "generating"));
+
+        assert!(progress.iter().any(|update| update.phase == "completed"));
+
+        eprintln!(
+            "LIVE_GM2_FINAL provider={} mime={} bytes={} handle={} ready=true",
+            result.provider_id,
+            output.mime_type,
+            metadata.len(),
+            output.handle,
         );
     }
 }

@@ -1003,3 +1003,262 @@ comfy.desktop_0:
         );
     }
 }
+
+// GM-2 Final production provider bridge.
+//
+// Backend ownership remains here because discovery/start/stop and Comfy Desktop
+// filesystem layout are platform responsibilities. The shared MediaProvider
+// never owns a macOS process directly.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComfyUiManagedProfileReady {
+    pub instance_id: String,
+    pub profile_id: String,
+    pub profile_version: u32,
+    pub checkpoint_name: String,
+    pub checkpoint_sha256: String,
+    pub comfyui_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComfyUiManagedGenerationResult {
+    pub ready: ComfyUiManagedProfileReady,
+    pub generated: crate::generative_media::comfyui_execution::ComfyUiGeneratedAsset,
+}
+
+fn execution_record_matches_manifest(
+    record: &crate::generative_media::comfyui_execution::ComfyUiExecutionValidationRecord,
+    manifest: &crate::generative_media::comfyui_profile::ManagedProfileManifest,
+    comfyui_version: &str,
+) -> bool {
+    use crate::generative_media::comfyui_execution::EXECUTION_CONTRACT_VERSION;
+
+    record.profile_id == manifest.profile_id
+        && record.profile_version == manifest.profile_version
+        && record.checkpoint_sha256 == manifest.checkpoint.sha256
+        && record.execution_contract_version == EXECUTION_CONTRACT_VERSION
+        && record.comfyui_version == comfyui_version
+        && record.cancellation_ok
+        && record.smoke_generation_ok
+        && record.output_retrieval_ok
+        && record.output_bytes > 0
+        && matches!(
+            record.output_mime_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp"
+        )
+}
+
+fn validated_managed_profile_for_endpoint(
+    installation: &ComfyUiMacOsInstallation,
+    endpoint: &str,
+) -> Result<ComfyUiManagedProfileReady, String> {
+    use crate::generative_media::{
+        comfyui::probe_comfyui_api,
+        comfyui_execution::{execution_validation_path, ComfyUiExecutionValidationRecord},
+        comfyui_profile::{
+            probe_core_text_to_image_profile, ManagedProfileManifest,
+            CORE_TEXT_TO_IMAGE_PROFILE_ID, CORE_TEXT_TO_IMAGE_PROFILE_VERSION,
+        },
+    };
+
+    let model_root = resolve_desktop_model_root(&installation.instance_id)?
+        .ok_or_else(|| "Comfy Desktop models root is not configured".to_owned())?;
+
+    let manifest_path = managed_profile_manifest_path()?;
+
+    let manifest: ManagedProfileManifest = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .map_err(|_| "Managed ComfyUI profile manifest is unavailable".to_owned())?,
+    )
+    .map_err(|_| "Managed ComfyUI profile manifest is invalid".to_owned())?;
+
+    if manifest.profile_id != CORE_TEXT_TO_IMAGE_PROFILE_ID
+        || manifest.profile_version != CORE_TEXT_TO_IMAGE_PROFILE_VERSION
+    {
+        return Err("Managed ComfyUI profile identity/version is stale".to_owned());
+    }
+
+    let profile = probe_core_text_to_image_profile(endpoint, Some(&model_root), &manifest_path)?;
+
+    if !profile.workflow_ready
+        || !profile.required_assets_ready
+        || !profile.custom_nodes_ready
+        || !profile.integrity_ok
+    {
+        return Err(
+            "Managed ComfyUI profile no longer satisfies workflow/model/node/integrity readiness"
+                .to_owned(),
+        );
+    }
+
+    let health = probe_comfyui_api(endpoint)?;
+
+    if !health.is_healthy() {
+        return Err("ComfyUI Local API is not healthy".to_owned());
+    }
+
+    let comfyui_version = health
+        .comfyui_version
+        .ok_or_else(|| "ComfyUI version is unavailable".to_owned())?;
+
+    let validation_path = execution_validation_path(&manifest_path)?;
+
+    let record: ComfyUiExecutionValidationRecord = serde_json::from_slice(
+        &fs::read(&validation_path)
+            .map_err(|_| "GM-2C execution validation evidence is unavailable".to_owned())?,
+    )
+    .map_err(|_| "GM-2C execution validation evidence is invalid".to_owned())?;
+
+    if !execution_record_matches_manifest(&record, &manifest, &comfyui_version) {
+        return Err(
+            "GM-2C execution validation evidence no longer matches the current managed profile/runtime"
+                .to_owned(),
+        );
+    }
+
+    let checkpoint_name = manifest
+        .checkpoint
+        .relative_path
+        .strip_prefix("checkpoints/")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            "Managed checkpoint path cannot be used by CheckpointLoaderSimple".to_owned()
+        })?
+        .to_owned();
+
+    Ok(ComfyUiManagedProfileReady {
+        instance_id: installation.instance_id.clone(),
+        profile_id: manifest.profile_id,
+        profile_version: manifest.profile_version,
+        checkpoint_name,
+        checkpoint_sha256: manifest.checkpoint.sha256,
+        comfyui_version,
+    })
+}
+
+pub(crate) fn probe_ready_managed_profile(
+    startup_timeout: std::time::Duration,
+) -> Result<ComfyUiManagedProfileReady, String> {
+    let installation = select_usable_desktop_installation()?;
+    let mut backend = start_comfyui_backend_and_wait(&installation, startup_timeout)?;
+
+    let result = validated_managed_profile_for_endpoint(&installation, &backend.endpoint);
+
+    backend.stop();
+
+    result
+}
+
+pub(crate) fn execute_ready_managed_text_to_image(
+    prompt: &str,
+    startup_timeout: std::time::Duration,
+    generation_timeout: std::time::Duration,
+) -> Result<ComfyUiManagedGenerationResult, String> {
+    let installation = select_usable_desktop_installation()?;
+    let mut backend = start_comfyui_backend_and_wait(&installation, startup_timeout)?;
+
+    let result = (|| {
+        let ready = validated_managed_profile_for_endpoint(&installation, &backend.endpoint)?;
+
+        let generated = crate::generative_media::comfyui_execution::execute_text_to_image(
+            &backend.endpoint,
+            &ready.checkpoint_name,
+            prompt,
+            generation_timeout,
+        )?;
+
+        Ok(ComfyUiManagedGenerationResult { ready, generated })
+    })();
+
+    backend.stop();
+
+    result
+}
+
+#[cfg(test)]
+mod gm2_final_readiness_tests {
+    use super::*;
+    use crate::generative_media::{
+        comfyui_execution::ComfyUiExecutionValidationRecord,
+        comfyui_profile::{
+            ManagedAssetRecord, ManagedProfileManifest, CORE_TEXT_TO_IMAGE_PROFILE_ID,
+            CORE_TEXT_TO_IMAGE_PROFILE_VERSION,
+        },
+    };
+
+    fn manifest() -> ManagedProfileManifest {
+        ManagedProfileManifest {
+            profile_id: CORE_TEXT_TO_IMAGE_PROFILE_ID.to_owned(),
+            profile_version: CORE_TEXT_TO_IMAGE_PROFILE_VERSION,
+            checkpoint: ManagedAssetRecord {
+                relative_path: "checkpoints/v1-5-pruned-emaonly-fp16.safetensors".to_owned(),
+                size_bytes: 2_132_696_762,
+                sha256: "e9476a13728cd75d8279f6ec8bad753a66a1957ca375a1464dc63b37db6e3916"
+                    .to_owned(),
+            },
+        }
+    }
+
+    fn record(sha256: &str, comfyui_version: &str) -> ComfyUiExecutionValidationRecord {
+        serde_json::from_value(serde_json::json!({
+            "profileId": CORE_TEXT_TO_IMAGE_PROFILE_ID,
+            "profileVersion": CORE_TEXT_TO_IMAGE_PROFILE_VERSION,
+            "checkpointSha256": sha256,
+            "executionContractVersion": 1,
+            "comfyuiVersion": comfyui_version,
+            "cancellationOk": true,
+            "smokeGenerationOk": true,
+            "outputRetrievalOk": true,
+            "outputMimeType": "image/png",
+            "outputBytes": 39637,
+            "validatedAt": "2026-09-07T14:30:34.862551+00:00"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn durable_ready_evidence_must_match_profile_hash_and_runtime() {
+        let manifest = manifest();
+
+        let valid = record(&manifest.checkpoint.sha256, "0.34.5");
+
+        assert!(execution_record_matches_manifest(
+            &valid, &manifest, "0.34.5"
+        ));
+
+        let stale_hash = record(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0.34.5",
+        );
+
+        assert!(!execution_record_matches_manifest(
+            &stale_hash,
+            &manifest,
+            "0.34.5"
+        ));
+
+        let stale_runtime = record(&manifest.checkpoint.sha256, "0.34.4");
+
+        assert!(!execution_record_matches_manifest(
+            &stale_runtime,
+            &manifest,
+            "0.34.5"
+        ));
+    }
+
+    #[test]
+    fn failed_execution_evidence_can_never_contribute_to_ready() {
+        let manifest = manifest();
+
+        let mut value =
+            serde_json::to_value(record(&manifest.checkpoint.sha256, "0.34.5")).unwrap();
+
+        value["outputRetrievalOk"] = serde_json::json!(false);
+
+        let record: ComfyUiExecutionValidationRecord = serde_json::from_value(value).unwrap();
+
+        assert!(!execution_record_matches_manifest(
+            &record, &manifest, "0.34.5"
+        ));
+    }
+}

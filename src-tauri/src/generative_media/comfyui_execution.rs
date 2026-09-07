@@ -14,7 +14,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const EXECUTION_CONTRACT_VERSION: u32 = 1;
+pub(crate) const EXECUTION_CONTRACT_VERSION: u32 = 1;
 const MAX_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -651,6 +651,124 @@ fn run_cancellation_probe(
     wait_until_prompt_leaves_queue(client, endpoint, &prompt_id, Duration::from_secs(30))?;
 
     Ok(true)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComfyUiGeneratedAsset {
+    pub prompt_id: String,
+    pub filename: String,
+    pub subfolder: String,
+    pub output_type: String,
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Execute one real provider-owned text-to-image request.
+///
+/// GM-2C already proved the protocol pieces independently. Production
+/// generation reuses the same workflow contract, history parser and image
+/// validation rather than introducing a second ComfyUI execution stack.
+pub(crate) fn execute_text_to_image(
+    endpoint: &str,
+    checkpoint: &str,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<ComfyUiGeneratedAsset, String> {
+    if checkpoint.trim().is_empty() {
+        return Err("Managed ComfyUI checkpoint name is empty".to_owned());
+    }
+
+    if prompt.trim().is_empty() {
+        return Err("Generative Media prompt is empty".to_owned());
+    }
+
+    let client = client()?;
+
+    let workflow =
+        crate::generative_media::comfyui_profile::core_text_to_image_workflow(checkpoint, prompt);
+
+    let response = client
+        .post(endpoint_url(endpoint, "/prompt")?)
+        .json(&serde_json::json!({ "prompt": workflow }))
+        .send()
+        .map_err(|error| format!("ComfyUI /prompt request failed: {error}"))?;
+
+    let status = response.status();
+
+    if !status.is_success() {
+        return Err(format!(
+            "ComfyUI /prompt rejected the generation request with HTTP {}",
+            status.as_u16()
+        ));
+    }
+
+    let payload: Value = response
+        .json()
+        .map_err(|_| "ComfyUI /prompt response was not valid JSON".to_owned())?;
+
+    let prompt_id = payload
+        .get("prompt_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "ComfyUI /prompt response did not contain a prompt id".to_owned())?
+        .to_owned();
+
+    let history = wait_for_completed_history(&client, endpoint, &prompt_id, timeout)?;
+
+    let image = extract_image_reference(&history)?;
+
+    let mut view_url = url::Url::parse(&endpoint_url(endpoint, "/view")?)
+        .map_err(|_| "ComfyUI /view URL is invalid".to_owned())?;
+
+    view_url
+        .query_pairs_mut()
+        .append_pair("filename", &image.filename)
+        .append_pair("subfolder", &image.subfolder)
+        .append_pair("type", &image.output_type);
+
+    let response = client
+        .get(view_url)
+        .send()
+        .map_err(|error| format!("ComfyUI /view output retrieval failed: {error}"))?;
+
+    let status = response.status();
+
+    if !status.is_success() {
+        return Err(format!(
+            "ComfyUI /view rejected output retrieval with HTTP {}",
+            status.as_u16()
+        ));
+    }
+
+    let declared_mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+
+    let bytes = response
+        .bytes()
+        .map_err(|error| format!("ComfyUI output bytes could not be read: {error}"))?
+        .to_vec();
+
+    if bytes.is_empty() {
+        return Err("ComfyUI returned an empty image output".to_owned());
+    }
+
+    if bytes.len() as u64 > MAX_OUTPUT_BYTES {
+        return Err("ComfyUI output exceeds the AI-OS output bound".to_owned());
+    }
+
+    let mime_type = image_mime(&bytes, declared_mime.as_deref())?;
+
+    Ok(ComfyUiGeneratedAsset {
+        prompt_id,
+        filename: image.filename,
+        subfolder: image.subfolder,
+        output_type: image.output_type,
+        mime_type,
+        bytes,
+    })
 }
 
 pub(crate) fn run_execution_validation(

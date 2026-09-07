@@ -5,16 +5,13 @@ use super::{
     },
     executor::{
         execute_generative_media_runtime_task, execute_local_model_runtime_task,
-        execute_mcp_runtime_task, execute_runtime_task,
-        OperationEventEmitter, RuntimeExecutionState, RuntimeTaskExecutionRequest,
-        RuntimeTaskExecutionResult,
+        execute_mcp_runtime_task, execute_runtime_task, OperationEventEmitter,
+        RuntimeExecutionState, RuntimeTaskExecutionRequest, RuntimeTaskExecutionResult,
     },
     models::{NormalizedRuntimeError, RuntimeErrorCode},
     openclaw_execution::OpenClawExecutionAdapter,
     openclaw_gateway_adapter::OpenClawGatewayExecutionAdapter,
-    openclaw_permission::{
-        OpenClawPermissionGate, PermissionEnforcingOpenClawExecutionAdapter,
-    },
+    openclaw_permission::{OpenClawPermissionGate, PermissionEnforcingOpenClawExecutionAdapter},
     skills,
     trusted_automation::{load_trusted_automation_settings, TrustedAutomationConfigError},
 };
@@ -157,9 +154,7 @@ impl RuntimeBackedPlanExecutor {
             runtime,
             emitter,
             adapter,
-            permission_gate: Arc::new(
-                ConfiguredCapabilityPermissionGate::new(Vec::new()),
-            ),
+            permission_gate: Arc::new(ConfiguredCapabilityPermissionGate::new(Vec::new())),
         }
     }
 }
@@ -228,7 +223,7 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
                     Arc::clone(&self.emitter),
                     runtime_request,
                     Arc::new(
-                        crate::generative_media::registry::MediaProviderRegistry::new(),
+                        crate::generative_media::registry::MediaProviderRegistry::production(),
                     ),
                 )
             }
@@ -609,5 +604,4 @@ mod tests {
             "media denial must not enter OpenClaw execution"
         );
     }
-
 }

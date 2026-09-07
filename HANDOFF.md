@@ -6331,3 +6331,104 @@ The standing rule remains:
 
 `mutable real application/account environment -> External E2E`
 - 2026-09-08 00:40  P15 GM-2C ComfyUI Execution complete
+
+### GM-2 Final — Provider Integration — Completed
+
+GM-2 is now complete as a production local Generative Media provider rather
+than only a ComfyUI readiness/execution test stack.
+
+Production path:
+
+`media.text-to-image`
+`-> Runtime canonical MediaRequest`
+`-> production MediaProviderRegistry`
+`-> MediaRouter`
+`-> ComfyUiLocalProvider`
+`-> managed local ComfyUI`
+`-> /prompt -> history -> /view`
+`-> AI-OS local asset storage`
+`-> normalized MediaResult`
+
+Ready First registration:
+
+- the production registry does not register ComfyUI merely because ComfyUI is
+  installed or its HTTP API answers;
+- the managed profile must still satisfy workflow, asset, custom-node and
+  integrity readiness;
+- the GM-2C durable execution-validation record must still match:
+  - profile ID
+  - profile version
+  - checkpoint SHA-256
+  - execution contract version
+  - current real ComfyUI runtime version;
+- cancellation, smoke generation and output retrieval must all remain accepted
+  execution evidence;
+- stale checkpoint/runtime/profile evidence cannot register a Ready provider;
+- execution repeats the Ready identity check against the newly started backend
+  before generating the user's image.
+
+Provider contract:
+
+- provider ID: `comfyui`
+- source: local
+- supported production capability in this first profile:
+  `media.text-to-image`
+- provider authorization: none
+- local readiness: `Ready`
+- no cloud provider is silently selected if local routing cannot proceed;
+- manual provider routing remains exact;
+- execution/provider failure does not trigger an automatic provider switch.
+
+Output contract:
+
+- ComfyUI output bytes are retrieved through `/view`;
+- the bytes must be a supported PNG/JPEG/WebP image;
+- AI-OS persists the generated output atomically under its managed local media
+  asset storage;
+- shared `MediaOutput.handle` remains opaque:
+  `asset://generative-media/...`;
+- no absolute macOS filesystem path is required by the provider-neutral media
+  contract;
+- the returned `MediaResult` contains normalized provider identity, image MIME,
+  opaque asset handle and non-secret execution metadata.
+
+Runtime ownership remains unchanged:
+
+`Planner -> Skill Resolver -> Shared Runtime Permission Admission -> Generative Media Executor -> MediaRouter -> MediaProvider`
+
+Generative Media still does not execute inside OpenClaw Gateway.
+
+Real-machine GM-2 Final acceptance proved:
+
+- durable Ready evidence matched the current managed profile/runtime;
+- production registry registered the real Ready local ComfyUI provider;
+- Runtime normalized a real `media.text-to-image` request;
+- MediaRouter selected the local provider;
+- ComfyUI executed a real generation;
+- real image bytes were retrieved;
+- output bytes were persisted in AI-OS managed asset storage;
+- normalized image MIME was returned;
+- opaque asset handle was returned;
+- the production result remained Local First and Ready.
+
+Final acceptance:
+
+`verify/verify_p15_gm_2_final_provider_integration.sh`
+
+GM-2 overall is complete:
+
+- GM-2A — Local ComfyUI Ready Detection
+- GM-2B — Workflow / Model / Node Readiness
+- GM-3 — One-click Setup / Repair
+- GM-2C — Execution
+- GM-2 Final — Provider Integration
+
+Next Generative Media milestone:
+
+**GM-4 — Cloud Providers**
+
+GM-4 adds replaceable authenticated cloud media providers, explicit cloud
+selection and paid-cloud budget/authorization semantics without weakening the
+existing Local First rule or silently falling from a failed local route into
+paid cloud execution.
+- 2026-09-08 01:51  P15 GM-2 Final ComfyUI Provider Integration complete

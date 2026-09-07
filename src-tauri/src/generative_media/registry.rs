@@ -64,10 +64,7 @@ impl MediaProviderRegistry {
             .collect()
     }
 
-    pub(crate) fn supporting(
-        &self,
-        capability: MediaCapability,
-    ) -> Vec<&dyn MediaProvider> {
+    pub(crate) fn supporting(&self, capability: MediaCapability) -> Vec<&dyn MediaProvider> {
         self.providers()
             .into_iter()
             .filter(|provider| provider.metadata().supports(capability))
@@ -96,6 +93,25 @@ impl MediaProviderRegistry {
             })
             .collect()
     }
+    /// Build the real production media registry.
+    ///
+    /// A local provider is admitted only after Ready First validation succeeds.
+    /// Failed/stale discovery does not create a provider that merely claims
+    /// `available=true`.
+    pub(crate) fn production() -> Self {
+        let mut registry = Self::new();
+
+        #[cfg(target_os = "macos")]
+        if let Ok(provider) =
+            crate::generative_media::comfyui_provider::ComfyUiLocalProvider::discover_ready()
+        {
+            registry
+                .register(provider)
+                .expect("production ComfyUI provider identity must be unique");
+        }
+
+        registry
+    }
 }
 
 #[cfg(test)]
@@ -109,9 +125,7 @@ mod tests {
             },
             provider::LocalMediaReadiness,
         },
-        provider_selection::{
-            AuthorizationKind, AuthorizationState, ProviderInterfaceKind,
-        },
+        provider_selection::{AuthorizationKind, AuthorizationState, ProviderInterfaceKind},
     };
 
     struct StubProvider {
@@ -201,16 +215,9 @@ mod tests {
 
         registry.register(stub("provider-a", None)).unwrap();
 
-        assert_eq!(
-            registry.supporting(MediaCapability::TextToImage).len(),
-            1
-        );
+        assert_eq!(registry.supporting(MediaCapability::TextToImage).len(), 1);
 
-        assert!(
-            registry
-                .supporting(MediaCapability::TextToVideo)
-                .is_empty()
-        );
+        assert!(registry.supporting(MediaCapability::TextToVideo).is_empty());
     }
 
     #[test]
