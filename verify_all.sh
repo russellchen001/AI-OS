@@ -13,7 +13,7 @@ fi
 
 is_external() {
   case "$(basename "$1")" in
-    verify_p15_microsoft_graph_real_e2e.sh|verify_p15_google_workspace_real_e2e.sh|verify_p15_wps_real_e2e.sh|verify_p15_iwork_real_e2e.sh|verify_p15_commerce_provider_real_e2e.sh|verify_p15_browser_authenticated_session.sh|verify_p15_browser_authenticated_session_real_e2e.sh|verify_p15_presentation_real_e2e.sh) return 0 ;;
+    verify_p15_microsoft_graph_real_e2e.sh|verify_p15_google_workspace_real_e2e.sh|verify_p15_wps_real_e2e.sh|verify_p15_iwork_real_e2e.sh|verify_p15_commerce_provider_real_e2e.sh|verify_p15_browser_authenticated_session.sh|verify_p15_browser_authenticated_session_real_e2e.sh|verify_p15_presentation_real_e2e.sh|verify_p15_structured_office_interop_real_e2e.sh|verify_p15_word_real_e2e.sh) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -62,6 +62,8 @@ run_external "Google" "$VERIFY_DIR/verify_p15_google_workspace_real_e2e.sh"
 run_external "WPS" "$VERIFY_DIR/verify_p15_wps_real_e2e.sh"
 run_external "iWork" "$VERIFY_DIR/verify_p15_iwork_real_e2e.sh"
 run_external "Presentation" "$VERIFY_DIR/verify_p15_presentation_real_e2e.sh"
+run_external "Office Interop" "$VERIFY_DIR/verify_p15_structured_office_interop_real_e2e.sh"
+run_external "Word" "$VERIFY_DIR/verify_p15_word_real_e2e.sh"
 run_external "eBay" "$VERIFY_DIR/verify_p15_commerce_provider_real_e2e.sh"
 run_external "Amazon" "$VERIFY_DIR/verify_p15_browser_authenticated_session_real_e2e.sh"
 run_external "Taobao" "$VERIFY_DIR/verify_p15_browser_authenticated_session_real_e2e.sh"

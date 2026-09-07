@@ -33,7 +33,7 @@ tungstenite = {
 url = "2"
 base64 = "0.22"
 sha2 = "0.10"
-reqwest = { version = "0.13", features = ["json", "stream", "form"] }
+reqwest = { version = "0.13", features = ["json", "stream", "form", "blocking"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt"] }
 uuid = { version = "1", features = ["v4", "serde"] }

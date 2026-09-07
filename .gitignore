@@ -53,3 +53,6 @@ office-probe-excel-structural.log
 run_gate.command
 .aios-task.sh
 .gate-logs/
+
+/services/external-connector-broker/target/
+/services/external-connector-broker/Cargo.lock

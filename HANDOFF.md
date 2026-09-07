@@ -5949,3 +5949,95 @@ The Browser safety invariants remain unchanged:
 - verification remains fail-closed.
 
 P15 completion count remains unchanged; Browser acceptance does not by itself increase the completed Core Skill count.
+
+### GM-2A — Local ComfyUI Ready Detection — Completed
+
+GM-2A establishes the real local ComfyUI discovery, lifecycle and Ready First
+foundation for Generative Media.
+
+Implemented and verified:
+
+- Direct ComfyUI Local API probing through Rust HTTP, without shelling out to
+  `curl` in the production adapter.
+- Positive ComfyUI identification uses both `/system_stats` and `/object_info`;
+  an arbitrary JSON HTTP service is not accepted as ComfyUI.
+- Official Comfy Desktop installations are discovered on macOS from
+  `~/Library/Application Support/Comfy Desktop/installations.json`.
+- Local discovery keeps `standalone + installed` instances visible even when
+  runtime files are damaged, so an installed-but-broken environment is not
+  incorrectly classified as `not_installed`.
+- Comfy Cloud registry entries are not treated as local ComfyUI engines.
+- The macOS adapter resolves the real local Python runtime and `main.py` from
+  the discovered Desktop installation.
+- AI-OS can start the discovered ComfyUI backend directly without requiring the
+  Comfy Desktop UI to be opened.
+- AI-OS chooses a dynamic loopback port rather than assuming port 8188.
+- Managed Comfy Desktop model-path configuration and shared input/output
+  directories are preserved when starting the backend.
+- Backend startup waits for the real Local API and validates it through the
+  platform-neutral ComfyUI API probe.
+- Backend lifecycle ownership is explicit: an AI-OS-started test backend is
+  stopped and reaped after use.
+- Local runtime facts feed `LocalMediaReadinessEvidence`.
+- API reachability alone never means Ready.
+
+Real-machine GM-2A acceptance on macOS verified:
+
+- local instance discovery: passed
+- runtime validation: passed
+- direct backend startup: passed
+- dynamic Local API endpoint: passed
+- ComfyUI API health: passed
+- backend shutdown: passed
+- detected ComfyUI version: `0.34.5`
+- final runtime state: `InstalledNotConfigured`
+- `engine_installed = true`
+- `engine_startable = true`
+- `api_reachable = true`
+- generation-profile requirements are intentionally still unverified, so
+  `Ready` is false
+
+Technical decisions established by GM-2A:
+
+- The core local execution and health contract is the direct ComfyUI Local API.
+- `comfy-cli` may be integrated later as an optional deterministic management
+  interface, but it is not a hard dependency of local execution.
+- `comfyui-mcp` may be used later as a secondary workflow-intelligence or
+  authoring extension; it is not part of the core execution path.
+- Platform-neutral ComfyUI API logic remains separate from platform-specific
+  discovery, startup and filesystem handling.
+- On macOS, official Comfy Desktop registry discovery is handled by the macOS
+  Generative Media adapter rather than the provider-neutral core.
+- Starting the Comfy Desktop application UI is not treated as proof that its
+  local backend started.
+- GM-2A does not install, configure or repair ComfyUI. Those remain later
+  setup/repair responsibilities.
+- `Ready` remains reserved for a generation profile whose workflow, required
+  assets, custom nodes, integrity, smoke generation and output retrieval have
+  all passed.
+
+Final acceptance command:
+
+`verify/verify_p15_gm_2a_ready_detection.sh`
+
+Next Generative Media milestone:
+
+**GM-2B — Workflow / Model / Node Readiness**
+
+GM-2B must turn the currently healthy-but-not-configured local runtime into
+profile-aware readiness by validating compatible workflows, required models,
+VAE/text encoders/auxiliary assets, custom nodes and managed-asset integrity.
+
+### Verification boundary — Core vs External E2E
+
+Technical decision:
+
+- Core verification must be deterministic and must not depend on mutable user-account state or interactive external application availability.
+- Real Microsoft Office AppleEvent automation and real cloud-account tests belong to External E2E.
+- External E2E environment prerequisites are not product regressions:
+  - missing test fixtures -> `SKIP`
+  - required user reauthorization -> `SKIP`
+  - unavailable or temporarily unresponsive external application automation -> `SKIP`
+- Once an External E2E environment is usable, genuine capability/assertion failures remain `FAIL`.
+- `done.sh` therefore continues to gate on real product failures without allowing unrelated account expiry or GUI automation availability to invalidate an unrelated feature checkpoint.
+- 2026-09-07 19:36  P15 GM-2A Local ComfyUI Ready Detection complete

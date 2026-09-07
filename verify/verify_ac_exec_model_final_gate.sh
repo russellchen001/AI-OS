@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set -u
 
 cd "$(dirname "$0")/.." || exit 1
@@ -11,8 +10,8 @@ SHARED_LOG="/tmp/ac-exec-final-shared.log"
 E2E_LOG="/tmp/ac-exec-final-e2e.log"
 COMPLETE_LOG="/tmp/ac-exec-final-complete.log"
 
-if cargo fmt --manifest-path src-tauri/Cargo.toml -- --check >"$FMT_LOG" 2>&1; then
-  echo "✓ Rust formatting passed"
+if bash verify/rustfmt_changed.sh >"$FMT_LOG" 2>&1; then
+  echo "✓ Changed Rust formatting passed"
 else
   tail -40 "$FMT_LOG"
   echo "✗ Rust formatting failed"

@@ -23,6 +23,11 @@ output="$(
 status=$?
 
 if [[ $status -ne 0 ]]; then
+  if [[ "$output" == *"Provider account sign-in must be renewed"* ]]; then
+    echo "SKIP $name: USER_REAUTHORIZATION_REQUIRED"
+    exit 0
+  fi
+
   echo "FAIL $name: real Google identity/Drive/Docs/Sheets/Slides validation failed"
   echo "$output" | tail -30
   exit 1

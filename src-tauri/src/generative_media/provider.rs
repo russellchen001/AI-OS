@@ -22,6 +22,41 @@ pub(crate) enum LocalMediaReadiness {
     Ready,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalMediaReadinessEvidence {
+    pub engine_installed: bool,
+    pub engine_startable: bool,
+    pub api_reachable: bool,
+    pub workflow_ready: bool,
+    pub required_assets_ready: bool,
+    pub custom_nodes_ready: bool,
+    pub integrity_ok: bool,
+    pub smoke_generation_ok: bool,
+    pub output_retrieval_ok: bool,
+}
+
+impl LocalMediaReadinessEvidence {
+    pub(crate) fn classify(&self) -> LocalMediaReadiness {
+        if !self.engine_installed {
+            return LocalMediaReadiness::NotInstalled;
+        }
+
+        if !self.engine_startable || !self.api_reachable {
+            return LocalMediaReadiness::InstalledBroken;
+        }
+
+        if !self.workflow_ready || !self.required_assets_ready || !self.custom_nodes_ready {
+            return LocalMediaReadiness::InstalledNotConfigured;
+        }
+
+        if !self.integrity_ok || !self.smoke_generation_ok || !self.output_retrieval_ok {
+            return LocalMediaReadiness::InstalledBroken;
+        }
+
+        LocalMediaReadiness::Ready
+    }
+}
+
 /// Provider discovery and routing metadata.
 ///
 /// Secrets never belong here. Cloud authorization is represented only through
@@ -196,5 +231,37 @@ mod tests {
             serde_json::to_string(&LocalMediaReadiness::Ready).unwrap(),
             "\"ready\""
         );
+    }
+
+    #[test]
+    fn readiness_evidence_classifies_all_stable_states() {
+        let ready = LocalMediaReadinessEvidence {
+            engine_installed: true,
+            engine_startable: true,
+            api_reachable: true,
+            workflow_ready: true,
+            required_assets_ready: true,
+            custom_nodes_ready: true,
+            integrity_ok: true,
+            smoke_generation_ok: true,
+            output_retrieval_ok: true,
+        };
+
+        assert_eq!(ready.classify(), LocalMediaReadiness::Ready);
+
+        let mut not_installed = ready.clone();
+        not_installed.engine_installed = false;
+        assert_eq!(not_installed.classify(), LocalMediaReadiness::NotInstalled);
+
+        let mut not_configured = ready.clone();
+        not_configured.workflow_ready = false;
+        assert_eq!(
+            not_configured.classify(),
+            LocalMediaReadiness::InstalledNotConfigured
+        );
+
+        let mut broken = ready;
+        broken.smoke_generation_ok = false;
+        assert_eq!(broken.classify(), LocalMediaReadiness::InstalledBroken);
     }
 }
