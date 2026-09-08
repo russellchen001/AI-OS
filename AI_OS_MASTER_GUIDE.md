@@ -1203,30 +1203,58 @@ Local execution is preferred.
 
 Cloud screenshot or task transmission must not be used as a silent fallback.
 
-#### Magnitude
+#### Local Model Optimization — llmfit
+
+Primary reusable component:
+
+- `AlexsJones/llmfit`
 
 Role:
 
-- Local Model optimization / inference enhancement for AI Center / My AI.
+- Local Model hardware profiling and compatibility analysis for AI Center /
+  My AI;
+- model-fit and quantization recommendation;
+- memory, context-window and expected-speed estimation;
+- benchmark-informed recommendation;
+- installed-model discovery and model-acquisition assistance where
+  appropriate.
 
-Potential reusable capabilities include:
+Architecture:
 
-- hardware profiling;
-- model recommendation;
-- quantization recommendation;
-- model acquisition;
-- local model lifecycle;
-- inference optimization.
+```text
+AI-OS
+  ↓
+Local Model Optimization Adapter
+  ↓
+llmfit
+  ↓
+hardware / model-fit / quantization / benchmark recommendation
+  ↓
+AI-OS Provider selection and lifecycle orchestration
+  ↓
+oMLX / Ollama / future replaceable Local Model Providers
+```
 
-Magnitude does not replace:
+llmfit does not replace:
 
 - AI Center;
 - Provider Registry;
+- Local First routing;
+- model/account identity;
+- permissions or policy;
 - oMLX;
 - Ollama.
 
 AI-OS retains Provider identity, routing, policy, permissions, account
-management, and product experience.
+management, model lifecycle orchestration, and product experience.
+
+Magnitude is not a default planned v1.0 integration. It remains a future
+optional replaceable Local Inference Provider and should only be integrated if
+a concrete execution capability gap remains after llmfit, oMLX and Ollama.
+
+AI-OS must not add Magnitude merely to duplicate hardware profiling, model
+recommendation, model lifecycle, or inference capabilities already adequately
+covered by the existing stack.
 
 ---
 
@@ -1373,6 +1401,21 @@ A focused development phase with defined goals and boundaries.
 ---
 
 # Change Log
+
+## 2026-09-09 — llmfit Local Model Optimization Direction
+
+- Selected `AlexsJones/llmfit` as the preferred v1.0 reusable Local Model
+  optimization / recommendation foundation.
+- Assigned llmfit hardware profiling, model-fit analysis, quantization
+  recommendation, expected performance estimation, benchmark evidence, and
+  model-acquisition assistance.
+- Kept AI Center, Provider Registry, Local First routing, policy and model
+  lifecycle orchestration under AI-OS ownership.
+- Kept oMLX and Ollama as the current v1.0 Local Model execution Providers.
+- Superseded the earlier plan to integrate Magnitude as the primary Local Model
+  optimization component.
+- Retained Magnitude only as a future optional replaceable Local Inference
+  Provider if a demonstrated execution gap justifies it.
 
 ## 2026-09-08 — Multi-Model / Multi-Agent / Multi-Skill Platform
 

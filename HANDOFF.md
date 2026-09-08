@@ -6611,21 +6611,45 @@ Local mode is preferred.
 
 Cloud screenshot/task transmission must not be a silent fallback.
 
-### Magnitude
+### Local Model Optimization — llmfit primary
 
-Accepted as a v1.0 post-Generative-Media Local Model optimization / inference
-integration candidate for AI Center / My AI.
+`AlexsJones/llmfit` is the preferred v1.0 reusable foundation for Local Model
+optimization / recommendation in AI Center / My AI.
 
-Potential reusable capabilities:
+Primary reusable responsibilities:
 
-- hardware profiling;
-- model recommendation;
-- quantization recommendation;
-- model acquisition;
-- local model lifecycle;
-- inference optimization.
+- hardware profiling, including CPU, GPU, RAM and Apple unified memory;
+- model-fit evaluation against the actual machine;
+- model and quantization recommendation;
+- memory, context-window and expected-speed estimation;
+- benchmark evidence;
+- installed-model discovery and model-acquisition assistance where appropriate.
 
-Magnitude does not replace AI Center, Provider Registry, oMLX, or Ollama.
+Architecture boundary:
+
+`llmfit` is an optimization / recommendation component, not the AI-OS model
+execution system.
+
+AI-OS continues to own:
+
+- AI Center;
+- Provider Registry;
+- Local First routing;
+- model/account identity;
+- permissions and policy;
+- model lifecycle orchestration;
+- product UX.
+
+oMLX and Ollama remain the current v1.0 Local Model execution Providers.
+
+Magnitude is superseded as the planned v1.0 Local Model optimization
+integration. It remains a future optional replaceable Local Inference Provider
+only if a demonstrated product gap remains after oMLX / Ollama / llmfit, such
+as materially better on-demand loading, inference throughput, or another
+execution capability that AI-OS actually needs.
+
+Do not integrate Magnitude merely to duplicate capabilities already supplied
+by AI Center, oMLX, Ollama, or llmfit.
 
 ### Social / Community Intelligence
 
@@ -6661,23 +6685,41 @@ GM-2 remains complete.
 
 Next implementation sequence:
 
-1. GM-4 — Cloud Providers
-2. GM-5 — Prompt / Reference Intelligence
-3. ComfyUI-Agent-Kit / ComfyUI-Mac-Silicon reuse within the appropriate
+1. GM-5 — Prompt / Reference Intelligence
+2. ComfyUI-Agent-Kit / ComfyUI-Mac-Silicon reuse within the appropriate
    Generative Media implementation boundary
-4. GM-6 — Quality Loop
-5. Generative Media closure
+3. GM-6 — Quality Loop
+4. Generative Media closure
 
 Accepted post-Generative-Media reuse sequence:
 
 1. Mano-P / Mano-CUA
-2. Magnitude
+2. llmfit Local Model Optimization / Recommendation integration
 3. Cognitive Distillation completion
 4. NAS Management foundation
 
 Social / Community Intelligence remains v2.0.
 
 Vehicle Control is not part of v1.0.
+
+## 2026-09-09 — Local Model Optimization — llmfit Primary
+
+Decision:
+
+- `AlexsJones/llmfit` replaces Magnitude as the preferred v1.0 reusable
+  foundation for Local Model hardware profiling, model-fit analysis,
+  quantization recommendation, performance estimation and recommendation.
+- llmfit remains behind AI-OS Local Model / AI Center boundaries and does not
+  replace AI Center, Provider Registry, routing, permissions, oMLX or Ollama.
+- oMLX and Ollama remain the current Local Model execution Providers.
+- Magnitude is no longer a planned default v1.0 integration.
+- Magnitude remains an optional future replaceable Local Inference Provider
+  only if a concrete execution gap is demonstrated after llmfit + oMLX +
+  Ollama.
+- This decision supersedes the earlier post-Generative-Media Magnitude
+  integration decision.
+- Current Generative Media work remains GM-5. The llmfit decision does not
+  interrupt the active Generative Media implementation sequence.
 
 ## 2026-09-08 — P15 GM-4 Cloud Providers — Completed
 
