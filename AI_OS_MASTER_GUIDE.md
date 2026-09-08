@@ -183,6 +183,53 @@ The v1.0 product boundary includes, at minimum:
 
 Individual capabilities may exist earlier, but the product is not considered v1.0 until the integrated P17 acceptance boundary is met.
 
+
+## Platform Identity — Multi-Model, Multi-Agent, Multi-Skill
+
+AI-OS is a **multi-model, multi-Agent, multi-Skill AI application platform**.
+
+Models, Agents, and Skills are three independent extension dimensions:
+
+- **Models** provide replaceable intelligence through AI Center.
+- **Agents** provide replaceable agentic execution through Runtime-to-Agent
+  adapters.
+- **Skills** provide replaceable domain capabilities through the Skill
+  Framework.
+
+No single model, Agent, Skill, provider, application, or external project is
+the AI-OS architecture.
+
+AI-OS owns:
+
+- user intent and Task lifecycle;
+- planning and orchestration;
+- Runtime lifecycle and execution policy;
+- permissions and confirmations;
+- model, Agent, and Skill selection boundaries;
+- normalized contracts and results;
+- user-facing product experience.
+
+Specialized implementation should be delegated to mature, compatible external
+products whenever practical.
+
+```text
+AI-OS Platform
+├── Multi-Model
+│   └── AI Center
+├── Multi-Agent
+│   └── Runtime-to-Agent adapters
+└── Multi-Skill
+    └── Skill / Provider capability ecosystem
+```
+
+The current v1.0 implementation boundary has one operational general execution
+Agent: OpenClaw.
+
+That is a v1.0 release-scope decision, not a definition of AI-OS as a
+single-Agent product.
+
+---
+
 ---
 
 # 3. Product Philosophy
@@ -214,6 +261,70 @@ AI providers and models are replaceable components managed by AI Center.
 ## Modular Expansion
 
 New external capabilities should normally be added as Skills rather than by modifying the core architecture.
+
+
+## Reuse First / GitHub First
+
+AI-OS should write the **smallest amount of custom implementation necessary**.
+
+Before implementing a substantial new Skill, Provider, Agent capability,
+execution engine, model-management feature, workflow system, connector, or
+technical subsystem, development must first investigate whether a mature
+reusable implementation already exists.
+
+Preferred sequence:
+
+```text
+Requirement
+  ↓
+Check existing AI-OS capability
+  ↓
+Search GitHub / OSS / mature products
+  ↓
+Evaluate license / security / maintenance / architecture / UX
+  ↓
+Reuse / integrate / adapt / wrap
+  ↓
+Build only the missing AI-OS-specific layer
+```
+
+Evaluation must consider:
+
+- commercial-use and license compatibility;
+- project maturity and maintenance;
+- security and credential handling;
+- supported operating systems and hardware;
+- architecture fit;
+- installation and runtime burden;
+- ordinary-user experience;
+- whether AI-OS already owns the responsibility;
+- whether the dependency can remain replaceable behind a stable Adapter,
+  Provider, Skill, MCP, or equivalent boundary.
+
+AI-OS must not recreate mature functionality merely to keep implementation
+in-house.
+
+When a mature product already solves most of a requirement, AI-OS should
+normally integrate it and implement only the remaining AI-OS-specific
+orchestration, policy, permission, normalization, and user-experience layer.
+
+A project with an incompatible license or operating model may still be retained
+as an architecture or research reference, but restricted implementation must
+not be copied into AI-OS.
+
+The value of AI-OS is measured by:
+
+- capability;
+- reliability;
+- integration quality;
+- security;
+- replaceability;
+- user simplicity;
+- successful real-world task completion;
+
+not by the number of lines written internally.
+
+---
 
 ---
 
@@ -286,8 +397,14 @@ OpenClaw must not replace Task Engine, Planner, AI Center, Memory, or the broade
 
 ## Agent Boundary and Future Agents
 
-AI-OS v1.0 has one operational execution Agent: OpenClaw. Hermes and Custom
-Agent records exist in the Registry as non-operational placeholders.
+AI-OS is architecturally a multi-Agent platform.
+
+AI-OS v1.0 currently has one operational general execution Agent: OpenClaw.
+Hermes and Custom Agent records exist in the Registry as non-operational
+placeholders.
+
+This is a v1.0 implementation boundary, not a definition of AI-OS as a
+single-Agent product.
 
 The intended v2.0 arrangement is that Hermes becomes the primary Agent, as a
 growth-type agent that accumulates understanding of the user, with OpenClaw
@@ -730,6 +847,10 @@ Secrets must never be hard-coded or committed to source control.
 10. Development-order recommendations do not modify the approved product roadmap.
 11. Product scope or phase changes require an explicit update to this guide approved by the project owner.
 12. Codex or another implementation agent must never silently remove, postpone beyond v1.0, rename, or renumber a frozen v1.0 capability.
+13. Apply Reuse First / GitHub First before substantial new implementation: inspect existing AI-OS capabilities first, then mature external products, and prefer a reviewed Adapter / Provider / Skill / MCP integration over rebuilding equivalent functionality.
+14. Third-party integrations must remain replaceable. AI-OS owns orchestration and product policy; external products own only the specialized implementation delegated to them.
+15. Reuse shared Provider, account, credential, model, Agent, Skill, and Runtime infrastructure whenever an existing contract already satisfies the requirement.
+16. Do not create duplicate login systems, credential stores, Provider Instances, Agent registries, model registries, account systems, or execution systems merely because another capability consumes the same underlying service.
 
 ## Forbidden Patterns
 
@@ -897,18 +1018,18 @@ Goals:
 
 Purpose: expand AI-OS from an execution framework into a practical personal AI operating system with real-world capabilities.
 
-Initial capability areas:
+P15 v1.0 capability areas (10 Skills):
 
-- Email and calendar
-- Browser and search
-- File management
-- Downloads
-- NAS management
-- Document, spreadsheet, and presentation workflows
-- Local model management
-- Computer control
-- Vehicle control
-Additional P15 capability foundations:
+1. Email and Calendar
+2. Browser and Search
+3. File Management
+4. Downloads
+5. NAS Management
+6. Document / Spreadsheet / Presentation Workflows
+7. Local Model Management
+8. Computer Control
+9. Local Generative Media
+10. Cognitive Distillation Foundation
 
 ### Local Generative Media Skill
 
@@ -919,6 +1040,86 @@ Goals:
 - Manage generation orchestration including prompts, models, LoRA selection, and refinement loops
 - Prefer local generation resources before cloud generation providers
 - Preserve user ownership and privacy by avoiding unnecessary cloud uploads
+
+
+#### Generative Media Reuse Architecture
+
+Generative Media follows Reuse First.
+
+##### ComfyUI-Agent-Kit
+
+ComfyUI-Agent-Kit is the preferred reusable foundation for ComfyUI-oriented:
+
+- hardware and runtime inspection where applicable;
+- model and workflow knowledge;
+- model acquisition;
+- model-management assistance;
+- ComfyUI Agent / MCP tooling.
+
+AI-OS should not build a duplicate large ComfyUI model-advisor system when
+reviewed reusable components already provide the required capability.
+
+##### ComfyUI-Mac-Silicon
+
+ComfyUI-Mac-Silicon is retained as Apple Silicon-specific knowledge for:
+
+- MPS;
+- unified memory;
+- Apple Silicon compatibility;
+- Mac-oriented model recommendation;
+- model precision and memory constraints;
+- performance guidance.
+
+External recommendation knowledge is advisory.
+
+AI-OS **GM-2 Ready First** remains authoritative for whether the current
+machine, workflow, model, nodes, runtime, and output path are genuinely usable.
+
+Local model acquisition should follow:
+
+```text
+Inspect actual computer hardware
+  ↓
+Inspect actual local media runtime
+  ↓
+Determine compatible models / quantizations
+  ↓
+Rank for the user's objective
+  ↓
+Confirm acquisition when required
+  ↓
+Download / install
+  ↓
+GM-2 Ready First
+  ↓
+Real smoke generation and output retrieval
+  ↓
+Ready
+```
+
+AI-OS should not download a large model first and only afterward determine that
+the user's computer cannot reasonably use it.
+
+##### Cloud Generative Media Account Reuse
+
+GM-4 must reuse Provider accounts and Provider Instances already connected
+through P13 AI Center / My AI.
+
+GM-4 must not create:
+
+- a second xAI login;
+- a second OpenAI login;
+- a Generative-Media-specific Provider Instance;
+- duplicate OAuth implementations;
+- duplicate Device Code implementations;
+- duplicate Keychain credential storage.
+
+Provider account identity is shared infrastructure.
+
+`Connected` and `Media Executable` are different concepts.
+
+An account may be connected through My AI while lacking a legitimate
+third-party media execution entitlement.
 
 ### Cognitive Distillation Foundation
 
@@ -931,42 +1132,103 @@ Goals:
 - Provide explainable foundations for future AI Council and Strategic Intelligence capabilities
 
 
-### P15 Computer Control and Vehicle Control boundary
+### P15 Computer Control boundary
 
-P15 no longer implements Smart Home / Device Control. That capability is
-deferred outside the current P15 scope because there is no real hardware
-available for end-to-end validation.
+P15 does not implement Smart Home / Device Control.
 
-Computer Control fills deterministic macOS system-level gaps that are not a
-good fit for Computer Use or general OpenClaw execution. It does not duplicate
-GUI automation. Its v1 scope is system state and direct system operations such
-as storage, CPU, memory, network, process, application, clipboard, audio,
-power, notification, and permission capabilities.
+Computer Control fills deterministic system-level gaps that are not a good fit
+for Computer Use or general Agent execution.
 
-Vehicle Control is a separate domain Skill. P15 v1 supports Tesla only through
-an official Tesla Provider.
+It does not duplicate GUI automation.
 
-Vehicle Control v1 includes, where supported by Tesla's official interfaces:
+Its v1.0 scope is deterministic system state and direct system operations such
+as:
 
-- Vehicle state and battery / charging state
-- Climate control
-- Lock and unlock
-- Charging operations and charging limits
-- Navigation destinations and waypoints
-- Other non-driving remote commands exposed by the official Tesla Fleet API
+- storage;
+- CPU;
+- memory;
+- network;
+- processes;
+- applications;
+- clipboard;
+- audio;
+- power;
+- notifications;
+- permissions.
 
-Tesla App integration is permitted as an official handoff and authorization
-path when Tesla requires its own application or user supervision. AI-OS must
-not reverse-engineer unsupported Tesla private APIs.
+Visual GUI understanding and interaction belong to Computer Use / GUI
+intelligence providers rather than Computer Control.
 
-FSD, Actually Smart Summon, autonomous driving, steering, acceleration,
-braking, and other vehicle-motion control are not P15 capabilities. Future
-`vehicle.autonomy.*` or `vehicle.summon.*` capabilities may only be implemented
-if Tesla exposes an appropriate official third-party interface.
 
-Computer Use must not automate safety-critical Tesla App vehicle-motion
-controls as a substitute for an unavailable official API.
+### Accepted v1.0 Reuse Integrations After Generative Media
 
+The following mature external projects are accepted integration candidates
+after the current Generative Media sequence.
+
+They are specialized implementations behind AI-OS boundaries, not replacement
+architectures.
+
+#### Mano-P / Mano-CUA
+
+Role:
+
+- GUI / Computer Use intelligence;
+- visual grounding;
+- visual action reasoning;
+- multi-step GUI interaction.
+
+Preferred boundary:
+
+```text
+AI-OS Task / Plan
+  ↓
+Runtime
+  ↓
+selected Agent / Skill execution path
+  ↓
+Mano-CUA Adapter
+  ↓
+GUI
+```
+
+Mano-P / Mano-CUA does not replace:
+
+- Task Engine;
+- Planner;
+- Runtime;
+- OpenClaw architecture;
+- Computer Control.
+
+Local execution is preferred.
+
+Cloud screenshot or task transmission must not be used as a silent fallback.
+
+#### Magnitude
+
+Role:
+
+- Local Model optimization / inference enhancement for AI Center / My AI.
+
+Potential reusable capabilities include:
+
+- hardware profiling;
+- model recommendation;
+- quantization recommendation;
+- model acquisition;
+- local model lifecycle;
+- inference optimization.
+
+Magnitude does not replace:
+
+- AI Center;
+- Provider Registry;
+- oMLX;
+- Ollama.
+
+AI-OS retains Provider identity, routing, policy, permissions, account
+management, and product experience.
+
+---
 
 ## P16 — Strategic Intelligence and AI Council
 
@@ -1024,6 +1286,31 @@ Minimum acceptance characteristics:
 - AI Council dynamically assembles expert teams under a Chief of Staff and produces decision-support synthesis
 - AI Arena supports controlled, reproducible multi-AI interaction across its required modes while retaining comparison and evaluation records
 - Architecture, permissions, failure handling, and user-facing reporting work as an integrated product
+
+
+## v2.0 Deferred — Social / Community Intelligence
+
+Social / Community Intelligence is explicitly deferred to AI-OS v2.0.
+
+It is not part of the current P15 or v1.0 implementation boundary.
+
+Potential future sources may include:
+
+- Xiaohongshu;
+- Douyin;
+- Bilibili;
+- Weibo;
+- Zhihu;
+- Kuaishou;
+- similar social and community services.
+
+MediaCrawler, Pachong, social-media-copilot, and other reviewed projects remain
+future architecture and reuse references only.
+
+Do not implement this capability during v1.0 unless the project owner
+explicitly changes the roadmap.
+
+---
 
 ---
 
@@ -1087,6 +1374,31 @@ A focused development phase with defined goals and boundaries.
 
 # Change Log
 
+## 2026-09-08 — Multi-Model / Multi-Agent / Multi-Skill Platform
+
+- Defined AI-OS explicitly as a multi-model, multi-Agent, multi-Skill AI
+  application platform.
+- Clarified that OpenClaw-only operational execution in the current v1.0
+  baseline is a release-scope boundary rather than a single-Agent product
+  architecture.
+- Added Reuse First / GitHub First as a mandatory development principle.
+- Required mature compatible products to be investigated before substantial
+  custom implementation.
+- Required shared Provider, account, credential, model, Agent, Skill, and
+  Runtime infrastructure to be reused rather than recreated per capability.
+- Accepted ComfyUI-Agent-Kit and ComfyUI-Mac-Silicon as Generative Media reuse
+  foundations while retaining GM-2 Ready First as execution authority.
+- Required GM-4 to reuse existing P13 / My AI Provider connections.
+- Accepted Mano-P / Mano-CUA as a post-Generative-Media GUI / Computer Use
+  intelligence integration candidate.
+- Accepted Magnitude as a post-Generative-Media Local Model optimization /
+  inference integration candidate.
+- Deferred Social / Community Intelligence to v2.0.
+- Reduced the active P15 v1.0 boundary to exactly 10 Skills.
+- Removed Vehicle Control from AI-OS v1.0 and P15. Earlier v1 Vehicle Control
+  roadmap decisions are superseded.
+
+
 ## 2026-08-02 — Version 2026.3
 
 - Removed all current-status content from this guide; `HANDOFF.md` is now the sole owner of repository state, and the document-authority section says so explicitly.
@@ -1116,6 +1428,7 @@ When making decisions, prefer:
 - Stability
 - Clear architecture
 - User value
+- Reuse of mature, compatible products before custom implementation
 - Incremental progress
 
 ---

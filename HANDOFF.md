@@ -6432,3 +6432,249 @@ selection and paid-cloud budget/authorization semantics without weakening the
 existing Local First rule or silently falling from a failed local route into
 paid cloud execution.
 - 2026-09-08 01:51  P15 GM-2 Final ComfyUI Provider Integration complete
+
+---
+
+## 2026-09-08 — Multi-Model / Multi-Agent / Multi-Skill Platform Decision
+
+### Product identity
+
+AI-OS is a **multi-model, multi-Agent, multi-Skill AI application platform**.
+
+Models, Agents, and Skills are independent replaceable extension dimensions.
+
+The current v1.0 implementation has one operational general execution Agent:
+OpenClaw.
+
+This is a current release-scope boundary, not a single-Agent architecture
+decision.
+
+The Runtime-to-Agent contract must remain general so future operational Agents
+can be added without redesigning Task Engine, Planner, or Runtime.
+
+### Reuse First / GitHub First
+
+Before substantial new implementation:
+
+1. inspect whether AI-OS already has the required capability;
+2. search GitHub, open-source ecosystems, and mature products;
+3. evaluate license, commercial compatibility, security, maintenance,
+   maturity, platform support, architecture fit, installation/runtime burden,
+   and ordinary-user UX;
+4. prefer Adapter / Provider / Skill / MCP integration;
+5. implement only the missing AI-OS-specific layer.
+
+AI-OS should minimize custom implementation when mature compatible products
+already solve the specialized problem.
+
+AI-OS owns orchestration, Task / Plan lifecycle, Runtime policy, permissions,
+confirmation, stable contracts, normalized results, and product experience.
+
+External products remain replaceable specialized implementations behind those
+boundaries.
+
+### Shared infrastructure reuse
+
+Skills and capability providers must reuse existing shared infrastructure when
+the existing contract is sufficient.
+
+This includes:
+
+- Provider accounts;
+- Provider Instances;
+- Provider Registry;
+- credentials;
+- Keychain storage;
+- Agent registry;
+- model infrastructure;
+- Skill infrastructure;
+- Runtime execution infrastructure.
+
+Do not create duplicate login, credential, Provider Instance, Agent registry,
+model registry, or execution systems merely because another capability consumes
+the same external service.
+
+### P15 v1.0 boundary — exactly 10 Skills
+
+The active P15 v1.0 capability boundary is now exactly:
+
+1. Email and Calendar
+2. Browser and Search
+3. File Management
+4. Downloads
+5. NAS Management
+6. Document / Spreadsheet / Presentation Workflows
+7. Local Model Management
+8. Computer Control
+9. Local Generative Media
+10. Cognitive Distillation Foundation
+
+### Vehicle Control — removed from v1.0
+
+Vehicle Control is **not part of AI-OS v1.0**.
+
+Vehicle Control is **not part of the active P15 boundary**.
+
+AI-OS v1.0 will not implement or accept:
+
+- Tesla Fleet API integration;
+- Tesla App integration;
+- vehicle state/control capabilities;
+- vehicle navigation handoff;
+- charging control;
+- climate control;
+- lock/unlock;
+- any other Vehicle Control capability.
+
+This decision **supersedes all earlier v1.0 / P15 Vehicle Control roadmap
+decisions**.
+
+Vehicle Control currently has no assigned implementation phase.
+
+It may only return to the roadmap through a future explicit project-owner
+decision.
+
+### Generative Media — GM-4 account reuse
+
+GM-4 reuses P13 / My AI Provider accounts and Provider Instances.
+
+GM-4 must not create:
+
+- a second xAI login;
+- a second OpenAI login;
+- duplicate OAuth;
+- duplicate Device Code authentication;
+- a Generative-Media-specific Provider Instance;
+- duplicate Keychain credential storage.
+
+`Connected` and `Media Executable` remain distinct states.
+
+A My AI Provider can be connected while still lacking a legitimate executable
+media entitlement.
+
+### Generative Media — ComfyUI reuse
+
+ComfyUI-Agent-Kit is accepted as the preferred reusable foundation for:
+
+- ComfyUI hardware/runtime inspection where applicable;
+- model/workflow knowledge;
+- model acquisition;
+- model-management assistance;
+- ComfyUI Agent / MCP tooling.
+
+ComfyUI-Mac-Silicon is accepted as the Apple Silicon knowledge source for:
+
+- MPS;
+- unified memory;
+- Mac model compatibility;
+- model recommendation;
+- memory / precision / performance constraints.
+
+AI-OS should not build a duplicate large ComfyUI model-advisor system unless
+real product gaps remain after these reusable sources are evaluated.
+
+GM-2 Ready First remains authoritative.
+
+Model acquisition order:
+
+```text
+inspect actual machine/runtime
+→ determine compatible model/version/quant
+→ rank for user objective
+→ confirm acquisition when required
+→ download/install
+→ GM-2 Ready First
+→ real smoke/output validation
+```
+
+Do not download a large model first and only afterward discover that the target
+machine cannot reasonably run it.
+
+### Mano-P / Mano-CUA
+
+Accepted as a v1.0 post-Generative-Media GUI / Computer Use intelligence
+integration candidate.
+
+Potential role:
+
+- visual GUI understanding;
+- GUI grounding;
+- click/type/scroll/drag reasoning;
+- multi-step visual interaction.
+
+It remains behind existing AI-OS Agent / Skill / Runtime boundaries.
+
+It does not replace Task Engine, Planner, Runtime, OpenClaw architecture, or
+Computer Control.
+
+Local mode is preferred.
+
+Cloud screenshot/task transmission must not be a silent fallback.
+
+### Magnitude
+
+Accepted as a v1.0 post-Generative-Media Local Model optimization / inference
+integration candidate for AI Center / My AI.
+
+Potential reusable capabilities:
+
+- hardware profiling;
+- model recommendation;
+- quantization recommendation;
+- model acquisition;
+- local model lifecycle;
+- inference optimization.
+
+Magnitude does not replace AI Center, Provider Registry, oMLX, or Ollama.
+
+### Social / Community Intelligence
+
+Social / Community Intelligence is explicitly deferred to v2.0.
+
+MediaCrawler, Pachong, social-media-copilot, and related reviewed projects remain
+future architecture / reuse references only.
+
+Do not implement this capability during current P15 / v1.0 unless the project
+owner explicitly changes the roadmap.
+
+### Documentation authority
+
+`AI_OS_MASTER_GUIDE.md` owns:
+
+- product definition;
+- architecture;
+- development rules;
+- P9-P17 roadmap.
+
+`HANDOFF.md` remains the sole source of truth for:
+
+- current repository state;
+- completed work;
+- current milestone;
+- next work;
+- blockers;
+- accepted / rejected / deferred implementation decisions.
+
+### Current Generative Media direction
+
+GM-2 remains complete.
+
+Next implementation sequence:
+
+1. GM-4 — Cloud Providers
+2. GM-5 — Prompt / Reference Intelligence
+3. ComfyUI-Agent-Kit / ComfyUI-Mac-Silicon reuse within the appropriate
+   Generative Media implementation boundary
+4. GM-6 — Quality Loop
+5. Generative Media closure
+
+Accepted post-Generative-Media reuse sequence:
+
+1. Mano-P / Mano-CUA
+2. Magnitude
+3. Cognitive Distillation completion
+4. NAS Management foundation
+
+Social / Community Intelligence remains v2.0.
+
+Vehicle Control is not part of v1.0.
