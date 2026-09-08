@@ -200,9 +200,9 @@ fn media_error(code: MediaErrorCode, message: &str, retryable: bool) -> MediaErr
     }
 }
 
-struct StoredAsset {
-    asset_id: String,
-    handle: String,
+pub(crate) struct StoredAsset {
+    pub(crate) asset_id: String,
+    pub(crate) handle: String,
 }
 
 fn local_asset_root() -> Result<PathBuf, String> {
@@ -220,16 +220,17 @@ fn extension_for_mime(mime_type: &str) -> Result<&'static str, String> {
         "image/png" => Ok("png"),
         "image/jpeg" => Ok("jpg"),
         "image/webp" => Ok("webp"),
-        _ => Err("Generated image MIME type is unsupported".to_owned()),
+        "video/mp4" => Ok("mp4"),
+        _ => Err("Generated media MIME type is unsupported".to_owned()),
     }
 }
 
-fn store_local_asset(bytes: &[u8], mime_type: &str) -> Result<StoredAsset, String> {
+pub(crate) fn store_local_asset(bytes: &[u8], mime_type: &str) -> Result<StoredAsset, String> {
     let root = local_asset_root()?;
     store_local_asset_at(&root, bytes, mime_type)
 }
 
-fn store_local_asset_at(
+pub(crate) fn store_local_asset_at(
     root: &std::path::Path,
     bytes: &[u8],
     mime_type: &str,

@@ -2031,16 +2031,19 @@ mod gm2_final_provider_integration_tests {
 
         let metadata = registry.metadata();
 
+        let local_comfyui = metadata
+            .iter()
+            .filter(|provider| provider.provider_id == COMFYUI_LOCAL_PROVIDER_ID)
+            .collect::<Vec<_>>();
+
         assert_eq!(
-            metadata.len(),
+            local_comfyui.len(),
             1,
-            "production registry should contain exactly the Ready local provider"
+            "production registry should contain exactly one local ComfyUI provider"
         );
 
-        assert_eq!(metadata[0].provider_id, COMFYUI_LOCAL_PROVIDER_ID);
-
         assert!(
-            metadata[0].is_local_ready(),
+            local_comfyui[0].is_local_ready(),
             "production registry may only expose Ready local ComfyUI"
         );
 

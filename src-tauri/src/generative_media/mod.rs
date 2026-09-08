@@ -1,3 +1,4 @@
+pub(crate) mod cloud_provider;
 pub(crate) mod comfyui;
 pub(crate) mod comfyui_execution;
 #[cfg(target_os = "macos")]

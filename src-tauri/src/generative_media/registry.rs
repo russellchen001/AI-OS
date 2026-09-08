@@ -110,6 +110,20 @@ impl MediaProviderRegistry {
                 .expect("production ComfyUI provider identity must be unique");
         }
 
+        if let Ok(instances) = crate::providers::list_provider_instances() {
+            for instance in instances {
+                if let Some(provider) =
+                    crate::generative_media::cloud_provider::CloudMediaProvider::from_provider_instance(
+                        &instance,
+                    )
+                {
+                    registry
+                        .register(provider)
+                        .expect("production Cloud Media provider identity must be unique");
+                }
+            }
+        }
+
         registry
     }
 }

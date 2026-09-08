@@ -1928,13 +1928,7 @@ fn validate_instance_id(value: &str) -> Result<&str, String> {
 
 #[cfg(target_os = "macos")]
 fn store_secret(account: &str, secret: &[u8], caller: &str) -> Result<(), String> {
-    crate::keychain_trace::record(
-        "WRITE_UPSERT",
-        caller,
-        KEYCHAIN_SERVICE,
-        account,
-        "UPDATE",
-    );
+    crate::keychain_trace::record("WRITE_UPSERT", caller, KEYCHAIN_SERVICE, account, "UPDATE");
     security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, account, secret)
         .map_err(|_| "macOS Keychain could not store the Provider credential".to_owned())?;
     provider_credential_cache().store(account, secret)
@@ -3044,11 +3038,7 @@ async fn complete_oauth_exchange(
     let stored = serde_json::to_vec(&token)
         .map_err(|_| "AI-OS could not secure the OAuth token".to_owned())?;
 
-    store_secret(
-        &session.provider_instance_id,
-        &stored,
-        "oauth_completion",
-    )?;
+    store_secret(&session.provider_instance_id, &stored, "oauth_completion")?;
 
     Ok(CompleteOAuthResult {
         provider_instance_id: session.provider_instance_id,
@@ -3057,11 +3047,30 @@ async fn complete_oauth_exchange(
     })
 }
 
+pub(crate) struct ProviderExecutionAuthorization {
+    pub access_token: String,
+    pub route_kind: Option<String>,
+    pub account_id: Option<String>,
+}
+
+pub(crate) async fn provider_execution_authorization(
+    instance_id: &str,
+    caller: &str,
+) -> Result<ProviderExecutionAuthorization, String> {
+    let credential = read_current_credential(validate_instance_id(instance_id)?, caller).await?;
+
+    Ok(ProviderExecutionAuthorization {
+        access_token: credential.value,
+        route_kind: credential.route_kind,
+        account_id: credential.account_id,
+    })
+}
+
 pub(crate) async fn provider_access_token(instance_id: &str) -> Result<String, String> {
     Ok(
-        read_current_credential(validate_instance_id(instance_id)?, "provider_access_token")
+        provider_execution_authorization(instance_id, "provider_access_token")
             .await?
-            .value,
+            .access_token,
     )
 }
 
@@ -3783,11 +3792,8 @@ async fn send_omlx_stream_request(
         .timeout(Duration::from_secs(600))
         .build()
         .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
-    let credential = read_current_credential(
-        &candidate.provider_instance_id,
-        "ai_center_omlx_stream",
-    )
-    .await?;
+    let credential =
+        read_current_credential(&candidate.provider_instance_id, "ai_center_omlx_stream").await?;
     let request = authenticate_provider_request(
         client.post("http://127.0.0.1:8000/v1/chat/completions"),
         AuthStyle::Bearer,
@@ -4362,8 +4368,14 @@ mod tests {
     #[test]
     fn provider_keychain_namespace_stays_compatible_with_existing_items() {
         assert_eq!(KEYCHAIN_SERVICE, "com.ai-os.provider");
-        assert_eq!(validate_instance_id("openai-default").unwrap(), "openai-default");
-        assert_eq!(validate_instance_id("google-default").unwrap(), "google-default");
+        assert_eq!(
+            validate_instance_id("openai-default").unwrap(),
+            "openai-default"
+        );
+        assert_eq!(
+            validate_instance_id("google-default").unwrap(),
+            "google-default"
+        );
     }
 
     #[test]

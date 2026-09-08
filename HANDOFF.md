@@ -6678,3 +6678,89 @@ Accepted post-Generative-Media reuse sequence:
 Social / Community Intelligence remains v2.0.
 
 Vehicle Control is not part of v1.0.
+
+## 2026-09-08 — P15 GM-4 Cloud Providers — Completed
+
+Status: Completed.
+
+Product/architecture decisions:
+
+- Generative Media reuses the existing P13 / My AI Provider Instance and credential infrastructure.
+- GM-4 does not create a second login, OAuth, Device Code, API-key storage, Keychain namespace, Provider Instance registry, or account UI.
+- One connected Provider account remains reusable by Chat, AI Council, AI Arena, Generative Media, and future Skills.
+- `Connected` and media execution entitlement remain distinct concepts.
+- The current production machine has connected OAuth Provider Instances for:
+  - `grok-default` (`providerId=grok`)
+  - `openai-default` (`providerId=openai`)
+- OAuth cloud media is treated as `subscription-entitlement`, not silently reclassified as metered API spend.
+- API-key cloud media is fail-closed before credential access/network execution until AI-OS has an explicit media spend envelope.
+- xAI is the recommended generic Cloud Media provider.
+- OpenAI remains the secondary Cloud Media provider.
+- Manual Provider selection remains exact.
+- Provider execution failure, authorization rejection, entitlement rejection, budget rejection, or policy rejection does not cause silent Provider switching.
+- Local First remains unchanged: failure/unreadiness of Local Media never silently creates paid cloud execution.
+
+GM-4 production capabilities:
+
+- xAI:
+  - `media.text-to-image`
+  - `media.image-edit`
+  - `media.text-to-video`
+  - `media.image-to-video`
+- OpenAI:
+  - `media.text-to-image`
+  - `media.image-edit`
+
+Production model defaults at implementation:
+
+- xAI image: `grok-imagine-image-2.0`
+- xAI video: `grok-imagine-video-1.5`
+- OpenAI image: `gpt-image-2`
+
+Execution path:
+
+`MediaRequest`
+→ `MediaRouter`
+→ exact `MediaProvider`
+→ existing P13 Provider Instance
+→ lazy P13 credential resolution / OAuth refresh
+→ official provider media endpoint
+→ output bytes
+→ AI-OS Generative Media asset storage
+→ opaque `asset://generative-media/...`
+→ normalized `MediaResult`
+
+Security/budget invariants:
+
+- Provider credentials remain outside `MediaProviderMetadata` and `MediaResult`.
+- OAuth access tokens are loaded lazily only after routing and admission.
+- API-key metered execution is rejected before backend entry, therefore before Keychain access and before network execution.
+- Returned assets contain no provider secret material.
+- Provider outputs are copied into AI-OS-managed asset storage rather than exposing temporary provider URLs.
+- xAI video presigned download URLs are consumed internally and are not returned as the stable asset handle.
+
+Reference boundary:
+
+- GM-4 accepts AI-OS Generative Media asset handles and base64 image data URLs for cloud image-reference operations.
+- Broader reference understanding, attachment interpretation, semantic prompt compilation, and reference intelligence remain GM-5 responsibilities.
+
+Acceptance:
+
+- deterministic Cloud Provider tests
+- subscription OAuth execution path
+- metered API fail-closed-before-backend path
+- opaque AI-OS cloud asset normalization
+- no secret material in result serialization
+- unsupported capability rejected before provider execution
+- xAI recommended / OpenAI secondary
+- existing Local First router invariants preserved
+- existing exact-provider/no-fallback executor invariant preserved
+- connected Provider Instance configuration validated without reading Keychain secrets
+- real cloud generation E2E is explicit opt-in only and may SKIP without failing deterministic GM-4 closure
+
+Next Generative Media milestone:
+
+- GM-5 — Prompt / Reference Intelligence
+- then GM-6 — Quality Loop
+- then Generative Media closure
+- 2026-09-09 00:54  P15 GM-4 Cloud Providers complete; GM-2 production-registry test generalized for cloud providers
