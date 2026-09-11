@@ -8,6 +8,8 @@ pub(crate) mod comfyui_provider;
 pub(crate) mod comfyui_setup;
 pub(crate) mod domain;
 pub(crate) mod executor;
+pub(crate) mod model_advisor;
+pub(crate) mod prompt_intelligence;
 pub(crate) mod provider;
 pub(crate) mod registry;
 pub(crate) mod router;

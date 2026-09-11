@@ -86,6 +86,25 @@ pub(crate) struct MediaReference {
     pub handle: String,
 }
 
+/// Provider-neutral intelligence derived from one bounded reference asset.
+/// The opaque source id and analyzer identity make every constraint traceable
+/// without persisting the original bytes or a generated prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReferenceSpec {
+    pub source_reference_id: String,
+    pub kind: MediaKind,
+    pub analyzer_provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyzer_provider_instance_id: Option<String>,
+    pub summary: String,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub temporal_events: Vec<String>,
+    pub provenance_sha256: String,
+}
+
 /// Provider-neutral representation of what the user wants.
 ///
 /// GM-1 keeps this intentionally small. Camera, lighting, composition, motion
@@ -101,6 +120,74 @@ pub(crate) struct CreativeIntent {
     pub constraints: Vec<String>,
     #[serde(default)]
     pub preferences: Vec<String>,
+    #[serde(default)]
+    pub details: CreativeIntentDetails,
+}
+
+/// Optional structured creative controls. Empty fields mean that the user's
+/// original wording is authoritative and does not need prompt expansion.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreativeIntentDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_context: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_framing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mood: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal_behavior: Option<String>,
+    #[serde(default)]
+    pub negative_constraints: Vec<String>,
+}
+
+impl CreativeIntentDetails {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.subject.is_none()
+            && self.scene_context.is_none()
+            && self.composition.is_none()
+            && self.camera_framing.is_none()
+            && self.style.is_none()
+            && self.lighting.is_none()
+            && self.mood.is_none()
+            && self.color.is_none()
+            && self.motion.is_none()
+            && self.temporal_behavior.is_none()
+            && self.negative_constraints.is_empty()
+    }
+}
+
+/// User-authoritative generation choices. A compiler or advisor may fill an
+/// omitted value, but must never replace a supplied value or provider identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MediaGenerationOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<u32>,
+    #[serde(default)]
+    pub enhance_prompt: bool,
 }
 
 /// An explicitly selected media provider.
@@ -126,6 +213,10 @@ pub(crate) struct MediaRequest {
     pub execution_target: MediaExecutionTarget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manual_provider: Option<MediaProviderSelection>,
+    #[serde(default)]
+    pub options: MediaGenerationOptions,
+    #[serde(default)]
+    pub normalized_references: Vec<ReferenceSpec>,
 }
 
 /// Opaque result produced by a provider.
@@ -208,6 +299,7 @@ mod tests {
             references: vec![reference()],
             constraints: vec!["preserve vehicle proportions".to_owned()],
             preferences: vec!["cinematic".to_owned()],
+            details: CreativeIntentDetails::default(),
         }
     }
 
@@ -219,6 +311,8 @@ mod tests {
             route_mode: MediaRouteMode::Auto,
             execution_target: MediaExecutionTarget::LocalFirst,
             manual_provider: None,
+            options: MediaGenerationOptions::default(),
+            normalized_references: Vec::new(),
         };
 
         let json = serde_json::to_value(request).unwrap();
@@ -245,6 +339,8 @@ mod tests {
                 provider_id: "openai".to_owned(),
                 provider_instance_id: Some("openai-primary".to_owned()),
             }),
+            options: MediaGenerationOptions::default(),
+            normalized_references: Vec::new(),
         };
 
         let json = serde_json::to_value(request).unwrap();

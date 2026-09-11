@@ -7481,9 +7481,15 @@ Acceptance evidence:
   - AR-1B Accepted (`PASS=19 FAIL=0`)
   - AR-1C Accepted (`PASS=15 FAIL=0`, real OpenClaw E2E PASS)
 - Generative Media: GM-4 Complete
-- GM-5: Not started; prior uncommitted attempt withdrawn
+- GM-5: In Progress — provider-scoped Prompt Intelligence implemented; Reference Intelligence pending
 - GM-6: Not started
 
 Next:
 
 - GM-5 — Prompt / Reference Intelligence
+
+GM-5 technical decision: MediaRouter fixes Provider identity first; the
+Provider-scoped Prompt Compiler and Model/Profile Advisor may refine only the
+request beneath that exact Provider/instance and preserve explicit user model,
+profile and verbatim-prompt choices. Prompt metadata persists a digest, never
+the generated or original prompt text.

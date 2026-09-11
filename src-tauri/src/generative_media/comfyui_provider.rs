@@ -89,6 +89,32 @@ impl MediaProvider for ComfyUiLocalProvider {
             ));
         }
 
+        if request
+            .options
+            .profile_id
+            .as_deref()
+            .is_some_and(|profile| profile != self.ready.profile_id)
+        {
+            return Err(media_error(
+                MediaErrorCode::InvalidRequest,
+                "The selected local generation profile is not the Ready ComfyUI profile.",
+                false,
+            ));
+        }
+
+        if request
+            .options
+            .model_id
+            .as_deref()
+            .is_some_and(|model| model != self.ready.checkpoint_name)
+        {
+            return Err(media_error(
+                MediaErrorCode::InvalidRequest,
+                "The selected local model is not the checkpoint proven Ready for this provider instance.",
+                false,
+            ));
+        }
+
         report(MediaProgress {
             phase: "starting".to_owned(),
             completed_units: Some(0),

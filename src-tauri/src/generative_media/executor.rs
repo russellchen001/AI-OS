@@ -3,6 +3,7 @@ use super::{
         MediaError, MediaErrorCode, MediaProgress, MediaProviderSelection, MediaRequest,
         MediaResult,
     },
+    prompt_intelligence::prepare_media_request,
     registry::MediaProviderRegistry,
     router::{MediaRouteError, MediaRouter},
 };
@@ -45,7 +46,8 @@ pub(crate) fn execute_media_request(
             retryable: true,
         })?;
 
-    let result = provider.execute(request, report)?;
+    let prepared = prepare_media_request(provider.metadata(), request);
+    let mut result = provider.execute(&prepared.request, report)?;
 
     if result.provider_id != route.provider_id
         || result.provider_instance_id != route.provider_instance_id
@@ -56,6 +58,24 @@ pub(crate) fn execute_media_request(
                 .to_owned(),
             retryable: false,
         });
+    }
+
+    let prompt_metadata = serde_json::to_value(prepared.metadata).map_err(|_| MediaError {
+        code: MediaErrorCode::ProviderError,
+        message: "Prompt Intelligence metadata could not be serialized.".to_owned(),
+        retryable: false,
+    })?;
+
+    match result.metadata.as_object_mut() {
+        Some(metadata) => {
+            metadata.insert("promptIntelligence".to_owned(), prompt_metadata);
+        }
+        None => {
+            result.metadata = serde_json::json!({
+                "providerMetadata": result.metadata,
+                "promptIntelligence": prompt_metadata,
+            });
+        }
     }
 
     Ok(result)
@@ -87,17 +107,12 @@ mod tests {
     use crate::{
         generative_media::{
             domain::{
-                CreativeIntent, LawfulContentCompatibility, MediaCapability,
-                MediaExecutionTarget, MediaKind, MediaOutput, MediaProviderSource,
-                MediaRouteMode,
+                CreativeIntent, LawfulContentCompatibility, MediaCapability, MediaExecutionTarget,
+                MediaKind, MediaOutput, MediaProviderSource, MediaRouteMode,
             },
-            provider::{
-                LocalMediaReadiness, MediaProvider, MediaProviderMetadata,
-            },
+            provider::{LocalMediaReadiness, MediaProvider, MediaProviderMetadata},
         },
-        provider_selection::{
-            AuthorizationKind, AuthorizationState, ProviderInterfaceKind,
-        },
+        provider_selection::{AuthorizationKind, AuthorizationState, ProviderInterfaceKind},
     };
 
     struct StubProvider {
@@ -174,6 +189,7 @@ mod tests {
                 references: Vec::new(),
                 constraints: Vec::new(),
                 preferences: Vec::new(),
+                details: Default::default(),
             },
             route_mode: MediaRouteMode::Manual,
             execution_target: target,
@@ -181,6 +197,8 @@ mod tests {
                 provider_id: provider_id.to_owned(),
                 provider_instance_id: instance.map(str::to_owned),
             }),
+            options: Default::default(),
+            normalized_references: Vec::new(),
         }
     }
 
@@ -204,11 +222,7 @@ mod tests {
 
         registry
             .register(StubProvider {
-                metadata: metadata(
-                    "local-fixture",
-                    None,
-                    MediaProviderSource::Local,
-                ),
+                metadata: metadata("local-fixture", None, MediaProviderSource::Local),
                 outcome: Ok(success("local-fixture", None)),
                 progress: vec![MediaProgress {
                     phase: "generate".to_owned(),
@@ -223,11 +237,7 @@ mod tests {
 
         let result = execute_media_request(
             &registry,
-            &request(
-                "local-fixture",
-                None,
-                MediaExecutionTarget::Local,
-            ),
+            &request("local-fixture", None, MediaExecutionTarget::Local),
             &mut |update| progress.push(update),
         )
         .unwrap();
@@ -261,11 +271,7 @@ mod tests {
 
         registry
             .register(StubProvider {
-                metadata: metadata(
-                    "cloud-other",
-                    Some("primary"),
-                    MediaProviderSource::Cloud,
-                ),
+                metadata: metadata("cloud-other", Some("primary"), MediaProviderSource::Cloud),
                 outcome: Ok(success("cloud-other", Some("primary"))),
                 progress: Vec::new(),
             })
@@ -330,10 +336,13 @@ mod tests {
                     references: Vec::new(),
                     constraints: Vec::new(),
                     preferences: Vec::new(),
+                    details: Default::default(),
                 },
                 route_mode: MediaRouteMode::Auto,
                 execution_target: MediaExecutionTarget::LocalFirst,
                 manual_provider: None,
+                options: Default::default(),
+                normalized_references: Vec::new(),
             },
             &mut |_| {},
         )

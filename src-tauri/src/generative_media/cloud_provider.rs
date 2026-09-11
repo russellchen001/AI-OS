@@ -420,15 +420,21 @@ fn execute_xai_image(
 ) -> Result<CloudGeneratedAsset, MediaError> {
     let client = blocking_client(IMAGE_TIMEOUT)?;
     let session_id = Uuid::new_v4().to_string();
+    let model = request
+        .options
+        .model_id
+        .as_deref()
+        .unwrap_or(XAI_IMAGE_MODEL);
+    let aspect_ratio = request.options.aspect_ratio.as_deref().unwrap_or("1:1");
 
     let (url, payload) = match request.capability {
         MediaCapability::TextToImage => (
             format!("{XAI_API_BASE}/images/generations"),
             serde_json::json!({
-                "model": XAI_IMAGE_MODEL,
+                "model": model,
                 "prompt": request.intent.request,
                 "n": 1,
-                "aspect_ratio": "1:1",
+                "aspect_ratio": aspect_ratio,
                 "resolution": "1k",
                 "response_format": "b64_json"
             }),
@@ -436,7 +442,7 @@ fn execute_xai_image(
         MediaCapability::ImageEdit => {
             let images = image_reference_data_urls(request)?;
             let mut payload = serde_json::json!({
-                "model": XAI_IMAGE_MODEL,
+                "model": model,
                 "prompt": request.intent.request,
                 "n": 1,
                 "resolution": "1k",
@@ -492,7 +498,7 @@ fn execute_xai_image(
     Ok(CloudGeneratedAsset {
         mime_type: detect_image_mime(&bytes)?.to_owned(),
         bytes,
-        model: XAI_IMAGE_MODEL.to_owned(),
+        model: model.to_owned(),
         request_id,
     })
 }
@@ -503,6 +509,13 @@ fn execute_xai_video(
 ) -> Result<CloudGeneratedAsset, MediaError> {
     let client = blocking_client(VIDEO_START_TIMEOUT)?;
     let session_id = Uuid::new_v4().to_string();
+    let model = request
+        .options
+        .model_id
+        .as_deref()
+        .unwrap_or(XAI_VIDEO_MODEL);
+    let duration = request.options.duration_seconds.unwrap_or(6);
+    let aspect_ratio = request.options.aspect_ratio.as_deref().unwrap_or("16:9");
 
     let image = if request.capability == MediaCapability::ImageToVideo {
         Some(
@@ -522,10 +535,10 @@ fn execute_xai_video(
     };
 
     let mut payload = serde_json::json!({
-        "model": XAI_VIDEO_MODEL,
+        "model": model,
         "prompt": request.intent.request,
-        "duration": 6,
-        "aspect_ratio": "16:9",
+        "duration": duration,
+        "aspect_ratio": aspect_ratio,
         "resolution": "480p"
     });
 
@@ -642,7 +655,7 @@ fn execute_xai_video(
                 return Ok(CloudGeneratedAsset {
                     bytes: bytes.to_vec(),
                     mime_type: "video/mp4".to_owned(),
-                    model: XAI_VIDEO_MODEL.to_owned(),
+                    model: model.to_owned(),
                     request_id: Some(request_id),
                 });
             }
@@ -685,28 +698,37 @@ fn execute_openai(
     } else {
         OPENAI_API_BASE
     };
+    let model = request
+        .options
+        .model_id
+        .as_deref()
+        .unwrap_or(OPENAI_IMAGE_MODEL);
+    let size = match (request.options.width, request.options.height) {
+        (Some(width), Some(height)) => format!("{width}x{height}"),
+        _ => "1024x1024".to_owned(),
+    };
 
     let (path, payload) = match request.capability {
         MediaCapability::TextToImage => (
             "images/generations",
             serde_json::json!({
-                "model": OPENAI_IMAGE_MODEL,
+                "model": model,
                 "prompt": request.intent.request,
                 "quality": "low",
-                "size": "1024x1024"
+                "size": size
             }),
         ),
         MediaCapability::ImageEdit => (
             "images/edits",
             serde_json::json!({
-                "model": OPENAI_IMAGE_MODEL,
+                "model": model,
                 "prompt": request.intent.request,
                 "images": image_reference_data_urls(request)?
                     .into_iter()
                     .map(|image_url| serde_json::json!({ "image_url": image_url }))
                     .collect::<Vec<_>>(),
                 "quality": "low",
-                "size": "1024x1024"
+                "size": size
             }),
         ),
         _ => unreachable!(),
@@ -749,7 +771,7 @@ fn execute_openai(
     Ok(CloudGeneratedAsset {
         mime_type: detect_image_mime(&bytes)?.to_owned(),
         bytes,
-        model: OPENAI_IMAGE_MODEL.to_owned(),
+        model: model.to_owned(),
         request_id,
     })
 }
@@ -981,6 +1003,7 @@ mod tests {
                 references: Vec::new(),
                 constraints: Vec::new(),
                 preferences: Vec::new(),
+                details: Default::default(),
             },
             route_mode: MediaRouteMode::Manual,
             execution_target: MediaExecutionTarget::Cloud,
@@ -988,6 +1011,8 @@ mod tests {
                 provider_id: provider.to_owned(),
                 provider_instance_id: Some(instance.to_owned()),
             }),
+            options: Default::default(),
+            normalized_references: Vec::new(),
         }
     }
 
@@ -1175,6 +1200,7 @@ mod tests {
                 }],
                 constraints: Vec::new(),
                 preferences: Vec::new(),
+                details: Default::default(),
             },
             route_mode: MediaRouteMode::Manual,
             execution_target: MediaExecutionTarget::Cloud,
@@ -1182,6 +1208,8 @@ mod tests {
                 provider_id: XAI_PROVIDER_ID.to_owned(),
                 provider_instance_id: Some("grok-default".to_owned()),
             }),
+            options: Default::default(),
+            normalized_references: Vec::new(),
         };
 
         let encoded = image_reference_data_urls(&request).unwrap();

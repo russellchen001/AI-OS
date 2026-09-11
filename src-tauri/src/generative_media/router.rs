@@ -49,30 +49,18 @@ impl<'a> MediaRouter<'a> {
         Self { registry }
     }
 
-    pub(crate) fn resolve(
-        &self,
-        request: &MediaRequest,
-    ) -> Result<MediaRoute, MediaRouteError> {
+    pub(crate) fn resolve(&self, request: &MediaRequest) -> Result<MediaRoute, MediaRouteError> {
         match request.route_mode {
             MediaRouteMode::Manual => self.resolve_manual(request),
             MediaRouteMode::Auto => match request.execution_target {
-                MediaExecutionTarget::LocalFirst => {
-                    self.resolve_local_first(request.capability)
-                }
-                MediaExecutionTarget::Local => {
-                    self.resolve_local(request.capability)
-                }
-                MediaExecutionTarget::Cloud => {
-                    self.resolve_cloud(request.capability)
-                }
+                MediaExecutionTarget::LocalFirst => self.resolve_local_first(request.capability),
+                MediaExecutionTarget::Local => self.resolve_local(request.capability),
+                MediaExecutionTarget::Cloud => self.resolve_cloud(request.capability),
             },
         }
     }
 
-    fn resolve_manual(
-        &self,
-        request: &MediaRequest,
-    ) -> Result<MediaRoute, MediaRouteError> {
+    fn resolve_manual(&self, request: &MediaRequest) -> Result<MediaRoute, MediaRouteError> {
         let selection = request
             .manual_provider
             .as_ref()
@@ -116,17 +104,12 @@ impl<'a> MediaRouter<'a> {
         self.resolve_local(capability)
     }
 
-    fn resolve_local(
-        &self,
-        capability: MediaCapability,
-    ) -> Result<MediaRoute, MediaRouteError> {
+    fn resolve_local(&self, capability: MediaCapability) -> Result<MediaRoute, MediaRouteError> {
         let mut candidates = self
             .registry
             .supporting(capability)
             .into_iter()
-            .filter(|provider| {
-                provider.metadata().source == MediaProviderSource::Local
-            })
+            .filter(|provider| provider.metadata().source == MediaProviderSource::Local)
             .collect::<Vec<_>>();
 
         if candidates.is_empty() {
@@ -138,17 +121,12 @@ impl<'a> MediaRouter<'a> {
         self.admit_provider(candidates[0], capability)
     }
 
-    fn resolve_cloud(
-        &self,
-        capability: MediaCapability,
-    ) -> Result<MediaRoute, MediaRouteError> {
+    fn resolve_cloud(&self, capability: MediaCapability) -> Result<MediaRoute, MediaRouteError> {
         let mut candidates = self
             .registry
             .supporting(capability)
             .into_iter()
-            .filter(|provider| {
-                provider.metadata().source == MediaProviderSource::Cloud
-            })
+            .filter(|provider| provider.metadata().source == MediaProviderSource::Cloud)
             .collect::<Vec<_>>();
 
         if candidates.is_empty() {
@@ -259,9 +237,7 @@ mod tests {
             },
             provider::MediaProviderMetadata,
         },
-        provider_selection::{
-            AuthorizationKind, AuthorizationState, ProviderInterfaceKind,
-        },
+        provider_selection::{AuthorizationKind, AuthorizationState, ProviderInterfaceKind},
     };
 
     struct StubProvider {
@@ -301,12 +277,8 @@ mod tests {
                 provider_instance_id: instance.map(str::to_owned),
                 source,
                 interface_kind: match source {
-                    MediaProviderSource::Local => {
-                        ProviderInterfaceKind::NativeStructured
-                    }
-                    MediaProviderSource::Cloud => {
-                        ProviderInterfaceKind::OfficialApi
-                    }
+                    MediaProviderSource::Local => ProviderInterfaceKind::NativeStructured,
+                    MediaProviderSource::Cloud => ProviderInterfaceKind::OfficialApi,
                 },
                 authorization_kind: match source {
                     MediaProviderSource::Local => AuthorizationKind::None,
@@ -345,16 +317,17 @@ mod tests {
                 references: Vec::new(),
                 constraints: Vec::new(),
                 preferences: Vec::new(),
+                details: Default::default(),
             },
             route_mode,
             execution_target,
             manual_provider,
+            options: Default::default(),
+            normalized_references: Vec::new(),
         }
     }
 
-    fn local_and_cloud_registry(
-        readiness: LocalMediaReadiness,
-    ) -> MediaProviderRegistry {
+    fn local_and_cloud_registry(readiness: LocalMediaReadiness) -> MediaProviderRegistry {
         let mut registry = MediaProviderRegistry::new();
 
         registry
@@ -392,8 +365,7 @@ mod tests {
 
     #[test]
     fn local_first_routes_to_ready_local_provider() {
-        let registry =
-            local_and_cloud_registry(LocalMediaReadiness::Ready);
+        let registry = local_and_cloud_registry(LocalMediaReadiness::Ready);
         let router = MediaRouter::new(&registry);
 
         let route = router
@@ -411,9 +383,7 @@ mod tests {
 
     #[test]
     fn local_first_requires_setup_and_never_silently_uses_cloud() {
-        let registry = local_and_cloud_registry(
-            LocalMediaReadiness::InstalledNotConfigured,
-        );
+        let registry = local_and_cloud_registry(LocalMediaReadiness::InstalledNotConfigured);
         let router = MediaRouter::new(&registry);
 
         assert_eq!(
@@ -559,9 +529,7 @@ mod tests {
             )),
             Err(MediaRouteError::AuthorizationRequired {
                 provider_id: "cloud-recommended".to_owned(),
-                provider_instance_id: Some(
-                    "recommended-primary".to_owned()
-                ),
+                provider_instance_id: Some("recommended-primary".to_owned()),
             })
         );
     }
@@ -614,10 +582,7 @@ mod tests {
             ))
             .unwrap();
 
-        assert_eq!(
-            route.provider_instance_id.as_deref(),
-            Some("secondary")
-        );
+        assert_eq!(route.provider_instance_id.as_deref(), Some("secondary"));
     }
 
     #[test]
@@ -663,16 +628,12 @@ mod tests {
                 MediaExecutionTarget::Cloud,
                 Some(MediaProviderSelection {
                     provider_id: "manual-provider".to_owned(),
-                    provider_instance_id: Some(
-                        "manual-primary".to_owned()
-                    ),
+                    provider_instance_id: Some("manual-primary".to_owned()),
                 }),
             )),
             Err(MediaRouteError::AuthorizationRequired {
                 provider_id: "manual-provider".to_owned(),
-                provider_instance_id: Some(
-                    "manual-primary".to_owned()
-                ),
+                provider_instance_id: Some("manual-primary".to_owned()),
             })
         );
     }
