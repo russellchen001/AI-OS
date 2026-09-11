@@ -1553,3 +1553,195 @@ External Agent connectivity architectures such as Linco Bridge may provide:
 - external channel connectivity
 
 Agent Connectivity remains separate from Runtime execution architecture.
+
+<!-- AI_OS_MINIMAL_KERNEL_DEFINITION_START -->
+
+## Canonical Product Identity — AI-Native Operating System
+
+AI-OS is an AI-native operating system.
+
+AI-OS is not:
+
+- an Agent;
+- an LLM;
+- a Skill;
+- a collection of hard-coded domain executors.
+
+Its role is to use the minimum stable Kernel necessary to connect, orchestrate
+and govern multiple Agents, multiple LLMs and multiple Skills in order to
+fulfill user intent.
+
+### Minimal Kernel
+
+The Kernel owns:
+
+- Task Engine;
+- Planner;
+- Runtime;
+- Agent Registry;
+- LLM / Provider Registry;
+- Skill Registry;
+- Memory;
+- permissions and policy;
+- lifecycle;
+- compatibility negotiation;
+- observability and recovery.
+
+The Kernel should stay small.
+
+Concrete user capabilities should be reused or adapted from mature existing
+implementations whenever possible.
+
+Preferred order:
+
+`reuse -> adapt -> wrap -> delegate -> build`
+
+### Canonical execution architecture
+
+User Do-task control plane:
+
+`User -> Task Engine -> Planner -> Runtime -> selected Agent`
+
+Capability invocation plane:
+
+`Agent -> Agent Skill Transport Adapter -> AI-OS Skill Invocation Gateway -> Skill backend`
+
+Backend examples may include:
+
+- MCP;
+- native OS integration;
+- external APIs;
+- local CLIs;
+- Providers;
+- mature open-source components.
+
+Agents execute tasks.
+
+LLMs provide intelligence.
+
+Skills provide reusable capabilities.
+
+AI-OS connects and governs all three.
+
+### Agent compatibility
+
+Agent compatibility is capability-based and determined by capability discovery and contract negotiation, never by an exact Agent version.
+
+
+AI-OS does not bind its execution architecture to one exact OpenClaw, Hermes,
+or future Agent version.
+
+Compatibility is capability-based.
+
+Agent versions are metadata.
+
+Runtime determines support through probing and contract negotiation.
+
+Agent-specific protocol and version differences remain isolated behind Agent
+and Transport Adapters.
+
+Version alone must never be the reason a Skill becomes available or
+unavailable.
+
+### Autonomous Skill expansion
+
+The long-term capability acquisition model is:
+
+`Need -> Discover -> Evaluate -> Adapt -> Validate -> Register -> Expose -> Use`
+
+AI-OS should eventually be able to search external capability ecosystems such
+as GitHub, MCP servers, Agent Skills, libraries, CLIs and APIs when an existing
+Skill cannot satisfy the user's request.
+
+AI-OS may automatically adapt validated capabilities for compatible Agents.
+
+This autonomous expansion applies to the capability ecosystem, not unrestricted
+rewriting of the Kernel or security model.
+
+### Intelligence Layer
+
+The strategic Intelligence Layer is:
+
+`P15 Cognitive Distillation -> P16 AI Council Simulation -> AI Arena Evaluation`
+
+#### Cognitive Distillation
+
+P15 produces structured cognitive data that can represent:
+
+- a person;
+- an expert;
+- a decision style;
+- an Agent behavior pattern.
+
+The data should preserve evidence, provenance, uncertainty and contradictions
+where possible.
+
+#### AI Council
+
+P16 supplies the multi-Agent / multi-model Council runtime.
+
+Paperclip and Agency Agents are external Council / Agent-operation integration
+candidates and should be directly reused where appropriate instead of
+reimplemented.
+
+They are not the Cognitive Distillation engine.
+
+AI Council consumes P15 distilled cognitive data and can run persona / expert
+simulation against a new situation.
+
+The key capability is:
+
+`distilled person + new situation -> multi-model Council simulation`
+
+The purpose is to estimate how the modeled person may:
+
+- interpret;
+- reason;
+- decide;
+- handle;
+- act.
+
+This simulated anticipation is the primary meaning of "prediction" for this
+feature.
+
+It is not defined as a separate generic probability forecasting subsystem.
+
+#### AI Arena
+
+AI Arena compares Agents, LLMs, Council configurations and simulation outputs.
+
+Its evidence can later improve routing, Council composition and distilled
+profiles.
+
+Canonical learning loop:
+
+`Distill -> Simulate -> Compare -> Validate -> Refine`
+
+### External integration boundary
+
+External projects may be directly integrated when that is better than
+reimplementation.
+
+They remain replaceable components.
+
+AI-OS retains ownership of:
+
+- Kernel contracts;
+- governance;
+- permission model;
+- Task lifecycle;
+- Memory;
+- Agent / LLM / Skill registries;
+- interoperability.
+
+### Development constraint
+
+Do not add domain-specific execution logic to AI-OS Core merely because a new
+user capability is requested.
+
+First determine whether that capability can be reused, adapted, wrapped or
+delegated.
+
+AR-1 is therefore limited to restoring the correct generic execution boundary.
+
+<!-- AI_OS_MINIMAL_KERNEL_DEFINITION_END -->

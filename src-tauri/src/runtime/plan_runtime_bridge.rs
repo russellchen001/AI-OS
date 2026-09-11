@@ -1,30 +1,39 @@
 use super::{
-    capability_permission::{
-        CapabilityPermissionDecision, ConfiguredCapabilityPermissionGate,
-        GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
+    agent_execution::{
+        negotiate_agent_compatibility, select_skill_transport, AgentCapabilities, AgentCapability,
+        AgentCompatibility, AgentExecutionAdapter, AgentExecutionError, AgentExecutionErrorKind,
+        AgentExecutionProgress, AgentExecutionRequest, AgentExecutionResult, AgentId,
+        AgentProbeResult,
     },
-    executor::{
-        execute_generative_media_runtime_task, execute_local_model_runtime_task,
-        execute_mcp_runtime_task, execute_runtime_task, OperationEventEmitter,
-        RuntimeExecutionState, RuntimeTaskExecutionRequest, RuntimeTaskExecutionResult,
+    agent_skill_transport::{
+        AgentSkillTransportAdapter, OpenClawAgentSkillTransport, RuntimeSkillInvocationGateway,
     },
-    models::{NormalizedRuntimeError, RuntimeErrorCode},
-    openclaw_execution::OpenClawExecutionAdapter,
+    executor::{OperationEventEmitter, RuntimeExecutionState},
+    openclaw_execution::{
+        OpenClawExecutionAdapter, OpenClawExecutionError, OpenClawExecutionErrorKind,
+        OpenClawExecutionProgress, OpenClawExecutionRequest,
+    },
     openclaw_gateway_adapter::OpenClawGatewayExecutionAdapter,
-    openclaw_permission::{OpenClawPermissionGate, PermissionEnforcingOpenClawExecutionAdapter},
+    skill_invocation::{SkillInvocationContext, SkillInvocationGateway},
     skills,
-    trusted_automation::{load_trusted_automation_settings, TrustedAutomationConfigError},
 };
-use crate::browser::runtime::execute_browser_capability;
-use crate::planner::{PlanId, PlanStepId, StepInput, StepOutput};
-use serde_json::{Map, Value};
+use crate::{
+    planner::{PlanId, PlanStepId, StepInput, StepOutput},
+    task_engine::TaskId,
+};
+use serde_json::{json, Map, Value};
 use std::{error::Error, fmt, sync::Arc};
 use uuid::Uuid;
 
+const CONTROL_PLANE_AGENT_EXECUTE: &str = "agent.execute";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanRuntimeExecutionRequest {
+    pub task_id: TaskId,
     pub plan_id: PlanId,
     pub step_id: PlanStepId,
+    pub agent_id: Option<String>,
+    pub goal: String,
     pub capability: String,
     pub input: StepInput,
     pub user_confirmed: bool,
@@ -61,9 +70,7 @@ pub enum PlanRuntimeExecutionError {
 impl fmt::Display for PlanRuntimeExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Configuration => {
-                formatter.write_str("trusted automation configuration is unavailable")
-            }
+            Self::Configuration => formatter.write_str("Runtime configuration is unavailable"),
             Self::InvalidRequest => formatter.write_str("Plan runtime request is invalid"),
             Self::SkillNotFound { capability } => {
                 write!(
@@ -78,7 +85,7 @@ impl fmt::Display for PlanRuntimeExecutionError {
                 formatter,
                 "Skill capability {capability} requires unsupported executor: {executor}"
             ),
-            Self::PermissionDenied => formatter.write_str("OpenClaw action is not permitted."),
+            Self::PermissionDenied => formatter.write_str("Runtime permission was denied."),
             Self::Admission { message, .. } | Self::Runtime { message, .. } => {
                 formatter.write_str(message)
             }
@@ -95,67 +102,180 @@ pub trait PlanRuntimeExecutor: Send + Sync {
     ) -> Result<PlanRuntimeExecutionResult, PlanRuntimeExecutionError>;
 }
 
-pub(crate) struct RuntimeBackedPlanExecutor {
-    runtime: RuntimeExecutionState,
-    emitter: Arc<dyn OperationEventEmitter>,
-    adapter: Arc<dyn OpenClawExecutionAdapter>,
-    permission_gate: Arc<ConfiguredCapabilityPermissionGate>,
+/// OpenClaw implementation of the generic Agent contract.
+///
+/// The OpenClaw-specific protocol stays behind this Adapter. Task Engine,
+/// Planner and Plan Runtime never depend on an OpenClaw version string.
+struct OpenClawAgentExecutionBridge {
+    downstream: Arc<dyn OpenClawExecutionAdapter>,
+    skill_transport: Option<Arc<dyn AgentSkillTransportAdapter>>,
+    skill_gateway: Option<Arc<dyn SkillInvocationGateway>>,
 }
 
-impl RuntimeBackedPlanExecutor {
-    pub(crate) fn from_persisted_settings(
-        runtime: RuntimeExecutionState,
-        emitter: Arc<dyn OperationEventEmitter>,
-    ) -> Result<Self, TrustedAutomationConfigError> {
-        let settings = load_trusted_automation_settings()?;
-        let gate = Arc::new(ConfiguredCapabilityPermissionGate::new(
-            settings.allowed_capabilities(),
-        ));
-        let openclaw_gate: Arc<dyn OpenClawPermissionGate> = gate.clone();
-        let downstream: Arc<dyn OpenClawExecutionAdapter> =
-            Arc::new(OpenClawGatewayExecutionAdapter);
-        let adapter: Arc<dyn OpenClawExecutionAdapter> = Arc::new(
-            PermissionEnforcingOpenClawExecutionAdapter::new(openclaw_gate, downstream),
-        );
-        Ok(Self {
-            runtime,
-            emitter,
-            adapter,
-            permission_gate: gate,
-        })
-    }
-
-    pub(crate) fn deny_all(
-        runtime: RuntimeExecutionState,
-        emitter: Arc<dyn OperationEventEmitter>,
-    ) -> Self {
-        let gate = Arc::new(ConfiguredCapabilityPermissionGate::new(Vec::new()));
-        let openclaw_gate: Arc<dyn OpenClawPermissionGate> = gate.clone();
-        let downstream: Arc<dyn OpenClawExecutionAdapter> =
-            Arc::new(OpenClawGatewayExecutionAdapter);
-        let adapter: Arc<dyn OpenClawExecutionAdapter> = Arc::new(
-            PermissionEnforcingOpenClawExecutionAdapter::new(openclaw_gate, downstream),
-        );
+impl OpenClawAgentExecutionBridge {
+    fn production(runtime: RuntimeExecutionState, emitter: Arc<dyn OperationEventEmitter>) -> Self {
         Self {
-            runtime,
-            emitter,
-            adapter,
-            permission_gate: gate,
+            downstream: Arc::new(OpenClawGatewayExecutionAdapter),
+            skill_transport: Some(Arc::new(OpenClawAgentSkillTransport::production())),
+            skill_gateway: Some(Arc::new(RuntimeSkillInvocationGateway::production(
+                runtime, emitter,
+            ))),
         }
     }
 
     #[cfg(test)]
-    fn with_adapter(
+    fn with_downstream(downstream: Arc<dyn OpenClawExecutionAdapter>) -> Self {
+        Self {
+            downstream,
+            skill_transport: None,
+            skill_gateway: None,
+        }
+    }
+}
+
+impl AgentExecutionAdapter for OpenClawAgentExecutionBridge {
+    fn probe(&self, agent_id: &AgentId) -> Result<AgentProbeResult, AgentExecutionError> {
+        if agent_id.as_str() != "openclaw" {
+            return Err(AgentExecutionError::new(
+                AgentExecutionErrorKind::ExecutionRejected,
+                format!(
+                    "No Agent Runtime Adapter is registered for {}.",
+                    agent_id.as_str()
+                ),
+                false,
+            ));
+        }
+
+        Ok(AgentProbeResult {
+            agent_id: agent_id.clone(),
+            // Do not inspect or gate on an exact OpenClaw version here.
+            version: None,
+            capabilities: AgentCapabilities::new([
+                AgentCapability::TaskExecution,
+                AgentCapability::StructuredToolInvocation,
+                AgentCapability::NativeSkillTransport,
+                AgentCapability::ProgressEvents,
+                AgentCapability::DurableSession,
+            ]),
+        })
+    }
+
+    fn execute(
+        &self,
+        request: &AgentExecutionRequest,
+        report: &mut dyn FnMut(AgentExecutionProgress),
+    ) -> Result<AgentExecutionResult, AgentExecutionError> {
+        if request.agent_id.as_str() != "openclaw" {
+            return Err(AgentExecutionError::new(
+                AgentExecutionErrorKind::ExecutionRejected,
+                format!(
+                    "No Agent Runtime Adapter is registered for {}.",
+                    request.agent_id.as_str()
+                ),
+                false,
+            ));
+        }
+
+        if !request.allowed_capabilities.is_empty() {
+            let transport = self.skill_transport.as_ref().ok_or_else(|| {
+                AgentExecutionError::new(
+                    AgentExecutionErrorKind::ExecutionRejected,
+                    "Agent Skill transport is unavailable.",
+                    false,
+                )
+            })?;
+            let gateway = self.skill_gateway.as_ref().ok_or_else(|| {
+                AgentExecutionError::new(
+                    AgentExecutionErrorKind::ExecutionRejected,
+                    "Skill Invocation Gateway is unavailable.",
+                    false,
+                )
+            })?;
+
+            return transport.execute(
+                request,
+                &request.skill_invocation_context,
+                gateway.as_ref(),
+                report,
+            );
+        }
+
+        let openclaw_request = OpenClawExecutionRequest::new(
+            request.execution_id.clone(),
+            "sessions.create",
+            json!({
+                "message": request.goal,
+                "agentId": request.agent_id.as_str(),
+                "label": "AI-OS Work",
+                "idempotencyKey": request.execution_id,
+            }),
+        )
+        .map_err(map_openclaw_error)?;
+
+        let result = self
+            .downstream
+            .execute(&openclaw_request, &mut |progress| {
+                report(map_openclaw_progress(progress))
+            })
+            .map_err(map_openclaw_error)?;
+
+        let session_id = result
+            .output
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+
+        Ok(AgentExecutionResult {
+            session_id,
+            output: result.output,
+        })
+    }
+}
+
+fn map_openclaw_progress(progress: OpenClawExecutionProgress) -> AgentExecutionProgress {
+    AgentExecutionProgress {
+        phase: progress.phase,
+        message: progress.message,
+    }
+}
+
+fn map_openclaw_error(error: OpenClawExecutionError) -> AgentExecutionError {
+    let kind = match error.kind {
+        OpenClawExecutionErrorKind::InvalidRequest => AgentExecutionErrorKind::InvalidRequest,
+        OpenClawExecutionErrorKind::PermissionRequired
+        | OpenClawExecutionErrorKind::PermissionDenied => AgentExecutionErrorKind::PermissionDenied,
+        OpenClawExecutionErrorKind::AuthenticationRequired => {
+            AgentExecutionErrorKind::AuthenticationRequired
+        }
+        OpenClawExecutionErrorKind::PairingRequired => AgentExecutionErrorKind::PairingRequired,
+        OpenClawExecutionErrorKind::ConnectionUnavailable
+        | OpenClawExecutionErrorKind::ProtocolFailure => {
+            AgentExecutionErrorKind::ConnectionUnavailable
+        }
+        OpenClawExecutionErrorKind::ExecutionRejected => AgentExecutionErrorKind::ExecutionRejected,
+        OpenClawExecutionErrorKind::ExecutionFailed => AgentExecutionErrorKind::ExecutionFailed,
+    };
+
+    AgentExecutionError::new(kind, error.message, error.retryable)
+}
+
+pub(crate) struct RuntimeBackedPlanExecutor {
+    agent_adapter: Arc<dyn AgentExecutionAdapter>,
+}
+
+impl RuntimeBackedPlanExecutor {
+    pub(crate) fn production(
         runtime: RuntimeExecutionState,
         emitter: Arc<dyn OperationEventEmitter>,
-        adapter: Arc<dyn OpenClawExecutionAdapter>,
     ) -> Self {
         Self {
-            runtime,
-            emitter,
-            adapter,
-            permission_gate: Arc::new(ConfiguredCapabilityPermissionGate::new(Vec::new())),
+            agent_adapter: Arc::new(OpenClawAgentExecutionBridge::production(runtime, emitter)),
         }
+    }
+
+    #[cfg(test)]
+    fn with_agent_adapter(agent_adapter: Arc<dyn AgentExecutionAdapter>) -> Self {
+        Self { agent_adapter }
     }
 }
 
@@ -165,91 +285,126 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
         request: PlanRuntimeExecutionRequest,
     ) -> Result<PlanRuntimeExecutionResult, PlanRuntimeExecutionError> {
         let capability = request.capability.trim().to_owned();
-        let skill = skills::resolver::resolve(&capability).ok_or_else(|| {
-            PlanRuntimeExecutionError::SkillNotFound {
-                capability: capability.clone(),
-            }
-        })?;
 
-        let executor_kind = skill.executor.kind.clone();
-        let handler = skill.executor.handler.clone();
+        if capability.is_empty() {
+            return Err(PlanRuntimeExecutionError::InvalidRequest);
+        }
 
-        let attempt_id = Uuid::new_v4().to_string();
-        let operation_id = operation_identity(&request.plan_id, &request.step_id, &attempt_id);
-        let input = Value::Object(request.input.into_iter().collect::<Map<_, _>>());
+        let allowed_capabilities = if capability == CONTROL_PLANE_AGENT_EXECUTE {
+            Vec::new()
+        } else {
+            skills::resolver::resolve(&capability).ok_or_else(|| {
+                PlanRuntimeExecutionError::SkillNotFound {
+                    capability: capability.clone(),
+                }
+            })?;
 
-        let runtime_request = RuntimeTaskExecutionRequest {
-            operation_id,
-            plan_id: request.plan_id.as_str().to_owned(),
-            step_id: request.step_id.as_str().to_owned(),
-            capability: capability.clone(),
-            input,
-            user_confirmed: request.user_confirmed,
+            vec![capability.clone()]
         };
 
-        match executor_kind.as_str() {
-            "openclaw" => execute_runtime_task(
-                self.runtime.manager(),
-                self.runtime.scheduler(),
-                Arc::clone(&self.emitter),
-                runtime_request,
-                Arc::clone(&self.adapter),
-            ),
+        let raw_agent_id = request
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or(PlanRuntimeExecutionError::InvalidRequest)?;
 
-            "local" if handler == "ollama" => execute_local_model_runtime_task(
-                self.runtime.manager(),
-                self.runtime.scheduler(),
-                Arc::clone(&self.emitter),
-                runtime_request,
-            ),
+        let agent_id =
+            AgentId::new(raw_agent_id).map_err(|_| PlanRuntimeExecutionError::InvalidRequest)?;
 
-            "media" if handler == "generative-media" => {
-                match self.permission_gate.authorize_with_policy(
-                    &capability,
-                    runtime_request.user_confirmed,
-                    GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
-                    GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
-                ) {
-                    CapabilityPermissionDecision::Allowed => {}
-                    CapabilityPermissionDecision::RequiresApproval
-                    | CapabilityPermissionDecision::Denied => {
-                        return Err(PlanRuntimeExecutionError::PermissionDenied);
-                    }
-                }
+        let probe = self.agent_adapter.probe(&agent_id).map_err(agent_error)?;
 
-                execute_generative_media_runtime_task(
-                    self.runtime.manager(),
-                    self.runtime.scheduler(),
-                    Arc::clone(&self.emitter),
-                    runtime_request,
-                    Arc::new(
-                        crate::generative_media::registry::MediaProviderRegistry::production(),
+        let mut required = vec![AgentCapability::TaskExecution];
+        if !allowed_capabilities.is_empty() {
+            required.push(AgentCapability::StructuredToolInvocation);
+        }
+
+        match negotiate_agent_compatibility(
+            &probe,
+            &required,
+            &[
+                AgentCapability::NativeSkillTransport,
+                AgentCapability::McpSkillTransport,
+                AgentCapability::Cancellation,
+                AgentCapability::ProgressEvents,
+                AgentCapability::DurableSession,
+            ],
+        ) {
+            AgentCompatibility::Compatible | AgentCompatibility::Degraded { .. } => {}
+            AgentCompatibility::Incompatible { missing_required } => {
+                return Err(PlanRuntimeExecutionError::Admission {
+                    message: format!(
+                        "Selected Agent is missing required capabilities: {missing_required:?}"
                     ),
-                )
-            }
-
-            "mcp" => execute_mcp_runtime_task(
-                self.runtime.manager(),
-                self.runtime.scheduler(),
-                Arc::clone(&self.emitter),
-                runtime_request,
-            ),
-
-            _ => {
-                return Err(PlanRuntimeExecutionError::UnsupportedExecutor {
-                    capability,
-                    executor: executor_kind,
+                    retryable: false,
                 });
             }
         }
-        .map(runtime_result)
-        .map_err(runtime_error)
+
+        if !allowed_capabilities.is_empty() && select_skill_transport(&probe.capabilities).is_none()
+        {
+            return Err(PlanRuntimeExecutionError::Admission {
+                message: "Selected Agent has no negotiated Skill transport.".to_owned(),
+                retryable: false,
+            });
+        }
+
+        let attempt_id = Uuid::new_v4().to_string();
+        let operation_id = operation_identity(&request.plan_id, &request.step_id, &attempt_id);
+        let skill_input = Value::Object(request.input.into_iter().collect::<Map<_, _>>());
+
+        let context = if capability == CONTROL_PLANE_AGENT_EXECUTE {
+            json!({
+                "source": "ai-os-plan-runtime"
+            })
+        } else {
+            json!({
+                "source": "ai-os-plan-runtime",
+                "requestedSkill": {
+                    "capability": capability,
+                    "input": skill_input,
+                }
+            })
+        };
+
+        let skill_invocation_context = SkillInvocationContext::new(
+            request.task_id.as_str(),
+            request.plan_id.as_str(),
+            operation_id.clone(),
+            agent_id.as_str(),
+            allowed_capabilities.clone(),
+            request.user_confirmed,
+        )
+        .map_err(|_| PlanRuntimeExecutionError::InvalidRequest)?;
+
+        let agent_request = AgentExecutionRequest::new(
+            operation_id.clone(),
+            request.task_id.as_str(),
+            request.plan_id.as_str(),
+            request.step_id.as_str(),
+            agent_id,
+            request.goal,
+            allowed_capabilities,
+            context,
+            skill_invocation_context,
+        )
+        .map_err(|_| PlanRuntimeExecutionError::InvalidRequest)?;
+
+        let result = self
+            .agent_adapter
+            .execute(&agent_request, &mut |_| {})
+            .map_err(agent_error)?;
+
+        Ok(PlanRuntimeExecutionResult {
+            operation_id,
+            output: Some(result.output),
+        })
     }
 }
 
 fn operation_identity(plan_id: &PlanId, step_id: &PlanStepId, attempt_id: &str) -> String {
     format!(
-        "plan-step:{}:{}:{}:{}:{}:{}",
+        "agent-execution:{}:{}:{}:{}:{}:{}",
         plan_id.as_str().len(),
         plan_id.as_str(),
         step_id.as_str().len(),
@@ -259,24 +414,15 @@ fn operation_identity(plan_id: &PlanId, step_id: &PlanStepId, attempt_id: &str) 
     )
 }
 
-fn runtime_result(result: RuntimeTaskExecutionResult) -> PlanRuntimeExecutionResult {
-    PlanRuntimeExecutionResult {
-        operation_id: result.operation_id,
-        output: result.output,
-    }
-}
-
-fn runtime_error(error: NormalizedRuntimeError) -> PlanRuntimeExecutionError {
-    match error.code {
-        RuntimeErrorCode::PermissionDenied => PlanRuntimeExecutionError::PermissionDenied,
-        RuntimeErrorCode::InvalidRequest => PlanRuntimeExecutionError::InvalidRequest,
-        RuntimeErrorCode::OperationConflict
-        | RuntimeErrorCode::OperationCapacityExceeded
-        | RuntimeErrorCode::RuntimeNotFound => PlanRuntimeExecutionError::Admission {
-            message: error.message,
-            retryable: error.retryable,
-        },
-        _ => PlanRuntimeExecutionError::Runtime {
+fn agent_error(error: AgentExecutionError) -> PlanRuntimeExecutionError {
+    match error.kind {
+        AgentExecutionErrorKind::InvalidRequest => PlanRuntimeExecutionError::InvalidRequest,
+        AgentExecutionErrorKind::PermissionDenied => PlanRuntimeExecutionError::PermissionDenied,
+        AgentExecutionErrorKind::AuthenticationRequired
+        | AgentExecutionErrorKind::PairingRequired
+        | AgentExecutionErrorKind::ConnectionUnavailable
+        | AgentExecutionErrorKind::ExecutionRejected
+        | AgentExecutionErrorKind::ExecutionFailed => PlanRuntimeExecutionError::Runtime {
             message: error.message,
             retryable: error.retryable,
         },
@@ -286,322 +432,222 @@ fn runtime_error(error: NormalizedRuntimeError) -> PlanRuntimeExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::openclaw_execution::{
-        OpenClawExecutionError, OpenClawExecutionErrorKind, OpenClawExecutionProgress,
-        OpenClawExecutionRequest, OpenClawExecutionResult,
-    };
-    use crate::runtime::openclaw_permission::{
-        ConfiguredCapabilityPermissionGate, PermissionEnforcingOpenClawExecutionAdapter,
-    };
-    use crate::runtime::{executor::OperationEventEmitter, models::RuntimeOperationSnapshot};
-    use serde_json::json;
     use std::sync::Mutex;
 
-    #[derive(Default)]
-    struct RecordingEmitter;
+    struct RecordingAgent {
+        probe: AgentProbeResult,
+        requests: Mutex<Vec<AgentExecutionRequest>>,
+    }
 
-    impl OperationEventEmitter for RecordingEmitter {
-        fn emit(&self, _snapshot: RuntimeOperationSnapshot) -> Result<(), ()> {
-            Ok(())
+    impl RecordingAgent {
+        fn compatible(agent_id: &str) -> Self {
+            Self {
+                probe: AgentProbeResult {
+                    agent_id: AgentId::new(agent_id).unwrap(),
+                    version: Some("future-version-is-metadata-only".to_owned()),
+                    capabilities: AgentCapabilities::new([
+                        AgentCapability::TaskExecution,
+                        AgentCapability::StructuredToolInvocation,
+                        AgentCapability::NativeSkillTransport,
+                        AgentCapability::ProgressEvents,
+                    ]),
+                },
+                requests: Mutex::new(Vec::new()),
+            }
         }
     }
 
-    fn bridge(adapter: Arc<dyn OpenClawExecutionAdapter>) -> RuntimeBackedPlanExecutor {
-        RuntimeBackedPlanExecutor::with_adapter(
-            RuntimeExecutionState::default(),
-            Arc::new(RecordingEmitter),
-            adapter,
-        )
-    }
+    impl AgentExecutionAdapter for RecordingAgent {
+        fn probe(&self, _agent_id: &AgentId) -> Result<AgentProbeResult, AgentExecutionError> {
+            Ok(self.probe.clone())
+        }
 
-    struct RecordingAdapter {
-        requests: Mutex<Vec<OpenClawExecutionRequest>>,
-        outcome: Result<OpenClawExecutionResult, OpenClawExecutionError>,
-    }
-
-    impl OpenClawExecutionAdapter for RecordingAdapter {
         fn execute(
             &self,
-            request: &OpenClawExecutionRequest,
-            _report: &mut dyn FnMut(OpenClawExecutionProgress),
-        ) -> Result<OpenClawExecutionResult, OpenClawExecutionError> {
+            request: &AgentExecutionRequest,
+            _report: &mut dyn FnMut(AgentExecutionProgress),
+        ) -> Result<AgentExecutionResult, AgentExecutionError> {
             self.requests.lock().unwrap().push(request.clone());
-            self.outcome.clone()
+            Ok(AgentExecutionResult {
+                session_id: Some("session-test".to_owned()),
+                output: json!({"agentOwned": true}),
+            })
         }
     }
 
-    fn request(plan: &str, step: &str) -> PlanRuntimeExecutionRequest {
+    fn request(capability: &str) -> PlanRuntimeExecutionRequest {
         PlanRuntimeExecutionRequest {
-            plan_id: PlanId::from_static(plan),
-            step_id: PlanStepId::from_static(step),
-            capability: "filesystem.scan".to_owned(),
+            task_id: TaskId::new(),
+            plan_id: PlanId::from_static("plan-a"),
+            step_id: PlanStepId::from_static("step-a"),
+            agent_id: Some("openclaw".to_owned()),
+            goal: "Complete the user's requested work".to_owned(),
+            capability: capability.to_owned(),
             input: [("path".to_owned(), json!("/safe"))].into_iter().collect(),
             user_confirmed: false,
         }
     }
 
     #[test]
-    fn unknown_capability_is_rejected_before_runtime_execution() {
-        let adapter = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Ok(OpenClawExecutionResult {
-                output: Value::Null,
-                summary: None,
-            }),
-        });
-        let executor = bridge(adapter.clone());
-        let mut unknown = request("plan", "step");
-        unknown.capability = "unknown.capability".to_owned();
+    fn registered_skill_enters_selected_agent_instead_of_backend_dispatch() {
+        let agent = Arc::new(RecordingAgent::compatible("openclaw"));
+        let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
+
+        let result = executor.execute_step(request("filesystem.scan")).unwrap();
+
+        assert_eq!(result.output, Some(json!({"agentOwned": true})));
+
+        let received = agent.requests.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].agent_id.as_str(), "openclaw");
+        assert_eq!(received[0].allowed_capabilities, vec!["filesystem.scan"]);
+        assert_eq!(
+            received[0].context["requestedSkill"]["capability"],
+            "filesystem.scan"
+        );
+    }
+
+    #[test]
+    fn browser_skill_no_longer_dispatches_directly_to_mcp() {
+        let agent = Arc::new(RecordingAgent::compatible("openclaw"));
+        let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
+
+        executor.execute_step(request("browser.search")).unwrap();
+
+        let received = agent.requests.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].allowed_capabilities, vec!["browser.search"]);
+    }
+
+    #[test]
+    fn local_model_skill_no_longer_dispatches_directly_to_ollama() {
+        let agent = Arc::new(RecordingAgent::compatible("openclaw"));
+        let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
+
+        executor.execute_step(request("models.list")).unwrap();
+
+        let received = agent.requests.lock().unwrap();
+        assert_eq!(received[0].allowed_capabilities, vec!["models.list"]);
+    }
+
+    #[test]
+    fn media_skill_no_longer_dispatches_directly_to_media_router() {
+        let agent = Arc::new(RecordingAgent::compatible("openclaw"));
+        let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
+
+        executor
+            .execute_step(request("media.text-to-image"))
+            .unwrap();
+
+        let received = agent.requests.lock().unwrap();
+        assert_eq!(
+            received[0].allowed_capabilities,
+            vec!["media.text-to-image"]
+        );
+    }
+
+    #[test]
+    fn unknown_skill_is_rejected_before_agent_execution() {
+        let agent = Arc::new(RecordingAgent::compatible("openclaw"));
+        let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
 
         assert_eq!(
-            executor.execute_step(unknown),
-            Err(PlanRuntimeExecutionError::SkillNotFound {
-                capability: "unknown.capability".to_owned(),
-            })
+            executor
+                .execute_step(request("unknown.capability"))
+                .unwrap_err(),
+            PlanRuntimeExecutionError::SkillNotFound {
+                capability: "unknown.capability".to_owned()
+            }
         );
-        assert!(adapter.requests.lock().unwrap().is_empty());
+
+        assert!(agent.requests.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn browser_skill_is_not_routed_to_openclaw() {
-        let adapter = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Ok(OpenClawExecutionResult {
-                output: Value::Null,
-                summary: None,
-            }),
-        });
+    fn control_plane_agent_execute_requires_no_fake_skill() {
+        let agent = Arc::new(RecordingAgent::compatible("openclaw"));
+        let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
 
-        let executor = bridge(adapter.clone());
+        executor
+            .execute_step(request(CONTROL_PLANE_AGENT_EXECUTE))
+            .unwrap();
 
-        let mut browser = request("plan", "step");
-        browser.capability = "browser.search".to_owned();
-
-        let result = executor.execute_step(browser);
-
-        assert!(
-            matches!(
-                result,
-                Err(PlanRuntimeExecutionError::Runtime { .. })
-                    | Err(PlanRuntimeExecutionError::Admission { .. })
-            ),
-            "browser skill should reach MCP runtime path"
-        );
-
-        assert!(adapter.requests.lock().unwrap().is_empty());
+        let received = agent.requests.lock().unwrap();
+        assert!(received[0].allowed_capabilities.is_empty());
+        assert!(received[0].context.get("requestedSkill").is_none());
     }
 
     #[test]
-    fn operation_identity_is_attempt_safe_and_traceable() {
-        let first = operation_identity(
-            &PlanId::from_static("plan-a"),
-            &PlanStepId::from_static("step-a"),
-            "attempt:一",
-        );
-        let same = operation_identity(
-            &PlanId::from_static("plan-a"),
-            &PlanStepId::from_static("step-a"),
-            "attempt:一",
-        );
-        assert_eq!(first, same);
-        assert!(first.contains("plan-a"));
-        assert!(first.contains("step-a"));
-        assert_ne!(
-            first,
-            operation_identity(
-                &PlanId::from_static("plan-a"),
-                &PlanStepId::from_static("step-b"),
-                "attempt:一",
-            )
-        );
-        assert_ne!(
-            first,
-            operation_identity(
-                &PlanId::from_static("plan-b"),
-                &PlanStepId::from_static("step-a"),
-                "attempt:一",
-            )
-        );
-        assert_ne!(
-            first,
-            operation_identity(
-                &PlanId::from_static("plan-a"),
-                &PlanStepId::from_static("step-a"),
-                "attempt:二",
-            )
-        );
-    }
+    fn missing_selected_agent_fails_closed() {
+        let agent = Arc::new(RecordingAgent::compatible("openclaw"));
+        let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
+        let mut missing = request("filesystem.scan");
+        missing.agent_id = None;
 
-    #[test]
-    fn plan_step_maps_to_runtime_task_request_and_success() {
-        let adapter = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Ok(OpenClawExecutionResult {
-                output: json!({"files": 2}),
-                summary: None,
-            }),
-        });
-        let bridge = bridge(adapter.clone());
-
-        let result = bridge.execute_step(request("plan-a", "step-a")).unwrap();
-
-        let received = adapter.requests.lock().unwrap();
-        assert_eq!(received.len(), 1);
-        assert_eq!(received[0].action.as_str(), "filesystem.scan");
-        assert_eq!(received[0].input, json!({"path": "/safe"}));
-        assert_eq!(result.output, Some(json!({"files": 2})));
-    }
-
-    #[test]
-    fn download_plan_step_uses_the_openclaw_execution_contract() {
-        let adapter = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Ok(OpenClawExecutionResult {
-                output: json!({"kind": "download", "status": "completed"}),
-                summary: None,
-            }),
-        });
-        let bridge = bridge(adapter.clone());
-        let mut download = request("plan-download", "step-download");
-        download.capability = "download.start".to_owned();
-        download.input = [
-            ("source".to_owned(), json!("https://example.com/file.zip")),
-            ("destination".to_owned(), json!("/safe/downloads")),
-        ]
-        .into_iter()
-        .collect();
-        download.user_confirmed = true;
-
-        let result = bridge.execute_step(download).unwrap();
-        let received = adapter.requests.lock().unwrap();
-
-        assert_eq!(received.len(), 1);
-        assert_eq!(received[0].action.as_str(), "download.start");
-        assert!(received[0].user_confirmed);
         assert_eq!(
-            result.output,
-            Some(json!({"kind": "download", "status": "completed"}))
+            executor.execute_step(missing).unwrap_err(),
+            PlanRuntimeExecutionError::InvalidRequest
         );
+
+        assert!(agent.requests.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn repeated_plan_step_attempts_have_distinct_retained_terminal_operations() {
-        let runtime = RuntimeExecutionState::default();
-        let manager = runtime.manager();
-        let adapter = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Ok(OpenClawExecutionResult {
-                output: json!({"files": 2}),
-                summary: None,
-            }),
+    fn openclaw_bridge_calls_agent_session_not_requested_skill_action() {
+        struct RecordingOpenClaw {
+            calls: Mutex<Vec<OpenClawExecutionRequest>>,
+        }
+
+        impl OpenClawExecutionAdapter for RecordingOpenClaw {
+            fn execute(
+                &self,
+                request: &OpenClawExecutionRequest,
+                _report: &mut dyn FnMut(OpenClawExecutionProgress),
+            ) -> Result<
+                crate::runtime::openclaw_execution::OpenClawExecutionResult,
+                OpenClawExecutionError,
+            > {
+                self.calls.lock().unwrap().push(request.clone());
+                Ok(
+                    crate::runtime::openclaw_execution::OpenClawExecutionResult {
+                        output: json!({"sessionId": "session-1"}),
+                        summary: None,
+                    },
+                )
+            }
+        }
+
+        let downstream = Arc::new(RecordingOpenClaw {
+            calls: Mutex::new(Vec::new()),
         });
-        let bridge =
-            RuntimeBackedPlanExecutor::with_adapter(runtime, Arc::new(RecordingEmitter), adapter);
+        let bridge = OpenClawAgentExecutionBridge::with_downstream(downstream.clone());
 
-        let first = bridge.execute_step(request("plan:一", "step:一")).unwrap();
-        let second = bridge.execute_step(request("plan:一", "step:一")).unwrap();
-
-        assert_ne!(first.operation_id, second.operation_id);
-        assert!(manager.get_operation(&first.operation_id).is_ok());
-        assert!(manager.get_operation(&second.operation_id).is_ok());
-    }
-
-    #[test]
-    fn permission_denial_maps_to_typed_bridge_error() {
-        let adapter = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Err(OpenClawExecutionError::new(
-                OpenClawExecutionErrorKind::PermissionDenied,
-                "OpenClaw action is not permitted.",
+        let agent_request = AgentExecutionRequest::new(
+            "execution-1",
+            "task-1",
+            "plan-1",
+            "step-1",
+            AgentId::new("openclaw").unwrap(),
+            "Do the work",
+            Vec::new(),
+            json!({}),
+            SkillInvocationContext::new(
+                "task-1",
+                "plan-1",
+                "execution-1",
+                "openclaw",
+                Vec::new(),
                 false,
-            )),
-        });
-        let bridge = bridge(adapter);
+            )
+            .unwrap(),
+        )
+        .unwrap();
 
-        assert_eq!(
-            bridge
-                .execute_step(request("plan-a", "step-a"))
-                .unwrap_err(),
-            PlanRuntimeExecutionError::PermissionDenied
-        );
-    }
+        bridge.execute(&agent_request, &mut |_| {}).unwrap();
 
-    #[test]
-    fn concrete_bridge_stack_enforces_configured_gate_before_downstream() {
-        let downstream = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Ok(OpenClawExecutionResult {
-                output: json!({"files": 2}),
-                summary: None,
-            }),
-        });
-        let gate = Arc::new(ConfiguredCapabilityPermissionGate::new([
-            "filesystem.read".to_owned()
-        ]));
-        let adapter: Arc<dyn OpenClawExecutionAdapter> = Arc::new(
-            PermissionEnforcingOpenClawExecutionAdapter::new(gate, downstream.clone()),
-        );
-        let bridge = bridge(adapter);
-
-        assert_eq!(
-            bridge
-                .execute_step(request("plan-a", "step-a"))
-                .unwrap_err(),
-            PlanRuntimeExecutionError::PermissionDenied
-        );
-        assert!(downstream.requests.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn confirmed_filesystem_scan_crosses_permission_gate_with_original_input() {
-        let downstream = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Ok(OpenClawExecutionResult {
-                output: json!({"files": ["a.txt"]}),
-                summary: None,
-            }),
-        });
-        let gate = Arc::new(ConfiguredCapabilityPermissionGate::new(Vec::new()));
-        let adapter: Arc<dyn OpenClawExecutionAdapter> = Arc::new(
-            PermissionEnforcingOpenClawExecutionAdapter::new(gate, downstream.clone()),
-        );
-        let bridge = bridge(adapter);
-        let mut confirmed = request("plan-a", "step-a");
-        confirmed.user_confirmed = true;
-
-        let result = bridge.execute_step(confirmed).unwrap();
-
-        assert_eq!(result.output, Some(json!({"files": ["a.txt"]})));
-        let received = downstream.requests.lock().unwrap();
-        assert_eq!(received.len(), 1);
-        assert_eq!(received[0].action.as_str(), "filesystem.scan");
-        assert_eq!(received[0].input, json!({"path": "/safe"}));
-        assert!(received[0].user_confirmed);
-    }
-    #[test]
-    fn unconfirmed_generative_media_is_rejected_before_runtime_execution() {
-        let adapter = Arc::new(RecordingAdapter {
-            requests: Mutex::new(Vec::new()),
-            outcome: Ok(OpenClawExecutionResult {
-                output: json!({"unexpected": true}),
-                summary: None,
-            }),
-        });
-
-        let bridge = bridge(adapter.clone());
-        let mut media = request("plan-media", "step-media");
-
-        media.capability = "media.text-to-image".to_owned();
-        media.user_confirmed = false;
-
-        assert_eq!(
-            bridge.execute_step(media).unwrap_err(),
-            PlanRuntimeExecutionError::PermissionDenied
-        );
-
-        assert!(
-            adapter.requests.lock().unwrap().is_empty(),
-            "media denial must not enter OpenClaw execution"
-        );
+        let calls = downstream.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].action.as_str(), "sessions.create");
+        assert_ne!(calls[0].action.as_str(), "browser.search");
     }
 }

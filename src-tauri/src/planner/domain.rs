@@ -303,6 +303,12 @@ pub struct Plan {
     pub task_id: TaskId,
     pub revision: u32,
     pub objective: String,
+    /// Selected operational Agent for this Plan execution.
+    ///
+    /// This is control-plane metadata. It must never be hidden inside Skill
+    /// input because Skills do not own Agent selection.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     pub status: PlanStatus,
     pub steps: Vec<PlanStep>,
     pub created_at: TimestampMs,
@@ -332,6 +338,7 @@ impl Plan {
             task_id,
             revision,
             objective,
+            agent_id: None,
             status: PlanStatus::Draft,
             steps: Vec::new(),
             created_at: timestamp,

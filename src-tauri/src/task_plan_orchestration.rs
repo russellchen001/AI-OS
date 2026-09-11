@@ -129,8 +129,11 @@ where
             };
 
             let runtime_result = runtime.execute_step(PlanRuntimeExecutionRequest {
+                task_id: task_id.clone(),
                 plan_id: plan_id.clone(),
                 step_id: step.id.clone(),
+                agent_id: plan.agent_id.clone(),
+                goal: plan.objective.clone(),
                 capability: step.capability,
                 input: step.input,
                 user_confirmed: step.user_confirmed,

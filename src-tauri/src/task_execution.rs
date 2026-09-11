@@ -101,8 +101,6 @@ pub(crate) struct ExecuteWorkTaskResponse {
 }
 
 fn build_work_task_step(
-    task: &Task,
-    agent_id: &str,
     capability: Option<&str>,
     input: Option<&HashMap<String, serde_json::Value>>,
     user_confirmed: bool,
@@ -110,36 +108,23 @@ fn build_work_task_step(
     if let Some(capability) = capability.map(str::trim).filter(|value| !value.is_empty()) {
         let mut step = PlanStep::new("Execute Core Skill", capability)
             .map_err(|error| error.to_string())?
-            .with_description(
-                "Execute the requested capability through the selected Agent Runtime.",
-            )
+            .with_description("Expose the requested AI-OS Skill capability to the selected Agent.")
             .with_user_confirmation(user_confirmed);
+
         if let Some(input) = input {
             step.input.extend(input.clone());
         }
+
         return Ok(step);
     }
 
-    let mut step = PlanStep::new("Execute with OpenClaw", "sessions.create")
-        .map_err(|error| error.to_string())?
-        .with_description("Send the requested outcome through the selected Agent Runtime.");
-    step.input.insert(
-        "message".to_owned(),
-        serde_json::Value::String(task.intent.clone()),
-    );
-    step.input.insert(
-        "agentId".to_owned(),
-        serde_json::Value::String(agent_id.to_owned()),
-    );
-    step.input.insert(
-        "label".to_owned(),
-        serde_json::Value::String("AI-OS Work".to_owned()),
-    );
-    step.input.insert(
-        "idempotencyKey".to_owned(),
-        serde_json::Value::String(format!("ai-os-{}", task.id)),
-    );
-    Ok(step)
+    PlanStep::new("Execute Work Task", "agent.execute")
+        .map_err(|error| error.to_string())
+        .map(|step| {
+            step.with_description(
+                "Execute the Plan through the selected Agent without inventing a Skill.",
+            )
+        })
 }
 
 fn resolve_chat_task_id(
@@ -290,8 +275,8 @@ fn execute_chat_work_task_inner(
     input: ExecuteWorkTaskInput,
 ) -> Result<ExecuteWorkTaskResponse, String> {
     let agent_id = input.agent_id.trim();
-    if agent_id != "openclaw" {
-        return Err("The selected Agent does not have a Runtime Adapter yet".to_owned());
+    if agent_id.is_empty() {
+        return Err("The selected Agent id is empty".to_owned());
     }
     let task_id = resolve_chat_task_id(&state, input.task_id.trim())?;
     let task = state
@@ -307,9 +292,9 @@ fn execute_chat_work_task_inner(
     let mut plan = planner
         .create_plan(&task_id, task.intent.clone())
         .map_err(|error| error.to_string())?;
+    plan.agent_id = Some(agent_id.to_owned());
+
     let step = build_work_task_step(
-        &task,
-        agent_id,
         input.capability.as_deref(),
         input.input.as_ref(),
         input.user_confirmed,
@@ -414,9 +399,7 @@ pub(crate) fn build_task_execution_state(
     let plans = Arc::new(InMemoryPlanRepository::new());
     let lifecycle =
         TaskLifecycleManager::new(Arc::clone(&tasks), Arc::new(InMemoryTaskEventBus::new()));
-    let runtime_executor =
-        RuntimeBackedPlanExecutor::from_persisted_settings(runtime.clone(), Arc::clone(&emitter))
-            .unwrap_or_else(|_| RuntimeBackedPlanExecutor::deny_all(runtime, emitter));
+    let runtime_executor = RuntimeBackedPlanExecutor::production(runtime, Arc::clone(&emitter));
     let service = TaskExecutionService {
         tasks: Arc::clone(&tasks),
         plans: Arc::clone(&plans),
@@ -639,26 +622,20 @@ mod tests {
             requests[0].input.get("path"),
             Some(&json!("/Users/example/Documents"))
         );
-        assert_ne!(requests[0].capability, "sessions.create");
+        assert_eq!(requests[0].agent_id.as_deref(), Some("openclaw"));
+        assert_eq!(requests[0].task_id.as_str(), response.task_id);
         assert!(requests[0].user_confirmed);
         assert!(!requests[0].input.contains_key("agentId"));
     }
 
     #[test]
-    fn missing_core_skill_capability_preserves_sessions_create_fallback() {
-        let task = Task::new(TaskType::Do, "finish the requested work").unwrap();
+    fn missing_core_skill_capability_plans_generic_agent_execution() {
+        let step = build_work_task_step(Some("  "), None, true).unwrap();
 
-        let step = build_work_task_step(&task, "openclaw", Some("  "), None, true).unwrap();
-
-        assert_eq!(step.capability, "sessions.create");
-        assert!(!step.user_confirmed);
-        assert_eq!(step.input.get("message"), Some(&json!(task.intent)));
-        assert_eq!(step.input.get("agentId"), Some(&json!("openclaw")));
-        assert_eq!(step.input.get("label"), Some(&json!("AI-OS Work")));
-        assert_eq!(
-            step.input.get("idempotencyKey"),
-            Some(&json!(format!("ai-os-{}", task.id)))
-        );
+        assert_eq!(step.capability, "agent.execute");
+        assert!(!step.input.contains_key("agentId"));
+        assert!(!step.input.contains_key("message"));
+        assert!(!step.input.contains_key("idempotencyKey"));
     }
 
     #[test]

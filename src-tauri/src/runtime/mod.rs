@@ -1,4 +1,6 @@
 mod adapters;
+pub(crate) mod agent_execution;
+pub(crate) mod agent_skill_transport;
 pub(crate) mod bulk;
 pub(crate) mod capability_permission;
 pub(crate) mod executor;
@@ -13,6 +15,7 @@ pub(crate) mod plan_runtime_bridge;
 pub(crate) mod recovery;
 mod registry;
 pub(crate) mod scheduler;
+pub(crate) mod skill_invocation;
 pub(crate) mod skills;
 pub(crate) mod trusted_automation;
 
