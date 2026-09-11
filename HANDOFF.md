@@ -6718,8 +6718,8 @@ Decision:
   Ollama.
 - This decision supersedes the earlier post-Generative-Media Magnitude
   integration decision.
-- Current Generative Media work remains GM-5. The llmfit decision does not
-  interrupt the active Generative Media implementation sequence.
+- Current Generative Media baseline remains GM-4 Complete. GM-5 is Not started
+  and is the next milestone after the AR-1 correction.
 
 ## 2026-09-08 — P15 GM-4 Cloud Providers — Completed
 
@@ -6806,3 +6806,684 @@ Next Generative Media milestone:
 - then GM-6 — Quality Loop
 - then Generative Media closure
 - 2026-09-09 00:54  P15 GM-4 Cloud Providers complete; GM-2 production-registry test generalized for cloud providers
+
+---
+
+## Archived — 2026-09-09 GM-5 Core Intelligence Wiring Attempt
+
+Historical record only. This uncommitted implementation was withdrawn on
+2026-09-12 so GM-5 can restart from the clean GM-4 baseline.
+
+The withdrawn experiment contained:
+
+- `CreativeIntent -> PromptSpec -> provider/model-specific Prompt Compiler`
+- PromptSpec structure is derived from the reusable media-prompt vocabulary
+  direction of `f/prompts.chat`; AI-OS keeps the normalized Rust contract
+  because Generative Media Runtime must not depend on a Node runtime
+- deliberate expert prompts remain verbatim when no structured
+  constraints/preferences/reference intelligence require recompilation
+- Prompt compilation runs only after `MediaRouter` fixes the Provider identity
+- automatic media model recommendation therefore cannot silently switch
+  Provider or Provider Instance
+- current executable model recommendations:
+  - Ready ComfyUI text-to-image:
+    managed SD1.5 FP16 profile
+  - xAI image:
+    `grok-imagine-image-2.0`
+  - xAI video:
+    `grok-imagine-video-1.5`
+  - OpenAI image:
+    `gpt-image-2`
+- `MediaModelAdvisor` is a replaceable boundary for later llmfit and broader
+  ComfyUI-Agent-Kit hardware/model/quant knowledge
+- `ReferenceSpec` is now the provider-neutral image/video understanding shape
+- `ReferenceAnalysisAdapterRegistry` is replaceable
+- `gokayfem/ComfyUI_VLM_nodes` remains the preferred local execution foundation
+  for reverse-prompt / image-video Reference Analysis
+- image workflow contract uses `ModernVLM`
+- video workflow contract uses `VLMVideoTemporalReasoner`
+- default v1 local Reference VLM contract is `Qwen 3 VL 2B Instruct`
+- image reference-conditioned generation canonicalizes to the already-existing
+  `ImageEdit` / `ImageToVideo` Provider capability without changing Provider
+  identity
+- GM-5 metadata records recommendation/compiler information but never persists
+  the user's generated prompt text
+
+Reuse boundaries:
+
+- `f/prompts.chat`:
+  PromptSpec / media Prompt Builder vocabulary and semantics
+- `gokayfem/ComfyUI_VLM_nodes`:
+  local image/video Reference Analysis execution
+- `SlavaSexton/ComfyUI-Agent-Kit`:
+  model prompt-dialect, workflow and hardware/model knowledge source
+- none of these projects replaces AI Center, MediaRouter, Provider Registry,
+  P13 account infrastructure or Runtime ownership
+
+Standing invariants:
+
+- Local First is not Local-then-Cloud
+- manual Provider selection remains exact
+- model recommendation cannot silently switch Provider
+- Provider execution/policy/auth/budget failure cannot trigger Provider switching
+- GM-2 Ready First remains authoritative for local generation
+- Reference Analysis must not silently upload local media to a cloud VLM
+- Reference Analysis must not silently download a multi-GB VLM on first use
+- P13 / My AI remains the credential and Provider account authority
+- GM-6 self-correction/retry quality loops remain outside GM-5
+
+This implementation is not part of the current tree. GM-5 is not started.
+
+Next implementation work:
+
+- connect the ComfyUI_VLM_nodes workflow contract to the existing managed
+  ComfyUI endpoint / input / history execution path
+- implement explicit Reference VLM setup/readiness so Qwen3-VL cannot download
+  implicitly
+- make `media.reference.image.analyze` and
+  `media.reference.video.analyze` real production paths
+- feed normalized ReferenceSpec values back into Prompt Compiler
+- complete automatic local candidate/model/profile ranking
+- run final GM-5 acceptance and full regression
+
+## Archived — 2026-09-09 GM-5 Local Reference Analysis Attempt
+
+Historical record only. The experimental local Reference Analysis path was
+withdrawn before commit and is not part of the current implementation.
+
+The withdrawn experiment included:
+
+- existing GM-2C ComfyUI transport is reused for text-producing workflows
+  through the same `/prompt` and `/history` lifecycle
+- `ComfyUiVlmReferenceAnalysisAdapter` is a production adapter
+- Reference Adapter identity includes exact local ComfyUI Provider Instance
+- `media.reference.image.analyze` executes local ComfyUI_VLM_nodes `ModernVLM`
+- `media.reference.video.analyze` executes local
+  `VLMVideoTemporalReasoner`
+- default Reference VLM is `Qwen/Qwen3-VL-2B-Instruct`
+- explicit Reference Analysis never silently uploads a reference to Cloud
+- manual Reference Analysis must match the selected ComfyUI adapter / instance
+- AI-OS reference asset staging remains bounded and temporary
+- local VLM execution requires the accepted ComfyUI_VLM_nodes revision,
+  explicit setup evidence, local model cache and prior smoke validation
+- normal generation uses normalized local `ReferenceSpec` when the local
+  Reference Adapter is already Ready
+- if local Reference Intelligence is not Ready, the original provider-native
+  reference remains attached and generation does not silently switch Provider
+- local generation accepts Reference Intelligence only from the same ComfyUI
+  Provider Instance
+- normalized ReferenceSpec values feed the GM-5 Prompt Compiler
+- GM-5 result metadata records the number of normalized reference specs but
+  does not persist the user's prompt text
+
+Still required before GM-5 closure:
+
+- explicit one-click Reference VLM setup / install / repair
+- real Reference VLM smoke analysis before Ready promotion
+- broader automatic local media model / profile candidate ranking
+- final GM-5 full regression and closure
+
+GM-6 quality/self-correction remains out of scope.
+
+## Archived — 2026-09-10 GM-5 Reference VLM Setup Attempt
+
+Historical record only. The uncommitted Reference VLM setup experiment was
+withdrawn before acceptance and is not part of the current tree.
+
+Architecture:
+
+- Setup / Repair is a separate explicitly confirmed lifecycle from
+  `media.reference.*` execution.
+- The managed local node package is `gokayfem/ComfyUI_VLM_nodes`.
+- AI-OS pins the accepted source revision
+  `3f9612774e862f94d1dfbe3a1b36375a52870382`.
+- Source acquisition uses AI-OS's existing Rust HTTP/archive dependencies rather
+  than requiring system Git or developer tools.
+- Archive extraction is bounded and rejects traversal, symlink and special-file
+  entries.
+- AI-OS never overwrites or silently adopts an unmanaged ComfyUI VLM node
+  directory.
+- A previously AI-OS-managed damaged node source is backed up before repair.
+- `requirements.txt` is executed with the selected ComfyUI installation's own
+  Python runtime.
+- Setup rejects pinned requirements that attempt to install or replace torch,
+  torchvision or torchaudio.
+- Model acquisition remains owned by the reusable upstream `ModernVLM` node.
+  AI-OS does not implement a second Hugging Face snapshot downloader.
+- The official Qwen3-VL model download may occur only inside explicitly
+  confirmed Setup / Repair when the real ModernVLM smoke workflow executes.
+- The smoke workflow must return text that normalizes into AI-OS
+  `ReferenceSpec`.
+- Ready promotion occurs only after the expected local model cache exists and
+  the real smoke has succeeded.
+- The Ready marker schema is now v2 and is bound to the exact ComfyUI Provider
+  Instance that passed the smoke.
+- Any Setup / Repair attempt clears previous Ready evidence before mutation;
+  failure therefore leaves Reference Analysis NotReady rather than preserving
+  stale authorization.
+- Normal `media.reference.*` execution remains unable to install nodes,
+  install Python packages or download the multi-gigabyte VLM.
+
+State at withdrawal:
+
+- deterministic Setup / Repair implementation and tests were removed;
+- the live Setup / Repair has not yet been executed in this milestone;
+- no Qwen3-VL download is claimed yet;
+- no ComfyUI Python dependency mutation is claimed yet;
+- no acceptance evidence from this withdrawn attempt is current.
+
+GM-6 remains out of scope.
+
+---
+
+## AR-1
+
+AR-1 fixes the Kernel execution boundary only.
+ — Agent Execution & Skill Invocation Boundary Realignment
+
+Status: **Complete — 2026-09-12.**
+
+### Architecture decision
+
+AI-OS itself is not an Agent. AI-OS owns platform orchestration, governance,
+Task Engine, Planner, Runtime, shared Memory, AI Center, permissions, policy,
+and capability infrastructure.
+
+User Do-task control plane:
+
+`User -> Task Engine -> Planner -> Runtime -> AgentExecutionAdapter -> selected Agent`
+
+v1 operational general execution Agent:
+
+`OpenClaw`
+
+The Runtime-to-Agent contract remains generic so future Agents can be added
+without redesigning Task Engine, Planner, Runtime, or P15 Skills.
+
+Capability plane during Agent execution:
+
+`Agent -> Agent Skill Transport Adapter -> AI-OS Skill Invocation Gateway -> Runtime permission / confirmation / policy -> Skill backend -> Provider / MCP / native OS / external service`
+
+Key boundaries:
+
+- Planner may recommend or constrain Skills, but does not terminally execute a
+  Skill backend for a user Do-task.
+- Agent owns task execution and decides when an allowed Skill is needed.
+- Runtime owns Agent lifecycle, scheduling, cancellation, recovery, permission,
+  confirmation, policy, tracing and governance.
+- Skill owns capability validation, backend invocation and normalized result.
+- Provider owns specialized implementation.
+- MCP is a Skill backend/provider transport, not an Agent or Task executor.
+- MediaRouter is a Generative Media Skill backend router, not an Agent.
+- Ollama and oMLX are model Providers, not Agents.
+- Agent-authored Skill invocation requests cannot self-declare user
+  confirmation or permission approval. Trusted confirmation state comes from
+  Runtime-issued execution context.
+- Setup/install/repair, readiness/health discovery, passive status, deterministic
+  acceptance fixtures, and AI Center Ask/model invocation may use non-Agent
+  paths when they are not executing a user Do-task.
+
+### AR-1A — Architecture Contracts
+
+Status: **Accepted — 2026-09-12.**
+
+Implemented contract layer:
+
+- generic `AgentId`;
+- generic `AgentExecutionRequest`, result, progress and error contracts;
+- generic `AgentExecutionAdapter`;
+- Runtime-issued `SkillInvocationContext`;
+- Agent-authored `SkillInvocationRequest`;
+- generic `SkillBackend`;
+- generic `SkillInvocationGateway`;
+- tests proving selected Agent identity is retained;
+- tests proving allowed capabilities are constraints rather than task
+  executors;
+- tests proving an Agent Skill request cannot self-authorize confirmation;
+- tests proving permission denial occurs before Skill backend execution.
+
+Acceptance evidence: `verify/verify_ar1a_agent_skill_contract.sh` returned
+`PASS=11 FAIL=0`.
+
+Do not implement AR-1 by merely renaming all Skill executor kinds to
+`openclaw`.
+
+---
+
+<!-- AI_OS_CANONICAL_PRODUCT_DEFINITION_START -->
+
+## Canonical AI-OS Product Definition
+
+Status: canonical product and architecture constraint.
+
+This definition supersedes older wording that frames AI-OS as an Agent, an
+LLM, a Skill, or a domain-specific executor.
+
+### Product identity
+
+AI-OS is an AI-native operating system.
+
+AI-OS itself is NOT:
+
+- an Agent;
+- an LLM;
+- a Skill;
+- a domain capability implementation.
+
+AI-OS exists to connect, orchestrate and govern:
+
+- multiple Agents;
+- multiple LLMs;
+- multiple Skills;
+- shared Memory;
+- Providers;
+- permissions and policy;
+- task and execution lifecycle.
+
+Canonical relationship:
+
+`User -> AI-OS -> Agent(s) + LLM(s) + Skill(s) -> Outcome`
+
+AI-OS should contain the minimum amount of first-party code required to make
+that relationship reliable.
+
+### Minimal Kernel principle
+
+AI-OS Core stays small.
+
+The Kernel owns:
+
+- Task Engine;
+- Planner;
+- Runtime;
+- Agent Registry and selection;
+- LLM / Provider Registry and routing;
+- Skill Registry and exposure;
+- shared Memory coordination;
+- permissions, confirmation and policy;
+- execution lifecycle;
+- cancellation and recovery;
+- tracing and observability;
+- compatibility and capability negotiation.
+
+The Kernel SHOULD NOT reimplement a capability when an acceptable mature
+Skill, MCP server, library, CLI, API, Agent tool, Provider, native adapter, or
+open-source project can be safely reused.
+
+Canonical implementation rule:
+
+`reuse -> adapt -> wrap -> delegate -> build only when necessary`
+
+### Agent-owned execution
+
+For user Do-tasks, AI-OS manages execution but does not become the Agent.
+
+Control plane:
+
+`User -> Task Engine -> Planner -> Runtime -> selected Agent`
+
+Capability plane during Agent execution:
+
+`Agent -> Agent Skill Transport Adapter -> Skill Invocation Gateway -> Skill backend -> Provider / MCP / native tool / external service`
+
+Responsibilities:
+
+AI-OS owns:
+
+- orchestration;
+- governance;
+- permissions;
+- routing;
+- Memory;
+- lifecycle;
+- compatibility;
+- tracing.
+
+Agent owns:
+
+- task execution;
+- action sequencing;
+- deciding which available Skills to invoke;
+- interpreting intermediate results.
+
+LLM owns:
+
+- reasoning / generation capability used by an Agent or other AI-OS subsystem.
+
+Skill owns:
+
+- a reusable capability contract;
+- validation of capability input;
+- normalized capability output.
+
+Provider / backend owns:
+
+- concrete implementation.
+
+### Multi-Agent compatibility principle
+
+Agent compatibility is capability-based and determined by capability discovery and contract negotiation, never by an exact Agent version.
+
+
+AI-OS MUST bind to capability contracts, not exact Agent versions.
+
+OpenClaw 2026.8.2 is only a current development and acceptance environment.
+It is not an AI-OS product dependency.
+
+Agent version strings are metadata for diagnostics and compatibility rules.
+
+Execution support is determined through capability discovery and contract
+negotiation.
+
+Relevant Agent capabilities may include:
+
+- task execution;
+- sessions;
+- structured tool invocation;
+- Skill invocation;
+- MCP transport;
+- native tool or plugin transport;
+- progress events;
+- cancellation;
+- durable sessions;
+- Agent-scoped Skill exposure.
+
+Rules:
+
+- unknown newer Agent versions are allowed when required capability probes pass;
+- known versions do not automatically enable capabilities they do not expose;
+- version alone MUST NOT enable or disable a Skill;
+- known version defects may trigger targeted compatibility rules;
+- Agent-specific protocol changes stay inside Agent / Transport Adapters.
+
+### Skill architecture
+
+Skills are AI-OS capabilities and are not permanently owned by one Agent.
+
+Canonical direction:
+
+`External capability -> AI-OS Skill Adapter -> AI-OS Skill Contract -> compatible Agent exposure`
+
+A Skill should be adapted once and then exposed to compatible Agents through
+transport adapters.
+
+MCP is one transport option.
+
+MCP is NOT the Skill Invocation Gateway.
+
+Future transports may include:
+
+- native Agent tools;
+- plugins;
+- local RPC;
+- other stable Agent protocols.
+
+Task Engine, Planner and Skill contracts must not need rewriting when the
+transport changes.
+
+### Autonomous capability expansion
+
+A future core capability of AI-OS is autonomous Skill acquisition.
+
+When the user needs a capability AI-OS does not currently possess:
+
+`Need -> Discover -> Evaluate -> Adapt -> Sandbox/Test -> Register -> Expose -> Use`
+
+Candidate capability sources may include:
+
+- GitHub;
+- MCP ecosystems;
+- Agent Skills;
+- libraries;
+- CLIs;
+- APIs;
+- mature open-source projects.
+
+AI-OS should eventually be able to:
+
+- discover candidate implementations;
+- inspect license;
+- inspect maintenance state;
+- inspect security;
+- inspect compatibility;
+- choose an acceptable candidate;
+- create the minimum required adapter;
+- validate the capability;
+- expose it to compatible Agents;
+- retain it for future reuse.
+
+This is capability self-expansion.
+
+It does NOT authorize unrestricted self-modification of:
+
+- Runtime Kernel;
+- Task Engine;
+- permission model;
+- security policy;
+- governance boundaries.
+
+### Strategic Intelligence Layer
+
+Multi-Agent, multi-LLM and multi-Skill orchestration is foundational
+infrastructure.
+
+The strategic AI-OS Intelligence Layer is:
+
+1. Cognitive Distillation;
+2. AI Council;
+3. AI Arena.
+
+#### P15 Cognitive Distillation
+
+P15 builds the foundation for structured cognitive distillation.
+
+Its purpose is not only summarization.
+
+It should produce reusable cognitive data representing a person, expert, Agent,
+decision style or behavior pattern.
+
+Possible structured dimensions include:
+
+- beliefs;
+- priorities;
+- values;
+- decision heuristics;
+- risk preference;
+- recurring strategies;
+- historical decisions;
+- behavioral patterns;
+- evidence and provenance;
+- contradictory evidence;
+- confidence.
+
+The output must be consumable by P16 AI Council.
+
+#### P16 AI Council
+
+P16 owns AI Council runtime and Council operating modes.
+
+The two previously selected GitHub projects are studied for their AI Council /
+multi-Agent operating patterns and may be directly integrated when appropriate
+instead of reimplemented.
+
+Current external integration candidates:
+
+- Paperclip;
+- Agency Agents.
+
+They are NOT Cognitive Distillation systems.
+
+AI Council must be able to consume P15 distilled cognitive data.
+
+A primary AI Council capability is persona / expert simulation:
+
+`Distilled cognitive profile + new situation -> Council simulation`
+
+Council can simulate questions such as:
+
+- how would this person likely understand the situation;
+- what would they focus on;
+- how might they reason;
+- how might they decide;
+- how might they handle the situation;
+- what action might they take.
+
+In AI-OS product terminology, "prediction" in this context primarily means:
+
+using a distilled cognitive profile to simulate and anticipate how the modeled
+person may think, decide or act when facing a new situation.
+
+This is NOT defined as a separate generic probability forecasting engine.
+
+Simulation output is modeled inference and must not be presented as certainty
+about a person's actual private thoughts.
+
+#### AI Arena
+
+AI Arena evaluates and compares:
+
+- Agents;
+- LLMs;
+- Council members;
+- Council compositions;
+- strategies;
+- prompts;
+- simulation outputs.
+
+Over time Arena evidence can improve:
+
+- Agent routing;
+- LLM routing;
+- Council composition;
+- distilled profiles;
+- Skill selection;
+- simulation quality.
+
+Canonical intelligence loop:
+
+`Distill -> Simulate -> Compare -> Validate -> Refine`
+
+### External project integration principle
+
+AI-OS may directly integrate mature external projects when doing so reduces
+code, risk and duplicated engineering.
+
+External projects remain replaceable components behind adapters.
+
+They do NOT become AI-OS itself.
+
+AI-OS retains ownership of:
+
+- system contracts;
+- governance;
+- Task lifecycle;
+- permissions;
+- Memory;
+- Agent Registry;
+- LLM / Provider Registry;
+- Skill Registry;
+- interoperability.
+
+### AR-1 boundary
+
+AR-1 repairs the Kernel execution boundary only.
+
+AR-1 DOES NOT implement:
+
+- AI Council;
+- Paperclip integration;
+- Agency Agents integration;
+- autonomous Skill discovery;
+- autonomous adapter generation;
+- Cognitive Distillation behavior;
+- AI Arena;
+- new business-specific Skills.
+
+AR-1B target:
+
+`User -> Task/Planner/Runtime -> selected Agent -> Skill Invocation Gateway -> existing Skill backend`
+
+AR-1B also establishes capability-negotiated Agent compatibility.
+
+No exact OpenClaw or future Agent version may become a product-level execution
+dependency.
+
+<!-- AI_OS_CANONICAL_PRODUCT_DEFINITION_END -->
+
+<!-- AR1B_IMPLEMENTATION_STATUS_START -->
+
+## AR-1B — Agent-Owned Execution Realignment
+
+Status: **Accepted — 2026-09-12.**
+
+Acceptance evidence:
+
+- AR-1B verifier: `PASS=19 FAIL=0`
+- targeted Agent execution Rust tests passed
+- targeted Plan Runtime bridge Rust tests passed
+- targeted Task execution Rust tests passed
+- targeted rustfmt check passed
+- `git diff --check` passed
+- the AR-1C real OpenClaw execution fixture passed against the active gateway
+
+AR-1B establishes the minimal control-plane correction:
+
+`Task -> Plan(selected Agent) -> Runtime -> AgentExecutionAdapter`
+
+Key constraints:
+
+- selected Agent identity is Plan execution metadata, not Skill input;
+- Planner does not terminally execute Browser, Local Model, Media or other Skill backends;
+- Plan Runtime no longer dispatches user Do-tasks by `skill.executor.kind`;
+- registered Skill capabilities become Agent exposure constraints;
+- `agent.execute` is a control-plane PlanStep for Do-tasks that do not name a specific Skill;
+- Agent compatibility is based on capability probing and contract negotiation;
+- exact Agent versions are diagnostic metadata only;
+- OpenClaw remains the v1 Agent Adapter but is not a version-locked product dependency;
+- Skill transport capability is modeled separately from the SkillInvocationGateway;
+- AR-1C supplies the separate Agent Skill transport and real invocation loop.
+
+AR-1C completes:
+
+`Agent -> Agent Skill Transport Adapter -> SkillInvocationGateway -> Skill backend`
+
+and proves the path with a real OpenClaw Agent invocation.
+
+The existing Skill manifest `executor` field may remain temporarily for frontend
+serialization/backward compatibility, but Plan Runtime must not use it to route
+user Do-tasks.
+
+<!-- AR1B_IMPLEMENTATION_STATUS_END -->
+
+## AR-1C — Agent Skill Transport and Gateway Loop
+
+Status: **Accepted — 2026-09-12.**
+
+Acceptance evidence:
+
+- `verify/verify_ar1c_agent_skill_transport.sh`: `PASS=15 FAIL=0`
+- real OpenClaw E2E: `1 passed; 0 failed`
+- safe fixture capability: `filesystem.scan`
+- real path: selected OpenClaw Agent -> `AgentSkillTransportAdapter` ->
+  `SkillInvocationGateway` -> Runtime permission/confirmation -> existing
+  filesystem backend -> normalized Skill result -> Agent completion
+- the Agent request contains no confirmation, permission, trusted automation,
+  backend, provider or elevated-authority field
+- permission denial and non-exposed capability denial occur before backend
+  invocation
+- capability negotiation, not an exact OpenClaw version, controls transport
+  admission
+
+## Current milestone
+
+- Kernel correction: AR-1 Complete
+  - AR-1A Accepted
+  - AR-1B Accepted (`PASS=19 FAIL=0`)
+  - AR-1C Accepted (`PASS=15 FAIL=0`, real OpenClaw E2E PASS)
+- Generative Media: GM-4 Complete
+- GM-5: Not started; prior uncommitted attempt withdrawn
+- GM-6: Not started
+
+Next:
+
+- GM-5 — Prompt / Reference Intelligence
