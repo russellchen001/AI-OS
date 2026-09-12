@@ -2898,9 +2898,9 @@ P15 Core Skills remains active at **7 / 10 active capability areas complete**.
 
 Current capability area:
 
-**Generative Media — GM-6 Quality Loop**
+**Generative Media — Closure**
 
-GM-5 is complete. User Do-task execution remains Agent-owned:
+GM-6 is complete. User Do-task execution remains Agent-owned:
 
 `Task Engine → Planner → Runtime → selected Agent → Agent Skill Transport → SkillInvocationGateway → Generative Media backend → MediaRouter → MediaProvider`
 
@@ -2921,7 +2921,8 @@ Current Generative Media milestone status:
 - GM-3 — One-click Setup / Repair foundation: Complete
 - GM-4 — Cloud Providers: Complete
 - GM-5 — Prompt / Reference Intelligence: Complete
-- GM-6 — Quality Loop: Next
+- GM-6 — Quality Loop: Complete
+- Generative Media Closure: Next
 
 Vehicle Control remains Deferred / out of v1 after its feasibility gate.
 NAS Management foundation remains hardware-blocked for real hardware E2E.
@@ -2946,8 +2947,8 @@ Deferred / removed from active v1 scope:
 
 In Progress:
 - Generative Media — Local First
-  - GM-0 through GM-5 complete
-  - **Next: GM-6 — Quality Loop**
+  - GM-0 through GM-6 complete
+  - **Next: Generative Media Closure**
 
 After Generative Media:
 1. Mano-P / Mano-CUA
@@ -2963,7 +2964,7 @@ Generative Media implementation order:
 4. GM-3 — One-click Install / Configure / Repair — Complete
 5. GM-4 — Cloud Providers, credentials, entitlement and budget enforcement — Complete
 6. GM-5 — Prompt Intelligence + OSS Reference Analysis — Complete
-7. GM-6 — Self-correction / Quality Loop — Next
+7. GM-6 — Self-correction / Quality Loop — Complete
 
 Do not begin P16 until the remaining P15 capability foundations are implemented
 or explicitly deferred.
@@ -6719,8 +6720,33 @@ Decision:
   Ollama.
 - This decision supersedes the earlier post-Generative-Media Magnitude
   integration decision.
-- Current Generative Media baseline is GM-5 Complete. GM-6 Quality Loop is the
-  only remaining Generative Media milestone before closure.
+- Current Generative Media baseline is GM-6 Complete. Formal Generative Media
+  closure is next.
+
+## 2026-09-12 — P15 GM-6 Bounded Quality Loop — Completed
+
+Status: Completed.
+
+- Provider-neutral `GenerationQualityAssessment` covers request satisfaction,
+  reference adherence, composition, obvious failures/artifacts, video temporal
+  coherence, retry usefulness, and confidence using deterministic output and
+  Provider signals before any optional expensive evaluator.
+- Normalized correction can clarify constraints, add negative constraints,
+  adjust parameters/profile/reference weighting, or mark retry not useful.
+  Execution occurs only after routing and never changes Provider or account.
+- The hard product maximum is one automatic correction attempt. Cancellation,
+  Runtime permission, Provider/account identity, policy/auth denial, and cloud
+  cost authorization all fail closed. Cloud retry additionally requires an
+  explicit bounded budget and a Provider cost estimator.
+- Results record bounded attempt/assessment/correction metadata without raw
+  prompts or media. Exhaustion returns a normalized terminal error; GM-6 does
+  not implement Cognitive Distillation or long-term failure learning.
+- Formal GM-6 acceptance: `PASS=15 FAIL=0`, including a real local bounded
+  correction smoke: one deterministic transient first attempt followed by one
+  real generation on the same Ready ComfyUI instance. The smoke-owned output
+  was removed after validation. AR-1 Agent/Skill boundaries remained green.
+
+Next: Generative Media Closure.
 
 ## 2026-09-12 — P15 GM-5 Prompt / Reference Intelligence — Completed
 

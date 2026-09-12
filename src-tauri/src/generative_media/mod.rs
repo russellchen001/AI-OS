@@ -13,6 +13,7 @@ pub(crate) mod executor;
 pub(crate) mod model_advisor;
 pub(crate) mod prompt_intelligence;
 pub(crate) mod provider;
+pub(crate) mod quality_loop;
 pub(crate) mod reference_analysis;
 pub(crate) mod registry;
 pub(crate) mod router;

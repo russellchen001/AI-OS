@@ -1121,6 +1121,32 @@ Provider account identity is shared infrastructure.
 An account may be connected through My AI while lacking a legitimate
 third-party media execution entitlement.
 
+##### Prompt, Reference and Quality Intelligence Boundaries
+
+Generative Media intelligence remains a Skill/backend domain behind the
+selected Agent, Agent Skill Transport, `SkillInvocationGateway`, and Runtime
+governance. `MediaRouter` is a backend router, not a Planner, Runtime, Agent, or
+Task executor.
+
+Prompt compilation begins only after the exact Provider and Provider Instance
+are selected. It may adapt dialect/model parameters within that identity, but
+must preserve explicit Provider, account, model, and profile choices. A
+deliberate expert prompt remains verbatim unless structured constraints,
+reference intelligence, or explicit enhancement requires compilation.
+
+Reference analysis uses replaceable adapters. Local references are never
+silently uploaded; ordinary analysis/generation never installs packages or
+downloads models. Local VLM Setup/Repair is a separate, explicit-confirmation
+operation, and Ready requires compatible schemas, complete local model assets,
+a real workflow smoke, and successful normalized `ReferenceSpec` output.
+
+The quality loop is a bounded correction step inside the already selected
+Provider execution. The default maximum is one automatic correction retry.
+Cancellation, permission, policy, Provider/account identity, and cost budget
+remain hard boundaries; Local First never means Local then Cloud. Attempt
+metadata may record normalized assessments/corrections, but not raw user media
+or unrestricted full prompts in long-term memory.
+
 ### Cognitive Distillation Foundation
 
 Goals:

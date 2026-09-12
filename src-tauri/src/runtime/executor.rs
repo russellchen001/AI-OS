@@ -283,6 +283,8 @@ pub(crate) struct RuntimeTaskExecutionResult {
 struct GenerativeMediaPreparedOperation {
     registry: std::sync::Arc<crate::generative_media::registry::MediaProviderRegistry>,
     request: crate::generative_media::domain::MediaRequest,
+    manager: Arc<RuntimeOperationManager>,
+    operation_id: String,
 }
 
 impl PreparedOperation for GenerativeMediaPreparedOperation {
@@ -290,7 +292,7 @@ impl PreparedOperation for GenerativeMediaPreparedOperation {
         self: Box<Self>,
         report: &mut dyn FnMut(RuntimeOperationProgress),
     ) -> Result<Option<Value>, NormalizedRuntimeError> {
-        let result = crate::generative_media::executor::execute_media_request(
+        let result = crate::generative_media::executor::execute_media_request_with_cancellation(
             self.registry.as_ref(),
             &self.request,
             &mut |progress| {
@@ -304,6 +306,17 @@ impl PreparedOperation for GenerativeMediaPreparedOperation {
                         .map(|value| u32::try_from(value).unwrap_or(u32::MAX)),
                     message: progress.message,
                 });
+            },
+            &|| {
+                self.manager
+                    .get_operation(&self.operation_id)
+                    .map(|operation| {
+                        matches!(
+                            operation.state,
+                            RuntimeOperationState::Cancelling | RuntimeOperationState::Cancelled
+                        )
+                    })
+                    .unwrap_or(true)
             },
         )
         .map_err(normalize_media_error)?;
@@ -401,7 +414,7 @@ pub(crate) fn execute_generative_media_runtime_task(
         &request.operation_id,
         "generative-media",
         super::models::RuntimeOperationAction::Execute,
-        false,
+        true,
     )?;
 
     let operation = match admission {
@@ -422,6 +435,8 @@ pub(crate) fn execute_generative_media_runtime_task(
     let prepared: Box<dyn PreparedOperation> = Box::new(GenerativeMediaPreparedOperation {
         registry,
         request: media_request,
+        manager: Arc::clone(&manager),
+        operation_id: request.operation_id.clone(),
     });
 
     let operation_id = request.operation_id.clone();
@@ -959,6 +974,20 @@ fn run_prepared_operation_supervisor(
             Ok(output)
         }
         Err(error) => {
+            if manager
+                .get_operation(operation_id)
+                .is_ok_and(|operation| operation.state == RuntimeOperationState::Cancelling)
+            {
+                if let Ok(snapshot) = manager.transition(
+                    operation_id,
+                    RuntimeOperationState::Cancelled,
+                    None,
+                    None,
+                ) {
+                    emit_best_effort(emitter, snapshot);
+                }
+                return Err(error);
+            }
             if let Some(recovery) = recovery {
                 let _ = recovery.evaluate(&error);
             }

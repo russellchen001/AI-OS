@@ -23,6 +23,15 @@ pub(crate) fn execute_media_request(
     request: &MediaRequest,
     report: &mut dyn FnMut(MediaProgress),
 ) -> Result<MediaResult, MediaError> {
+    execute_media_request_with_cancellation(registry, request, report, &|| false)
+}
+
+pub(crate) fn execute_media_request_with_cancellation(
+    registry: &MediaProviderRegistry,
+    request: &MediaRequest,
+    report: &mut dyn FnMut(MediaProgress),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<MediaResult, MediaError> {
     let route = MediaRouter::new(registry)
         .resolve(request)
         .map_err(map_route_error)?;
@@ -47,7 +56,8 @@ pub(crate) fn execute_media_request(
         })?;
 
     let prepared = prepare_media_request(provider.metadata(), request);
-    let mut result = provider.execute(&prepared.request, report)?;
+    let mut result =
+        super::quality_loop::execute_quality_loop(provider, &prepared.request, report, cancelled)?;
 
     if result.provider_id != route.provider_id
         || result.provider_instance_id != route.provider_instance_id

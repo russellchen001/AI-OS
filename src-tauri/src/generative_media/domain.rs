@@ -188,6 +188,31 @@ pub(crate) struct MediaGenerationOptions {
     pub duration_seconds: Option<u32>,
     #[serde(default)]
     pub enhance_prompt: bool,
+    #[serde(default)]
+    pub quality_loop: QualityLoopPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QualityLoopPolicy {
+    pub enabled: bool,
+    pub max_correction_attempts: u8,
+    pub allow_retry: bool,
+    pub allow_cloud_retry: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_additional_cost_micros: Option<u64>,
+}
+
+impl Default for QualityLoopPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_correction_attempts: 1,
+            allow_retry: true,
+            allow_cloud_retry: false,
+            max_additional_cost_micros: Some(0),
+        }
+    }
 }
 
 /// An explicitly selected media provider.
