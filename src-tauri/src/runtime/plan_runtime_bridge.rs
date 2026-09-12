@@ -490,7 +490,8 @@ fn mano_error(error: ManoFallbackError) -> PlanRuntimeExecutionError {
     match error.kind {
         ManoFallbackErrorKind::InvalidRequest => PlanRuntimeExecutionError::InvalidRequest,
         ManoFallbackErrorKind::PermissionDenied => PlanRuntimeExecutionError::PermissionDenied,
-        ManoFallbackErrorKind::Unavailable
+        ManoFallbackErrorKind::Unsupported
+        | ManoFallbackErrorKind::Unavailable
         | ManoFallbackErrorKind::AlreadyRunning
         | ManoFallbackErrorKind::Cancelled
         | ManoFallbackErrorKind::TimedOut

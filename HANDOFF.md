@@ -7649,10 +7649,14 @@ Implemented in `runtime/mano_fallback.rs` and wired only in
   are rejected before any CLI probe or task transmission;
 - execution is bounded to one active task, a configurable 1–100 step limit
   (default 25), and a 30–1800 second Runtime timeout (default 600);
-- cancellation calls the official `mano-cua stop`, distinguishes stop requested
-  from terminal cancellation, applies a bounded grace period, kills a stuck
-  child, and clears active process state;
-- shutdown requests official stop and reaps the child process;
+- Local cancellation writes the official CLI-consumed `~/.mano/stop.flag`
+  directly, because upstream `mano-cua stop` also contacts the Cloud stop
+  endpoint even for Local sessions; Cloud mode may call the CLI stop command
+  only after explicit Cloud authorization;
+- cancellation distinguishes stop requested from terminal cancellation,
+  applies a bounded grace period, kills a stuck child, and clears active
+  process state;
+- shutdown uses the same mode-safe stop path and reaps the child process;
 - stdout/stderr, screenshots, task text and typed content are not copied into
   AI-OS observability; only generic phase and normalized result/error metadata
   are returned.
@@ -7662,43 +7666,72 @@ Official upstream verified on 2026-09-13:
 - `mano-cua run "task"` is Cloud by default;
 - `--local` selects Local;
 - Local setup/readiness uses `check`, `install-sdk`, and `install-model`;
-- `stop` is the official cancellation path;
+- `stop` is exposed as the cancellation command, but version 1.1.4 also calls
+  the Cloud device-stop endpoint; Local therefore uses its stop flag directly;
 - the supported product contract is one concurrent task and primary display;
 - current Mano-P Local recommendation is Apple M4 or newer with 32GB+ RAM (or
   the supported compute-stick path).
 
-Deterministic acceptance:
+Current deterministic acceptance:
 
-- Mano full-fallback behavior: 11 PASS / 0 FAIL, including exact-once fallback,
+- Mano full-fallback behavior: 12 PASS / 0 FAIL, including exact-once fallback,
   all non-trigger errors, explicit Cloud authorization, no Local-to-Cloud
   switch, task confirmation, secret rejection, bounded black-box execution,
-  cancellation and timeout cleanup;
+  mode-safe Local cancellation and timeout cleanup;
 - Runtime-backed executor tests: 13 passed / 0 failed;
-- managed Mano adapter tests: 7 passed / 0 failed;
-- full Rust library regression: 833 passed / 0 failed / 50 ignored;
+- managed Mano adapter tests: 8 passed / 0 failed / 1 real-CLI test ignored by
+  default;
+- full Rust library regression: 834 passed / 0 failed / 51 ignored;
 - `cargo check`: PASS;
 - `git diff --check`: PASS.
 
-### MP-5 — real environment closure blocked
+### MP-5 — real CLI integration complete; task smoke environment-blocked
 
-This Mac is Apple M4 with 16GB RAM, below the current official 32GB Local
-recommendation, and `mano-cua` is not installed. Local therefore correctly
-reports not ready. Cloud has not been authorized and no screenshot/task has
-been transmitted. Installing Mano-CUA, granting macOS Screen Recording and
-Accessibility, or running a Cloud smoke requires explicit user approval.
+Real environment acceptance on 2026-09-13:
 
-The unchanged AR-1C real OpenClaw E2E is also currently blocked by live Agent
+- official Homebrew package `mano-cua` 1.1.4 is installed at
+  `/opt/homebrew/bin/mano-cua`;
+- the actual command surface is `run`, `stop`, `config`, `check`,
+  `install-sdk`, and `install-model`; there is no separate `status` command;
+- version-independent probes against real `run --help` and `stop --help` pass;
+- real `mano-cua check` exits 1 with SDK NOT READY, model NOT READY, and Local
+  mode not ready;
+- this Mac is Apple M4 with 16GB RAM, below the accepted 32GB Local policy, so
+  AI-OS truthfully normalizes Local as Unsupported before task execution;
+- no SDK, model, or other large Local dependency was installed;
+- real-CLI integration acceptance passes for executable discovery, capability
+  probes, Local Unsupported/readiness normalization, and empty subprocess state;
+- `verify/verify_p15_mano_full_fallback.sh`: PASS=14 / FAIL=0, with AR-1C
+  External E2E explicitly outside the Mano result;
+- Local cancellation compatibility passes without invoking the CLI stop command
+  or contacting Cloud; it writes the upstream-consumed stop flag and retains
+  bounded forced cleanup for a stuck child;
+- the one stop flag created by the initial idle CLI compatibility probe was
+  removed after inspection.
+
+During that initial idle compatibility probe, `mano-cua stop` unexpectedly made
+one device-level request to the upstream Cloud stop endpoint before reporting no
+active session. No task was run and no screenshot or task description was sent.
+AI-OS now prevents that call on every Local cancellation path. Cloud remains
+unauthorized and no Local-to-Cloud fallback exists.
+
+The true Mano task execution smoke remains environment-blocked: Local is
+unsupported/not ready on M4/16GB without the uninstalled SDK/model, while Cloud
+has no authorization. It must not be reported as PASS. Screen Recording and
+Accessibility were not requested because execution never became ready.
+
+The unchanged AR-1C real OpenClaw E2E remains independently blocked by live Agent
 behavior: OpenClaw 2026.8.2 returned `execution.unavailable` for its temporary
-`filesystem.scan` fixture instead of invoking that exposed Skill. All Mano
-deterministic tests pass, but MP-0/AR-1C full external acceptance must not be
-reported as green until that live round trip succeeds.
+`filesystem.scan` fixture instead of invoking that exposed Skill. Mano acceptance
+does not modify, weaken, or count that external check as a Mano failure.
 
 Current:
 
 - MP-0 — Complete and separate from Mano
 - MP-1 — Complete
-- MP-2 — Complete in code; real CLI unavailable on this machine
-- MP-3 — Complete in code; real GUI/Cloud smoke not authorized
+- MP-2 — Complete, including real CLI discovery and readiness probes
+- MP-3 — Complete implementation and cancellation wiring; real task smoke
+  environment-blocked
 - MP-4 — Complete
-- MP-5 — Blocked on external installation/permissions or Cloud authorization,
-  plus the existing AR-1C live OpenClaw fixture behavior
+- MP-5 — Integration acceptance complete; real task execution smoke remains
+  environment-blocked by unsupported/not-ready Local and unauthorized Cloud

@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::{
     env,
     error::Error,
-    fmt,
+    fmt, fs,
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -65,6 +65,7 @@ pub(crate) struct ManoProbeResult {
 pub(crate) enum ManoFallbackErrorKind {
     InvalidRequest,
     PermissionDenied,
+    Unsupported,
     Unavailable,
     AlreadyRunning,
     Cancelled,
@@ -166,6 +167,7 @@ struct ActiveExecution {
 
 pub(crate) struct ManagedManoCliFallback {
     executable: PathBuf,
+    local_stop_flag: PathBuf,
     policy: Result<ManoPolicy, ManoFallbackError>,
     active: Mutex<Option<ActiveExecution>>,
 }
@@ -176,6 +178,7 @@ impl ManagedManoCliFallback {
             executable: env::var_os("AI_OS_MANO_CUA_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("mano-cua")),
+            local_stop_flag: dirs::home_dir().unwrap_or_default().join(".mano/stop.flag"),
             policy: ManoPolicy::from_environment(),
             active: Mutex::new(None),
         }
@@ -214,8 +217,15 @@ impl ManagedManoCliFallback {
         }
     }
 
-    fn request_stop(&self) {
-        let _ = self.run_control_command(&["stop"]);
+    fn request_stop(&self) -> Result<(), ManoFallbackError> {
+        match self.policy()?.mode {
+            ManoMode::Local => {
+                let parent = self.local_stop_flag.parent().ok_or_else(execution_failed)?;
+                fs::create_dir_all(parent).map_err(|_| execution_failed())?;
+                fs::write(&self.local_stop_flag, []).map_err(|_| execution_failed())
+            }
+            ManoMode::Cloud => self.run_control_command(&["stop"]),
+        }
     }
 
     fn finish_active(
@@ -258,7 +268,7 @@ impl ManagedManoCliFallback {
             };
 
             if request_stop {
-                self.request_stop();
+                let _ = self.request_stop();
             }
             if let Some(result) = terminal {
                 let mut active = self.active.lock().map_err(|_| execution_failed())?;
@@ -280,16 +290,16 @@ impl ManoFallbackAdapter for ManagedManoCliFallback {
                 false,
             ));
         }
+        self.run_control_command(&["run", "--help"])?;
+        self.run_control_command(&["stop", "--help"])?;
         if policy.mode == ManoMode::Local && !policy.local_hardware_supported {
             return Err(ManoFallbackError::new(
-                ManoFallbackErrorKind::Unavailable,
-                "Mano Local is not ready on this hardware.",
+                ManoFallbackErrorKind::Unsupported,
+                "Mano Local is unsupported on this hardware policy.",
                 false,
             ));
         }
 
-        self.run_control_command(&["run", "--help"])?;
-        self.run_control_command(&["stop", "--help"])?;
         if policy.mode == ManoMode::Local {
             self.run_control_command(&["check"])?;
         }
@@ -441,15 +451,14 @@ impl ManoFallbackAdapter for ManagedManoCliFallback {
                 running.cancel_requested_at = Some(Instant::now());
             }
         }
-        self.request_stop();
-        Ok(())
+        self.request_stop()
     }
 }
 
 impl Drop for ManagedManoCliFallback {
     fn drop(&mut self) {
         if self.active.get_mut().is_ok_and(|active| active.is_some()) {
-            self.request_stop();
+            let _ = self.request_stop();
         }
         if let Ok(active) = self.active.get_mut() {
             if let Some(running) = active.as_mut() {
@@ -586,6 +595,7 @@ mod tests {
     fn adapter(executable: &str, policy: ManoPolicy) -> ManagedManoCliFallback {
         ManagedManoCliFallback {
             executable: PathBuf::from(executable),
+            local_stop_flag: PathBuf::from("/tmp/ai-os-unused-mano-stop.flag"),
             policy: Ok(policy),
             active: Mutex::new(None),
         }
@@ -655,7 +665,7 @@ mod tests {
 
         assert_eq!(
             adapter.probe().unwrap_err().kind,
-            ManoFallbackErrorKind::Unavailable
+            ManoFallbackErrorKind::Unsupported
         );
     }
 
@@ -688,6 +698,22 @@ mod tests {
             adapter.execute(&sensitive, &mut |_| {}).unwrap_err().kind,
             ManoFallbackErrorKind::PermissionDenied
         );
+    }
+
+    #[test]
+    fn mp1_local_cancellation_signal_is_written_without_invoking_cli_stop() {
+        let directory = tempfile::tempdir().unwrap();
+        let stop_flag = directory.path().join("nested/stop.flag");
+        let adapter = ManagedManoCliFallback {
+            executable: PathBuf::from("/definitely/missing/mano-cua"),
+            local_stop_flag: stop_flag.clone(),
+            policy: Ok(policy(ManoMode::Local, false, true)),
+            active: Mutex::new(None),
+        };
+
+        adapter.request_stop().unwrap();
+
+        assert!(stop_flag.is_file());
     }
 
     #[test]
@@ -737,6 +763,29 @@ mod tests {
         let error = adapter.execute(&request(true), &mut |_| {}).unwrap_err();
 
         assert_eq!(error.kind, ManoFallbackErrorKind::TimedOut);
+        assert!(adapter.active.lock().unwrap().is_none());
+    }
+
+    #[test]
+    #[ignore = "requires the official mano-cua CLI on an M4/16GB acceptance machine"]
+    fn mp5_real_cli_is_discovered_and_local_not_ready_is_normalized() {
+        assert!(!local_hardware_supported());
+        let directory = tempfile::tempdir().unwrap();
+        let adapter = ManagedManoCliFallback {
+            executable: PathBuf::from("mano-cua"),
+            local_stop_flag: directory.path().join("stop.flag"),
+            policy: Ok(policy(ManoMode::Local, false, false)),
+            active: Mutex::new(None),
+        };
+
+        assert_eq!(
+            adapter.probe().unwrap_err().kind,
+            ManoFallbackErrorKind::Unsupported
+        );
+        assert_eq!(
+            adapter.run_control_command(&["check"]).unwrap_err().kind,
+            ManoFallbackErrorKind::Unavailable
+        );
         assert!(adapter.active.lock().unwrap().is_none());
     }
 }
