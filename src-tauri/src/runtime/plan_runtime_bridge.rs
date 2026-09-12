@@ -57,6 +57,9 @@ pub enum PlanRuntimeExecutionError {
         executor: String,
     },
     PermissionDenied,
+    NoViableExecutionPath {
+        message: String,
+    },
     Admission {
         message: String,
         retryable: bool,
@@ -86,9 +89,9 @@ impl fmt::Display for PlanRuntimeExecutionError {
                 "Skill capability {capability} requires unsupported executor: {executor}"
             ),
             Self::PermissionDenied => formatter.write_str("Runtime permission was denied."),
-            Self::Admission { message, .. } | Self::Runtime { message, .. } => {
-                formatter.write_str(message)
-            }
+            Self::NoViableExecutionPath { message }
+            | Self::Admission { message, .. }
+            | Self::Runtime { message, .. } => formatter.write_str(message),
         }
     }
 }
@@ -418,6 +421,11 @@ fn agent_error(error: AgentExecutionError) -> PlanRuntimeExecutionError {
     match error.kind {
         AgentExecutionErrorKind::InvalidRequest => PlanRuntimeExecutionError::InvalidRequest,
         AgentExecutionErrorKind::PermissionDenied => PlanRuntimeExecutionError::PermissionDenied,
+        AgentExecutionErrorKind::NoViableExecutionPath => {
+            PlanRuntimeExecutionError::NoViableExecutionPath {
+                message: error.message,
+            }
+        }
         AgentExecutionErrorKind::AuthenticationRequired
         | AgentExecutionErrorKind::PairingRequired
         | AgentExecutionErrorKind::ConnectionUnavailable
@@ -426,6 +434,49 @@ fn agent_error(error: AgentExecutionError) -> PlanRuntimeExecutionError {
             message: error.message,
             retryable: error.retryable,
         },
+    }
+}
+
+#[cfg(test)]
+mod mano_fallback_error_contract_tests {
+    use super::*;
+
+    fn agent_error_of(kind: AgentExecutionErrorKind) -> PlanRuntimeExecutionError {
+        agent_error(AgentExecutionError::new(kind, "test failure", false))
+    }
+
+    #[test]
+    fn only_no_viable_execution_path_keeps_a_dedicated_plan_runtime_signal() {
+        assert!(matches!(
+            agent_error_of(AgentExecutionErrorKind::NoViableExecutionPath),
+            PlanRuntimeExecutionError::NoViableExecutionPath { .. }
+        ));
+
+        for kind in [
+            AgentExecutionErrorKind::AuthenticationRequired,
+            AgentExecutionErrorKind::PairingRequired,
+            AgentExecutionErrorKind::ConnectionUnavailable,
+            AgentExecutionErrorKind::ExecutionRejected,
+            AgentExecutionErrorKind::ExecutionFailed,
+        ] {
+            assert!(matches!(
+                agent_error_of(kind),
+                PlanRuntimeExecutionError::Runtime { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn permission_and_invalid_request_never_become_mano_fallback_signal() {
+        assert_eq!(
+            agent_error_of(AgentExecutionErrorKind::PermissionDenied),
+            PlanRuntimeExecutionError::PermissionDenied
+        );
+
+        assert_eq!(
+            agent_error_of(AgentExecutionErrorKind::InvalidRequest),
+            PlanRuntimeExecutionError::InvalidRequest
+        );
     }
 }
 

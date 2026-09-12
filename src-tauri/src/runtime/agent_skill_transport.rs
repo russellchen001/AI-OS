@@ -308,7 +308,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             }
         });
         let first_message = format!(
-            "You are the selected execution Agent. AI-OS Runtime exposes only the capabilities in this JSON: {}. Decide the action sequence. To use a capability, do not call a similarly named OpenClaw tool and do not perform it directly. Return only one compact JSON object shaped as {{\"type\":\"skill.invoke\",\"invocationId\":\"agent-authored-id\",\"capability\":\"one exposed capability\",\"input\":{{}}}}. Do not include confirmation, permission, backend, provider, or authority fields.",
+            "You are the selected execution Agent. AI-OS Runtime exposes only the capabilities in this JSON: {}. Decide the action sequence. To use a capability, do not call a similarly named OpenClaw tool and do not perform it directly. Return only one compact JSON object. If an exposed capability can advance the task, return {{\"type\":\"skill.invoke\",\"invocationId\":\"agent-authored-id\",\"capability\":\"one exposed capability\",\"input\":{{}}}}. If no exposed AI-OS capability provides a viable execution path for this task, return {{\"type\":\"execution.unavailable\",\"reason\":\"brief reason\"}}. Do not report execution.unavailable for permission denial, authentication, pairing, connection failures, temporary errors, or ordinary execution failures. Do not include confirmation, permission, backend, provider, or authority fields.",
             exposure
         );
 
@@ -334,7 +334,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             .map_err(map_skill_error)?;
 
         let result_message = format!(
-            "AI-OS Runtime completed your Skill request. Treat this JSON as the normalized Skill result and return only your final completion JSON; do not call tools: {}",
+            "AI-OS Runtime completed your Skill request. Treat this JSON as the normalized Skill result. Return only one compact final JSON object and do not call tools. If the task can now be completed, return a completion JSON. If the normalized result proves that no viable AI-OS execution path remains, return {{\"type\":\"execution.unavailable\",\"reason\":\"brief reason\"}}. Do not use execution.unavailable for permission denial, authentication, pairing, connection failures, temporary errors, or ordinary execution failures: {}",
             json!({
                 "type": "skill.result",
                 "invocationId": result.invocation_id,
@@ -356,6 +356,8 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
                 false,
             )
         })?;
+
+        reject_no_viable_completion(&completion)?;
 
         Ok(AgentExecutionResult {
             session_id: Some(session_key),
@@ -457,8 +459,6 @@ fn history(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentSkillRequestWire {
-    #[serde(rename = "type")]
-    request_type: String,
     invocation_id: String,
     capability: String,
     input: Value,
@@ -472,15 +472,61 @@ fn parse_skill_request(history: &Value) -> Result<SkillInvocationRequest, AgentE
             false,
         )
     })?;
+
+    let value = parse_agent_json(&text)?;
+
+    match value.get("type").and_then(Value::as_str) {
+        Some("execution.unavailable") => Err(no_viable_execution_path(&value)),
+        Some("skill.invoke") => {
+            let wire: AgentSkillRequestWire =
+                serde_json::from_value(value).map_err(|_| invalid_skill_protocol())?;
+
+            SkillInvocationRequest::new(wire.invocation_id, wire.capability, wire.input)
+                .map_err(|_| invalid_skill_protocol())
+        }
+        _ => Err(invalid_skill_protocol()),
+    }
+}
+
+fn parse_agent_json(text: &str) -> Result<Value, AgentExecutionError> {
     let start = text.find('{').ok_or_else(invalid_skill_protocol)?;
     let end = text.rfind('}').ok_or_else(invalid_skill_protocol)?;
-    let wire: AgentSkillRequestWire =
-        serde_json::from_str(&text[start..=end]).map_err(|_| invalid_skill_protocol())?;
-    if wire.request_type != "skill.invoke" {
-        return Err(invalid_skill_protocol());
+
+    serde_json::from_str(&text[start..=end]).map_err(|_| invalid_skill_protocol())
+}
+
+fn no_viable_execution_path(value: &Value) -> AgentExecutionError {
+    let reason = value
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("No exposed AI-OS capability provides a viable execution path.");
+
+    AgentExecutionError::new(
+        AgentExecutionErrorKind::NoViableExecutionPath,
+        reason,
+        false,
+    )
+}
+
+fn reject_no_viable_completion(text: &str) -> Result<(), AgentExecutionError> {
+    let Some(start) = text.find('{') else {
+        return Ok(());
+    };
+    let Some(end) = text.rfind('}') else {
+        return Ok(());
+    };
+
+    let Ok(value) = serde_json::from_str::<Value>(&text[start..=end]) else {
+        return Ok(());
+    };
+
+    if value.get("type").and_then(Value::as_str) == Some("execution.unavailable") {
+        return Err(no_viable_execution_path(&value));
     }
-    SkillInvocationRequest::new(wire.invocation_id, wire.capability, wire.input)
-        .map_err(|_| invalid_skill_protocol())
+
+    Ok(())
 }
 
 fn latest_assistant_text(history: &Value) -> Option<String> {
@@ -554,6 +600,78 @@ fn map_gateway_failure(failure: ActiveGatewayMethodFailure) -> AgentExecutionErr
         }
     };
     AgentExecutionError::new(kind, failure.message, retryable)
+}
+
+#[cfg(test)]
+mod mano_fallback_contract_tests {
+    use super::*;
+
+    fn assistant_history(content: &str) -> Value {
+        json!({
+            "messages": [{
+                "message": {
+                    "role": "assistant",
+                    "content": content
+                }
+            }]
+        })
+    }
+
+    #[test]
+    fn execution_unavailable_becomes_no_viable_execution_path() {
+        let history = assistant_history(
+            r#"{"type":"execution.unavailable","reason":"No exposed capability can complete the task."}"#,
+        );
+
+        let error = parse_skill_request(&history).unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            AgentExecutionErrorKind::NoViableExecutionPath
+        );
+        assert_eq!(
+            error.message,
+            "No exposed capability can complete the task."
+        );
+        assert!(!error.retryable);
+    }
+
+    #[test]
+    fn ordinary_invalid_protocol_does_not_become_mano_fallback_signal() {
+        let history = assistant_history(
+            r#"{"type":"unexpected.response","reason":"bad protocol"}"#,
+        );
+
+        let error = parse_skill_request(&history).unwrap_err();
+
+        assert_eq!(error.kind, AgentExecutionErrorKind::ExecutionFailed);
+    }
+
+    #[test]
+    fn final_completion_can_explicitly_report_no_viable_path() {
+        let error = reject_no_viable_completion(
+            r#"{"type":"execution.unavailable","reason":"The attempted Skill cannot finish the task."}"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            AgentExecutionErrorKind::NoViableExecutionPath
+        );
+    }
+
+    #[test]
+    fn normal_completion_is_not_a_fallback_signal() {
+        reject_no_viable_completion(
+            r#"{"type":"execution.complete","summary":"done"}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn legacy_plain_text_completion_remains_accepted() {
+        reject_no_viable_completion("Task completed successfully.").unwrap();
+    }
 }
 
 #[cfg(test)]

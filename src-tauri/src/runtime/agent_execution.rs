@@ -111,6 +111,7 @@ pub(crate) enum AgentExecutionErrorKind {
     PairingRequired,
     ConnectionUnavailable,
     ExecutionRejected,
+    NoViableExecutionPath,
     ExecutionFailed,
 }
 
