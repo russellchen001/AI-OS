@@ -7749,9 +7749,10 @@ Safety incident record: the first Cloud attempt opened an existing
 have appeared in required Cloud screenshots; no credentials were present and
 the document was not modified. A later attempt typed the fixed test marker but
 TextEdit saved it as iCloud `未命名.txt` instead of the authorized `/tmp` path.
-That session was stopped immediately. The 29-byte file was not deleted because
-the acceptance authorization explicitly excluded deletion. The final passing
-run used a pre-opened empty local fixture and did not use Save As or iCloud.
+That session was stopped immediately. AI-OS did not delete the 29-byte file
+under the no-deletion authorization; it was no longer present after TextEdit
+switched to the local fixture. The final passing run used a pre-opened empty
+local fixture and did not use Save As or iCloud.
 
 Local product-path acceptance:
 
