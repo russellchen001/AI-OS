@@ -7673,8 +7673,9 @@ Deterministic acceptance:
   all non-trigger errors, explicit Cloud authorization, no Local-to-Cloud
   switch, task confirmation, secret rejection, bounded black-box execution,
   cancellation and timeout cleanup;
-- Runtime-backed executor tests: 12 passed / 0 failed;
+- Runtime-backed executor tests: 13 passed / 0 failed;
 - managed Mano adapter tests: 7 passed / 0 failed;
+- full Rust library regression: 833 passed / 0 failed / 50 ignored;
 - `cargo check`: PASS;
 - `git diff --check`: PASS.
 
