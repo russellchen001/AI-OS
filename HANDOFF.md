@@ -2894,11 +2894,11 @@ config, or the repository.
 
 ## In progress
 
-P15 Core Skills remains active at **7 / 10 active capability areas complete**.
+P15 Core Skills remains active at **8 / 10 active capability areas complete**.
 
 Current capability area:
 
-**Generative Media — Closure**
+**Generative Media — Complete**
 
 GM-6 is complete. User Do-task execution remains Agent-owned:
 
@@ -2922,7 +2922,7 @@ Current Generative Media milestone status:
 - GM-4 — Cloud Providers: Complete
 - GM-5 — Prompt / Reference Intelligence: Complete
 - GM-6 — Quality Loop: Complete
-- Generative Media Closure: Next
+- Generative Media Closure: Complete
 
 Vehicle Control remains Deferred / out of v1 after its feasibility gate.
 NAS Management foundation remains hardware-blocked for real hardware E2E.
@@ -2941,20 +2941,18 @@ Completed:
 5. Email and Calendar
 6. Office workflows
 7. Computer Control v1
+8. Generative Media
 
 Deferred / removed from active v1 scope:
 - Vehicle Control v1 — Deferred after feasibility gate; no adapter implemented
 
-In Progress:
-- Generative Media — Local First
-  - GM-0 through GM-6 complete
-  - **Next: Generative Media Closure**
+Next P15 Skill:
+- **Mano-P / Mano-CUA**
 
-After Generative Media:
-1. Mano-P / Mano-CUA
-2. llmfit Local Model Optimization / Recommendation integration
-3. Cognitive Distillation completion
-4. NAS Management foundation — real hardware E2E remains blocked until NAS storage is installed
+After Mano-P / Mano-CUA:
+1. llmfit Local Model Optimization / Recommendation integration
+2. Cognitive Distillation completion
+3. NAS Management foundation — real hardware E2E remains blocked until NAS storage is installed
 
 Generative Media implementation order:
 
@@ -6683,15 +6681,8 @@ owner explicitly changes the roadmap.
 
 ### Current Generative Media direction
 
-GM-2 remains complete.
-
-Next implementation sequence:
-
-1. GM-5 — Prompt / Reference Intelligence
-2. ComfyUI-Agent-Kit / ComfyUI-Mac-Silicon reuse within the appropriate
-   Generative Media implementation boundary
-3. GM-6 — Quality Loop
-4. Generative Media closure
+Generative Media GM-0 through GM-6 and formal closure are complete. Do not
+begin the next P15 Skill from this handoff.
 
 Accepted post-Generative-Media reuse sequence:
 
@@ -6720,8 +6711,29 @@ Decision:
   Ollama.
 - This decision supersedes the earlier post-Generative-Media Magnitude
   integration decision.
-- Current Generative Media baseline is GM-6 Complete. Formal Generative Media
-  closure is next.
+- Current Generative Media status is Complete. Next P15 Skill is Mano-P /
+  Mano-CUA; it has not been started.
+
+## 2026-09-12 — Generative Media Closure — Completed
+
+Status: Complete.
+
+- Formal closure verifier: `PASS=11 FAIL=0` across GM-0 through GM-6,
+  Provider Registry, Ready/Setup/Repair, Local First/manual-selection
+  invariants, Cloud account/budget boundaries, Prompt/Reference Intelligence,
+  bounded Quality Loop, Runtime confirmation, and AR-1 Agent-owned execution.
+- Real local evidence passed for ComfyUI text-to-image, VLM Setup/Repair,
+  normal ReferenceSpec analysis, and one bounded correction followed by a real
+  generation on the same Provider instance.
+- Connected Cloud Provider metadata and deterministic execution boundaries
+  passed. Real cloud image/video calls remain blocked by explicit account/spend
+  confirmation and were not fabricated; no private reference was uploaded.
+- Final Rust library suite, diff integrity, commit list, and clean worktree are
+  recorded by the closing commit/report.
+
+Current: Generative Media — Complete.
+
+Next P15 Skill: Mano-P / Mano-CUA. Not started.
 
 ## 2026-09-12 — P15 GM-6 Bounded Quality Loop — Completed
 
@@ -6746,7 +6758,7 @@ Status: Completed.
   real generation on the same Ready ComfyUI instance. The smoke-owned output
   was removed after validation. AR-1 Agent/Skill boundaries remained green.
 
-Next: Generative Media Closure.
+Next: Mano-P / Mano-CUA. Do not start it as part of Generative Media closure.
 
 ## 2026-09-12 — P15 GM-5 Prompt / Reference Intelligence — Completed
 

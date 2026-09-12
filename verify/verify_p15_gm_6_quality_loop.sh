@@ -60,7 +60,9 @@ else
   printf '%s\n' 'SKIP real local bounded correction smoke — set AI_OS_GM6_LIVE=1'
 fi
 
-if bash "$ROOT/verify/verify_ar1a_agent_skill_contract.sh" >/dev/null 2>&1 &&
+if [[ "${AI_OS_SKIP_AR_AGGREGATE:-0}" == "1" ]]; then
+  printf '%s\n' 'SKIP nested AR aggregate — parent closure owns AR verification'
+elif bash "$ROOT/verify/verify_ar1a_agent_skill_contract.sh" >/dev/null 2>&1 &&
    bash "$ROOT/verify/verify_ar1b_agent_owned_execution.sh" >/dev/null 2>&1 &&
    bash "$ROOT/verify/verify_ar1c_agent_skill_transport.sh" >/dev/null 2>&1; then
   ok 'quality loop remains behind Agent Skill transport and SkillInvocationGateway'
