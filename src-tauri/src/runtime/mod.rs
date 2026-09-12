@@ -6,6 +6,7 @@ pub(crate) mod capability_permission;
 pub(crate) mod executor;
 pub(crate) mod ipc;
 pub(crate) mod lifecycle;
+pub(crate) mod mano_fallback;
 pub mod models;
 pub(crate) mod openclaw_execution;
 pub(crate) mod openclaw_gateway_adapter;

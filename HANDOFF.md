@@ -7569,13 +7569,11 @@ the generated or original prompt text.
 
 ### MP-0 — Computer Use Provider Foundation — Complete
 
-Mano-P / Mano-CUA remains a supplement to the existing AI-OS Computer Use
-capability. It does not create a second Computer Use architecture and does not
-replace OpenClaw, Computer Control, Planner, Runtime, or existing structured
-tool paths.
+MP-0 belongs to the existing AI-OS Computer Use capability. It does not belong
+to Mano and does not create a second Computer Use architecture.
 
 MP-0 completed the missing provider-neutral Runtime / Skill integration
-boundary required for a safe Mano provider:
+boundary required for provider-neutral Computer Use:
 
 - `computer.use.execute` enters through the selected Agent;
 - Agent Skill Transport remains generic;
@@ -7611,8 +7609,95 @@ No cloud fallback has been enabled.
 Current:
 - MP-0 — Complete
 
-Next:
-- MP-1 — Managed Local Mano Provider
+### Mano architecture correction — authoritative
 
-MP-1 must integrate Mano-CUA / Mano-P as a local Computer Use provider behind
-the existing provider-neutral boundary. It must not rebuild Computer Use.
+Mano-CUA / Mano-P is the final full-task fallback executor used by Runtime only
+after the selected Agent explicitly reports `NoViableExecutionPath`.
+
+- Mano is not an Agent.
+- Mano is not a Skill.
+- Mano is not a `ComputerUseProvider` and is not registered in
+  `ComputerUseProviderRegistry`.
+- Mano does not replace OpenClaw. The v1 primary Agent remains OpenClaw and
+  continues to use all legal AI-OS Skills, Browser/Search, Computer Use,
+  Computer Control, native/API and provider paths first.
+- Every other Agent success or error, including permission, authentication,
+  pairing, connection, protocol, timeout, cancellation, rejection and ordinary
+  execution failure, bypasses Mano.
+
+Technical decision: `RuntimeBackedPlanExecutor` owns `agent_adapter` and the
+independent `mano_fallback` at the same Runtime layer. The adapter wraps the
+official Mano-CUA CLI as one black-box GUI loop; AI-OS does not reimplement
+screenshot capture, grounding, action planning, inference, verification or GUI
+retry logic.
+
+### MP-1 through MP-4 — implementation complete — 2026-09-13
+
+Implemented in `runtime/mano_fallback.rs` and wired only in
+`runtime/plan_runtime_bridge.rs`:
+
+- current official CLI capability probes use `run --help`, `stop --help`, and
+  Local `check`; no exact version or removed `config show` contract is used;
+- Local is the default and preferred mode; it requires supported hardware plus
+  a successful official Local readiness check;
+- Cloud requires both the Runtime-owned `AI_OS_MANO_MODE=cloud` setting and
+  explicit `AI_OS_MANO_CLOUD_AUTHORIZED=true`; Local never silently switches to
+  Cloud;
+- every Mano entry requires the Runtime-owned task confirmation bit; Agent
+  output cannot select mode or authorize Mano/Cloud;
+- requests containing credential/secret fields or credential-like task text
+  are rejected before any CLI probe or task transmission;
+- execution is bounded to one active task, a configurable 1–100 step limit
+  (default 25), and a 30–1800 second Runtime timeout (default 600);
+- cancellation calls the official `mano-cua stop`, distinguishes stop requested
+  from terminal cancellation, applies a bounded grace period, kills a stuck
+  child, and clears active process state;
+- shutdown requests official stop and reaps the child process;
+- stdout/stderr, screenshots, task text and typed content are not copied into
+  AI-OS observability; only generic phase and normalized result/error metadata
+  are returned.
+
+Official upstream verified on 2026-09-13:
+
+- `mano-cua run "task"` is Cloud by default;
+- `--local` selects Local;
+- Local setup/readiness uses `check`, `install-sdk`, and `install-model`;
+- `stop` is the official cancellation path;
+- the supported product contract is one concurrent task and primary display;
+- current Mano-P Local recommendation is Apple M4 or newer with 32GB+ RAM (or
+  the supported compute-stick path).
+
+Deterministic acceptance:
+
+- Mano full-fallback behavior: 11 PASS / 0 FAIL, including exact-once fallback,
+  all non-trigger errors, explicit Cloud authorization, no Local-to-Cloud
+  switch, task confirmation, secret rejection, bounded black-box execution,
+  cancellation and timeout cleanup;
+- Runtime-backed executor tests: 12 passed / 0 failed;
+- managed Mano adapter tests: 7 passed / 0 failed;
+- `cargo check`: PASS;
+- `git diff --check`: PASS.
+
+### MP-5 — real environment closure blocked
+
+This Mac is Apple M4 with 16GB RAM, below the current official 32GB Local
+recommendation, and `mano-cua` is not installed. Local therefore correctly
+reports not ready. Cloud has not been authorized and no screenshot/task has
+been transmitted. Installing Mano-CUA, granting macOS Screen Recording and
+Accessibility, or running a Cloud smoke requires explicit user approval.
+
+The unchanged AR-1C real OpenClaw E2E is also currently blocked by live Agent
+behavior: OpenClaw 2026.8.2 returned `execution.unavailable` for its temporary
+`filesystem.scan` fixture instead of invoking that exposed Skill. All Mano
+deterministic tests pass, but MP-0/AR-1C full external acceptance must not be
+reported as green until that live round trip succeeds.
+
+Current:
+
+- MP-0 — Complete and separate from Mano
+- MP-1 — Complete
+- MP-2 — Complete in code; real CLI unavailable on this machine
+- MP-3 — Complete in code; real GUI/Cloud smoke not authorized
+- MP-4 — Complete
+- MP-5 — Blocked on external installation/permissions or Cloud authorization,
+  plus the existing AR-1C live OpenClaw fixture behavior

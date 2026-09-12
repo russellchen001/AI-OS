@@ -9,6 +9,10 @@ use super::{
         AgentSkillTransportAdapter, OpenClawAgentSkillTransport, RuntimeSkillInvocationGateway,
     },
     executor::{OperationEventEmitter, RuntimeExecutionState},
+    mano_fallback::{
+        ManagedManoCliFallback, ManoFallbackAdapter, ManoFallbackError, ManoFallbackErrorKind,
+        ManoFallbackRequest,
+    },
     openclaw_execution::{
         OpenClawExecutionAdapter, OpenClawExecutionError, OpenClawExecutionErrorKind,
         OpenClawExecutionProgress, OpenClawExecutionRequest,
@@ -103,6 +107,11 @@ pub trait PlanRuntimeExecutor: Send + Sync {
         &self,
         request: PlanRuntimeExecutionRequest,
     ) -> Result<PlanRuntimeExecutionResult, PlanRuntimeExecutionError>;
+
+    fn cancel_execution(&self, execution_id: &str) -> Result<(), PlanRuntimeExecutionError> {
+        let _ = execution_id;
+        Err(PlanRuntimeExecutionError::InvalidRequest)
+    }
 }
 
 /// OpenClaw implementation of the generic Agent contract.
@@ -264,6 +273,7 @@ fn map_openclaw_error(error: OpenClawExecutionError) -> AgentExecutionError {
 
 pub(crate) struct RuntimeBackedPlanExecutor {
     agent_adapter: Arc<dyn AgentExecutionAdapter>,
+    mano_fallback: Arc<dyn ManoFallbackAdapter>,
 }
 
 impl RuntimeBackedPlanExecutor {
@@ -273,12 +283,27 @@ impl RuntimeBackedPlanExecutor {
     ) -> Self {
         Self {
             agent_adapter: Arc::new(OpenClawAgentExecutionBridge::production(runtime, emitter)),
+            mano_fallback: Arc::new(ManagedManoCliFallback::production()),
         }
     }
 
     #[cfg(test)]
     fn with_agent_adapter(agent_adapter: Arc<dyn AgentExecutionAdapter>) -> Self {
-        Self { agent_adapter }
+        Self {
+            agent_adapter,
+            mano_fallback: Arc::new(RejectingManoFallback),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_adapters(
+        agent_adapter: Arc<dyn AgentExecutionAdapter>,
+        mano_fallback: Arc<dyn ManoFallbackAdapter>,
+    ) -> Self {
+        Self {
+            agent_adapter,
+            mano_fallback,
+        }
     }
 }
 
@@ -354,7 +379,7 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
 
         let attempt_id = Uuid::new_v4().to_string();
         let operation_id = operation_identity(&request.plan_id, &request.step_id, &attempt_id);
-        let skill_input = Value::Object(request.input.into_iter().collect::<Map<_, _>>());
+        let skill_input = Value::Object(request.input.clone().into_iter().collect::<Map<_, _>>());
 
         let context = if capability == CONTROL_PLANE_AGENT_EXECUTE {
             json!({
@@ -386,22 +411,46 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
             request.plan_id.as_str(),
             request.step_id.as_str(),
             agent_id,
-            request.goal,
+            request.goal.clone(),
             allowed_capabilities,
             context,
             skill_invocation_context,
         )
         .map_err(|_| PlanRuntimeExecutionError::InvalidRequest)?;
 
-        let result = self
-            .agent_adapter
-            .execute(&agent_request, &mut |_| {})
-            .map_err(agent_error)?;
+        let result = match self.agent_adapter.execute(&agent_request, &mut |_| {}) {
+            Ok(result) => result,
+            Err(error) if error.kind == AgentExecutionErrorKind::NoViableExecutionPath => {
+                let fallback_request = ManoFallbackRequest {
+                    execution_id: operation_id.clone(),
+                    task_id: request.task_id.as_str().to_owned(),
+                    plan_id: request.plan_id.as_str().to_owned(),
+                    step_id: request.step_id.as_str().to_owned(),
+                    goal: request.goal,
+                    capability,
+                    input: skill_input,
+                    user_confirmed: request.user_confirmed,
+                };
+                let fallback = self
+                    .mano_fallback
+                    .execute(&fallback_request, &mut |_| {})
+                    .map_err(mano_error)?;
+                AgentExecutionResult {
+                    session_id: None,
+                    output: fallback.output,
+                }
+            }
+            Err(error) => return Err(agent_error(error)),
+        };
 
         Ok(PlanRuntimeExecutionResult {
             operation_id,
             output: Some(result.output),
         })
+    }
+
+    fn cancel_execution(&self, execution_id: &str) -> Result<(), PlanRuntimeExecutionError> {
+        self.mano_fallback.cancel(execution_id).map_err(mano_error)
     }
 }
 
@@ -434,6 +483,55 @@ fn agent_error(error: AgentExecutionError) -> PlanRuntimeExecutionError {
             message: error.message,
             retryable: error.retryable,
         },
+    }
+}
+
+fn mano_error(error: ManoFallbackError) -> PlanRuntimeExecutionError {
+    match error.kind {
+        ManoFallbackErrorKind::InvalidRequest => PlanRuntimeExecutionError::InvalidRequest,
+        ManoFallbackErrorKind::PermissionDenied => PlanRuntimeExecutionError::PermissionDenied,
+        ManoFallbackErrorKind::Unavailable
+        | ManoFallbackErrorKind::AlreadyRunning
+        | ManoFallbackErrorKind::Cancelled
+        | ManoFallbackErrorKind::TimedOut
+        | ManoFallbackErrorKind::ExecutionFailed => PlanRuntimeExecutionError::Runtime {
+            message: error.message,
+            retryable: error.retryable,
+        },
+    }
+}
+
+#[cfg(test)]
+struct RejectingManoFallback;
+
+#[cfg(test)]
+impl ManoFallbackAdapter for RejectingManoFallback {
+    fn probe(&self) -> Result<super::mano_fallback::ManoProbeResult, ManoFallbackError> {
+        Err(ManoFallbackError {
+            kind: ManoFallbackErrorKind::Unavailable,
+            message: "Mano fallback was not configured for this test.".to_owned(),
+            retryable: false,
+        })
+    }
+
+    fn execute(
+        &self,
+        _request: &ManoFallbackRequest,
+        _report: &mut dyn FnMut(super::mano_fallback::ManoFallbackProgress),
+    ) -> Result<super::mano_fallback::ManoFallbackResult, ManoFallbackError> {
+        Err(ManoFallbackError {
+            kind: ManoFallbackErrorKind::Unavailable,
+            message: "Mano fallback was not configured for this test.".to_owned(),
+            retryable: false,
+        })
+    }
+
+    fn cancel(&self, _execution_id: &str) -> Result<(), ManoFallbackError> {
+        Err(ManoFallbackError {
+            kind: ManoFallbackErrorKind::InvalidRequest,
+            message: "No Mano fallback execution is active.".to_owned(),
+            retryable: false,
+        })
     }
 }
 
@@ -483,7 +581,10 @@ mod mano_fallback_error_contract_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
 
     struct RecordingAgent {
         probe: AgentProbeResult,
@@ -526,6 +627,89 @@ mod tests {
         }
     }
 
+    struct FailingAgent {
+        probe: AgentProbeResult,
+        kind: AgentExecutionErrorKind,
+    }
+
+    impl FailingAgent {
+        fn new(kind: AgentExecutionErrorKind) -> Self {
+            Self {
+                probe: RecordingAgent::compatible("openclaw").probe,
+                kind,
+            }
+        }
+    }
+
+    impl AgentExecutionAdapter for FailingAgent {
+        fn probe(&self, _agent_id: &AgentId) -> Result<AgentProbeResult, AgentExecutionError> {
+            Ok(self.probe.clone())
+        }
+
+        fn execute(
+            &self,
+            _request: &AgentExecutionRequest,
+            _report: &mut dyn FnMut(AgentExecutionProgress),
+        ) -> Result<AgentExecutionResult, AgentExecutionError> {
+            Err(AgentExecutionError::new(
+                self.kind.clone(),
+                "selected Agent reported no execution path",
+                false,
+            ))
+        }
+    }
+
+    struct RecordingMano {
+        calls: AtomicUsize,
+        requests: Mutex<Vec<ManoFallbackRequest>>,
+        cancellations: Mutex<Vec<String>>,
+        error: Option<ManoFallbackError>,
+    }
+
+    impl RecordingMano {
+        fn successful() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+                cancellations: Mutex::new(Vec::new()),
+                error: None,
+            }
+        }
+    }
+
+    impl ManoFallbackAdapter for RecordingMano {
+        fn probe(&self) -> Result<super::super::mano_fallback::ManoProbeResult, ManoFallbackError> {
+            Ok(super::super::mano_fallback::ManoProbeResult {
+                mode: super::super::mano_fallback::ManoMode::Local,
+                concurrency: 1,
+                primary_display_only: true,
+            })
+        }
+
+        fn execute(
+            &self,
+            request: &ManoFallbackRequest,
+            _report: &mut dyn FnMut(super::super::mano_fallback::ManoFallbackProgress),
+        ) -> Result<super::super::mano_fallback::ManoFallbackResult, ManoFallbackError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.requests.lock().unwrap().push(request.clone());
+            if let Some(error) = &self.error {
+                return Err(error.clone());
+            }
+            Ok(super::super::mano_fallback::ManoFallbackResult {
+                output: json!({"executor": "mano-cua", "status": "completed"}),
+            })
+        }
+
+        fn cancel(&self, execution_id: &str) -> Result<(), ManoFallbackError> {
+            self.cancellations
+                .lock()
+                .unwrap()
+                .push(execution_id.to_owned());
+            Ok(())
+        }
+    }
+
     fn request(capability: &str) -> PlanRuntimeExecutionRequest {
         PlanRuntimeExecutionRequest {
             task_id: TaskId::new(),
@@ -537,6 +721,110 @@ mod tests {
             input: [("path".to_owned(), json!("/safe"))].into_iter().collect(),
             user_confirmed: false,
         }
+    }
+
+    #[test]
+    fn mp1_only_no_viable_execution_path_invokes_mano_exactly_once() {
+        let mano = Arc::new(RecordingMano::successful());
+        let executor = RuntimeBackedPlanExecutor::with_adapters(
+            Arc::new(FailingAgent::new(
+                AgentExecutionErrorKind::NoViableExecutionPath,
+            )),
+            mano.clone(),
+        );
+        let mut fallback_request = request("filesystem.scan");
+        fallback_request.user_confirmed = true;
+        let task_id = fallback_request.task_id.as_str().to_owned();
+        let plan_id = fallback_request.plan_id.as_str().to_owned();
+        let step_id = fallback_request.step_id.as_str().to_owned();
+
+        let result = executor.execute_step(fallback_request).unwrap();
+
+        assert_eq!(mano.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(result.output.unwrap()["executor"], "mano-cua");
+        let received = mano.requests.lock().unwrap();
+        assert_eq!(received[0].task_id, task_id);
+        assert_eq!(received[0].plan_id, plan_id);
+        assert_eq!(received[0].step_id, step_id);
+        assert_eq!(received[0].capability, "filesystem.scan");
+        assert!(received[0].user_confirmed);
+    }
+
+    #[test]
+    fn mp1_every_other_agent_outcome_bypasses_mano() {
+        for kind in [
+            AgentExecutionErrorKind::InvalidRequest,
+            AgentExecutionErrorKind::PermissionDenied,
+            AgentExecutionErrorKind::AuthenticationRequired,
+            AgentExecutionErrorKind::PairingRequired,
+            AgentExecutionErrorKind::ConnectionUnavailable,
+            AgentExecutionErrorKind::ExecutionRejected,
+            AgentExecutionErrorKind::ExecutionFailed,
+        ] {
+            let mano = Arc::new(RecordingMano::successful());
+            let executor = RuntimeBackedPlanExecutor::with_adapters(
+                Arc::new(FailingAgent::new(kind)),
+                mano.clone(),
+            );
+
+            assert!(executor.execute_step(request("filesystem.scan")).is_err());
+            assert_eq!(mano.calls.load(Ordering::SeqCst), 0);
+        }
+
+        let mano = Arc::new(RecordingMano::successful());
+        let executor = RuntimeBackedPlanExecutor::with_adapters(
+            Arc::new(RecordingAgent::compatible("openclaw")),
+            mano.clone(),
+        );
+        executor.execute_step(request("filesystem.scan")).unwrap();
+        assert_eq!(mano.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn mp1_mano_unavailable_is_a_normalized_terminal_runtime_error() {
+        let mano = Arc::new(RecordingMano {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            cancellations: Mutex::new(Vec::new()),
+            error: Some(ManoFallbackError {
+                kind: ManoFallbackErrorKind::Unavailable,
+                message: "Mano-CUA is unavailable or not ready.".to_owned(),
+                retryable: true,
+            }),
+        });
+        let executor = RuntimeBackedPlanExecutor::with_adapters(
+            Arc::new(FailingAgent::new(
+                AgentExecutionErrorKind::NoViableExecutionPath,
+            )),
+            mano.clone(),
+        );
+        let mut fallback_request = request("filesystem.scan");
+        fallback_request.user_confirmed = true;
+
+        assert!(matches!(
+            executor.execute_step(fallback_request),
+            Err(PlanRuntimeExecutionError::Runtime {
+                retryable: true,
+                ..
+            })
+        ));
+        assert_eq!(mano.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn mp1_plan_runtime_routes_cancellation_to_mano() {
+        let mano = Arc::new(RecordingMano::successful());
+        let executor = RuntimeBackedPlanExecutor::with_adapters(
+            Arc::new(RecordingAgent::compatible("openclaw")),
+            mano.clone(),
+        );
+
+        executor.cancel_execution("execution-1").unwrap();
+
+        assert_eq!(
+            mano.cancellations.lock().unwrap().as_slice(),
+            ["execution-1"]
+        );
     }
 
     #[test]
