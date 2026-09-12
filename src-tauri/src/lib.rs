@@ -215,6 +215,7 @@ pub fn run() {
             models::show_ollama_model,
             models::show_ollama_model_in_finder,
             generative_media::comfyui_setup::setup_comfyui_managed_profile,
+            generative_media::comfyui_reference_setup::setup_comfyui_reference_vlm,
             multillm::start_multillm_stream,
             multillm::cancel_multillm_stream,
             mcp::list_mcp_servers,

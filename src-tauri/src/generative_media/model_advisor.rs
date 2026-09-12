@@ -42,7 +42,9 @@ pub(crate) fn advise_model(
                 Some("Qwen 3 VL 2B Instruct"),
                 Some("reference.vlm.standard"),
             ),
-            MediaCapability::ReferenceConditionedGeneration => (None, Some("image.reference")),
+            MediaCapability::ReferenceConditionedGeneration => {
+                (None, Some("comfyui-checkpoint-t2i-v1"))
+            }
             _ => (None, Some("comfyui-checkpoint-t2i-v1")),
         },
         _ => (None, None),

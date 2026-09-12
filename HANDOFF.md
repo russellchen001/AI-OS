@@ -2898,19 +2898,14 @@ P15 Core Skills remains active at **7 / 10 active capability areas complete**.
 
 Current capability area:
 
-**Generative Media — Local First**
+**Generative Media — GM-6 Quality Loop**
 
-GM-1 is complete. The stable execution architecture is:
+GM-5 is complete. User Do-task execution remains Agent-owned:
 
-`Planner → Skill Resolver → Shared Runtime Permission Admission → Generative Media Executor → MediaRouter → MediaProvider`
+`Task Engine → Planner → Runtime → selected Agent → Agent Skill Transport → SkillInvocationGateway → Generative Media backend → MediaRouter → MediaProvider`
 
-Generative Media is a **Runtime-owned Core Skill**. It does not execute inside
-`OpenClawGatewayExecutionAdapter`, and OpenClaw is not the Generative Media
-Provider abstraction.
-
-GM-1 establishes the execution foundation only. The production
-`MediaProviderRegistry` intentionally contains no real ComfyUI or cloud
-Provider yet, so GM-1 does not claim working image/video generation.
+`MediaRouter` is a backend router only. Runtime governance and the
+`SkillInvocationGateway` permission boundary remain authoritative.
 
 Current Generative Media milestone status:
 
@@ -2922,7 +2917,11 @@ Current Generative Media milestone status:
 - GM-1C — Runtime / execution bridge: Complete
 - GM-1C1 — Download / Generative Media capability-boundary repair: Complete
 - GM-1D — Shared Runtime Permission Admission: Complete
-- GM-2 — ComfyUI Ready Detection + Local Provider: Next
+- GM-2 — ComfyUI Ready Detection + Local Provider: Complete
+- GM-3 — One-click Setup / Repair foundation: Complete
+- GM-4 — Cloud Providers: Complete
+- GM-5 — Prompt / Reference Intelligence: Complete
+- GM-6 — Quality Loop: Next
 
 Vehicle Control remains Deferred / out of v1 after its feasibility gate.
 NAS Management foundation remains hardware-blocked for real hardware E2E.
@@ -2947,22 +2946,24 @@ Deferred / removed from active v1 scope:
 
 In Progress:
 - Generative Media — Local First
-  - GM-1 complete
-  - **Next: GM-2 — ComfyUI Ready Detection + Local Provider**
+  - GM-0 through GM-5 complete
+  - **Next: GM-6 — Quality Loop**
 
 After Generative Media:
-1. Cognitive Distillation Foundation
-2. NAS Management foundation — real hardware E2E remains blocked until NAS storage is installed
+1. Mano-P / Mano-CUA
+2. llmfit Local Model Optimization / Recommendation integration
+3. Cognitive Distillation completion
+4. NAS Management foundation — real hardware E2E remains blocked until NAS storage is installed
 
 Generative Media implementation order:
 
 1. GM-0 — Product Contract — Complete
 2. GM-1 — Core / Provider Router / Runtime Permission Foundation — Complete
-3. GM-2 — ComfyUI Ready Detection + Local Provider
-4. GM-3 — One-click Install / Configure / Repair
-5. GM-4 — Cloud Providers, credentials, entitlement and budget enforcement
-6. GM-5 — Prompt Intelligence + OSS Reference Analysis
-7. GM-6 — Self-correction / Quality Loop
+3. GM-2 — ComfyUI Ready Detection + Local Provider — Complete
+4. GM-3 — One-click Install / Configure / Repair — Complete
+5. GM-4 — Cloud Providers, credentials, entitlement and budget enforcement — Complete
+6. GM-5 — Prompt Intelligence + OSS Reference Analysis — Complete
+7. GM-6 — Self-correction / Quality Loop — Next
 
 Do not begin P16 until the remaining P15 capability foundations are implemented
 or explicitly deferred.
@@ -6718,8 +6719,40 @@ Decision:
   Ollama.
 - This decision supersedes the earlier post-Generative-Media Magnitude
   integration decision.
-- Current Generative Media baseline remains GM-4 Complete. GM-5 is Not started
-  and is the next milestone after the AR-1 correction.
+- Current Generative Media baseline is GM-5 Complete. GM-6 Quality Loop is the
+  only remaining Generative Media milestone before closure.
+
+## 2026-09-12 — P15 GM-5 Prompt / Reference Intelligence — Completed
+
+Status: Completed.
+
+- `CreativeIntent → PromptSpec → provider/model compiler` runs only after
+  `MediaRouter` fixes the exact Provider and Provider Instance. Expert prompts
+  remain verbatim unless structured constraints, references, or explicit
+  enhancement require compilation; manual model/profile choices remain exact.
+- Reference analysis is a replaceable adapter. The accepted local adapter pins
+  `gokayfem/ComfyUI_VLM_nodes` revision
+  `3f9612774e862f94d1dfbe3a1b36375a52870382`, uses `ModernVLM` for images and
+  `VLMVideoTemporalReasoner` for video, and currently validates Qwen3-VL 2B.
+- Normal execution is loopback-only, bounded, temporary, and never installs or
+  downloads. Explicit confirmed Setup/Repair owns source/model installation,
+  safe extraction, dependency shielding, managed backup, and Ready promotion.
+- Ready requires compatible node schemas, a complete local model snapshot, a
+  real 64x64 RGB workflow result, and successful normalization of that result
+  into a traceable `ReferenceSpec`. The RGB fixture avoids a current ComfyUI
+  PyAV incompatibility with 1x1 grayscale input; this is not a VLM node defect.
+- Formal GM-5 acceptance: `PASS=20 FAIL=0`, including real Setup/Repair and
+  normal Ready-adapter smoke. AR-1A remained `11/0`, AR-1B `19/0`, and the
+  real OpenClaw round-trip passed after the configured local oMLX service was
+  restored.
+- `AlexsJones/llmfit` remains the accepted future Local Model hardware-fit
+  foundation; GM-5 keeps only a replaceable Provider-scoped advisor boundary
+  and does not invent a parallel suitability database.
+- Known limitation: cloud generation/reference smoke remains explicit opt-in
+  where account or paid-call confirmation is required; no private reference is
+  uploaded and no paid confirmation is fabricated.
+
+Next Generative Media milestone: GM-6 — Quality Loop.
 
 ## 2026-09-08 — P15 GM-4 Cloud Providers — Completed
 

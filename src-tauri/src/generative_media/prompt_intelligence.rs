@@ -219,9 +219,13 @@ fn joined_constraints(values: &[String]) -> String {
 fn reference_constraints(references: &[ReferenceSpec]) -> Vec<String> {
     references
         .iter()
-        .flat_map(|reference| reference.constraints.iter())
-        .map(|constraint| constraint.trim())
-        .filter(|constraint| !constraint.is_empty())
+        .flat_map(|reference| {
+            std::iter::once(reference.summary.as_str())
+                .chain(reference.constraints.iter().map(String::as_str))
+                .chain(reference.temporal_events.iter().map(String::as_str))
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .collect()
 }
@@ -364,6 +368,11 @@ mod tests {
             .intent
             .request
             .contains("preserve the blue geometric layout"));
+        assert!(prepared
+            .request
+            .intent
+            .request
+            .contains("blue geometric poster"));
         assert_eq!(prepared.metadata.normalized_reference_count, 1);
     }
 

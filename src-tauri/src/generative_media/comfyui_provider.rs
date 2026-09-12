@@ -29,6 +29,16 @@ pub(crate) struct ComfyUiLocalProvider {
 impl ComfyUiLocalProvider {
     pub(crate) fn discover_ready() -> Result<Self, String> {
         let ready = probe_ready_managed_profile(Duration::from_secs(150))?;
+        let mut capabilities = vec![
+            MediaCapability::TextToImage,
+            MediaCapability::ReferenceConditionedGeneration,
+        ];
+        if crate::generative_media::comfyui_reference::reference_vlm_is_ready(&ready) {
+            capabilities.extend([
+                MediaCapability::AnalyzeImageReference,
+                MediaCapability::AnalyzeVideoReference,
+            ]);
+        }
 
         let metadata = MediaProviderMetadata {
             provider_id: COMFYUI_LOCAL_PROVIDER_ID.to_owned(),
@@ -41,7 +51,7 @@ impl ComfyUiLocalProvider {
             available: true,
             local_readiness: Some(LocalMediaReadiness::Ready),
             priority: 100,
-            capabilities: vec![MediaCapability::TextToImage],
+            capabilities,
             lawful_content_compatibility: LawfulContentCompatibility::Unknown,
             recommended_cloud: false,
             supports_progress: true,
@@ -63,10 +73,77 @@ impl MediaProvider for ComfyUiLocalProvider {
         request: &MediaRequest,
         report: &mut dyn FnMut(MediaProgress),
     ) -> Result<MediaResult, MediaError> {
-        if request.capability != MediaCapability::TextToImage {
+        if matches!(
+            request.capability,
+            MediaCapability::AnalyzeImageReference | MediaCapability::AnalyzeVideoReference
+        ) {
+            let kind = if request.capability == MediaCapability::AnalyzeImageReference {
+                MediaKind::Image
+            } else {
+                MediaKind::Video
+            };
+            let reference = request
+                .intent
+                .references
+                .iter()
+                .find(|reference| reference.kind == kind)
+                .ok_or_else(|| {
+                    media_error(
+                        MediaErrorCode::InvalidRequest,
+                        "Reference Analysis requires one matching reference asset.",
+                        false,
+                    )
+                })?;
+            report(MediaProgress {
+                phase: "analyzing-reference".to_owned(),
+                completed_units: Some(0),
+                total_units: Some(1),
+                message: "Analyzing the reference with the selected local VLM.".to_owned(),
+            });
+            let adapter =
+                crate::generative_media::comfyui_reference::ComfyUiVlmReferenceAdapter::new(
+                    self.ready.clone(),
+                );
+            let spec =
+                crate::generative_media::reference_analysis::ReferenceAnalysisAdapter::analyze(
+                    &adapter, reference,
+                )?;
+            report(MediaProgress {
+                phase: "completed".to_owned(),
+                completed_units: Some(1),
+                total_units: Some(1),
+                message: "Local Reference Analysis completed.".to_owned(),
+            });
+            return Ok(MediaResult {
+                provider_id: COMFYUI_LOCAL_PROVIDER_ID.to_owned(),
+                provider_instance_id: self.metadata.provider_instance_id.clone(),
+                outputs: Vec::new(),
+                metadata: serde_json::json!({
+                    "source": "local",
+                    "referenceSpec": spec,
+                    "rawReferencePersisted": false,
+                    "rawPromptPersisted": false,
+                }),
+            });
+        }
+
+        if !matches!(
+            request.capability,
+            MediaCapability::TextToImage | MediaCapability::ReferenceConditionedGeneration
+        ) {
             return Err(media_error(
                 MediaErrorCode::UnsupportedCapability,
-                "The local ComfyUI provider currently supports text-to-image only.",
+                "The local ComfyUI provider does not support this media capability.",
+                false,
+            ));
+        }
+
+        if request.capability == MediaCapability::ReferenceConditionedGeneration
+            && request.normalized_references.is_empty()
+        {
+            return Err(media_error(
+                MediaErrorCode::InvalidRequest,
+                "Reference-conditioned generation requires normalized ReferenceSpec input.",
                 false,
             ));
         }

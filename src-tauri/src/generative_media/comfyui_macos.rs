@@ -21,6 +21,22 @@ pub(crate) struct ComfyUiMacOsInstallation {
     pub main_py_present: bool,
 }
 
+pub(crate) fn active_input_directory(
+    installation: &ComfyUiMacOsInstallation,
+) -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "Home directory is unavailable".to_owned())?;
+    let shared_input = home.join("ComfyUI-Shared/input");
+    if shared_input.is_dir() {
+        return Ok(shared_input);
+    }
+
+    installation
+        .main_py_path
+        .parent()
+        .map(|runtime_root| runtime_root.join("input"))
+        .ok_or_else(|| "ComfyUI runtime root is unavailable".to_owned())
+}
+
 pub(crate) fn parse_desktop_installations(
     contents: &str,
 ) -> Result<Vec<ComfyUiMacOsInstallation>, String> {
@@ -197,7 +213,7 @@ fn spawn_comfyui_backend(
         .join(format!("{}.yaml", installation.instance_id));
 
     let shared_root = home.join("ComfyUI-Shared");
-    let input_directory = shared_root.join("input");
+    let input_directory = active_input_directory(installation)?;
     let output_directory = shared_root.join("output");
 
     let mut command = std::process::Command::new(&installation.python_path);
