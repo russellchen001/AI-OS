@@ -670,6 +670,24 @@ mod tests {
     }
 
     #[test]
+    fn mp1_agent_input_cannot_enable_cloud() {
+        let adapter = adapter("/usr/bin/true", policy(ManoMode::Local, true, false));
+        let mut attempted_override = request(true);
+        attempted_override.input = json!({
+            "manoMode": "cloud",
+            "manoCloudAuthorized": true
+        });
+
+        assert_eq!(
+            adapter
+                .execute(&attempted_override, &mut |_| {})
+                .unwrap_err()
+                .kind,
+            ManoFallbackErrorKind::Unsupported
+        );
+    }
+
+    #[test]
     fn mp1_task_confirmation_is_required_before_any_cli_probe() {
         let adapter = adapter(
             "/definitely/missing/mano-cua",
@@ -728,6 +746,54 @@ mod tests {
         assert_eq!(result.output["mode"], "cloud");
         assert_eq!(result.output["status"], "completed");
         assert_eq!(phases, vec!["starting", "executing", "completed"]);
+        assert!(adapter.active.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn mp1_task_text_and_input_do_not_leak_into_progress_or_result() {
+        let adapter = adapter("/usr/bin/true", policy(ManoMode::Cloud, true, false));
+        let marker = "AI_OS_MANO_PRIVATE_MARKER_7A4C";
+        let mut marked = request(true);
+        marked.goal = format!("Open TextEdit and type {marker}");
+        marked.input = json!({"fixture": marker});
+        let mut progress = Vec::new();
+
+        let result = adapter
+            .execute(&marked, &mut |update| progress.push(update))
+            .unwrap();
+        let exposed = format!("{progress:?} {:?}", result.output);
+
+        assert!(!exposed.contains(marker));
+    }
+
+    #[test]
+    fn mp1_concurrency_is_one_and_second_execution_is_rejected() {
+        let (_directory, executable) = blocking_cli_fixture();
+        let adapter = Arc::new(adapter(
+            executable.to_str().unwrap(),
+            policy(ManoMode::Cloud, true, false),
+        ));
+        let running_adapter = Arc::clone(&adapter);
+        let handle = thread::spawn(move || running_adapter.execute(&request(true), &mut |_| {}));
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while adapter.active.lock().unwrap().is_none() && Instant::now() < deadline {
+            thread::sleep(POLL_INTERVAL);
+        }
+        assert!(adapter.active.lock().unwrap().is_some());
+
+        let mut second = request(true);
+        second.execution_id = "execution-2".to_owned();
+        assert_eq!(
+            adapter.execute(&second, &mut |_| {}).unwrap_err().kind,
+            ManoFallbackErrorKind::AlreadyRunning
+        );
+
+        adapter.cancel("execution-1").unwrap();
+        assert_eq!(
+            handle.join().unwrap().unwrap_err().kind,
+            ManoFallbackErrorKind::Cancelled
+        );
         assert!(adapter.active.lock().unwrap().is_none());
     }
 

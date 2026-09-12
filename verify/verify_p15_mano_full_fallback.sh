@@ -56,6 +56,9 @@ require_test \
   mp1_unavailable_local_never_switches_to_authorized_cloud \
   'unavailable Local never switches to Cloud'
 require_test \
+  mp1_agent_input_cannot_enable_cloud \
+  'Agent input cannot enable Cloud'
+require_test \
   mp1_task_confirmation_is_required_before_any_cli_probe \
   'task-entry confirmation is enforced before Mano starts'
 require_test \
@@ -67,6 +70,12 @@ require_test \
 require_test \
   mp1_explicitly_authorized_cloud_runs_as_one_bounded_black_box \
   'authorized Cloud delegates one complete task to the upstream CLI'
+require_test \
+  mp1_task_text_and_input_do_not_leak_into_progress_or_result \
+  'task text and input do not leak into AI-OS progress or result'
+require_test \
+  mp1_concurrency_is_one_and_second_execution_is_rejected \
+  'concurrency is one and a second execution is rejected'
 require_test \
   mp1_runtime_cancel_uses_official_stop_and_reaches_cancelled_terminal_state \
   'Runtime cancellation uses stop and reaches Cancelled'

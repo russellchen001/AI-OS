@@ -7674,18 +7674,19 @@ Official upstream verified on 2026-09-13:
 
 Current deterministic acceptance:
 
-- Mano full-fallback behavior: 12 PASS / 0 FAIL, including exact-once fallback,
+- Mano full-fallback behavior: 15 PASS / 0 FAIL, including exact-once fallback,
   all non-trigger errors, explicit Cloud authorization, no Local-to-Cloud
-  switch, task confirmation, secret rejection, bounded black-box execution,
-  mode-safe Local cancellation and timeout cleanup;
+  switch, Agent input unable to enable Cloud, task confirmation, secret
+  rejection, one-execution concurrency, no task/result leakage, bounded
+  black-box execution, mode-safe Local cancellation and timeout cleanup;
 - Runtime-backed executor tests: 13 passed / 0 failed;
-- managed Mano adapter tests: 8 passed / 0 failed / 1 real-CLI test ignored by
+- managed Mano adapter tests: 11 passed / 0 failed / 1 real-CLI test ignored by
   default;
-- full Rust library regression: 834 passed / 0 failed / 51 ignored;
+- full Rust library regression: 837 passed / 0 failed / 52 ignored;
 - `cargo check`: PASS;
 - `git diff --check`: PASS.
 
-### MP-5 — real CLI integration complete; task smoke environment-blocked
+### MP-5 — Complete — 2026-09-13
 
 Real environment acceptance on 2026-09-13:
 
@@ -7701,7 +7702,7 @@ Real environment acceptance on 2026-09-13:
 - no SDK, model, or other large Local dependency was installed;
 - real-CLI integration acceptance passes for executable discovery, capability
   probes, Local Unsupported/readiness normalization, and empty subprocess state;
-- `verify/verify_p15_mano_full_fallback.sh`: PASS=14 / FAIL=0, with AR-1C
+- `verify/verify_p15_mano_full_fallback.sh`: PASS=17 / FAIL=0, with AR-1C
   External E2E explicitly outside the Mano result;
 - Local cancellation compatibility passes without invoking the CLI stop command
   or contacting Cloud; it writes the upstream-consumed stop flag and retains
@@ -7712,13 +7713,60 @@ Real environment acceptance on 2026-09-13:
 During that initial idle compatibility probe, `mano-cua stop` unexpectedly made
 one device-level request to the upstream Cloud stop endpoint before reporting no
 active session. No task was run and no screenshot or task description was sent.
-AI-OS now prevents that call on every Local cancellation path. Cloud remains
-unauthorized and no Local-to-Cloud fallback exists.
+AI-OS now prevents that call on every Local cancellation path. No Local-to-Cloud
+fallback exists.
 
-The true Mano task execution smoke remains environment-blocked: Local is
-unsupported/not ready on M4/16GB without the uninstalled SDK/model, while Cloud
-has no authorization. It must not be reported as PASS. Screen Recording and
-Accessibility were not requested because execution never became ready.
+Cloud real E2E acceptance:
+
+- Cloud was enabled only in the verifier process with both Runtime-owned
+  `AI_OS_MANO_MODE=cloud` and explicit `AI_OS_MANO_CLOUD_AUTHORIZED=true`;
+- the production `RuntimeBackedPlanExecutor` selected live OpenClaw and exposed
+  only `filesystem.scan` for a GUI-only TextEdit goal;
+- live OpenClaw Skill Transport returned `execution.unavailable`, which the
+  Agent adapter normalized to the exact `NoViableExecutionPath` trigger;
+- Runtime then invoked the production Mano adapter exactly once;
+- Mano Cloud performed real GUI input and Command-S in a pre-opened dedicated
+  empty `/tmp` TextEdit file;
+- the saved file contained exactly `AI_OS_MANO_CLOUD_E2E_20260913` (29 bytes,
+  SHA-256 `19bb2d58dfe50ebccd60bab180b3529c2da0f07aae0bb77631f41c1a5774d929`);
+- AI-OS received only normalized output `{executor: mano-cua, mode: cloud,
+  status: completed}`;
+- the marker was absent from known AI-OS/OpenClaw/browser diagnostic logs;
+- Mano Cloud bash capability was temporarily disabled and trajectory saving
+  remained disabled during the smoke; the prior `disable-bash=false` setting
+  was restored afterward;
+- the test fixture, stop flag, Cloud subprocess and active session were cleaned
+  after completion;
+- `verify/verify_p15_mano_cloud_e2e.sh`: PASS.
+
+Real failure-path acceptance also exercised a 240-second Runtime timeout and a
+live Cloud cancellation. The timeout returned the normalized retryable timeout,
+the Cloud stop endpoint acknowledged the session stop, and the adapter reaped
+the child after its bounded grace period.
+
+Safety incident record: the first Cloud attempt opened an existing
+`custom_instructions.txt` TextEdit window, so its non-secret instructions may
+have appeared in required Cloud screenshots; no credentials were present and
+the document was not modified. A later attempt typed the fixed test marker but
+TextEdit saved it as iCloud `未命名.txt` instead of the authorized `/tmp` path.
+That session was stopped immediately. The 29-byte file was not deleted because
+the acceptance authorization explicitly excluded deletion. The final passing
+run used a pre-opened empty local fixture and did not use Save As or iCloud.
+
+Local product-path acceptance:
+
+- the current official supported condition, actual Local CLI surface,
+  SDK/model readiness contract, hardware/readiness probe, explicit `--local`
+  route, no silent Cloud call, Unsupported/Not Ready normalization,
+  cancellation, process lifecycle and supported-hardware execution path are all
+  implemented and accepted;
+- no SDK/model was downloaded and no Local GUI task PASS is claimed on this
+  M4/16GB development machine;
+- authoritative status: "Implementation and supported-hardware execution path
+  complete; no supported local test host available for real GUI smoke in this
+  environment.";
+- future device compatibility findings do not reopen the Mano architecture
+  milestone unless they identify an actual AI-OS implementation defect.
 
 The unchanged AR-1C real OpenClaw E2E remains independently blocked by live Agent
 behavior: OpenClaw 2026.8.2 returned `execution.unavailable` for its temporary
@@ -7730,8 +7778,6 @@ Current:
 - MP-0 — Complete and separate from Mano
 - MP-1 — Complete
 - MP-2 — Complete, including real CLI discovery and readiness probes
-- MP-3 — Complete implementation and cancellation wiring; real task smoke
-  environment-blocked
+- MP-3 — Complete, including real Cloud GUI execution and cancellation wiring
 - MP-4 — Complete
-- MP-5 — Integration acceptance complete; real task execution smoke remains
-  environment-blocked by unsupported/not-ready Local and unauthorized Cloud
+- MP-5 — Complete and formally closed

@@ -582,10 +582,25 @@ mod mano_fallback_error_contract_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Mutex,
+    use std::{
+        env, fs,
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
     };
+
+    struct NoopEmitter;
+
+    impl OperationEventEmitter for NoopEmitter {
+        fn emit(
+            &self,
+            _snapshot: super::super::models::RuntimeOperationSnapshot,
+        ) -> Result<(), ()> {
+            Ok(())
+        }
+    }
 
     struct RecordingAgent {
         probe: AgentProbeResult,
@@ -826,6 +841,56 @@ mod tests {
             mano.cancellations.lock().unwrap().as_slice(),
             ["execution-1"]
         );
+    }
+
+    #[test]
+    #[ignore = "requires explicit Mano Cloud authorization and macOS GUI permissions"]
+    fn mp5_real_openclaw_to_mano_cloud_textedit_completes_and_is_verified() {
+        assert_eq!(env::var("AI_OS_MANO_MODE").as_deref(), Ok("cloud"));
+        assert_eq!(
+            env::var("AI_OS_MANO_CLOUD_AUTHORIZED").as_deref(),
+            Ok("true")
+        );
+
+        let output_path = PathBuf::from(
+            env::var("AI_OS_MANO_CLOUD_E2E_OUTPUT_PATH")
+                .expect("the verifier must provide a dedicated output path"),
+        );
+        let output_directory = output_path
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .expect("the verifier output must have a dedicated directory");
+        assert!(output_directory.starts_with("ai-os-mano-cloud-e2e."));
+        assert_eq!(
+            output_path.file_name().and_then(|name| name.to_str()),
+            Some("AI_OS_MANO_CLOUD_E2E.txt")
+        );
+        assert_eq!(fs::metadata(&output_path).unwrap().len(), 0);
+
+        let marker = "AI_OS_MANO_CLOUD_E2E_20260913";
+        let executor = RuntimeBackedPlanExecutor::production(
+            RuntimeExecutionState::default(),
+            Arc::new(NoopEmitter),
+        );
+        let mut cloud_request = request("filesystem.scan");
+        cloud_request.user_confirmed = true;
+        cloud_request.goal = format!(
+            "Use GUI actions only. The frontmost app is TextEdit with the dedicated empty local test file {} already open. Click inside the empty document, type exactly {marker}, press Command-S, confirm the document is saved, then finish. Do not use Terminal, shell, a browser, accounts, messages, Save As, or any other document.",
+            output_path.display()
+        );
+
+        let result = executor.execute_step(cloud_request).unwrap();
+
+        assert_eq!(
+            result.output,
+            Some(json!({
+                "executor": "mano-cua",
+                "mode": "cloud",
+                "status": "completed"
+            }))
+        );
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), marker);
     }
 
     #[test]
