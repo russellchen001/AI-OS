@@ -7564,3 +7564,55 @@ Provider-scoped Prompt Compiler and Model/Profile Advisor may refine only the
 request beneath that exact Provider/instance and preserve explicit user model,
 profile and verbatim-prompt choices. Prompt metadata persists a digest, never
 the generated or original prompt text.
+
+## MANO-P / MANO-CUA CURRENT STATE — 2026-09-12
+
+### MP-0 — Computer Use Provider Foundation — Complete
+
+Mano-P / Mano-CUA remains a supplement to the existing AI-OS Computer Use
+capability. It does not create a second Computer Use architecture and does not
+replace OpenClaw, Computer Control, Planner, Runtime, or existing structured
+tool paths.
+
+MP-0 completed the missing provider-neutral Runtime / Skill integration
+boundary required for a safe Mano provider:
+
+- `computer.use.execute` enters through the selected Agent;
+- Agent Skill Transport remains generic;
+- execution crosses `SkillInvocationGateway`;
+- Runtime confirmation and capability exposure are enforced before backend use;
+- Computer Use providers are isolated behind `ComputerUseProviderRegistry`;
+- provider compatibility is capability-based rather than version-based;
+- Agent input cannot choose provider, local/cloud mode, confirmation, shell,
+  credentials, or backend identity;
+- progress, cancellation, normalized errors, bounded step count, bounded
+  duration, application scope, and display scope have provider-neutral
+  contracts;
+- Computer Use remains always-confirm and cannot inherit Trusted Automation;
+- Browser and deterministic `system.*` capabilities are not captured by
+  Computer Use;
+- production provider registry intentionally remains empty until a real provider
+  passes readiness.
+
+Acceptance:
+
+- `verify/verify_p15_mano_provider_foundation.sh`
+  - PASS=18
+  - FAIL=0
+- AR-1A regression: PASS
+- AR-1B regression: PASS
+- AR-1C regression: PASS
+- `git diff --check`: PASS
+
+No Mano-CUA runtime or Mano-P model has been installed by MP-0.
+No real GUI control has been enabled by MP-0.
+No cloud fallback has been enabled.
+
+Current:
+- MP-0 — Complete
+
+Next:
+- MP-1 — Managed Local Mano Provider
+
+MP-1 must integrate Mano-CUA / Mano-P as a local Computer Use provider behind
+the existing provider-neutral boundary. It must not rebuild Computer Use.

@@ -520,6 +520,39 @@ mod tests {
     }
 
     #[test]
+    fn mp0_planner_dispatches_computer_use_to_selected_agent() {
+        let agent = Arc::new(RecordingAgent::compatible("openclaw"));
+        let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
+        let mut request = request("computer.use.execute");
+        request.input = [
+            (
+                "task".to_owned(),
+                json!("Interact with the fixture application"),
+            ),
+            ("goal".to_owned(), json!("Complete the visual fixture")),
+            ("allowedApplications".to_owned(), json!(["Fixture App"])),
+            ("maxSteps".to_owned(), json!(4)),
+            ("maxDurationMs".to_owned(), json!(2_000)),
+        ]
+        .into_iter()
+        .collect();
+
+        executor.execute_step(request).unwrap();
+
+        let received = agent.requests.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].agent_id.as_str(), "openclaw");
+        assert_eq!(
+            received[0].allowed_capabilities,
+            vec!["computer.use.execute"]
+        );
+        assert_eq!(
+            received[0].context["requestedSkill"]["capability"],
+            "computer.use.execute"
+        );
+    }
+
+    #[test]
     fn local_model_skill_no_longer_dispatches_directly_to_ollama() {
         let agent = Arc::new(RecordingAgent::compatible("openclaw"));
         let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());

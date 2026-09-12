@@ -5,7 +5,7 @@ use super::{
     },
     capability_permission::{
         CapabilityPermissionDecision, ConfiguredCapabilityPermissionGate,
-        GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
+        COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES, GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
     },
     executor::{
         execute_generative_media_runtime_task, execute_local_model_runtime_task,
@@ -22,6 +22,7 @@ use super::{
     skills,
     trusted_automation::load_trusted_automation_settings,
 };
+use crate::computer_use::ComputerUseSkillBackend;
 use crate::openclaw::{
     invoke_active_gateway_method, ActiveGatewayFailureKind, ActiveGatewayMethodFailure,
 };
@@ -108,6 +109,8 @@ impl SkillInvocationGateway for RuntimeSkillInvocationGateway {
         let confirmable = [request.capability.as_str()];
         let always_confirm = GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES
             .contains(&request.capability.as_str())
+            || COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES
+                .contains(&request.capability.as_str())
             || matches!(
                 request.capability.as_str(),
                 "system.process.terminate"
@@ -143,6 +146,7 @@ struct RuntimeSkillBackend {
     runtime: RuntimeExecutionState,
     emitter: Arc<dyn OperationEventEmitter>,
     openclaw: Arc<dyn OpenClawExecutionAdapter>,
+    computer_use: Arc<ComputerUseSkillBackend>,
 }
 
 impl RuntimeSkillBackend {
@@ -151,6 +155,7 @@ impl RuntimeSkillBackend {
             runtime,
             emitter,
             openclaw: Arc::new(OpenClawGatewayExecutionAdapter),
+            computer_use: Arc::new(ComputerUseSkillBackend::production()),
         }
     }
 }
@@ -181,6 +186,9 @@ impl SkillBackend for RuntimeSkillBackend {
         };
 
         let result = match skill.executor.kind.as_str() {
+            "computer-use" if skill.executor.handler == "computer-use" => {
+                return self.computer_use.invoke(context, request);
+            }
             "openclaw" => execute_runtime_task(
                 self.runtime.manager(),
                 self.runtime.scheduler(),
@@ -623,6 +631,31 @@ mod tests {
         .unwrap()
     }
 
+    fn computer_use_context(
+        confirmed: bool,
+        exposed: Vec<String>,
+    ) -> SkillInvocationContext {
+        SkillInvocationContext::new(
+            "task-1",
+            "plan-1",
+            "execution-1",
+            "openclaw",
+            exposed,
+            confirmed,
+        )
+        .unwrap()
+    }
+
+    fn computer_use_input() -> Value {
+        json!({
+            "task": "Interact with the fixture application",
+            "goal": "Complete the bounded visual fixture",
+            "allowedApplications": ["Fixture App"],
+            "maxSteps": 4,
+            "maxDurationMs": 2000
+        })
+    }
+
     #[test]
     fn openclaw_transport_round_trips_agent_request_gateway_result_and_completion() {
         let invoker = Arc::new(ScriptedInvoker {
@@ -673,6 +706,124 @@ mod tests {
         assert!(exposure.contains("filesystem.scan"));
         assert!(!exposure.contains("userConfirmed"));
         assert!(!exposure.contains("permissionDecision"));
+    }
+
+    #[test]
+    fn mp0_selected_agent_crosses_transport_gateway_backend_registry_and_provider() {
+        use crate::computer_use::{
+            provider::mock::MockComputerUseProvider,
+            registry::ComputerUseProviderRegistry, ComputerUseSkillBackend,
+        };
+
+        let invoker = Arc::new(ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "request-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": serde_json::to_string(&json!({
+                        "type": "skill.invoke",
+                        "invocationId": "computer-use-1",
+                        "capability": "computer.use.execute",
+                        "input": computer_use_input()
+                    })).unwrap()
+                }]})),
+                Ok(json!({"runId": "result-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"complete\",\"summary\":\"fixture complete\"}"
+                }]})),
+            ])),
+        });
+        let provider = Arc::new(MockComputerUseProvider::ready("diagnostic-only"));
+        let backend = Arc::new(ComputerUseSkillBackend::with_registry(
+            ComputerUseProviderRegistry::with_selected_provider(
+                provider.identity.clone(),
+                provider.clone(),
+            ),
+        ));
+        let gateway = RuntimeSkillInvocationGateway::with_backend(Vec::new(), backend);
+        let transport = OpenClawAgentSkillTransport::with_invoker(invoker.clone());
+        let context = computer_use_context(true, vec!["computer.use.execute".to_owned()]);
+        let request = AgentExecutionRequest::new(
+            "execution-1",
+            "task-1",
+            "plan-1",
+            "step-1",
+            super::super::agent_execution::AgentId::new("openclaw").unwrap(),
+            "Complete one bounded GUI fixture",
+            vec!["computer.use.execute".to_owned()],
+            json!({"requestedSkill": {
+                "capability": "computer.use.execute",
+                "input": computer_use_input()
+            }}),
+            context.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(provider.request_count(), 0);
+        let result = transport
+            .execute(&request, &context, &gateway, &mut |_| {})
+            .unwrap();
+
+        assert_eq!(provider.request_count(), 1);
+        assert_eq!(
+            result.output["skillInvocation"]["capability"],
+            "computer.use.execute"
+        );
+        assert_eq!(
+            result.output["skillInvocation"]["provider"],
+            "mock-computer-use"
+        );
+        assert_eq!(invoker.calls.lock().unwrap()[0].0, "agent");
+    }
+
+    #[test]
+    fn mp0_gateway_blocks_unconfirmed_unexposed_and_trusted_bypass() {
+        use crate::computer_use::{
+            provider::mock::MockComputerUseProvider,
+            registry::ComputerUseProviderRegistry, ComputerUseSkillBackend,
+        };
+
+        for (allowed, context, expected) in [
+            (
+                Vec::new(),
+                computer_use_context(false, vec!["computer.use.execute".to_owned()]),
+                SkillInvocationErrorKind::PermissionRequired,
+            ),
+            (
+                Vec::new(),
+                computer_use_context(true, vec!["browser.search".to_owned()]),
+                SkillInvocationErrorKind::CapabilityNotExposed,
+            ),
+            (
+                vec!["computer.use.execute".to_owned()],
+                computer_use_context(false, vec!["computer.use.execute".to_owned()]),
+                SkillInvocationErrorKind::PermissionRequired,
+            ),
+        ] {
+            let provider = Arc::new(MockComputerUseProvider::ready("test"));
+            let backend = Arc::new(ComputerUseSkillBackend::with_registry(
+                ComputerUseProviderRegistry::with_selected_provider(
+                    provider.identity.clone(),
+                    provider.clone(),
+                ),
+            ));
+            let gateway = RuntimeSkillInvocationGateway::with_backend(allowed, backend);
+            let request = SkillInvocationRequest::new(
+                "computer-use-1",
+                "computer.use.execute",
+                computer_use_input(),
+            )
+            .unwrap();
+
+            let error = gateway.invoke(&context, &request).unwrap_err();
+
+            assert_eq!(error.kind, expected);
+            assert_eq!(provider.request_count(), 0);
+        }
     }
 
     #[test]

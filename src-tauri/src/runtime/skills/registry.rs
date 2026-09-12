@@ -90,6 +90,16 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "browser",
         ),
         skill(
+            "computer-use",
+            "Computer Use",
+            "system",
+            "Perform one bounded visual GUI interaction through a Runtime-selected provider.",
+            &["computer.use.execute"],
+            &["screen.capture", "input.control"],
+            "computer-use",
+            "computer-use",
+        ),
+        skill(
             "local-models",
             "Local Models",
             "system",
@@ -190,6 +200,35 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn mp0_computer_use_execute_is_registered_as_one_skill_capability() {
+        let skill = find_by_capability("computer.use.execute").expect("Computer Use skill");
+
+        assert_eq!(skill.id, "computer-use");
+        assert_eq!(skill.capabilities, vec!["computer.use.execute"]);
+        assert_eq!(skill.executor.kind, "computer-use");
+        assert_eq!(skill.executor.handler, "computer-use");
+    }
+
+    #[test]
+    fn mp0_system_capabilities_are_not_captured_by_computer_use() {
+        assert!(crate::system::CAPABILITIES.contains(&"system.app.launch"));
+        assert_ne!(
+            find_by_capability("computer.use.execute").unwrap().id,
+            "system"
+        );
+        assert!(find_by_capability("system.app.launch").is_none());
+    }
+
+    #[test]
+    fn mp0_browser_capabilities_remain_on_existing_browser_path() {
+        for capability in ["browser.search", "browser.control"] {
+            let skill = find_by_capability(capability).expect("browser skill");
+            assert_eq!(skill.id, "browser");
+            assert_eq!(skill.executor.kind, "mcp");
+        }
+    }
+
+    #[test]
     fn registry_contains_current_runtime_capabilities() {
         for capability in [
             "filesystem.read",
@@ -200,6 +239,7 @@ mod tests {
             "ai.openclaw.gateway",
             "browser.search",
             "browser.control",
+            "computer.use.execute",
             "models.list",
             "models.show",
             "models.pull",
@@ -307,7 +347,7 @@ mod tests {
     fn list_command_returns_canonical_registry() {
         let skills = list_skills();
 
-        assert_eq!(skills.len(), 7);
+        assert_eq!(skills.len(), 8);
 
         assert_eq!(skills[0].id, "document");
         assert_eq!(skills[0].executor.kind, "openclaw");
@@ -317,17 +357,21 @@ mod tests {
         assert_eq!(skills[2].id, "openclaw-session");
         assert_eq!(skills[3].id, "browser");
 
-        assert_eq!(skills[4].id, "local-models");
-        assert_eq!(skills[4].executor.kind, "local");
-        assert_eq!(skills[4].executor.handler, "ollama");
+    assert_eq!(skills[4].id, "computer-use");
+    assert_eq!(skills[4].executor.kind, "computer-use");
+    assert_eq!(skills[4].executor.handler, "computer-use");
 
-        assert_eq!(skills[5].id, "generative-media");
-        assert_eq!(skills[5].executor.kind, "media");
-        assert_eq!(skills[5].executor.handler, "generative-media");
+        assert_eq!(skills[5].id, "local-models");
+        assert_eq!(skills[5].executor.kind, "local");
+        assert_eq!(skills[5].executor.handler, "ollama");
 
-        assert_eq!(skills[6].id, "downloads");
-        assert_eq!(skills[6].executor.kind, "openclaw");
-        assert_eq!(skills[6].executor.handler, "downloads");
+        assert_eq!(skills[6].id, "generative-media");
+        assert_eq!(skills[6].executor.kind, "media");
+        assert_eq!(skills[6].executor.handler, "generative-media");
+
+        assert_eq!(skills[7].id, "downloads");
+        assert_eq!(skills[7].executor.kind, "openclaw");
+        assert_eq!(skills[7].executor.handler, "downloads");
     }
 
     #[test]

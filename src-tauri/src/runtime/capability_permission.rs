@@ -25,6 +25,11 @@ pub(crate) const GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES: &[&str] = &[
     "media.reference.generate",
 ];
 
+/// Visual GUI control observes the screen and injects input. Persistent trust
+/// never substitutes for confirmation attached to the current execution.
+pub(crate) const COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES: &[&str] =
+    &["computer.use.execute"];
+
 /// Executor-neutral Runtime permission policy.
 ///
 /// The Runtime owns the authorization decision. Individual executors provide

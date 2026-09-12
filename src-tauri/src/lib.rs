@@ -2,6 +2,7 @@ mod backup;
 mod browser;
 mod claude_code;
 mod commerce_provider;
+mod computer_use;
 #[cfg(test)]
 mod computer_control_acceptance;
 mod connections;
