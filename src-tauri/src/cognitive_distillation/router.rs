@@ -13,7 +13,6 @@ const HIGH_VOLUME_SOURCE_THRESHOLD: usize = 8;
 pub(crate) struct CognitiveDistillationRouteRequest {
     pub subject_kind: SubjectKind,
     pub evidence_bundle: EvidenceBundle,
-    pub public_research_required: bool,
     pub article_heavy: bool,
     pub high_assurance_evidence: bool,
 }
@@ -22,7 +21,6 @@ pub(crate) struct CognitiveDistillationRouteRequest {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum PipelineRole {
     PrimaryCreator,
-    ResearchEnrichment,
     CorpusEnrichment,
 }
 
@@ -41,7 +39,6 @@ pub(crate) struct CognitiveDistillationRouteResult {
     pub source_count: usize,
     pub canonical_profile_authority: String,
     pub active_profile_permitted: bool,
-    pub public_research_permitted: bool,
     pub reasons: Vec<String>,
 }
 
@@ -49,7 +46,6 @@ pub(crate) struct CognitiveDistillationRouteResult {
 pub(crate) enum RouteError {
     Evidence(EvidenceError),
     SubjectMismatch,
-    PrivateResearchForbidden,
     PrimaryCreatorUnavailable,
 }
 
@@ -60,8 +56,6 @@ impl fmt::Display for RouteError {
             Self::SubjectMismatch => {
                 formatter.write_str("Evidence bundle subject does not match the route request.")
             }
-            Self::PrivateResearchForbidden => formatter
-                .write_str("Private-person distillation cannot use public research adapters."),
             Self::PrimaryCreatorUnavailable => {
                 formatter.write_str("No eligible primary persona creator is ready.")
             }
@@ -78,10 +72,6 @@ pub(crate) fn route_distillation(
     if request.subject_kind != request.evidence_bundle.subject_kind {
         return Err(RouteError::SubjectMismatch);
     }
-    let private = matches!(request.subject_kind, SubjectKind::PrivatePerson);
-    if private && request.public_research_required {
-        return Err(RouteError::PrivateResearchForbidden);
-    }
     if catalog.availability(CreatorAdapterId::Distilly) != AdapterAvailability::Ready {
         return Err(RouteError::PrimaryCreatorUnavailable);
     }
@@ -95,22 +85,6 @@ pub(crate) fn route_distillation(
         .iter()
         .map(|source| source.source_kind)
         .collect::<HashSet<_>>();
-    let public_research_permitted = matches!(
-        request.subject_kind,
-        SubjectKind::PublicPerson | SubjectKind::HistoricalPerson
-    );
-
-    if public_research_permitted && request.public_research_required {
-        if catalog.availability(CreatorAdapterId::HumanDistill) == AdapterAvailability::Ready {
-            pipelines.push(SelectedPipeline {
-                adapter: CreatorAdapterId::HumanDistill,
-                role: PipelineRole::ResearchEnrichment,
-            });
-        } else {
-            skipped.push(CreatorAdapterId::HumanDistill);
-            reasons.push("Public research enrichment is unavailable; existing authorized evidence remains valid.".to_owned());
-        }
-    }
     if request.article_heavy
         || source_kinds.contains(&SourceKind::Article)
         || source_kinds.contains(&SourceKind::Book)
@@ -148,7 +122,6 @@ pub(crate) fn route_distillation(
         source_count: request.evidence_bundle.sources.len(),
         canonical_profile_authority: "ai-os".to_owned(),
         active_profile_permitted: false,
-        public_research_permitted,
         reasons,
     })
 }
@@ -172,13 +145,12 @@ mod tests {
             reason: None,
         }
     }
-    fn catalog(human: AdapterAvailability) -> AdapterCatalog {
-        catalog_with_any(human, AdapterAvailability::ReferenceOnly)
+    fn catalog() -> AdapterCatalog {
+        catalog_with_any(AdapterAvailability::ReferenceOnly)
     }
-    fn catalog_with_any(human: AdapterAvailability, anyone: AdapterAvailability) -> AdapterCatalog {
+    fn catalog_with_any(anyone: AdapterAvailability) -> AdapterCatalog {
         AdapterCatalog::for_test(vec![
             status(CreatorAdapterId::Distilly, AdapterAvailability::Ready),
-            status(CreatorAdapterId::HumanDistill, human),
             status(CreatorAdapterId::AnyoneStyle, anyone),
             status(
                 CreatorAdapterId::DistillBlog,
@@ -209,7 +181,6 @@ mod tests {
                 sources: vec![source],
                 evidence,
             },
-            public_research_required: false,
             article_heavy: false,
             high_assurance_evidence: false,
         }
@@ -219,7 +190,7 @@ mod tests {
     fn router_selects_implementations_without_user_choice() {
         let route = route_distillation(
             &request(SubjectKind::SelfProfile, SourceKind::Chat),
-            &catalog(AdapterAvailability::Unavailable),
+            &catalog(),
         )
         .unwrap();
         assert_eq!(
@@ -233,46 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn private_media_never_triggers_public_research() {
-        let mut request = request(SubjectKind::PrivatePerson, SourceKind::Chat);
-        request.public_research_required = true;
-        assert_eq!(
-            route_distillation(&request, &catalog(AdapterAvailability::Ready)).unwrap_err(),
-            RouteError::PrivateResearchForbidden
-        );
-    }
-
-    #[test]
-    fn unavailable_specialized_adapter_falls_back_to_valid_primary() {
-        let mut request = request(SubjectKind::PublicPerson, SourceKind::PublicWeb);
-        request.public_research_required = true;
-        let route =
-            route_distillation(&request, &catalog(AdapterAvailability::Unavailable)).unwrap();
-        assert_eq!(
-            route.pipelines.last().unwrap().adapter,
-            CreatorAdapterId::Distilly
-        );
-        assert!(route
-            .skipped_optional_adapters
-            .contains(&CreatorAdapterId::HumanDistill));
-    }
-
-    #[test]
-    fn ready_public_research_enriches_before_primary_creator() {
-        let mut request = request(SubjectKind::HistoricalPerson, SourceKind::PublicWeb);
-        request.public_research_required = true;
-        let route = route_distillation(&request, &catalog(AdapterAvailability::Ready)).unwrap();
-        assert_eq!(route.pipelines[0].role, PipelineRole::ResearchEnrichment);
-        assert_eq!(route.pipelines[1].role, PipelineRole::PrimaryCreator);
-    }
-
-    #[test]
     fn reference_only_unlicensed_adapters_are_never_selected() {
         let mut request = request(SubjectKind::PublicPerson, SourceKind::Article);
         request.article_heavy = true;
         request.high_assurance_evidence = true;
-        let route =
-            route_distillation(&request, &catalog(AdapterAvailability::Unavailable)).unwrap();
+        let route = route_distillation(&request, &catalog()).unwrap();
         assert_eq!(route.pipelines.len(), 1);
         assert!(route
             .skipped_optional_adapters
@@ -301,11 +237,8 @@ mod tests {
             request.evidence_bundle.sources.push(source);
         }
 
-        let route = route_distillation(
-            &request,
-            &catalog_with_any(AdapterAvailability::Unavailable, AdapterAvailability::Ready),
-        )
-        .unwrap();
+        let route =
+            route_distillation(&request, &catalog_with_any(AdapterAvailability::Ready)).unwrap();
         assert_eq!(route.source_count, HIGH_VOLUME_SOURCE_THRESHOLD);
         assert_eq!(route.pipelines[0].adapter, CreatorAdapterId::AnyoneStyle);
         assert_eq!(route.pipelines[1].adapter, CreatorAdapterId::Distilly);

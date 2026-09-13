@@ -5,6 +5,9 @@ use super::{
     },
     provider::LocalMediaReadiness,
 };
+use crate::managed_assets::{
+    download_with_resume, file_matches_spec, sha256_bytes, sha256_file, ManagedAssetSpec,
+};
 use reqwest::{
     blocking::{Client, Response},
     header::{CONTENT_RANGE, RANGE},
@@ -31,29 +34,6 @@ const BOOTSTRAP_FILE: &str = "v1-5-pruned-emaonly-fp16.safetensors";
 const BOOTSTRAP_SIZE: u64 = 2_132_696_762;
 const BOOTSTRAP_SHA256: &str = "e9476a13728cd75d8279f6ec8bad753a66a1957ca375a1464dc63b37db6e3916";
 const BOOTSTRAP_LICENSE: &str = "creativeml-openrail-m";
-
-#[derive(Debug, Clone)]
-struct ManagedAssetSpec {
-    source_url: String,
-    relative_path: String,
-    size_bytes: u64,
-    sha256: String,
-}
-
-impl ManagedAssetSpec {
-    fn bootstrap() -> Self {
-        let host = "huggingface.co";
-
-        Self {
-            source_url: format!(
-                "https://{host}/Comfy-Org/stable-diffusion-v1-5-archive/resolve/main/{BOOTSTRAP_FILE}?download=true"
-            ),
-            relative_path: format!("checkpoints/{BOOTSTRAP_FILE}"),
-            size_bytes: BOOTSTRAP_SIZE,
-            sha256: BOOTSTRAP_SHA256.to_owned(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ExistingAssetState {
@@ -88,34 +68,6 @@ pub struct ManagedProfileSetupResult {
     pub smoke_generation_checked: bool,
     pub output_retrieval_checked: bool,
     pub readiness: LocalMediaReadiness,
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file =
-        File::open(path).map_err(|_| "Managed checkpoint could not be opened".to_owned())?;
-
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
-
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|_| "Managed checkpoint could not be read".to_owned())?;
-
-        if read == 0 {
-            break;
-        }
-
-        hasher.update(&buffer[..read]);
-    }
-
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn validate_relative_asset_path(path: &Path) -> Result<(), String> {
@@ -175,28 +127,6 @@ fn validate_destination(
     let part_path = parent.join(format!(".{BOOTSTRAP_FILE}.ai-os.part"));
 
     Ok((final_path, part_path))
-}
-
-fn file_matches_spec(path: &Path, spec: &ManagedAssetSpec) -> Result<bool, String> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(_) => return Err("Managed checkpoint metadata could not be read".to_owned()),
-    };
-
-    if metadata.file_type().is_symlink() {
-        return Err("Managed checkpoint symlinks are refused".to_owned());
-    }
-
-    if !metadata.file_type().is_file() {
-        return Err("Managed checkpoint path is not a regular file".to_owned());
-    }
-
-    if metadata.len() != spec.size_bytes {
-        return Ok(false);
-    }
-
-    Ok(sha256_file(path)? == spec.sha256)
 }
 
 fn manifest_matches_spec(path: &Path, spec: &ManagedAssetSpec) -> bool {
@@ -307,176 +237,6 @@ fn write_manifest_atomic(
     }
 
     Ok(())
-}
-
-fn response_range_starts_at(response: &Response, offset: u64) -> bool {
-    let Some(value) = response.headers().get(CONTENT_RANGE) else {
-        return false;
-    };
-
-    let Ok(value) = value.to_str() else {
-        return false;
-    };
-
-    value.starts_with(&format!("bytes {offset}-"))
-}
-
-fn stream_response(mut response: Response, part_path: &Path, append: bool) -> Result<(), String> {
-    let mut options = OpenOptions::new();
-    options.create(true).write(true);
-
-    if append {
-        options.append(true);
-    } else {
-        options.truncate(true);
-    }
-
-    let mut file = options
-        .open(part_path)
-        .map_err(|_| "Managed checkpoint partial file could not be opened".to_owned())?;
-
-    let mut buffer = [0_u8; 1024 * 1024];
-
-    loop {
-        let read = response
-            .read(&mut buffer)
-            .map_err(|_| "Managed checkpoint download was interrupted".to_owned())?;
-
-        if read == 0 {
-            break;
-        }
-
-        file.write_all(&buffer[..read])
-            .map_err(|_| "Managed checkpoint partial file could not be written".to_owned())?;
-    }
-
-    file.sync_all()
-        .map_err(|_| "Managed checkpoint partial file could not be synchronized".to_owned())
-}
-
-fn download_with_resume(
-    client: &Client,
-    spec: &ManagedAssetSpec,
-    part_path: &Path,
-) -> Result<(), String> {
-    let mut last_error = "Managed checkpoint download failed".to_owned();
-
-    for attempt in 1..=3 {
-        let offset = fs::metadata(part_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-
-        if offset > spec.size_bytes {
-            let _ = fs::remove_file(part_path);
-            last_error = "Partial checkpoint was larger than the expected asset".to_owned();
-            continue;
-        }
-
-        if offset == spec.size_bytes {
-            if file_matches_spec(part_path, spec)? {
-                return Ok(());
-            }
-
-            fs::remove_file(part_path).map_err(|_| {
-                "Corrupt completed partial checkpoint could not be removed".to_owned()
-            })?;
-
-            last_error = "Completed partial checkpoint failed integrity verification and was reset"
-                .to_owned();
-
-            continue;
-        }
-
-        let mut request = client.get(&spec.source_url);
-
-        if offset > 0 {
-            request = request.header(RANGE, format!("bytes={offset}-"));
-        }
-
-        let response = match request.send() {
-            Ok(response) => response,
-            Err(error) => {
-                last_error =
-                    format!("Managed checkpoint request attempt {attempt} failed: {error}");
-                thread::sleep(Duration::from_secs(1));
-                continue;
-            }
-        };
-
-        let status = response.status();
-
-        if status == StatusCode::RANGE_NOT_SATISFIABLE {
-            if offset == spec.size_bytes {
-                return Ok(());
-            }
-
-            let _ = fs::remove_file(part_path);
-            last_error = "Remote server rejected the partial checkpoint range".to_owned();
-            thread::sleep(Duration::from_secs(1));
-            continue;
-        }
-
-        if !status.is_success() {
-            last_error = format!(
-                "Managed checkpoint server returned HTTP {}",
-                status.as_u16()
-            );
-            thread::sleep(Duration::from_secs(1));
-            continue;
-        }
-
-        let append = if offset > 0 && status == StatusCode::PARTIAL_CONTENT {
-            if !response_range_starts_at(&response, offset) {
-                let _ = fs::remove_file(part_path);
-                last_error = "Remote checkpoint range did not match the partial file".to_owned();
-                thread::sleep(Duration::from_secs(1));
-                continue;
-            }
-
-            true
-        } else {
-            false
-        };
-
-        if let Err(error) = stream_response(response, part_path, append) {
-            last_error = error;
-            thread::sleep(Duration::from_secs(1));
-            continue;
-        }
-
-        let length = fs::metadata(part_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-
-        if length == spec.size_bytes {
-            if file_matches_spec(part_path, spec)? {
-                return Ok(());
-            }
-
-            fs::remove_file(part_path)
-                .map_err(|_| "Corrupt downloaded checkpoint could not be removed".to_owned())?;
-
-            last_error = "Downloaded checkpoint failed pinned integrity verification and was reset"
-                .to_owned();
-
-            thread::sleep(Duration::from_secs(1));
-            continue;
-        }
-
-        if length > spec.size_bytes {
-            let _ = fs::remove_file(part_path);
-            last_error = "Downloaded checkpoint exceeded the expected size".to_owned();
-        } else {
-            last_error = format!(
-                "Checkpoint download is incomplete ({length}/{})",
-                spec.size_bytes
-            );
-        }
-
-        thread::sleep(Duration::from_secs(1));
-    }
-
-    Err(last_error)
 }
 
 fn backup_managed_corrupt_asset(final_path: &Path) -> Result<PathBuf, String> {

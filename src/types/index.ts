@@ -28,6 +28,7 @@ export type PageName =
   | "AI Council"
   | "AI Arena"
   | "Agents"
+  | "Person Profiles"
   | "Settings";
 
 export type ThemeMode =

@@ -6031,3 +6031,169 @@ select:focus-visible {
 .chat-message-assistant .markdown-renderer * {
   max-width: 100%;
 }
+
+/* Person profiles — review surface for distilled person profiles.
+   Reuses the tokens the agents/arena pages already establish. */
+.person-profiles-page {
+  width: min(1120px, 100%);
+  padding: 36px 20px 88px;
+  display: grid;
+  gap: 18px;
+}
+
+.person-profiles-header {
+  align-items: flex-end;
+  padding: 20px 0 28px;
+  border-bottom: 1px solid #e8ece9;
+}
+.person-profiles-header h1 { font-size: clamp(42px, 5vw, 58px); }
+.person-profiles-header p:last-child {
+  max-width: 620px;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.person-profile-empty,
+.person-profile-status,
+.person-profile-narrative,
+.person-profile-review,
+.person-profile-categorised,
+.person-profile-skill,
+.person-profile-history {
+  border: 1px solid #e1e7e3;
+  border-radius: 17px;
+  background: #fbfcfb;
+  box-shadow: 0 6px 20px rgba(20, 29, 24, .035);
+  padding: 22px;
+}
+
+.person-profile-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.person-profile-status h2 { font-size: 18px; letter-spacing: -.01em; }
+.person-profile-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.person-profile-actions button {
+  min-height: 42px;
+  padding-inline: 17px;
+  border-radius: 11px;
+  border: 1px solid #e1e7e3;
+  background: #ffffff;
+  cursor: pointer;
+}
+.person-profile-actions button:disabled { opacity: .45; cursor: not-allowed; }
+
+.person-profile-note { font-size: 12px; line-height: 1.6; color: #5c6b63; }
+.person-profile-warning { font-size: 12px; line-height: 1.6; color: #8a5a13; }
+
+.person-profile-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.person-profile-chip {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 11px 15px;
+  border-radius: 11px;
+  border: 1px solid #e1e7e3;
+  background: #ffffff;
+  cursor: pointer;
+}
+.person-profile-chip-selected { border-color: #176b52; box-shadow: 0 6px 18px rgba(23, 107, 82, .14); }
+.person-profile-chip-meta { font-size: 10px; letter-spacing: .06em; color: #5c6b63; }
+
+.person-profile-narrative details { margin-top: 10px; }
+.person-profile-narrative summary { cursor: pointer; font-size: 12px; letter-spacing: .04em; }
+.person-profile-narrative pre,
+.person-profile-skill pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+  background: #f5f7f6;
+  border-radius: 11px;
+  padding: 14px;
+  margin-top: 8px;
+}
+
+.person-profile-reviewer { display: grid; gap: 5px; margin: 14px 0 18px; }
+.person-profile-reviewer span { font-size: 10px; letter-spacing: .18em; color: #176b52; }
+.person-profile-reviewer input,
+.person-profile-claim textarea,
+.person-profile-claim select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 11px;
+  border: 1px solid #e1e7e3;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+}
+
+.person-profile-claim {
+  display: grid;
+  gap: 8px;
+  padding: 15px 0;
+  border-top: 1px solid #eef1ef;
+}
+.person-profile-claim textarea { resize: vertical; line-height: 1.55; }
+.person-profile-claim-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 10px;
+  letter-spacing: .06em;
+  color: #5c6b63;
+}
+
+.person-profile-review-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 16px;
+  border-top: 1px solid #eef1ef;
+  font-size: 12px;
+}
+.person-profile-review-footer button {
+  min-height: 42px;
+  padding-inline: 17px;
+  border-radius: 11px;
+  border: none;
+  background: #176b52;
+  color: #ffffff;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(23, 107, 82, .16);
+}
+.person-profile-review-footer button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.person-profile-categorised h4 {
+  margin-top: 16px;
+  font-size: 11px;
+  letter-spacing: .14em;
+  color: #176b52;
+}
+.person-profile-categorised ul,
+.person-profile-history ol { margin: 6px 0 0; padding-left: 18px; }
+.person-profile-categorised li,
+.person-profile-history li { font-size: 13px; line-height: 1.65; }
+.person-profile-history li button {
+  margin-left: 10px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid #e1e7e3;
+  background: #ffffff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .person-profiles-page { padding: 24px 16px 64px; }
+  .person-profile-status { flex-direction: column; }
+}

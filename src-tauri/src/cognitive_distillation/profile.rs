@@ -25,6 +25,30 @@ pub(crate) struct CognitiveClaim {
     pub contradictory_evidence_ids: Vec<String>,
 }
 
+/// Which Distilly artifact a narrative section came from. Distilly writes the
+/// work and persona documents separately and also a combined skill document;
+/// keeping them apart lets a reviewer see what the creator actually said in each
+/// rather than one merged wall of text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum NarrativeOrigin {
+    Work,
+    Persona,
+    Combined,
+}
+
+/// Prose a creator adapter produced. It is NOT a claim and never becomes one
+/// automatically: it carries no evidence links, so promoting it into a
+/// `CognitiveClaim` would mean inventing provenance. A human reviewer reads it and
+/// writes the claims it justifies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DraftNarrativeSection {
+    pub origin: NarrativeOrigin,
+    pub adapter: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RevisionRecord {
@@ -50,6 +74,15 @@ pub(crate) struct PersonDistillationProfile {
     pub behavioral_patterns: Vec<CognitiveClaim>,
     pub communication_style: Vec<CognitiveClaim>,
     pub representative_examples: Vec<CognitiveClaim>,
+    /// Evidence-backed claims that have not been placed in a cognitive category.
+    /// AI-OS will not guess whether an observation is a decision pattern or a
+    /// communication style, so a drafted profile arrives with every claim here and
+    /// human review is what moves them into the categorised fields above.
+    #[serde(default)]
+    pub unclassified_claims: Vec<CognitiveClaim>,
+    /// Creator prose awaiting review. Never a claim; see `DraftNarrativeSection`.
+    #[serde(default)]
+    pub draft_narrative: Vec<DraftNarrativeSection>,
     pub evidence_bundle_id: String,
     pub contradictions: Vec<String>,
     pub revision_history: Vec<RevisionRecord>,
@@ -72,6 +105,9 @@ pub(crate) enum ProfileError {
     Evidence(EvidenceError),
     InvalidProfile,
     HumanReviewRequired,
+    UnreviewedMaterialRemains,
+    IncompleteReview,
+    UnsupportedClaim,
     RawMediaForbidden,
 }
 impl fmt::Display for ProfileError {
@@ -82,6 +118,15 @@ impl fmt::Display for ProfileError {
             Self::HumanReviewRequired => {
                 formatter.write_str("Human review is required before profile activation.")
             }
+            Self::UnreviewedMaterialRemains => formatter.write_str(
+                "Profile still carries unclassified claims or creator narrative that review has not resolved.",
+            ),
+            Self::IncompleteReview => formatter.write_str(
+                "Every drafted claim must be decided before the profile leaves review.",
+            ),
+            Self::UnsupportedClaim => formatter.write_str(
+                "A claim must reference evidence the bundle actually contains.",
+            ),
             Self::RawMediaForbidden => {
                 formatter.write_str("Runnable Persona Skill cannot contain raw multimodal assets.")
             }
@@ -100,6 +145,13 @@ impl AiOsProfileAuthority {
         validate_bundle(bundle).map_err(ProfileError::Evidence)?;
         if !human_reviewed {
             return Err(ProfileError::HumanReviewRequired);
+        }
+        // Review has to mean something. A drafted profile arrives with every claim
+        // unclassified and the creator's prose attached; if either is still present
+        // the reviewer has not actually categorised the material, whatever the
+        // review flag says.
+        if !profile.unclassified_claims.is_empty() || !profile.draft_narrative.is_empty() {
+            return Err(ProfileError::UnreviewedMaterialRemains);
         }
         if profile.profile_id.trim().is_empty()
             || profile.revision == 0
@@ -168,6 +220,8 @@ mod tests {
             behavioral_patterns: Vec::new(),
             communication_style: Vec::new(),
             representative_examples: Vec::new(),
+            unclassified_claims: Vec::new(),
+            draft_narrative: Vec::new(),
             evidence_bundle_id: "bundle".to_owned(),
             contradictions: Vec::new(),
             revision_history: vec![RevisionRecord {

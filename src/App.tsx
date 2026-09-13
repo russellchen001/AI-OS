@@ -19,6 +19,7 @@ import AiCouncilPage from "./pages/AiCouncilPage";
 import SettingsPage from "./pages/SettingsPage";
 import ChatPage from "./pages/ChatPage";
 import MyAiPage from "./pages/MyAiPage";
+import PersonProfilesPage from "./pages/PersonProfilesPage";
 import AiArenaPage from "./pages/AiArenaPage";
 import AgentsPage from "./pages/AgentsPage";
 import {
@@ -638,7 +639,7 @@ function App() {
       />
 
       <main className="main-content">
-        {!["Chat", "My AI", "Settings", "Agents", "AI Arena", "AI Council", "Artifacts"].includes(activePage) && <Header
+        {!["Chat", "My AI", "Settings", "Agents", "AI Arena", "AI Council", "Artifacts", "Person Profiles"].includes(activePage) && <Header
           isChecking={
             isChecking
           }
@@ -830,6 +831,10 @@ function App() {
 
         {activePage === "Agents" && (
           <AgentsPage onMessage={handleMessage} />
+        )}
+
+        {activePage === "Person Profiles" && (
+          <PersonProfilesPage onMessage={handleMessage} />
         )}
 
         {activePage ===

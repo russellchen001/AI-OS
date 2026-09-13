@@ -194,6 +194,7 @@ struct LocalModelPreparedOperation {
 
 struct CognitiveDistillationPreparedOperation {
     input: Value,
+    operation_id: String,
 }
 
 impl PreparedOperation for CognitiveDistillationPreparedOperation {
@@ -207,7 +208,7 @@ impl PreparedOperation for CognitiveDistillationPreparedOperation {
             total_units: None,
             message: "Preparing an authorized Cognitive Distillation pipeline.".to_owned(),
         });
-        crate::cognitive_distillation::prepare_from_value(&self.input)
+        crate::cognitive_distillation::invoke_creator_from_value(&self.input, &self.operation_id)
             .map(Some)
             .map_err(|message| NormalizedRuntimeError {
                 code: RuntimeErrorCode::InvalidRequest,
@@ -807,6 +808,7 @@ pub(crate) fn execute_cognitive_distillation_runtime_task(
     emit_best_effort(emitter.as_ref(), operation);
     let prepared: Box<dyn PreparedOperation> = Box::new(CognitiveDistillationPreparedOperation {
         input: request.input,
+        operation_id: request.operation_id.clone(),
     });
     let operation_id = request.operation_id.clone();
     let task_manager = Arc::clone(&manager);
@@ -1076,12 +1078,9 @@ fn run_prepared_operation_supervisor(
                 .get_operation(operation_id)
                 .is_ok_and(|operation| operation.state == RuntimeOperationState::Cancelling)
             {
-                if let Ok(snapshot) = manager.transition(
-                    operation_id,
-                    RuntimeOperationState::Cancelled,
-                    None,
-                    None,
-                ) {
+                if let Ok(snapshot) =
+                    manager.transition(operation_id, RuntimeOperationState::Cancelled, None, None)
+                {
                     emit_best_effort(emitter, snapshot);
                 }
                 return Err(error);

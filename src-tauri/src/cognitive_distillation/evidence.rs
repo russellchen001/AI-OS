@@ -259,7 +259,17 @@ fn require_modality_evidence(
         SourceMediaKind::Text => has_text,
         SourceMediaKind::Image => has_text || has_visual,
         SourceMediaKind::Audio => has_text && has_time,
-        SourceMediaKind::Video => has_time && has_text && has_visual,
+        // A video must carry VISUAL observations and be placeable in time. It must
+        // not additionally be required to carry text: a soundless demonstration
+        // with nothing written on screen — someone showing a technique with their
+        // hands — is legitimate evidence, and requiring text made it impossible to
+        // represent at all.
+        //
+        // The rule this replaces demanded text as well, which was never what the
+        // rule was for: `video_cannot_collapse_to_audio_only_transcript` clears
+        // visual_observations, so what it guards is the visual half. Audio-only
+        // collapse is still refused, because audio-only carries no visual.
+        SourceMediaKind::Video => has_time && has_visual,
         SourceMediaKind::Document => (has_text || has_visual) && item.location.page_start.is_some(),
         SourceMediaKind::Mixed => false,
     };
@@ -491,6 +501,34 @@ mod tests {
             .unwrap_err(),
             EvidenceError::MissingModalityEvidence
         );
+    }
+
+    /// A soundless demonstration with nothing written on screen — hands showing a
+    /// technique — is legitimate evidence. Requiring text as well as visuals made
+    /// it impossible to represent, which is a gap in the contract rather than a
+    /// property of the video.
+    #[test]
+    fn a_soundless_video_with_no_text_is_still_admissible_when_it_carries_visuals() {
+        let source = source(
+            "silent-demonstration",
+            SourceMediaKind::Video,
+            SourceKind::UserFile,
+            true,
+        );
+        let mut item = item("evidence", SourceMediaKind::Video);
+        item.extracted_text = None;
+        item.visual_observations = vec!["hands fold the dough toward the centre".to_owned()];
+
+        let evidence = normalize_extraction(
+            SubjectKind::PrivatePerson,
+            &source,
+            &local_policy(),
+            extraction(item),
+        )
+        .unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert!(evidence[0].extracted_text.is_none());
+        assert!(!evidence[0].visual_observations.is_empty());
     }
 
     #[test]

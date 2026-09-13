@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(skill.executor.kind, "cognitive-distillation");
         assert_eq!(skill.capabilities.len(), 1);
         assert!(find_by_capability("distilly.create").is_none());
-        assert!(find_by_capability("human-distill.create").is_none());
+        assert!(find_by_capability("public-web-research.create").is_none());
     }
 
     #[test]

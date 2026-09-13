@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -9,7 +9,6 @@ use std::{
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CreatorAdapterId {
     Distilly,
-    HumanDistill,
     AnyoneStyle,
     DistillBlog,
 }
@@ -51,11 +50,6 @@ impl AdapterCatalog {
         Self {
             statuses: vec![
                 probe_distilly(),
-                probe_skill_dir(
-                    CreatorAdapterId::HumanDistill,
-                    "AI_OS_HUMAN_DISTILL_SKILL_DIR",
-                    "licensed Skill directory with SKILL.md",
-                ),
                 AdapterStatus {
                     id: CreatorAdapterId::AnyoneStyle,
                     availability: AdapterAvailability::ReferenceOnly,
@@ -96,33 +90,63 @@ impl AdapterCatalog {
     }
 }
 
-fn probe_distilly() -> AdapterStatus {
+/// Where a Distilly installation may live, in the order AI-OS should prefer.
+///
+/// `workspace-ai-os-files` comes first because that is the workspace of the
+/// dedicated OpenClaw execution Agent — the only copy the Agent that runs the
+/// writer can actually reach. Probing a copy the executor cannot reach would let
+/// AI-OS report Ready about one installation and then run a different one.
+fn distilly_candidates() -> Vec<PathBuf> {
     let mut candidates = std::env::var_os("AI_OS_DISTILLY_SKILL_DIR")
         .map(|path| vec![PathBuf::from(path)])
         .unwrap_or_default();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         candidates.extend([
+            home.join(".openclaw/workspace-ai-os-files/skills/distilly"),
             home.join(".openclaw/workspace/skills/distilly"),
             home.join(".openclaw/skills/distilly"),
             home.join(".agents/skills/distilly"),
         ]);
     }
-    probe_distilly_candidates(candidates)
+    candidates
+}
+
+/// True when this directory is a Distilly installation AI-OS can use.
+fn distilly_installation_is_usable(directory: &Path) -> bool {
+    let required = [
+        directory.join("SKILL.md"),
+        directory.join("tools/skill_writer.py"),
+        directory.join("tools/version_manager.py"),
+    ];
+    let skill_contract = fs::read_to_string(&required[0]).unwrap_or_default();
+    required.iter().all(|path| path.is_file())
+        && ["create", "update", "rollback"]
+            .iter()
+            .all(|word| skill_contract.to_ascii_lowercase().contains(word))
+}
+
+/// The writer the creator must execute, resolved from the SAME installation the
+/// readiness probe accepts.
+///
+/// The probe and the executor share this resolver on purpose. They used to
+/// disagree: readiness was probed against `~/.openclaw/workspace/...` while the
+/// creator prompt hardcoded `~/.openclaw/workspace-ai-os-files/...`. That worked
+/// only while both copies happened to exist, and would have failed silently and
+/// confusingly the moment one was removed.
+pub(crate) fn resolve_distilly_writer() -> Option<PathBuf> {
+    distilly_candidates()
+        .into_iter()
+        .find(|directory| distilly_installation_is_usable(directory))
+        .map(|directory| directory.join("tools").join("skill_writer.py"))
+}
+
+fn probe_distilly() -> AdapterStatus {
+    probe_distilly_candidates(distilly_candidates())
 }
 
 fn probe_distilly_candidates(candidates: Vec<PathBuf>) -> AdapterStatus {
     for directory in candidates {
-        let required = [
-            directory.join("SKILL.md"),
-            directory.join("tools/skill_writer.py"),
-            directory.join("tools/version_manager.py"),
-        ];
-        let skill_contract = fs::read_to_string(&required[0]).unwrap_or_default();
-        if required.iter().all(|path| path.is_file())
-            && ["create", "update", "rollback"]
-                .iter()
-                .all(|word| skill_contract.to_ascii_lowercase().contains(word))
-        {
+        if distilly_installation_is_usable(&directory) {
             return AdapterStatus {
                 id: CreatorAdapterId::Distilly,
                 availability: AdapterAvailability::Ready,
@@ -141,6 +165,7 @@ fn probe_distilly_candidates(candidates: Vec<PathBuf>) -> AdapterStatus {
     }
 }
 
+#[allow(dead_code)]
 fn probe_skill_dir(id: CreatorAdapterId, variable: &str, probe: &str) -> AdapterStatus {
     let ready = std::env::var_os(variable)
         .map(PathBuf::from)

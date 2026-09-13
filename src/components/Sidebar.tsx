@@ -46,6 +46,11 @@ const navItems: Array<{
     label: "Agents",
   },
   {
+    name: "Person Profiles",
+    icon: "☴",
+    label: "Person Profiles",
+  },
+  {
     name: "AI Council",
     icon: "◉",
     label: "AI Council",

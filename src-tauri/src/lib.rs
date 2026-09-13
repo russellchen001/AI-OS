@@ -1,11 +1,11 @@
 mod backup;
 mod browser;
 mod claude_code;
-mod commerce_provider;
-mod computer_use;
 mod cognitive_distillation;
+mod commerce_provider;
 #[cfg(test)]
 mod computer_control_acceptance;
+mod computer_use;
 mod connections;
 mod conversations;
 mod document;
@@ -20,6 +20,7 @@ mod keychain_trace;
 mod local_model_advisor;
 mod logs;
 mod macos_permissions;
+mod managed_assets;
 mod mcp;
 mod mcp_runtime;
 mod memory;
@@ -225,6 +226,16 @@ pub fn run() {
             cognitive_distillation::get_cognitive_distillation_status,
             cognitive_distillation::preview_cognitive_distillation_route,
             cognitive_distillation::validate_cognitive_distillation_evidence,
+            cognitive_distillation::list_person_profiles,
+            cognitive_distillation::get_person_profile,
+            cognitive_distillation::review_person_profile,
+            cognitive_distillation::activate_person_profile,
+            cognitive_distillation::revise_person_profile,
+            cognitive_distillation::rollback_person_profile,
+            cognitive_distillation::build_person_persona_skill,
+            cognitive_distillation::read_media_evidence,
+            cognitive_distillation::media_toolchain_status,
+            cognitive_distillation::install_media_toolchain,
             generative_media::comfyui_setup::setup_comfyui_managed_profile,
             generative_media::comfyui_reference_setup::setup_comfyui_reference_vlm,
             multillm::start_multillm_stream,

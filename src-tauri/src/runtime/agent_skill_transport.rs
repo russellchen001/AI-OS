@@ -32,6 +32,21 @@ use std::sync::Arc;
 
 const OPENCLAW_EXECUTION_AGENT_ID: &str = "ai-os-files";
 const AGENT_WAIT_ATTEMPTS: usize = 35;
+const AGENT_WAIT_INTERVAL_MILLISECONDS: u64 = 9_000;
+/// Budget for one Agent turn on the generic Skill transport path, where the
+/// Agent chooses a capability and the Runtime performs the real work.
+const AGENT_RUN_TIMEOUT_SECONDS: u64 = 120;
+/// Budget for one Distilly creator turn. The creator Agent has to distil the
+/// bounded evidence into two quarantined files and then execute the validated
+/// writer CLI, so it needs more than one generic Skill-selection turn. This is
+/// a longer bound, not an unbounded one, and it widens no permission.
+const DISTILLY_RUN_TIMEOUT_SECONDS: u64 = 600;
+/// Budget for one public-web research turn. This turn reads public sources
+/// before it can grade a single claim, so it is bounded by how fast the open web
+/// answers rather than by how fast the Agent thinks. Measured: a 600s budget was
+/// spent without finishing, while the creator turn that followed it needed under
+/// 300s. This is a wider bound, not an unbounded one.
+const RESEARCH_RUN_TIMEOUT_SECONDS: u64 = 1_500;
 
 /// Agent-facing Skill transport. It translates one Agent protocol into the
 /// generic SkillInvocationGateway contract; it never owns permission policy or
@@ -293,6 +308,73 @@ impl OpenClawAgentSkillTransport {
     }
 }
 
+/// One OpenClaw Agent turn on behalf of cognitive distillation. `purpose` names
+/// which turn this is, so a failure says which half of the pipeline refused
+/// rather than blaming whichever half was written first.
+fn invoke_distillation_turn(
+    purpose: &str,
+    session_id: &str,
+    prompt: &str,
+    run_timeout_seconds: u64,
+) -> Result<(), String> {
+    let invoker = ProductionOpenClawAgentMethodInvoker;
+    let session_key = format!("agent:{OPENCLAW_EXECUTION_AGENT_ID}:ai-os-distilly-{session_id}");
+    let idempotency_key = format!("{session_id}:distilly");
+    run_agent(
+        &invoker,
+        &session_key,
+        prompt,
+        &idempotency_key,
+        run_timeout_seconds,
+    )
+    .map_err(|error| {
+        format!(
+            "OpenClaw could not run the {purpose} turn (session {session_key}, idempotency {idempotency_key}, budget {run_timeout_seconds}s): {}",
+            error.message
+        )
+    })?;
+    latest_assistant_text(&history(&invoker, &session_key).map_err(|error| {
+        format!(
+            "OpenClaw could not read the {purpose} transcript (session {session_key}): {}",
+            error.message
+        )
+    })?)
+    .filter(|text| !text.trim().is_empty())
+    .map(|_| ())
+    .ok_or_else(|| {
+        format!("The OpenClaw {purpose} turn (session {session_key}) returned no completion.")
+    })
+}
+
+pub(crate) fn invoke_distilly_skill(session_id: &str, prompt: &str) -> Result<(), String> {
+    invoke_distillation_turn(
+        "Distilly creator",
+        session_id,
+        prompt,
+        DISTILLY_RUN_TIMEOUT_SECONDS,
+    )
+}
+
+/// Reads back what the Agent said on a distillation turn.
+///
+/// Used only when a turn reported success but left no artefact behind. In that
+/// case the completion text is the only account of what the Agent actually did,
+/// and discarding it leaves a person holding a missing file and no explanation.
+pub(crate) fn distillation_turn_completion(session_id: &str) -> Option<String> {
+    let invoker = ProductionOpenClawAgentMethodInvoker;
+    let session_key = format!("agent:{OPENCLAW_EXECUTION_AGENT_ID}:ai-os-distilly-{session_id}");
+    latest_assistant_text(&history(&invoker, &session_key).ok()?)
+}
+
+pub(crate) fn invoke_research_skill(session_id: &str, prompt: &str) -> Result<(), String> {
+    invoke_distillation_turn(
+        "public-web research",
+        session_id,
+        prompt,
+        RESEARCH_RUN_TIMEOUT_SECONDS,
+    )
+}
+
 impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
     fn execute(
         &self,
@@ -328,6 +410,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             &session_key,
             &first_message,
             &format!("{}:request", request.execution_id),
+            AGENT_RUN_TIMEOUT_SECONDS,
         )?;
         let mut decision_history = history(self.invoker.as_ref(), &session_key)?;
         let mut attempted_capabilities = Vec::new();
@@ -393,6 +476,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
                             request.execution_id,
                             attempted_capabilities.len()
                         ),
+                        AGENT_RUN_TIMEOUT_SECONDS,
                     )?;
                     decision_history = history(self.invoker.as_ref(), &session_key)?;
                 }
@@ -413,6 +497,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             &session_key,
             &result_message,
             &format!("{}:result", request.execution_id),
+            AGENT_RUN_TIMEOUT_SECONDS,
         )?;
         let completion_history = history(self.invoker.as_ref(), &session_key)?;
         let completion = latest_assistant_text(&completion_history).ok_or_else(|| {
@@ -446,6 +531,7 @@ fn run_agent(
     session_key: &str,
     message: &str,
     idempotency_key: &str,
+    run_timeout_seconds: u64,
 ) -> Result<(), AgentExecutionError> {
     let accepted = invoker
         .invoke(
@@ -456,7 +542,7 @@ fn run_agent(
                 "sessionKey": session_key,
                 "thinking": "off",
                 "deliver": false,
-                "timeout": 120,
+                "timeout": run_timeout_seconds,
                 "idempotencyKey": idempotency_key,
             })),
         )
@@ -473,23 +559,41 @@ fn run_agent(
             )
         })?;
 
-    for _ in 0..AGENT_WAIT_ATTEMPTS {
+    let wait_attempts = AGENT_WAIT_ATTEMPTS.max(
+        usize::try_from(
+            run_timeout_seconds
+                .saturating_mul(1_000)
+                .div_euclid(AGENT_WAIT_INTERVAL_MILLISECONDS)
+                .saturating_add(5),
+        )
+        .unwrap_or(AGENT_WAIT_ATTEMPTS),
+    );
+    for _ in 0..wait_attempts {
         let terminal = invoker
             .invoke(
                 "agent.wait",
-                Some(json!({"runId": run_id, "timeoutMs": 9_000})),
+                Some(json!({"runId": run_id, "timeoutMs": AGENT_WAIT_INTERVAL_MILLISECONDS})),
             )
             .map_err(map_gateway_failure)?;
         match terminal.get("status").and_then(Value::as_str) {
             Some("ok") => return Ok(()),
             Some("timeout") => continue,
             Some("error") => {
+                // OpenClaw's run-level error field is frequently a single
+                // uninformative word ("failed"). A one-word error tells a person
+                // nothing about which layer refused, so the run identity and the
+                // whole terminal record travel with it.
+                let reported = terminal
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("no error text");
                 return Err(AgentExecutionError::new(
                     AgentExecutionErrorKind::ExecutionFailed,
-                    terminal
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("OpenClaw Agent execution failed."),
+                    format!(
+                        "OpenClaw Agent run {run_id} ended in error: {reported}. Terminal record: {terminal}"
+                    ),
                     false,
                 ));
             }
@@ -505,7 +609,9 @@ fn run_agent(
 
     Err(AgentExecutionError::new(
         AgentExecutionErrorKind::ExecutionFailed,
-        "OpenClaw Agent execution timed out.",
+        format!(
+            "OpenClaw Agent run {run_id} did not reach a terminal status within its {run_timeout_seconds}s budget ({wait_attempts} waits of {AGENT_WAIT_INTERVAL_MILLISECONDS}ms)."
+        ),
         true,
     ))
 }
