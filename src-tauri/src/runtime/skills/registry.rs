@@ -133,6 +133,16 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "generative-media",
         ),
         skill(
+            "cognitive-distillation",
+            "Create Person Profile",
+            "intelligence",
+            "Prepare one evidence-grounded multimodal person profile pipeline selected by AI-OS.",
+            &["cognitive-distillation.profile.prepare"],
+            &["filesystem.read", "profile.create"],
+            "cognitive-distillation",
+            "router",
+        ),
+        skill(
             "downloads",
             "Downloads",
             "network",
@@ -347,7 +357,7 @@ mod tests {
     fn list_command_returns_canonical_registry() {
         let skills = list_skills();
 
-        assert_eq!(skills.len(), 8);
+        assert_eq!(skills.len(), 9);
 
         assert_eq!(skills[0].id, "document");
         assert_eq!(skills[0].executor.kind, "openclaw");
@@ -369,9 +379,23 @@ mod tests {
         assert_eq!(skills[6].executor.kind, "media");
         assert_eq!(skills[6].executor.handler, "generative-media");
 
-        assert_eq!(skills[7].id, "downloads");
-        assert_eq!(skills[7].executor.kind, "openclaw");
-        assert_eq!(skills[7].executor.handler, "downloads");
+        assert_eq!(skills[7].id, "cognitive-distillation");
+        assert_eq!(skills[7].executor.kind, "cognitive-distillation");
+        assert_eq!(skills[7].executor.handler, "router");
+
+        assert_eq!(skills[8].id, "downloads");
+        assert_eq!(skills[8].executor.kind, "openclaw");
+        assert_eq!(skills[8].executor.handler, "downloads");
+    }
+
+    #[test]
+    fn cognitive_distillation_exposes_one_platform_routed_capability() {
+        let skill = find_by_capability("cognitive-distillation.profile.prepare").unwrap();
+        assert_eq!(skill.id, "cognitive-distillation");
+        assert_eq!(skill.executor.kind, "cognitive-distillation");
+        assert_eq!(skill.capabilities.len(), 1);
+        assert!(find_by_capability("distilly.create").is_none());
+        assert!(find_by_capability("human-distill.create").is_none());
     }
 
     #[test]

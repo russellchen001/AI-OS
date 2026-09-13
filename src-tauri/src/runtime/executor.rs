@@ -192,6 +192,31 @@ struct LocalModelPreparedOperation {
     user_confirmed: bool,
 }
 
+struct CognitiveDistillationPreparedOperation {
+    input: Value,
+}
+
+impl PreparedOperation for CognitiveDistillationPreparedOperation {
+    fn execute(
+        self: Box<Self>,
+        report: &mut dyn FnMut(RuntimeOperationProgress),
+    ) -> Result<Option<Value>, NormalizedRuntimeError> {
+        report(RuntimeOperationProgress {
+            phase: "routing".to_owned(),
+            completed_units: None,
+            total_units: None,
+            message: "Preparing an authorized Cognitive Distillation pipeline.".to_owned(),
+        });
+        crate::cognitive_distillation::prepare_from_value(&self.input)
+            .map(Some)
+            .map_err(|message| NormalizedRuntimeError {
+                code: RuntimeErrorCode::InvalidRequest,
+                message,
+                retryable: false,
+            })
+    }
+}
+
 impl PreparedOperation for LocalModelPreparedOperation {
     fn execute(
         self: Box<Self>,
@@ -741,6 +766,79 @@ pub(crate) fn execute_local_model_runtime_task(
         .recv()
         .map_err(|_| operation_task_failed())??;
 
+    Ok(RuntimeTaskExecutionResult {
+        operation_id: request.operation_id,
+        output,
+    })
+}
+
+pub(crate) fn execute_cognitive_distillation_runtime_task(
+    manager: Arc<RuntimeOperationManager>,
+    scheduler: RuntimeScheduler,
+    emitter: Arc<dyn OperationEventEmitter>,
+    request: RuntimeTaskExecutionRequest,
+) -> Result<RuntimeTaskExecutionResult, NormalizedRuntimeError> {
+    let request = request.validate()?;
+    if request.capability != "cognitive-distillation.profile.prepare" {
+        return Err(NormalizedRuntimeError {
+            code: RuntimeErrorCode::InvalidRequest,
+            message: "Cognitive Distillation capability is not recognized.".to_owned(),
+            retryable: false,
+        });
+    }
+    let admission = manager.admit_identified_operation(
+        &request.operation_id,
+        "cognitive-distillation",
+        super::models::RuntimeOperationAction::Execute,
+        false,
+    )?;
+    let operation = match admission {
+        RuntimeOperationAdmission::Accepted { operation } => operation,
+        RuntimeOperationAdmission::Conflict { .. } => {
+            return Err(NormalizedRuntimeError {
+                code: RuntimeErrorCode::OperationConflict,
+                message: "A Cognitive Distillation operation with this identifier already exists."
+                    .to_owned(),
+                retryable: false,
+            });
+        }
+        RuntimeOperationAdmission::Rejected { error } => return Err(error),
+    };
+    emit_best_effort(emitter.as_ref(), operation);
+    let prepared: Box<dyn PreparedOperation> = Box::new(CognitiveDistillationPreparedOperation {
+        input: request.input,
+    });
+    let operation_id = request.operation_id.clone();
+    let task_manager = Arc::clone(&manager);
+    let task_emitter = Arc::clone(&emitter);
+    let (result_sender, result_receiver) = mpsc::sync_channel(1);
+    let task = Box::new(move || {
+        let result = run_supervised_prepared_operation(
+            task_manager,
+            operation_id,
+            task_emitter,
+            prepared,
+            None,
+        );
+        let _ = result_sender.send(result);
+    });
+    let scheduled = catch_unwind(AssertUnwindSafe(|| scheduler.enqueue(task)))
+        .ok()
+        .and_then(Result::ok)
+        .is_some();
+    if !scheduled {
+        let error = operation_task_failed();
+        let _ = fail_operation(
+            manager.as_ref(),
+            &request.operation_id,
+            error.clone(),
+            emitter.as_ref(),
+        );
+        return Err(error);
+    }
+    let output = result_receiver
+        .recv()
+        .map_err(|_| operation_task_failed())??;
     Ok(RuntimeTaskExecutionResult {
         operation_id: request.operation_id,
         output,

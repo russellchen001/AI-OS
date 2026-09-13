@@ -3,6 +3,7 @@ mod browser;
 mod claude_code;
 mod commerce_provider;
 mod computer_use;
+mod cognitive_distillation;
 #[cfg(test)]
 mod computer_control_acceptance;
 mod connections;
@@ -221,6 +222,9 @@ pub fn run() {
             local_model_advisor::recommend_local_models,
             local_model_advisor::assess_local_model,
             local_model_advisor::assess_installed_local_models,
+            cognitive_distillation::get_cognitive_distillation_status,
+            cognitive_distillation::preview_cognitive_distillation_route,
+            cognitive_distillation::validate_cognitive_distillation_evidence,
             generative_media::comfyui_setup::setup_comfyui_managed_profile,
             generative_media::comfyui_reference_setup::setup_comfyui_reference_vlm,
             multillm::start_multillm_stream,

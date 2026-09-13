@@ -8,9 +8,9 @@ use super::{
         COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES, GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES,
     },
     executor::{
-        execute_generative_media_runtime_task, execute_local_model_runtime_task,
-        execute_mcp_runtime_task, execute_runtime_task, OperationEventEmitter,
-        RuntimeExecutionState, RuntimeTaskExecutionRequest,
+        execute_cognitive_distillation_runtime_task, execute_generative_media_runtime_task,
+        execute_local_model_runtime_task, execute_mcp_runtime_task, execute_runtime_task,
+        OperationEventEmitter, RuntimeExecutionState, RuntimeTaskExecutionRequest,
     },
     models::{NormalizedRuntimeError, RuntimeErrorCode},
     openclaw_execution::OpenClawExecutionAdapter,
@@ -216,6 +216,14 @@ impl SkillBackend for RuntimeSkillBackend {
                     Arc::new(
                         crate::generative_media::registry::MediaProviderRegistry::production(),
                     ),
+                )
+            }
+            "cognitive-distillation" if skill.executor.handler == "router" => {
+                execute_cognitive_distillation_runtime_task(
+                    self.runtime.manager(),
+                    self.runtime.scheduler(),
+                    Arc::clone(&self.emitter),
+                    runtime_request,
                 )
             }
             _ => {

@@ -7950,3 +7950,126 @@ Current post-Generative-Media sequence:
 2. llmfit Local Model Optimization / Recommendation — Complete
 3. Cognitive Distillation — Next
 4. NAS Management foundation
+
+## 2026-09-13 — CD-1A — Multimodal Evidence and Automatic Routing Foundation
+
+Status: Complete foundation. Cognitive Distillation remains In Progress until a
+licensed Distilly installation, creator execution/import, profile review UI and
+real multimodal creator smoke are complete.
+
+### Technical decision
+
+Cognitive Distillation is one AI-OS product capability. Users provide a person
+objective and authorized sources; they never select Distilly, human-distill,
+anyone-skill or distill-blog-skill. The deterministic
+`CognitiveDistillationRouter` is a platform policy component, not an Agent,
+Runtime, Provider or LLM.
+
+Accepted flow:
+
+```text
+User objective
+→ SubjectPolicyGate / authorized source intake
+→ multimodal evidence ingestion
+→ canonical EvidenceBundle
+→ CognitiveDistillationRouter
+→ eligible creator/enrichment Skills
+→ AI-OS profile normalizer and validator
+→ human review
+→ PersonDistillationProfile@revision
+→ raw-media-free RunnablePersonaSkill
+→ P16 CouncilProjection
+```
+
+- Distilly remains the primary general creator and is discovered as an
+  installed Agent Skill by capability (`create`, `update`, `rollback`), not by
+  an exact version or an `npx` call that could download code.
+- human-distill is eligible only as public/historical research enrichment when
+  a verified local Skill directory is configured.
+- anyone-skill and distill-blog-skill remain `reference-only` because their
+  repositories did not contain valid LICENSE files at the CD-0 audit point.
+  They cannot be selected, copied or vendored. Their adapter identities remain
+  reserved so a future licensed implementation can be enabled without changing
+  the canonical contract.
+- Only AI-OS can change a canonical profile to Active. Creator output remains a
+  draft until evidence validation and explicit human review succeed.
+
+### Multimodal evidence contract
+
+`src-tauri/src/cognitive_distillation/` defines Text, Image, Audio, Video,
+Document and Mixed source media. Every evidence item retains source id, digest,
+correlation group, page/time/region location, speaker, extracted text, visual
+observations, structural/contextual observations, confirmed/inferred/conflict
+state, confidence, extractor identity and extractor revision.
+
+- Video evidence requires both timestamped text and visual/structural evidence;
+  an audio-only transcript is rejected.
+- Document evidence retains page provenance; visual observations are not
+  collapsed into anonymous prose.
+- Confidence combines only independent correlation groups. Reposts, derived
+  copies and multiple frames from one source cannot inflate independent-source
+  count.
+- Contradictory evidence remains attached to the claim for review instead of
+  being deleted.
+- Creator Skills receive bounded authorized evidence representations, never
+  unrestricted device access.
+
+### Reuse and local-first extraction
+
+- Existing `media.reference.image.analyze` and
+  `media.reference.video.analyze` capabilities remain the VLM/reference-analysis
+  boundary; Cognitive Distillation does not create a second VLM stack.
+- Existing file/document/browser/search/provider capabilities remain source
+  intake boundaries.
+- FFmpeg is the selected replaceable demux/keyframe adapter; its real local
+  capability probe passed at `/opt/homebrew/bin/ffmpeg`.
+- Focused upstream review selected MIT `whisper.cpp` as the preferred portable
+  local ASR adapter because it provides an offline CLI and first-class Apple
+  Silicon Metal/Core ML support. MIT MLX Whisper remains an optional
+  Apple-Silicon adapter. Compatibility is capability-probed, not version-gated.
+- Neither ASR executable is installed on this host. AI-OS did not install a
+  runtime or download a transcription model merely for acceptance, so real
+  timestamped ASR and end-to-end video transcription remain environment-blocked.
+
+### Privacy and safety
+
+- Private-person media cannot request public research.
+- Any Cloud extractor is rejected before evidence normalization unless current
+  explicit Cloud authorization is present; there is no Local-to-Cloud fallback.
+- Extractor output that asserts sensitive traits is rejected. Appearance or
+  voice cannot be used to infer diagnosis, ethnicity, religion, political
+  ideology, sexual orientation or health condition.
+- Runnable Persona Skills reject raw image/audio/video assets. Audit and route
+  results use opaque ids, digests and status rather than raw content.
+- The Agent sees only `cognitive-distillation.profile.prepare`; implementation-
+  specific capabilities such as `distilly.create` are not registered. Runtime
+  Skill Gateway policy remains mandatory.
+
+### Acceptance evidence
+
+- `verify/verify_p15_cognitive_distillation_multimodal.sh`: PASS 6 / FAIL 0;
+  local ASR availability recorded separately as unavailable.
+- Cognitive Distillation deterministic tests: 19 passed / 0 failed, including
+  automatic high-volume evidence enrichment routing at eight authorized sources.
+- Skill Registry: 15 passed / 0 failed.
+- Agent Skill Transport regression: 18 passed / 0 failed / 1 external E2E
+  ignored.
+- Full Rust library regression: 873 passed / 0 failed / 53 environment tests
+  ignored.
+- Frontend production build: PASS (this foundation adds no separate engine UI).
+- `cargo check`: PASS.
+- Targeted Rust formatting check: PASS.
+- `git diff --check`: PASS.
+
+### Remaining CD-1 work
+
+1. Install or configure a licensed Distilly Skill and run its real capability
+   probe without direct credential collection or unapproved network access.
+2. Implement bounded creator invocation, quarantined artifact import and
+   `PersonDistillationProfile` normalization.
+3. Add the single Create Person Profile review UI: included sources, media type,
+   extraction status, evidence quality, conflicts and activation review. Do not
+   expose creator implementation names outside advanced diagnostics.
+4. After explicit approval for the local ASR runtime/model installation, run
+   real audio and video timestamp/provenance smoke; reuse the existing media
+   reference-analysis path for visual evidence.
