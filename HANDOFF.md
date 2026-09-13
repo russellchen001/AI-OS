@@ -7545,6 +7545,44 @@ Acceptance evidence:
 - capability negotiation, not an exact OpenClaw version, controls transport
   admission
 
+### OpenClaw capability-exhaustion gate — Complete — 2026-09-13
+
+The OpenClaw Skill transport audit found two premature
+`NoViableExecutionPath` paths: an initial unstructured
+`execution.unavailable` response was trusted immediately, and a successful
+Skill result could later be reclassified as unavailable. The transport also
+stopped after the first recoverable Skill/backend failure instead of returning
+the remaining exposed candidates to the Agent.
+
+Technical decision: Runtime treats the exact exposed capability set as the
+legal candidate set. An initial no-path decision is accepted only when
+`evaluatedCapabilities` contains every exposed capability exactly once, with no
+unknown or duplicate entries. Recoverable `ConnectionUnavailable` or
+`ExecutionFailed` results continue to an unattempted candidate; if any Skill
+attempt has already failed, a later unavailable response preserves that typed
+failure and cannot become a Mano trigger. A successful Skill also cannot be
+reclassified as no-path. Permission, auth, pairing, connection, protocol,
+invalid-request, and ordinary execution failures retain their existing typed
+non-Mano mappings.
+
+Acceptance evidence:
+
+- `verify/verify_p15_openclaw_no_viable_gate.sh`: `PASS=9 FAIL=0`;
+- an available capability blocks an unproven no-path response;
+- one transient Skill failure continues to a second exposed capability and
+  completes successfully;
+- only exact evaluation of all legal candidates can produce
+  `NoViableExecutionPath` before any Skill failure or success;
+- failed and successful Skill attempts cannot be reclassified into the Mano
+  trigger;
+- the Plan Runtime Mano trigger remains exact-match-only on
+  `NoViableExecutionPath`.
+
+This hardening changes only the OpenClaw Agent Skill transport contract and its
+tests. The Mano adapter architecture is unchanged and MP-5 remains formally
+closed. The live AR-1C External E2E was not weakened or counted as part of this
+deterministic acceptance.
+
 ## Current milestone
 
 - Kernel correction: AR-1 Complete
@@ -7769,10 +7807,12 @@ Local product-path acceptance:
 - future device compatibility findings do not reopen the Mano architecture
   milestone unless they identify an actual AI-OS implementation defect.
 
-The unchanged AR-1C real OpenClaw E2E remains independently blocked by live Agent
-behavior: OpenClaw 2026.8.2 returned `execution.unavailable` for its temporary
-`filesystem.scan` fixture instead of invoking that exposed Skill. Mano acceptance
-does not modify, weaken, or count that external check as a Mano failure.
+The last AR-1C real OpenClaw E2E observation remains an independent historical
+external result: OpenClaw 2026.8.2 returned `execution.unavailable` for its
+temporary `filesystem.scan` fixture instead of invoking that exposed Skill.
+The capability-exhaustion gate now rejects that response unless it carries the
+complete evaluated-capability proof. This task did not rerun or weaken the live
+external check, and the result is not counted as a Mano failure.
 
 Current:
 

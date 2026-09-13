@@ -109,8 +109,7 @@ impl SkillInvocationGateway for RuntimeSkillInvocationGateway {
         let confirmable = [request.capability.as_str()];
         let always_confirm = GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES
             .contains(&request.capability.as_str())
-            || COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES
-                .contains(&request.capability.as_str())
+            || COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES.contains(&request.capability.as_str())
             || matches!(
                 request.capability.as_str(),
                 "system.process.terminate"
@@ -308,7 +307,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             }
         });
         let first_message = format!(
-            "You are the selected execution Agent. AI-OS Runtime exposes only the capabilities in this JSON: {}. Decide the action sequence. To use a capability, do not call a similarly named OpenClaw tool and do not perform it directly. Return only one compact JSON object. If an exposed capability can advance the task, return {{\"type\":\"skill.invoke\",\"invocationId\":\"agent-authored-id\",\"capability\":\"one exposed capability\",\"input\":{{}}}}. If no exposed AI-OS capability provides a viable execution path for this task, return {{\"type\":\"execution.unavailable\",\"reason\":\"brief reason\"}}. Do not report execution.unavailable for permission denial, authentication, pairing, connection failures, temporary errors, or ordinary execution failures. Do not include confirmation, permission, backend, provider, or authority fields.",
+            "You are the selected execution Agent. AI-OS Runtime exposes only the capabilities in this JSON: {}. Evaluate every exposed capability that could match the task before declaring no viable path. To use a capability, do not call a similarly named OpenClaw tool and do not perform it directly. Return only one compact JSON object. If any exposed capability can advance the task, return {{\"type\":\"skill.invoke\",\"invocationId\":\"agent-authored-id\",\"capability\":\"one exposed capability\",\"input\":{{}}}}. Only if every exposed capability has been evaluated and none can advance the task may you return {{\"type\":\"execution.unavailable\",\"reason\":\"brief reason\",\"evaluatedCapabilities\":[\"every exposed capability exactly once\"]}}. Do not report execution.unavailable for permission denial, authentication, pairing, connection failures, provider unavailability, temporary errors, protocol errors, ordinary execution failures, or because one capability is inapplicable. Do not include confirmation, permission, backend, provider, or authority fields.",
             exposure
         );
 
@@ -322,19 +321,78 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             &first_message,
             &format!("{}:request", request.execution_id),
         )?;
-        let request_history = history(self.invoker.as_ref(), &session_key)?;
-        let agent_request = parse_skill_request(&request_history)?;
+        let mut decision_history = history(self.invoker.as_ref(), &session_key)?;
+        let mut attempted_capabilities = Vec::new();
+        let mut prior_failure: Option<AgentExecutionError> = None;
 
-        report(AgentExecutionProgress {
-            phase: "skill-invocation".to_owned(),
-            message: "Runtime admitted the Agent Skill request.".to_owned(),
-        });
-        let result = gateway
-            .invoke(context, &agent_request)
-            .map_err(map_skill_error)?;
+        let result = loop {
+            let agent_request = match parse_skill_decision(&decision_history)? {
+                AgentSkillDecision::Unavailable(value) => {
+                    let no_viable =
+                        validated_no_viable_execution_path(&value, &request.allowed_capabilities)?;
+                    return Err(prior_failure.unwrap_or(no_viable));
+                }
+                AgentSkillDecision::Invoke(agent_request) => agent_request,
+            };
+
+            if attempted_capabilities.contains(&agent_request.capability) {
+                return Err(invalid_skill_protocol());
+            }
+            attempted_capabilities.push(agent_request.capability.clone());
+
+            report(AgentExecutionProgress {
+                phase: "skill-invocation".to_owned(),
+                message: "Runtime admitted the Agent Skill request.".to_owned(),
+            });
+            match gateway.invoke(context, &agent_request) {
+                Ok(result) => break result,
+                Err(error) => {
+                    let failure = map_skill_error(error);
+                    let remaining = request
+                        .allowed_capabilities
+                        .iter()
+                        .filter(|capability| !attempted_capabilities.contains(capability))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if remaining.is_empty()
+                        || !matches!(
+                            failure.kind,
+                            AgentExecutionErrorKind::ConnectionUnavailable
+                                | AgentExecutionErrorKind::ExecutionFailed
+                        )
+                    {
+                        return Err(failure);
+                    }
+                    if prior_failure.is_none() {
+                        prior_failure = Some(failure.clone());
+                    }
+                    let failure_message = format!(
+                        "The attempted AI-OS Skill failed. This failure is not evidence that no viable execution path exists. Evaluate the remaining exposed capabilities and return only one compact JSON object. Request one remaining capability with skill.invoke if it can advance the task. Do not retry an attempted capability. Do not return execution.unavailable because of this failure. Remaining capabilities: {}. Normalized failure: {}",
+                        json!(remaining),
+                        json!({
+                            "type": "skill.failure",
+                            "capability": agent_request.capability,
+                            "kind": format!("{:?}", failure.kind),
+                            "retryable": failure.retryable,
+                        })
+                    );
+                    run_agent(
+                        self.invoker.as_ref(),
+                        &session_key,
+                        &failure_message,
+                        &format!(
+                            "{}:failure:{}",
+                            request.execution_id,
+                            attempted_capabilities.len()
+                        ),
+                    )?;
+                    decision_history = history(self.invoker.as_ref(), &session_key)?;
+                }
+            }
+        };
 
         let result_message = format!(
-            "AI-OS Runtime completed your Skill request. Treat this JSON as the normalized Skill result. Return only one compact final JSON object and do not call tools. If the task can now be completed, return a completion JSON. If the normalized result proves that no viable AI-OS execution path remains, return {{\"type\":\"execution.unavailable\",\"reason\":\"brief reason\"}}. Do not use execution.unavailable for permission denial, authentication, pairing, connection failures, temporary errors, or ordinary execution failures: {}",
+            "AI-OS Runtime completed your Skill request successfully. Treat this JSON as the normalized Skill result. Return only one compact completion JSON object and do not call tools. A successful exposed Skill is a viable path, so execution.unavailable is not valid after this result: {}",
             json!({
                 "type": "skill.result",
                 "invocationId": result.invocation_id,
@@ -464,7 +522,13 @@ struct AgentSkillRequestWire {
     input: Value,
 }
 
-fn parse_skill_request(history: &Value) -> Result<SkillInvocationRequest, AgentExecutionError> {
+#[derive(Debug)]
+enum AgentSkillDecision {
+    Invoke(SkillInvocationRequest),
+    Unavailable(Value),
+}
+
+fn parse_skill_decision(history: &Value) -> Result<AgentSkillDecision, AgentExecutionError> {
     let text = latest_assistant_text(history).ok_or_else(|| {
         AgentExecutionError::new(
             AgentExecutionErrorKind::ExecutionFailed,
@@ -476,12 +540,13 @@ fn parse_skill_request(history: &Value) -> Result<SkillInvocationRequest, AgentE
     let value = parse_agent_json(&text)?;
 
     match value.get("type").and_then(Value::as_str) {
-        Some("execution.unavailable") => Err(no_viable_execution_path(&value)),
+        Some("execution.unavailable") => Ok(AgentSkillDecision::Unavailable(value)),
         Some("skill.invoke") => {
             let wire: AgentSkillRequestWire =
                 serde_json::from_value(value).map_err(|_| invalid_skill_protocol())?;
 
             SkillInvocationRequest::new(wire.invocation_id, wire.capability, wire.input)
+                .map(AgentSkillDecision::Invoke)
                 .map_err(|_| invalid_skill_protocol())
         }
         _ => Err(invalid_skill_protocol()),
@@ -510,6 +575,41 @@ fn no_viable_execution_path(value: &Value) -> AgentExecutionError {
     )
 }
 
+fn validated_no_viable_execution_path(
+    value: &Value,
+    exposed_capabilities: &[String],
+) -> Result<AgentExecutionError, AgentExecutionError> {
+    let evaluated = value
+        .get("evaluatedCapabilities")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid_skill_protocol)?;
+    let mut normalized = Vec::with_capacity(evaluated.len());
+    for capability in evaluated {
+        let capability = capability
+            .as_str()
+            .map(str::trim)
+            .filter(|capability| !capability.is_empty())
+            .ok_or_else(invalid_skill_protocol)?;
+        if normalized.iter().any(|seen| seen == capability)
+            || !exposed_capabilities
+                .iter()
+                .any(|exposed| exposed == capability)
+        {
+            return Err(invalid_skill_protocol());
+        }
+        normalized.push(capability.to_owned());
+    }
+    if normalized.len() != exposed_capabilities.len()
+        || exposed_capabilities
+            .iter()
+            .any(|capability| !normalized.contains(capability))
+    {
+        return Err(invalid_skill_protocol());
+    }
+
+    Ok(no_viable_execution_path(value))
+}
+
 fn reject_no_viable_completion(text: &str) -> Result<(), AgentExecutionError> {
     let Some(start) = text.find('{') else {
         return Ok(());
@@ -523,7 +623,14 @@ fn reject_no_viable_completion(text: &str) -> Result<(), AgentExecutionError> {
     };
 
     if value.get("type").and_then(Value::as_str) == Some("execution.unavailable") {
-        return Err(no_viable_execution_path(&value));
+        return Err(AgentExecutionError::new(
+            AgentExecutionErrorKind::ExecutionFailed,
+            "OpenClaw reported no viable path after a Skill completed successfully.",
+            false,
+        ));
+    }
+    if value.get("type").and_then(Value::as_str) == Some("skill.invoke") {
+        return Err(invalid_skill_protocol());
     }
 
     Ok(())
@@ -618,54 +725,62 @@ mod mano_fallback_contract_tests {
     }
 
     #[test]
-    fn execution_unavailable_becomes_no_viable_execution_path() {
+    fn execution_unavailable_requires_every_exposed_capability_to_be_evaluated() {
         let history = assistant_history(
             r#"{"type":"execution.unavailable","reason":"No exposed capability can complete the task."}"#,
         );
 
-        let error = parse_skill_request(&history).unwrap_err();
-
-        assert_eq!(
-            error.kind,
-            AgentExecutionErrorKind::NoViableExecutionPath
-        );
-        assert_eq!(
-            error.message,
-            "No exposed capability can complete the task."
-        );
-        assert!(!error.retryable);
-    }
-
-    #[test]
-    fn ordinary_invalid_protocol_does_not_become_mano_fallback_signal() {
-        let history = assistant_history(
-            r#"{"type":"unexpected.response","reason":"bad protocol"}"#,
-        );
-
-        let error = parse_skill_request(&history).unwrap_err();
+        let AgentSkillDecision::Unavailable(value) = parse_skill_decision(&history).unwrap() else {
+            panic!("expected unavailable decision");
+        };
+        let error = validated_no_viable_execution_path(&value, &["filesystem.scan".to_owned()])
+            .unwrap_err();
 
         assert_eq!(error.kind, AgentExecutionErrorKind::ExecutionFailed);
     }
 
     #[test]
-    fn final_completion_can_explicitly_report_no_viable_path() {
+    fn all_exposed_capabilities_evaluated_allows_no_viable_execution_path() {
+        let history = assistant_history(
+            r#"{"type":"execution.unavailable","reason":"No exposed capability can complete the task.","evaluatedCapabilities":["filesystem.scan","filesystem.read"]}"#,
+        );
+        let AgentSkillDecision::Unavailable(value) = parse_skill_decision(&history).unwrap() else {
+            panic!("expected unavailable decision");
+        };
+
+        let error = validated_no_viable_execution_path(
+            &value,
+            &["filesystem.scan".to_owned(), "filesystem.read".to_owned()],
+        )
+        .unwrap();
+
+        assert_eq!(error.kind, AgentExecutionErrorKind::NoViableExecutionPath);
+        assert!(!error.retryable);
+    }
+
+    #[test]
+    fn ordinary_invalid_protocol_does_not_become_mano_fallback_signal() {
+        let history =
+            assistant_history(r#"{"type":"unexpected.response","reason":"bad protocol"}"#);
+
+        let error = parse_skill_decision(&history).unwrap_err();
+
+        assert_eq!(error.kind, AgentExecutionErrorKind::ExecutionFailed);
+    }
+
+    #[test]
+    fn successful_skill_completion_cannot_become_no_viable_path() {
         let error = reject_no_viable_completion(
             r#"{"type":"execution.unavailable","reason":"The attempted Skill cannot finish the task."}"#,
         )
         .unwrap_err();
 
-        assert_eq!(
-            error.kind,
-            AgentExecutionErrorKind::NoViableExecutionPath
-        );
+        assert_eq!(error.kind, AgentExecutionErrorKind::ExecutionFailed);
     }
 
     #[test]
     fn normal_completion_is_not_a_fallback_signal() {
-        reject_no_viable_completion(
-            r#"{"type":"execution.complete","summary":"done"}"#,
-        )
-        .unwrap();
+        reject_no_viable_completion(r#"{"type":"execution.complete","summary":"done"}"#).unwrap();
     }
 
     #[test]
@@ -719,6 +834,34 @@ mod tests {
         }
     }
 
+    struct FirstCapabilityFailsBackend {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl SkillBackend for FirstCapabilityFailsBackend {
+        fn invoke(
+            &self,
+            _context: &SkillInvocationContext,
+            request: &SkillInvocationRequest,
+        ) -> Result<SkillInvocationResult, SkillInvocationError> {
+            self.calls.lock().unwrap().push(request.capability.clone());
+            if request.capability == "filesystem.scan" {
+                return Err(SkillInvocationError::new(
+                    SkillInvocationErrorKind::ExecutionFailed,
+                    "the first candidate failed transiently",
+                    true,
+                ));
+            }
+            Ok(SkillInvocationResult {
+                invocation_id: request.invocation_id.clone(),
+                capability: request.capability.clone(),
+                backend: "existing-backend".to_owned(),
+                provider: Some("second-provider".to_owned()),
+                output: json!({"content": "fixture"}),
+            })
+        }
+    }
+
     fn execution_request() -> AgentExecutionRequest {
         AgentExecutionRequest::new(
             "execution-1",
@@ -749,10 +892,34 @@ mod tests {
         .unwrap()
     }
 
-    fn computer_use_context(
-        confirmed: bool,
-        exposed: Vec<String>,
-    ) -> SkillInvocationContext {
+    fn multi_capability_request() -> AgentExecutionRequest {
+        AgentExecutionRequest::new(
+            "execution-1",
+            "task-1",
+            "plan-1",
+            "step-1",
+            super::super::agent_execution::AgentId::new("openclaw").unwrap(),
+            "Inspect then read the safe fixture",
+            vec!["filesystem.scan".to_owned(), "filesystem.read".to_owned()],
+            json!({}),
+            multi_capability_context(),
+        )
+        .unwrap()
+    }
+
+    fn multi_capability_context() -> SkillInvocationContext {
+        SkillInvocationContext::new(
+            "task-1",
+            "plan-1",
+            "execution-1",
+            "openclaw",
+            vec!["filesystem.scan".to_owned(), "filesystem.read".to_owned()],
+            true,
+        )
+        .unwrap()
+    }
+
+    fn computer_use_context(confirmed: bool, exposed: Vec<String>) -> SkillInvocationContext {
         SkillInvocationContext::new(
             "task-1",
             "plan-1",
@@ -827,10 +994,189 @@ mod tests {
     }
 
     #[test]
+    fn available_capability_prevents_premature_no_viable_execution_path() {
+        let invoker = Arc::new(ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "request-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"execution.unavailable\",\"reason\":\"premature\"}"
+                }]})),
+            ])),
+        });
+        let backend = Arc::new(RecordingBackend {
+            calls: Mutex::new(Vec::new()),
+        });
+        let gateway = RuntimeSkillInvocationGateway::with_backend(Vec::new(), backend.clone());
+
+        let error = OpenClawAgentSkillTransport::with_invoker(invoker)
+            .execute(&execution_request(), &context(true), &gateway, &mut |_| {})
+            .unwrap_err();
+
+        assert_eq!(error.kind, AgentExecutionErrorKind::ExecutionFailed);
+        assert!(backend.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_capability_failure_continues_to_another_available_capability() {
+        let invoker = Arc::new(ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "request-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"skill.invoke\",\"invocationId\":\"scan-1\",\"capability\":\"filesystem.scan\",\"input\":{\"path\":\"/safe\"}}"
+                }]})),
+                Ok(json!({"runId": "recovery-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"skill.invoke\",\"invocationId\":\"read-1\",\"capability\":\"filesystem.read\",\"input\":{\"path\":\"/safe/fixture.txt\"}}"
+                }]})),
+                Ok(json!({"runId": "result-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"complete\",\"summary\":\"fixture read\"}"
+                }]})),
+            ])),
+        });
+        let backend = Arc::new(FirstCapabilityFailsBackend {
+            calls: Mutex::new(Vec::new()),
+        });
+        let gateway = RuntimeSkillInvocationGateway::with_backend(Vec::new(), backend.clone());
+
+        let result = OpenClawAgentSkillTransport::with_invoker(invoker)
+            .execute(
+                &multi_capability_request(),
+                &multi_capability_context(),
+                &gateway,
+                &mut |_| {},
+            )
+            .unwrap();
+
+        assert_eq!(
+            backend.calls.lock().unwrap().as_slice(),
+            ["filesystem.scan", "filesystem.read"]
+        );
+        assert_eq!(
+            result.output["skillInvocation"]["capability"],
+            "filesystem.read"
+        );
+    }
+
+    #[test]
+    fn failed_capability_cannot_be_reclassified_as_no_viable_path() {
+        let invoker = Arc::new(ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "request-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"skill.invoke\",\"invocationId\":\"scan-1\",\"capability\":\"filesystem.scan\",\"input\":{\"path\":\"/safe\"}}"
+                }]})),
+                Ok(json!({"runId": "recovery-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"execution.unavailable\",\"reason\":\"the first candidate failed\",\"evaluatedCapabilities\":[\"filesystem.scan\",\"filesystem.read\"]}"
+                }]})),
+            ])),
+        });
+        let backend = Arc::new(FirstCapabilityFailsBackend {
+            calls: Mutex::new(Vec::new()),
+        });
+        let gateway = RuntimeSkillInvocationGateway::with_backend(Vec::new(), backend.clone());
+
+        let error = OpenClawAgentSkillTransport::with_invoker(invoker)
+            .execute(
+                &multi_capability_request(),
+                &multi_capability_context(),
+                &gateway,
+                &mut |_| {},
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind, AgentExecutionErrorKind::ExecutionFailed);
+        assert!(error.retryable);
+        assert_eq!(
+            backend.calls.lock().unwrap().as_slice(),
+            ["filesystem.scan"]
+        );
+    }
+
+    #[test]
+    fn only_all_evaluated_legal_candidates_may_return_no_viable_path() {
+        let invoker = Arc::new(ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "request-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"execution.unavailable\",\"reason\":\"both are inapplicable\",\"evaluatedCapabilities\":[\"filesystem.scan\",\"filesystem.read\"]}"
+                }]})),
+            ])),
+        });
+        let backend = Arc::new(RecordingBackend {
+            calls: Mutex::new(Vec::new()),
+        });
+        let gateway = RuntimeSkillInvocationGateway::with_backend(Vec::new(), backend.clone());
+
+        let error = OpenClawAgentSkillTransport::with_invoker(invoker)
+            .execute(
+                &multi_capability_request(),
+                &multi_capability_context(),
+                &gateway,
+                &mut |_| {},
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind, AgentExecutionErrorKind::NoViableExecutionPath);
+        assert!(backend.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn successful_skill_cannot_be_reclassified_as_no_viable_path() {
+        let invoker = Arc::new(ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "request-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"skill.invoke\",\"invocationId\":\"scan-1\",\"capability\":\"filesystem.scan\",\"input\":{\"path\":\"/safe\"}}"
+                }]})),
+                Ok(json!({"runId": "result-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": "{\"type\":\"execution.unavailable\",\"reason\":\"wrongly reclassified\",\"evaluatedCapabilities\":[\"filesystem.scan\"]}"
+                }]})),
+            ])),
+        });
+        let backend = Arc::new(RecordingBackend {
+            calls: Mutex::new(Vec::new()),
+        });
+        let gateway = RuntimeSkillInvocationGateway::with_backend(Vec::new(), backend.clone());
+
+        let error = OpenClawAgentSkillTransport::with_invoker(invoker)
+            .execute(&execution_request(), &context(true), &gateway, &mut |_| {})
+            .unwrap_err();
+
+        assert_eq!(error.kind, AgentExecutionErrorKind::ExecutionFailed);
+        assert_eq!(backend.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn mp0_selected_agent_crosses_transport_gateway_backend_registry_and_provider() {
         use crate::computer_use::{
-            provider::mock::MockComputerUseProvider,
-            registry::ComputerUseProviderRegistry, ComputerUseSkillBackend,
+            provider::mock::MockComputerUseProvider, registry::ComputerUseProviderRegistry,
+            ComputerUseSkillBackend,
         };
 
         let invoker = Arc::new(ScriptedInvoker {
@@ -901,8 +1247,8 @@ mod tests {
     #[test]
     fn mp0_gateway_blocks_unconfirmed_unexposed_and_trusted_bypass() {
         use crate::computer_use::{
-            provider::mock::MockComputerUseProvider,
-            registry::ComputerUseProviderRegistry, ComputerUseSkillBackend,
+            provider::mock::MockComputerUseProvider, registry::ComputerUseProviderRegistry,
+            ComputerUseSkillBackend,
         };
 
         for (allowed, context, expected) in [
