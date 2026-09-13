@@ -2216,6 +2216,39 @@ a {
   gap: 24px;
 }
 
+.local-model-recommendation {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(39, 124, 97, 0.28);
+  border-radius: 10px;
+  background: rgba(39, 124, 97, 0.07);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.local-model-recommendation > div {
+  display: grid;
+  min-width: 220px;
+  gap: 3px;
+}
+
+.local-model-recommendation strong {
+  color: var(--text);
+}
+
+.local-model-recommendation p {
+  flex: 1;
+  margin: 0;
+}
+
+.local-model-recommendation small {
+  color: #277c61;
+  font-weight: 650;
+}
+
 .local-model-list {
   display: flex;
   flex-wrap: wrap;

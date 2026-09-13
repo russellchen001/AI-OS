@@ -1,13 +1,18 @@
 import {
+  assessInstalledLocalModels,
+  assessLocalModel,
   deleteOmlxModel,
   deleteOllamaModel,
   listOmlxAdminModels,
   pullOmlxModel,
   pullOllamaModel,
+  recommendLocalModels,
   showOmlxModel,
   showOmlxModelInFinder,
   showOllamaModel,
   showOllamaModelInFinder,
+  type ModelFitAssessment,
+  type LocalModelRecommendationReport,
   type OmlxAdminModel,
 } from "../services/models";
 
@@ -53,6 +58,31 @@ type DeviceAuth = {
   userCode: string;
   expiresIn: number;
 };
+
+function assessmentBadge(assessment?: ModelFitAssessment): string | null {
+  if (!assessment) return null;
+  if (assessment.providerCompatible === false) return "Not recommended";
+  switch (assessment.fit) {
+    case "fit": return "Compatible";
+    case "marginal": return "Marginal";
+    case "not-fit": return "Not recommended";
+    default: return "Fit unknown";
+  }
+}
+
+function assessmentDetails(assessment: ModelFitAssessment): string {
+  const lines = [
+    `Recommendation: ${assessmentBadge(assessment) ?? assessment.fitLabel}`,
+    `Model: ${assessment.resolvedModelId ?? assessment.requestedModelId}`,
+    `Estimated memory: ${assessment.estimatedMemoryGb == null ? "Unknown" : `${assessment.estimatedMemoryGb.toFixed(1)} GB`}`,
+    `Suggested quant: ${assessment.quantization ?? "Unknown"}`,
+    `Recommended context: ${assessment.recommendedContext == null ? "Unknown" : assessment.recommendedContext.toLocaleString()}`,
+    `Expected speed: ${assessment.expectedTokensPerSecond == null ? "Unknown" : `${assessment.expectedTokensPerSecond.toFixed(1)} tok/s`}`,
+    `Evidence confidence: ${assessment.confidence}`,
+  ];
+  if (assessment.evidence.length) lines.push("", assessment.evidence.slice(0, 4).join("\n"));
+  return lines.join("\n");
+}
 
 type MyAiPageProps = {
   localModels: OllamaModel[];
@@ -212,6 +242,8 @@ function MyAiPage({
   const [omlxRuntime, setOmlxRuntime] = useState<OmlxRuntimeStatus | null>(null);
   const [omlxAdminModels, setOmlxAdminModels] = useState<OmlxAdminModel[]>([]);
   const [omlxLoading, setOmlxLoading] = useState(false);
+  const [localModelAssessments, setLocalModelAssessments] = useState<Record<string, ModelFitAssessment>>({});
+  const [localModelRecommendations, setLocalModelRecommendations] = useState<LocalModelRecommendationReport | null>(null);
   const [ollamaEnabled, setOllamaEnabled] = useState(
     () => window.localStorage.getItem("ai-os:ollama-enabled") === "true",
   );
@@ -276,6 +308,63 @@ function MyAiPage({
               badge: "Ready",
               description: `${omlxInstance?.models.length ?? 0} local model${omlxInstance?.models.length === 1 ? "" : "s"} available`,
             };
+  const ollamaAssessmentKey = displayedOllamaModels.map((model) => model.name).join("|");
+  const omlxAssessmentModels = omlxAdminModels.length
+    ? omlxAdminModels
+    : (omlxInstance?.models ?? []).map((model) => ({
+        name: model.remoteModelId,
+        displayName: model.displayName,
+        size: 0,
+        sizeFormatted: "",
+      }));
+  const omlxAssessmentKey = omlxAssessmentModels.map((model) => model.name).join("|");
+
+  useEffect(() => {
+    const models = [
+      ...displayedOllamaModels.map((model) => {
+        const details = localModels.find((entry) => entry.name === model.name || entry.model === model.name)?.details;
+        return {
+          providerId: "ollama" as const,
+          modelId: model.name,
+          parameterSize: details?.parameterSize,
+          quantization: details?.quantizationLevel,
+        };
+      }),
+      ...omlxAssessmentModels.map((model) => ({
+        providerId: "omlx" as const,
+        modelId: model.name,
+      })),
+    ];
+    if (!models.length) {
+      setLocalModelAssessments({});
+      return;
+    }
+    let active = true;
+    void assessInstalledLocalModels(models)
+      .then((report) => {
+        if (!active) return;
+        setLocalModelAssessments(Object.fromEntries(report.assessments.map((assessment) => [
+          `${assessment.providerId}:${assessment.requestedModelId}`,
+          assessment,
+        ])));
+      })
+      .catch(() => {
+        if (active) setLocalModelAssessments({});
+      });
+    return () => { active = false; };
+  }, [ollamaAssessmentKey, omlxAssessmentKey]);
+
+  useEffect(() => {
+    let active = true;
+    void recommendLocalModels()
+      .then((report) => {
+        if (active) setLocalModelRecommendations(report);
+      })
+      .catch(() => {
+        if (active) setLocalModelRecommendations(null);
+      });
+    return () => { active = false; };
+  }, []);
 
   async function refreshOmlx(startIfStopped = false) {
     setOmlxLoading(true);
@@ -455,8 +544,15 @@ function MyAiPage({
 
   async function inspectLocalModel(model: string) {
     try {
-      const details = await showOllamaModel(model);
-      await dialog.alert({ title: model, message: details, confirmLabel: "Done" });
+      const [details, assessment] = await Promise.all([
+        showOllamaModel(model),
+        assessLocalModel({ providerId: "ollama", modelId: model }),
+      ]);
+      await dialog.alert({
+        title: model,
+        message: `${assessmentDetails(assessment)}\n\nOllama details\n${details}`,
+        confirmLabel: "Done",
+      });
     } catch (error) {
       await dialog.alert({ title: "Could not inspect model", message: String(error) });
     }
@@ -512,10 +608,13 @@ function MyAiPage({
 
   async function inspectOmlxModel(model: string) {
     try {
-      const details = await showOmlxModel(model);
+      const [details, assessment] = await Promise.all([
+        showOmlxModel(model),
+        assessLocalModel({ providerId: "omlx", modelId: model }),
+      ]);
       await dialog.alert({
         title: details.displayName,
-        message: `Model ID: ${details.name}\nDisk size: ${details.sizeFormatted}`,
+        message: `${assessmentDetails(assessment)}\n\noMLX details\nModel ID: ${details.name}\nDisk size: ${details.sizeFormatted}`,
         confirmLabel: "Done",
       });
     } catch (error) {
@@ -1188,6 +1287,25 @@ function MyAiPage({
         <span>Private models that run locally</span>
       </div>
 
+      {localModelRecommendations?.preferred && (
+        <div className="local-model-recommendation" aria-label="Recommended local model">
+          <div>
+            <strong>Recommended for this Mac</strong>
+            <span>{localModelRecommendations.preferred.modelId}</span>
+          </div>
+          <p>
+            {localModelRecommendations.preferred.preferredQuantization ?? "Quant unknown"}
+            {localModelRecommendations.preferred.recommendedContext != null
+              ? ` · ${localModelRecommendations.preferred.recommendedContext.toLocaleString()} context`
+              : ""}
+            {localModelRecommendations.preferred.estimatedMemoryGb != null
+              ? ` · ${localModelRecommendations.preferred.estimatedMemoryGb.toFixed(1)} GB estimated memory`
+              : ""}
+          </p>
+          <small>Advice only · downloads always require confirmation</small>
+        </div>
+      )}
+
       {showOllamaCard && <article className="local-provider-card">
         <div className="provider-card-heading">
           <div className="provider-mark provider-mark-ollama">O</div>
@@ -1201,7 +1319,7 @@ function MyAiPage({
         </div>
         {displayedOllamaModels.length > 0 && (
           <div className="local-model-list">
-            {displayedOllamaModels.slice(0, 4).map((model, index) => (
+            {displayedOllamaModels.slice(0, 4).map((model) => (
               <div key={model.name}>
                 <span>{model.displayName}</span>
                 <div className="local-model-actions">
@@ -1221,7 +1339,9 @@ function MyAiPage({
                     Delete
                   </button>
                 </div>
-                {index === 0 && <small>Suggested</small>}
+                {assessmentBadge(localModelAssessments[`ollama:${model.name}`]) && (
+                  <small>{assessmentBadge(localModelAssessments[`ollama:${model.name}`])}</small>
+                )}
               </div>
             ))}
           </div>
@@ -1312,6 +1432,9 @@ function MyAiPage({
                 {omlxInstance.models.some((entry) => entry.isDefault && (
                   entry.remoteModelId === model.name || entry.displayName === model.displayName
                 )) && <small>Default</small>}
+                {assessmentBadge(localModelAssessments[`omlx:${model.name}`]) && (
+                  <small>{assessmentBadge(localModelAssessments[`omlx:${model.name}`])}</small>
+                )}
               </div>
             ))}
           </div>

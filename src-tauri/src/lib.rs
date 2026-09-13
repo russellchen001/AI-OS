@@ -16,6 +16,7 @@ mod generative_media;
 mod google_workspace;
 mod health;
 mod keychain_trace;
+mod local_model_advisor;
 mod logs;
 mod macos_permissions;
 mod mcp;
@@ -215,6 +216,11 @@ pub fn run() {
             models::run_ollama_model,
             models::show_ollama_model,
             models::show_ollama_model_in_finder,
+            local_model_advisor::get_local_model_advisor_status,
+            local_model_advisor::get_local_machine_profile,
+            local_model_advisor::recommend_local_models,
+            local_model_advisor::assess_local_model,
+            local_model_advisor::assess_installed_local_models,
             generative_media::comfyui_setup::setup_comfyui_managed_profile,
             generative_media::comfyui_reference_setup::setup_comfyui_reference_vlm,
             multillm::start_multillm_stream,

@@ -12,12 +12,87 @@ export type OmlxAdminModel = {
   sizeFormatted: string;
 };
 
+export type ModelFitLevel = "fit" | "marginal" | "not-fit" | "unknown";
+
+export type LocalModelReference = {
+  providerId: "ollama" | "omlx";
+  modelId: string;
+  parameterSize?: string;
+  quantization?: string;
+};
+
+export type ModelFitAssessment = {
+  providerId: string;
+  requestedModelId: string;
+  resolvedModelId?: string;
+  parameterSize?: string;
+  quantization?: string;
+  estimatedMemoryGb?: number;
+  fit: ModelFitLevel;
+  fitLabel: string;
+  recommendedContext?: number;
+  expectedTokensPerSecond?: number;
+  providerCompatible?: boolean;
+  confidence: string;
+  evidence: string[];
+  source: string;
+};
+
+export type InstalledModelAssessmentReport = {
+  assessments: ModelFitAssessment[];
+};
+
+export type LocalModelRecommendation = {
+  rank: number;
+  modelId: string;
+  modelFamily?: string;
+  preferredQuantization?: string;
+  recommendedContext?: number;
+  estimatedMemoryGb?: number;
+  expectedTokensPerSecond?: number;
+  fit: ModelFitLevel;
+  providerCompatibility: string[];
+  score?: number;
+  confidence: string;
+  evidence: string[];
+  acquisitionModelId?: string;
+};
+
+export type LocalModelRecommendationReport = {
+  recommendations: LocalModelRecommendation[];
+  preferred?: LocalModelRecommendation;
+  acquisitionRequiresConfirmation: boolean;
+  routingAuthority: "ai-os";
+  warning?: string;
+};
+
 export async function listOmlxAdminModels(): Promise<OmlxAdminModel[]> {
   return invoke<OmlxAdminModel[]>("list_omlx_admin_models");
 }
 
 export async function showOmlxModel(model: string): Promise<OmlxAdminModel> {
   return invoke<OmlxAdminModel>("show_omlx_model", { model });
+}
+
+export async function assessLocalModel(
+  model: LocalModelReference,
+): Promise<ModelFitAssessment> {
+  return invoke<ModelFitAssessment>("assess_local_model", { model });
+}
+
+export async function assessInstalledLocalModels(
+  models: LocalModelReference[],
+): Promise<InstalledModelAssessmentReport> {
+  return invoke<InstalledModelAssessmentReport>("assess_installed_local_models", { models });
+}
+
+export async function recommendLocalModels(): Promise<LocalModelRecommendationReport> {
+  return invoke<LocalModelRecommendationReport>("recommend_local_models", {
+    request: {
+      capability: "chat",
+      limit: 3,
+    },
+  });
 }
 
 export async function showOmlxModelInFinder(model: string): Promise<void> {

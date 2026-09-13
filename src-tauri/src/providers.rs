@@ -1227,6 +1227,7 @@ fn execution_agent_candidates_from_config(
     capability: &str,
     config: &serde_json::Value,
     route_candidates: &[AiCenterRouteCandidate],
+    fit_evidence: &HashMap<(String, String), crate::local_model_advisor::LocalModelRouteEvidence>,
 ) -> Result<Vec<String>, String> {
     let requirement = execution_capability_requirement(capability)
         .ok_or_else(|| format!("No execution requirement declared for {capability}"))?;
@@ -1264,15 +1265,37 @@ fn execution_agent_candidates_from_config(
                 candidate_provider == provider_id && candidate.model_id == model_id
             })?;
 
-            Some((route_index, agent_id.to_owned()))
+            let route_candidate = &route_candidates[route_index];
+            let evidence = fit_evidence.get(&(
+                route_candidate.provider_id.clone(),
+                route_candidate.model_id.clone(),
+            ));
+            if evidence.is_some_and(|evidence| {
+                evidence.fit == crate::local_model_advisor::ModelFitLevel::NotFit
+            }) {
+                return None;
+            }
+            let fit_rank = match evidence.map(|evidence| evidence.fit) {
+                Some(crate::local_model_advisor::ModelFitLevel::Fit) => 0,
+                Some(crate::local_model_advisor::ModelFitLevel::Marginal) => 1,
+                _ => 2,
+            };
+            let score = evidence.and_then(|evidence| evidence.score).unwrap_or(0.0);
+
+            Some((fit_rank, score, route_index, agent_id.to_owned()))
         })
         .collect::<Vec<_>>();
 
-    candidates.sort_by_key(|(route_index, _)| *route_index);
+    candidates.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.1.total_cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
 
     Ok(candidates
         .into_iter()
-        .map(|(_, agent_id)| agent_id)
+        .map(|(_, _, _, agent_id)| agent_id)
         .collect())
 }
 
@@ -1288,7 +1311,8 @@ pub(crate) fn execution_agent_candidates(capability: &str) -> Result<Vec<String>
 
     let (_, route_candidates) = route_candidates()?;
 
-    execution_agent_candidates_from_config(capability, &config, &route_candidates)
+    let fit_evidence = crate::local_model_advisor::cached_route_evidence();
+    execution_agent_candidates_from_config(capability, &config, &route_candidates, &fit_evidence)
 }
 
 fn connected_provider_model_ids(instances: &[ProviderInstance], provider_id: &str) -> Vec<String> {
@@ -4931,9 +4955,13 @@ mod tests {
             &["qwen3:8b".to_owned(), "qwen2.5:7b".to_owned()],
         );
 
-        let candidates =
-            execution_agent_candidates_from_config("download.start", &config, &route_candidates)
-                .unwrap();
+        let candidates = execution_agent_candidates_from_config(
+            "download.start",
+            &config,
+            &route_candidates,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(
             candidates,
@@ -4941,6 +4969,72 @@ mod tests {
                 "ai-os-exec-standard".to_owned(),
                 "ai-os-exec-cloud".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn ai_center_owns_admission_and_ranking_when_llmfit_evidence_exists() {
+        let config = serde_json::json!({
+            "agents": {
+                "list": [
+                    {
+                        "id": "ai-os-exec-omlx",
+                        "model": { "primary": "omlx/model-a" },
+                        "params": { "num_ctx": 65536 }
+                    },
+                    {
+                        "id": "ai-os-exec-ollama",
+                        "model": { "primary": "ollama/model-b" },
+                        "params": { "num_ctx": 65536 }
+                    },
+                    {
+                        "id": "ai-os-exec-rejected",
+                        "model": { "primary": "ollama/model-c" },
+                        "params": { "num_ctx": 65536 }
+                    }
+                ]
+            }
+        });
+        let route_candidates = auto_route_candidates(
+            &[],
+            &["model-a".to_owned()],
+            &["model-b".to_owned(), "model-c".to_owned()],
+        );
+        let fit_evidence = HashMap::from([
+            (
+                ("omlx".to_owned(), "model-a".to_owned()),
+                crate::local_model_advisor::LocalModelRouteEvidence {
+                    fit: crate::local_model_advisor::ModelFitLevel::Marginal,
+                    score: Some(70.0),
+                },
+            ),
+            (
+                ("ollama".to_owned(), "model-b".to_owned()),
+                crate::local_model_advisor::LocalModelRouteEvidence {
+                    fit: crate::local_model_advisor::ModelFitLevel::Fit,
+                    score: Some(90.0),
+                },
+            ),
+            (
+                ("ollama".to_owned(), "model-c".to_owned()),
+                crate::local_model_advisor::LocalModelRouteEvidence {
+                    fit: crate::local_model_advisor::ModelFitLevel::NotFit,
+                    score: Some(99.0),
+                },
+            ),
+        ]);
+
+        let candidates = execution_agent_candidates_from_config(
+            "download.start",
+            &config,
+            &route_candidates,
+            &fit_evidence,
+        )
+        .unwrap();
+
+        assert_eq!(
+            candidates,
+            vec!["ai-os-exec-ollama".to_owned(), "ai-os-exec-omlx".to_owned()]
         );
     }
 
