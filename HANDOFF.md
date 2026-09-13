@@ -7822,3 +7822,131 @@ Current:
 - MP-3 — Complete, including real Cloud GUI execution and cancellation wiring
 - MP-4 — Complete
 - MP-5 — Complete and formally closed
+
+## 2026-09-13 — LMO-0 through LMO-5 — llmfit Local Model Advisor Complete
+
+Status: Complete. Next P15 work is Cognitive Distillation.
+
+### Current upstream basis
+
+- Integration was reviewed against the current `AlexsJones/llmfit` upstream at
+  release 1.1.15, published 2026-09-10, under the MIT license.
+- Current supported surfaces include the `llmfit-core` Rust library, CLI JSON,
+  REST API and MCP. AI-OS uses only the public, short-lived CLI JSON surface.
+- The capability probe checks the real `system`, `fit`, `recommend`, and `info`
+  command surface. `--version` is retained only as diagnostic evidence and is
+  not a compatibility gate.
+- macOS Apple Silicon is supported upstream. Its hardware probe reports Apple
+  unified memory, Metal acceleration, CPU/GPU identity, memory availability,
+  model fit, quantization, context, estimated speed and estimate confidence.
+- Upstream can discover runtimes, acquire models and run benchmarks, but those
+  side-effecting responsibilities are not delegated by AI-OS.
+
+### Architecture and contracts
+
+The accepted path is:
+
+```text
+AI Center / My AI
+→ Local Model Advisor boundary
+→ read-only llmfit CLI adapter
+→ hardware and model-fit evidence
+→ AI-OS recommendation/admission decision
+→ existing Ollama / oMLX execution Providers
+```
+
+- `src-tauri/src/local_model_advisor.rs` owns `MachineProfile`,
+  `ModelFitAssessment`, ranked `LocalModelRecommendation`, installed-model
+  assessment, acquisition advice and normalized Runtime status.
+- `MachineProfile` contains platform, architecture, CPU/cores, GPU,
+  accelerator, total/available memory, unified-memory status and locally
+  measured available storage.
+- Fit evidence contains model identity, parameter size, quantization, estimated
+  memory, Fit/Marginal/Not Fit/Unknown, recommended context, expected speed,
+  provider compatibility, confidence and upstream evidence.
+- Unknown aliases or unsupported metadata remain Unknown; AI-OS never invents
+  quantization, speed, context or provider compatibility.
+- Missing or incompatible llmfit falls back to a real native AI-OS hardware
+  profile while recommendation/fit advice remains explicitly unavailable or
+  Unknown.
+- Installed Ollama and oMLX inventory still comes from the existing AI-OS model
+  management boundaries. Every discovered model is assessed; installed never
+  implies suitable.
+- Acquisition output is advice only. Downloads, replacement, deletion and
+  Runtime installation remain existing user-confirmed AI-OS operations.
+
+### Safety and ownership
+
+- The adapter has a strict read-only allowlist. It rejects llmfit `download`,
+  `run`, `bench`, `update`, and `serve` before process spawn.
+- Recommendation receives capability/category and model metadata only. Raw
+  user task text, prompts, Memory and file contents are not forwarded.
+- `LOCALMAXXING_API_KEY` and `GITHUB_TOKEN` are removed from llmfit subprocess
+  environments. No model, task text or local content was uploaded in
+  acceptance.
+- The advisor is exposed to My AI through Tauri commands, not to Agents as a
+  Skill. An Agent cannot select an advisor result or enable acquisition.
+- AC-EXEC-MODEL remains the sole routing/admission owner. It can consume cached
+  fit evidence to reject Not Fit candidates and rank Fit before Marginal before
+  Unknown, after its existing capability and context hard gates.
+- Ollama and oMLX remain execution Providers. llmfit is not a Runtime, Provider,
+  Agent, downloader, AI Center replacement or global router.
+- Generative Media keeps its provider/workflow-specific `MediaModelAdvisor`.
+  General hardware/model-fit evidence is shareable, but the two business
+  advisor layers were not merged.
+
+### My AI behavior
+
+- The existing My AI Local Models section now shows a compact
+  "Recommended for this Mac" result with quantization, context and estimated
+  memory when evidence is available.
+- Installed Ollama/oMLX model rows show Compatible, Marginal, Not recommended,
+  or Fit unknown based on actual assessment.
+- Existing model-details dialogs include memory, quantization, context, speed,
+  confidence and bounded evidence. No separate llmfit product page was added.
+- The UI states that recommendations are advice and downloads require
+  confirmation.
+
+### Real smoke and limitations
+
+- Official Homebrew `llmfit` 1.1.15 is installed at
+  `/opt/homebrew/bin/llmfit`; installation added the CLI only and downloaded no
+  model.
+- Real machine probe passed on Apple M4: 10 CPU cores, 16GB unified memory,
+  Apple M4 GPU and Metal acceleration.
+- Real JSON recommendation and provider-specific fit probes passed for both MLX
+  and forced llama.cpp paths. Returned recommendations included dynamic model,
+  quantization, memory, context, fit, speed and confidence evidence.
+- Ollama on `127.0.0.1:11434` and oMLX on `127.0.0.1:8000` were not running, so
+  this environment had no live installed-model inventory to assess. Production
+  inventory wiring and deterministic Ollama/oMLX installed-model assessments
+  passed; no service was started and no model was downloaded merely for smoke.
+- Expected performance remains upstream estimate evidence unless llmfit marks
+  it calibrated/measured. AI-OS preserves that confidence instead of presenting
+  an estimate as a benchmark.
+
+### Acceptance evidence
+
+- `verify/verify_p15_llmfit_local_model_advisor.sh`: PASS, including real
+  machine/recommendation/provider-fit smoke.
+- Deterministic advisor tests: 9 passed / 0 failed / 1 real smoke ignored by
+  default; the ignored real smoke passed explicitly.
+- AC-EXEC-MODEL complete verifier: PASS across selection, single-agent
+  execution, retryable verification, sequential candidates and two-attempt
+  fallback policy.
+- Generative Media regression: 91 passed / 0 failed / 11 environment tests
+  ignored.
+- Full Rust library regression: 853 passed / 0 failed / 53 ignored.
+- Frontend production build: PASS.
+- `cargo check`: PASS.
+- Targeted rustfmt check: PASS.
+- `git diff --check`: PASS.
+- Implementation commit: `f202734` (`feat: integrate llmfit local model
+  advisor`).
+
+Current post-Generative-Media sequence:
+
+1. Mano-P / Mano-CUA — Complete
+2. llmfit Local Model Optimization / Recommendation — Complete
+3. Cognitive Distillation — Next
+4. NAS Management foundation
