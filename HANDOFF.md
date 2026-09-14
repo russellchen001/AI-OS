@@ -10499,6 +10499,126 @@ delete the capability rather than to instruct the Agent more firmly.
 
 <!-- CD-1N-END -->
 
+<!-- CD-1O-START -->
+
+## 2026-09-13 — CD-1O the media pipeline gets a production caller, and the UI is seen for the first time
+
+### The media readers had no entry point
+
+CD-1I through CD-1L built audio, video, still-image and document reading, each
+with tests, all passing. None of it was reachable from the application. Every
+build printed the whole pipeline as dead code —
+`evidence_from_media`, `read_screen_text`, `install`, `requirement`, about fifty
+`never used` warnings across `transcription.rs`, `visual.rs` and `toolchain.rs`.
+A person dragging a video into AI-OS would have had nothing catch it.
+
+The wiring was written once before, in a previous session's cloud workspace, and
+lost when that container was recycled. It was rewritten here rather than
+reconstructed from memory of it.
+
+**`read_media_with` in `mod.rs`** is the entry point, plus three commands
+registered in `lib.rs`: `read_media_evidence`, `media_toolchain_status`,
+`install_media_toolchain`.
+
+Four decisions in it, each answering a failure the earlier work had exposed:
+
+- **One unreadable file does not fail the handover.** What could be read becomes
+  the bundle; the rest is returned in `skipped` with its reason. Someone dragging
+  in a folder should learn which file was unreadable, not be told the batch
+  failed.
+- **The same file handed over twice is read once.** Two sources sharing one
+  `source_id` makes `validate_bundle` refuse the whole bundle for a reason nobody
+  could act on.
+- **Evidence ids are prefixed with their source.** They are unique only within
+  one extraction: two audio files both begin at `transcript-00000`, and
+  `validate_bundle` does not check for collisions across a bundle.
+- **`screen_states_read` is surfaced as a note.** "I read the video" and "I read
+  fourteen distinct screens from it" are different claims, and only the second
+  can be checked against the material by whoever reviews the profile. It was
+  being produced and thrown away — the last `never used` warning in these files.
+
+`MediaTranscription` now also returns its `SourceArtifact`. A caller that had to
+rebuild it would be inventing a digest for a file the reader had already hashed.
+
+Three tests cover the entry point itself — empty handover, a handover where
+nothing could be read, and the duplicate — deliberately using a toolchain that
+points at nothing, so they assert the entry point's behaviour without depending
+on any tool being installed.
+
+**The oracle for this work was not the test suite.** The tests passed before the
+wiring existed. What proves it is the warning count in those three files:
+
+```
+cargo check … | grep -E "cognitive_distillation/(transcription|visual|toolchain)" | wc -l
+50+  →  0
+```
+
+Zero means every function in the media readers now has a caller. That check is
+worth repeating whenever a reader is added.
+
+### The Person Profiles UI, opened by a person for the first time
+
+Built in CD-1E, never once rendered by anyone until now. It works, and the
+lifecycle contract is visible in it rather than only in the tests:
+
+- both stored profiles shown as `r1 · draft`
+- **Activate** and **Build persona skill** rendered disabled on a draft
+- `1 contradiction in the evidence. They are carried through rather than
+  resolved automatically.`
+- "What the creator wrote" is labelled as prose that is never promoted
+  automatically and is cleared on review
+- each claim is an editable textarea over a fixed `1 evidence reference` —
+  rewording is allowed, moving a claim onto different evidence is not
+- every claim defaults to `Undecided…`, with `4 still undecided.` above the
+  submit control
+
+**Not verified:** submitting a review end to end. The owner cleared the profile
+store before running it, so the `draft → reviewed → activatable` transition has
+still only been exercised in tests, never through the UI against the real store.
+That is the one remaining unproven path in the lifecycle and it should be the
+first thing done with the next real profile.
+
+### Test data was being written into the production store
+
+The two `#[ignore]` real smokes wrote their drafts into
+`~/Library/Application Support/AI-OS/person_profiles.sqlite3` — the store a
+released AI-OS uses. Opening the UI showed a synthetic Alice and a leftover
+public-figure profile as the user's own data.
+
+The store was deleted at the owner's instruction, and **the defect no longer
+exists** because both smokes were removed with the research path in CD-1N. It is
+recorded because the mistake is easy to repeat: **a real smoke must write to a
+temporary store, not the one a shipped app uses.** Anyone adding one should give
+`ProfileStore` a test-directory constructor first.
+
+### Committed
+
+`744499a` on `feature/p15-core-skills`, 28 files, not pushed. Files were listed
+explicitly; `git add -A` is not used in this repository.
+
+```
+cargo test --lib   935 passed, 0 failed, 58 ignored   (macOS)
+```
+
+### What remains
+
+| | |
+|---|---|
+| Owner | bundle ffmpeg / whisper.cpp / tesseract / llama.cpp into the app, sign and notarise (owner half of CD-1M) |
+| Unproven | review submission through the UI against the real store |
+| Deferred | cross-platform defects 1 and 2 (owner decision, recorded above) |
+| Not built | P16 CouncilProjection |
+
+Adapter position after CD-1N and CD-1O: **Distilly is the only external creator
+in the product**, and it is the only one that has run for real. `anyone-skill`
+and `distill-blog-skill` remain declared in the router but permanently
+reference-only — no licence, no executor, and no branch that can select them.
+They are in the same position `human-distill` was in before it was removed, and
+removing them is the obvious next tidy if the owner wants the adapter list to
+mean what it says.
+
+<!-- CD-1O-END -->
+
 <!-- GM-PORTABILITY-SURFACE-START -->
 
 ## 2026-09-13 — Owner decision: the two cross-platform defects are deferred, not open bugs
