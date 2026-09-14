@@ -9,8 +9,6 @@ use std::{
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CreatorAdapterId {
     Distilly,
-    AnyoneStyle,
-    DistillBlog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,27 +46,7 @@ pub(crate) struct AdapterCatalog {
 impl AdapterCatalog {
     pub(crate) fn probe() -> Self {
         Self {
-            statuses: vec![
-                probe_distilly(),
-                AdapterStatus {
-                    id: CreatorAdapterId::AnyoneStyle,
-                    availability: AdapterAvailability::ReferenceOnly,
-                    capability_probe: "repository-license".to_owned(),
-                    reason: Some(
-                        "Upstream repository has no valid LICENSE file; workflow reference only."
-                            .to_owned(),
-                    ),
-                },
-                AdapterStatus {
-                    id: CreatorAdapterId::DistillBlog,
-                    availability: AdapterAvailability::ReferenceOnly,
-                    capability_probe: "repository-license".to_owned(),
-                    reason: Some(
-                        "Upstream repository has no valid LICENSE file; workflow reference only."
-                            .to_owned(),
-                    ),
-                },
-            ],
+            statuses: vec![probe_distilly()],
         }
     }
 
@@ -165,25 +143,6 @@ fn probe_distilly_candidates(candidates: Vec<PathBuf>) -> AdapterStatus {
     }
 }
 
-#[allow(dead_code)]
-fn probe_skill_dir(id: CreatorAdapterId, variable: &str, probe: &str) -> AdapterStatus {
-    let ready = std::env::var_os(variable)
-        .map(PathBuf::from)
-        .map(|path| path.join("SKILL.md").is_file())
-        .unwrap_or(false);
-    AdapterStatus {
-        id,
-        availability: if ready {
-            AdapterAvailability::Ready
-        } else {
-            AdapterAvailability::Unavailable
-        },
-        capability_probe: probe.to_owned(),
-        reason: (!ready)
-            .then(|| "No configured, verified local Skill directory was found.".to_owned()),
-    }
-}
-
 fn command_status(id: &str, command: &str, arguments: &[&str], probe: &str) -> ExtractorStatus {
     let ready = Command::new(command)
         .args(arguments)
@@ -244,18 +203,5 @@ mod tests {
         let status = probe_distilly_candidates(vec![root.path().to_path_buf()]);
         assert_eq!(status.availability, AdapterAvailability::Ready);
         assert!(!status.capability_probe.contains("1.0"));
-    }
-
-    #[test]
-    fn unlicensed_adapters_are_reference_only() {
-        let catalog = AdapterCatalog::probe();
-        assert_eq!(
-            catalog.availability(CreatorAdapterId::AnyoneStyle),
-            AdapterAvailability::ReferenceOnly
-        );
-        assert_eq!(
-            catalog.availability(CreatorAdapterId::DistillBlog),
-            AdapterAvailability::ReferenceOnly
-        );
     }
 }

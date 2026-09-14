@@ -1,12 +1,10 @@
 use super::{
     adapters::{AdapterAvailability, AdapterCatalog, CreatorAdapterId},
     evidence::{validate_bundle, EvidenceBundle, EvidenceError},
-    SourceKind, SubjectKind,
+    SubjectKind,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, error::Error, fmt};
-
-const HIGH_VOLUME_SOURCE_THRESHOLD: usize = 8;
+use std::{error::Error, fmt};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +19,6 @@ pub(crate) struct CognitiveDistillationRouteRequest {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum PipelineRole {
     PrimaryCreator,
-    CorpusEnrichment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -76,53 +73,18 @@ pub(crate) fn route_distillation(
         return Err(RouteError::PrimaryCreatorUnavailable);
     }
 
-    let mut pipelines = Vec::new();
-    let mut skipped = Vec::new();
-    let mut reasons = Vec::new();
-    let source_kinds = request
-        .evidence_bundle
-        .sources
-        .iter()
-        .map(|source| source.source_kind)
-        .collect::<HashSet<_>>();
-    if request.article_heavy
-        || source_kinds.contains(&SourceKind::Article)
-        || source_kinds.contains(&SourceKind::Book)
-    {
-        if catalog.availability(CreatorAdapterId::DistillBlog) == AdapterAvailability::Ready {
-            pipelines.push(SelectedPipeline {
-                adapter: CreatorAdapterId::DistillBlog,
-                role: PipelineRole::CorpusEnrichment,
-            });
-        } else {
-            skipped.push(CreatorAdapterId::DistillBlog);
-            reasons.push("Article specialization is not legally/technically ready; Distilly remains the valid creator.".to_owned());
-        }
-    }
-    let evidence_enrichment_requested = request.high_assurance_evidence
-        || request.evidence_bundle.sources.len() >= HIGH_VOLUME_SOURCE_THRESHOLD;
-    if evidence_enrichment_requested {
-        if catalog.availability(CreatorAdapterId::AnyoneStyle) == AdapterAvailability::Ready {
-            pipelines.push(SelectedPipeline {
-                adapter: CreatorAdapterId::AnyoneStyle,
-                role: PipelineRole::CorpusEnrichment,
-            });
-        } else {
-            skipped.push(CreatorAdapterId::AnyoneStyle);
-        }
-    }
-    pipelines.push(SelectedPipeline {
+    let pipelines = vec![SelectedPipeline {
         adapter: CreatorAdapterId::Distilly,
         role: PipelineRole::PrimaryCreator,
-    });
+    }];
 
     Ok(CognitiveDistillationRouteResult {
         pipelines,
-        skipped_optional_adapters: skipped,
+        skipped_optional_adapters: Vec::new(),
         source_count: request.evidence_bundle.sources.len(),
         canonical_profile_authority: "ai-os".to_owned(),
         active_profile_permitted: false,
-        reasons,
+        reasons: Vec::new(),
     })
 }
 
@@ -131,7 +93,7 @@ mod tests {
     use super::*;
     use crate::cognitive_distillation::{
         evidence::{normalize_extraction, test_support::*},
-        SourceMediaKind,
+        SourceKind, SourceMediaKind,
     };
 
     fn status(
@@ -146,18 +108,12 @@ mod tests {
         }
     }
     fn catalog() -> AdapterCatalog {
-        catalog_with_any(AdapterAvailability::ReferenceOnly)
+        AdapterCatalog::for_test(vec![status(
+            CreatorAdapterId::Distilly,
+            AdapterAvailability::Ready,
+        )])
     }
-    fn catalog_with_any(anyone: AdapterAvailability) -> AdapterCatalog {
-        AdapterCatalog::for_test(vec![
-            status(CreatorAdapterId::Distilly, AdapterAvailability::Ready),
-            status(CreatorAdapterId::AnyoneStyle, anyone),
-            status(
-                CreatorAdapterId::DistillBlog,
-                AdapterAvailability::ReferenceOnly,
-            ),
-        ])
-    }
+
     fn request(subject: SubjectKind, source_kind: SourceKind) -> CognitiveDistillationRouteRequest {
         let source = source(
             "s1",
@@ -201,46 +157,5 @@ mod tests {
             }]
         );
         assert!(!route.active_profile_permitted);
-    }
-
-    #[test]
-    fn reference_only_unlicensed_adapters_are_never_selected() {
-        let mut request = request(SubjectKind::PublicPerson, SourceKind::Article);
-        request.article_heavy = true;
-        request.high_assurance_evidence = true;
-        let route = route_distillation(&request, &catalog()).unwrap();
-        assert_eq!(route.pipelines.len(), 1);
-        assert!(route
-            .skipped_optional_adapters
-            .contains(&CreatorAdapterId::AnyoneStyle));
-        assert!(route
-            .skipped_optional_adapters
-            .contains(&CreatorAdapterId::DistillBlog));
-    }
-
-    #[test]
-    fn source_volume_automatically_requests_evidence_enrichment() {
-        let mut request = request(SubjectKind::SelfProfile, SourceKind::Chat);
-        for index in 2..=HIGH_VOLUME_SOURCE_THRESHOLD {
-            let source_id = format!("s{index}");
-            let evidence_id = format!("e{index}");
-            let source = source(&source_id, SourceMediaKind::Text, SourceKind::Chat, false);
-            request.evidence_bundle.evidence.extend(
-                normalize_extraction(
-                    SubjectKind::SelfProfile,
-                    &source,
-                    &local_policy(),
-                    extraction(item(&evidence_id, SourceMediaKind::Text)),
-                )
-                .unwrap(),
-            );
-            request.evidence_bundle.sources.push(source);
-        }
-
-        let route =
-            route_distillation(&request, &catalog_with_any(AdapterAvailability::Ready)).unwrap();
-        assert_eq!(route.source_count, HIGH_VOLUME_SOURCE_THRESHOLD);
-        assert_eq!(route.pipelines[0].adapter, CreatorAdapterId::AnyoneStyle);
-        assert_eq!(route.pipelines[1].adapter, CreatorAdapterId::Distilly);
     }
 }

@@ -10750,3 +10750,49 @@ Defect 2 (`capture_authorization_mapping_preserves_avfoundation_states` in
 in the same change, since step 2 cannot be reached in a test build without it.
 
 <!-- GM-PORTABILITY-SURFACE-END -->
+
+<!-- CD-DISTILLATION-SCOPE-CLEANUP-2026-09-14 -->
+
+## Cognitive Distillation — old external creator cleanup
+
+Status: completed.
+
+Current authoritative external distillation scope:
+
+- Distilly remains the completed person/profile creator.
+- Nuwa (`alchaincyf/nuwa-skill`) is the only additional cognitive-distillation project planned for integration.
+- `human-distill` has been removed.
+- `anyone-skill` has been removed.
+- `distill-blog-skill` has been removed.
+- Historical references to those three removed projects elsewhere in this document are historical only and are not current product scope.
+- Do not restore any of the three removed projects unless the owner explicitly changes this decision.
+
+Architecture decision:
+
+- AI-OS owns reading and normalizing source material.
+- Text, documents, images, audio, and video are converted into AI-OS `EvidenceBundle` data before external distillation components receive them.
+- Distilly and Nuwa are analysis/distillation components; they are not authoritative evidence collectors for private-person profiles.
+- Distilly answers primarily: “What is this person like?”
+- Nuwa is intended to answer primarily: “How does this person think, judge, and make decisions?”
+- AI-OS remains the canonical profile authority.
+- External creator output must pass AI-OS provenance/evidence validation and review before becoming active profile data.
+
+Cleanup verification:
+
+- Removed-adapter product-code residue: 0.
+- Removed local Skill installation residue: 0.
+- Cognitive Distillation targeted test suite: 77 passed, 0 failed, 5 ignored.
+- `cargo check`: passed.
+- `git diff --check`: passed.
+- After cleanup, the Cognitive Distillation creator adapter catalog contains Distilly only.
+- Nuwa has not yet been integrated; its repository and execution contract must be audited before implementation.
+
+Next:
+
+1. Audit official `alchaincyf/nuwa-skill`.
+2. Confirm license, files, dependencies, execution assumptions, input/output contract, and whether it can operate from an AI-OS supplied EvidenceBundle without autonomous public research.
+3. Add Nuwa capability probing only after that audit.
+4. Integrate Nuwa behind AI-OS quarantine/provenance/review boundaries.
+5. Merge validated Distilly + Nuwa results into Person Profiles.
+
+<!-- CD-DISTILLATION-SCOPE-CLEANUP-2026-09-14-END -->
