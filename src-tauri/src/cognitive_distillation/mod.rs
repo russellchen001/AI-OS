@@ -2,6 +2,7 @@ mod adapters;
 mod creator;
 mod evidence;
 mod import;
+mod nuwa;
 mod profile;
 mod review;
 mod router;
@@ -615,7 +616,10 @@ mod handover_tests {
             &absent_tools(),
         )
         .unwrap_err();
-        assert!(error.contains("Nothing handed over could be read"), "{error}");
+        assert!(
+            error.contains("Nothing handed over could be read"),
+            "{error}"
+        );
         assert!(error.contains("interview.m4a"), "{error}");
     }
 

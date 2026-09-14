@@ -19,6 +19,7 @@ pub(crate) struct CognitiveDistillationRouteRequest {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum PipelineRole {
     PrimaryCreator,
+    CognitiveAnalyzer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -73,14 +74,25 @@ pub(crate) fn route_distillation(
         return Err(RouteError::PrimaryCreatorUnavailable);
     }
 
-    let pipelines = vec![SelectedPipeline {
+    let mut pipelines = vec![SelectedPipeline {
         adapter: CreatorAdapterId::Distilly,
         role: PipelineRole::PrimaryCreator,
     }];
 
+    let mut skipped_optional_adapters = Vec::new();
+
+    if catalog.availability(CreatorAdapterId::Nuwa) == AdapterAvailability::Ready {
+        pipelines.push(SelectedPipeline {
+            adapter: CreatorAdapterId::Nuwa,
+            role: PipelineRole::CognitiveAnalyzer,
+        });
+    } else {
+        skipped_optional_adapters.push(CreatorAdapterId::Nuwa);
+    }
+
     Ok(CognitiveDistillationRouteResult {
         pipelines,
-        skipped_optional_adapters: Vec::new(),
+        skipped_optional_adapters,
         source_count: request.evidence_bundle.sources.len(),
         canonical_profile_authority: "ai-os".to_owned(),
         active_profile_permitted: false,
@@ -108,10 +120,17 @@ mod tests {
         }
     }
     fn catalog() -> AdapterCatalog {
-        AdapterCatalog::for_test(vec![status(
-            CreatorAdapterId::Distilly,
-            AdapterAvailability::Ready,
-        )])
+        AdapterCatalog::for_test(vec![
+            status(CreatorAdapterId::Distilly, AdapterAvailability::Ready),
+            status(CreatorAdapterId::Nuwa, AdapterAvailability::Ready),
+        ])
+    }
+
+    fn catalog_without_nuwa() -> AdapterCatalog {
+        AdapterCatalog::for_test(vec![
+            status(CreatorAdapterId::Distilly, AdapterAvailability::Ready),
+            status(CreatorAdapterId::Nuwa, AdapterAvailability::Unavailable),
+        ])
     }
 
     fn request(subject: SubjectKind, source_kind: SourceKind) -> CognitiveDistillationRouteRequest {
@@ -143,6 +162,25 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_nuwa_is_reported_as_optional_and_does_not_block_distilly() {
+        let route = route_distillation(
+            &request(SubjectKind::PrivatePerson, SourceKind::UserFile),
+            &catalog_without_nuwa(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            route.pipelines,
+            [SelectedPipeline {
+                adapter: CreatorAdapterId::Distilly,
+                role: PipelineRole::PrimaryCreator
+            }]
+        );
+        assert_eq!(route.skipped_optional_adapters, [CreatorAdapterId::Nuwa]);
+        assert!(!route.active_profile_permitted);
+    }
+
+    #[test]
     fn router_selects_implementations_without_user_choice() {
         let route = route_distillation(
             &request(SubjectKind::SelfProfile, SourceKind::Chat),
@@ -151,11 +189,18 @@ mod tests {
         .unwrap();
         assert_eq!(
             route.pipelines,
-            [SelectedPipeline {
-                adapter: CreatorAdapterId::Distilly,
-                role: PipelineRole::PrimaryCreator
-            }]
+            [
+                SelectedPipeline {
+                    adapter: CreatorAdapterId::Distilly,
+                    role: PipelineRole::PrimaryCreator
+                },
+                SelectedPipeline {
+                    adapter: CreatorAdapterId::Nuwa,
+                    role: PipelineRole::CognitiveAnalyzer
+                }
+            ]
         );
+        assert!(route.skipped_optional_adapters.is_empty());
         assert!(!route.active_profile_permitted);
     }
 }

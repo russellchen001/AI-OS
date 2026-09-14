@@ -9,6 +9,7 @@ use std::{
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CreatorAdapterId {
     Distilly,
+    Nuwa,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +47,7 @@ pub(crate) struct AdapterCatalog {
 impl AdapterCatalog {
     pub(crate) fn probe() -> Self {
         Self {
-            statuses: vec![probe_distilly()],
+            statuses: vec![probe_distilly(), probe_nuwa()],
         }
     }
 
@@ -143,6 +144,82 @@ fn probe_distilly_candidates(candidates: Vec<PathBuf>) -> AdapterStatus {
     }
 }
 
+/// Nuwa is deliberately probed as an analysis Skill only.
+///
+/// AI-OS owns source ingestion, EvidenceBundle construction, provenance,
+/// quarantine and profile authority. Finding Nuwa here does NOT authorize
+/// autonomous web research or direct profile activation.
+fn nuwa_candidates() -> Vec<PathBuf> {
+    let mut candidates = std::env::var_os("AI_OS_NUWA_SKILL_DIR")
+        .map(|path| vec![PathBuf::from(path)])
+        .unwrap_or_default();
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        candidates.extend([
+            home.join(".openclaw/workspace-ai-os-files/skills/nuwa-skill"),
+            home.join(".openclaw/workspace/skills/nuwa-skill"),
+            home.join(".openclaw/skills/nuwa-skill"),
+            home.join(".agents/skills/nuwa-skill"),
+        ]);
+    }
+
+    candidates
+}
+
+fn nuwa_installation_is_usable(directory: &Path) -> bool {
+    let required = [
+        directory.join("SKILL.md"),
+        directory.join("LICENSE"),
+        directory.join("references/extraction-framework.md"),
+        directory.join("references/fidelity-scorecard.md"),
+        directory.join("references/skill-template.md"),
+    ];
+
+    if !required.iter().all(|path| path.is_file()) {
+        return false;
+    }
+
+    let skill = fs::read_to_string(&required[0]).unwrap_or_default();
+    let framework = fs::read_to_string(&required[2]).unwrap_or_default();
+
+    skill.contains("name: huashu-nuwa")
+        && skill.contains("本地语料")
+        && skill.contains("心智模型")
+        && skill.contains("决策启发式")
+        && framework.contains("跨域复现")
+        && framework.contains("有生成力")
+        && framework.contains("有排他性")
+}
+
+fn probe_nuwa() -> AdapterStatus {
+    probe_nuwa_candidates(nuwa_candidates())
+}
+
+fn probe_nuwa_candidates(candidates: Vec<PathBuf>) -> AdapterStatus {
+    for directory in candidates {
+        if nuwa_installation_is_usable(&directory) {
+            return AdapterStatus {
+                id: CreatorAdapterId::Nuwa,
+                availability: AdapterAvailability::Ready,
+                capability_probe:
+                    "installed-skill:local-corpus+cognitive-framework+fidelity-validation"
+                        .to_owned(),
+                reason: None,
+            };
+        }
+    }
+
+    AdapterStatus {
+        id: CreatorAdapterId::Nuwa,
+        availability: AdapterAvailability::Unavailable,
+        capability_probe: "installed-skill:local-corpus+cognitive-framework+fidelity-validation"
+            .to_owned(),
+        reason: Some(
+            "A capability-compatible local Nuwa Skill installation was not found.".to_owned(),
+        ),
+    }
+}
+
 fn command_status(id: &str, command: &str, arguments: &[&str], probe: &str) -> ExtractorStatus {
     let ready = Command::new(command)
         .args(arguments)
@@ -190,6 +267,41 @@ pub(crate) fn probe_ffmpeg() -> ExtractorStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nuwa_compatibility_uses_cognitive_capabilities_not_version() {
+        let root = tempfile::tempdir().unwrap();
+        let references = root.path().join("references");
+        fs::create_dir(&references).unwrap();
+
+        fs::write(
+            root.path().join("SKILL.md"),
+            "name: huashu-nuwa\n本地语料\n心智模型\n决策启发式\n",
+        )
+        .unwrap();
+
+        fs::write(root.path().join("LICENSE"), "MIT").unwrap();
+
+        fs::write(
+            references.join("extraction-framework.md"),
+            "跨域复现\n有生成力\n有排他性\n",
+        )
+        .unwrap();
+
+        fs::write(
+            references.join("fidelity-scorecard.md"),
+            "fidelity scorecard",
+        )
+        .unwrap();
+
+        fs::write(references.join("skill-template.md"), "skill template").unwrap();
+
+        let status = probe_nuwa_candidates(vec![root.path().to_path_buf()]);
+
+        assert_eq!(status.id, CreatorAdapterId::Nuwa);
+        assert_eq!(status.availability, AdapterAvailability::Ready);
+        assert!(!status.capability_probe.contains("fe037468"));
+    }
 
     #[test]
     fn distilly_compatibility_uses_capabilities_not_version() {
