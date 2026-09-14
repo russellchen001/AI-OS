@@ -10796,3 +10796,52 @@ Next:
 5. Merge validated Distilly + Nuwa results into Person Profiles.
 
 <!-- CD-DISTILLATION-SCOPE-CLEANUP-2026-09-14-END -->
+
+<!-- P15-EXTERNAL-TOOLCHAIN-UNSIGNED-V1-2026-09-14 -->
+
+## 2026-09-14 — macOS v1 distribution / media toolchain decision
+
+Authoritative v1 decision:
+
+- AI-OS v1 does not require Apple Developer Program membership.
+- AI-OS v1 does not require Developer ID signing or Apple notarization.
+- Formal signing/notarization is not a P15 development or release blocker.
+- The previous goal to bundle `ffmpeg`, `whisper.cpp`, `tesseract`, and `llama.cpp` inside `AI-OS.app` and then sign/notarize the complete bundle is superseded.
+
+### External Toolchain mode
+
+For v1, AI-OS uses external/local system tools:
+
+- `ffmpeg`
+- `ffprobe`
+- `whisper.cpp`
+- `tesseract`
+- `llama.cpp` where required
+
+AI-OS responsibilities:
+
+1. Detect whether the required tool is available and compatible.
+2. Report readiness in product-facing language.
+3. If missing, provide a controlled install/setup path.
+4. Invoke the discovered local executable through the existing AI-OS capability boundary.
+5. Never require these executables to be bundled inside `AI-OS.app`.
+6. Keep tool capability detection independent of exact version numbers whenever possible.
+
+Distribution expectation:
+
+- v1 may be distributed unsigned.
+- macOS Gatekeeper may require the user to explicitly allow/open the application.
+- This is an accepted v1 product trade-off.
+- Signing/notarization may be reconsidered for a later polished/public distribution but is not part of current P15 acceptance.
+
+### Cognitive Distillation impact
+
+The existing image/audio/video ingestion architecture remains valid:
+
+`source material -> AI-OS local readers/toolchain -> EvidenceBundle -> Distilly / Nuwa -> AI-OS validation -> Person Profile`
+
+Nuwa does not replace the AI-OS media ingestion layer.
+
+Nuwa is responsible for cognitive analysis, not for solving macOS executable distribution/signing.
+
+<!-- P15-EXTERNAL-TOOLCHAIN-UNSIGNED-V1-2026-09-14-END -->
