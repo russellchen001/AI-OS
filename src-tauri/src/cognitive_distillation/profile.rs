@@ -25,6 +25,37 @@ pub(crate) struct CognitiveClaim {
     pub contradictory_evidence_ids: Vec<String>,
 }
 
+/// The Nuwa-native cognitive kind is retained while a candidate is awaiting
+/// review. It is provenance/context for the reviewer, not a canonical profile
+/// category: AI-OS never silently maps a Nuwa kind onto a profile field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CognitiveCandidateKind {
+    MentalModel,
+    DecisionHeuristic,
+    ValuePriority,
+    CognitiveTension,
+    CommunicationPattern,
+}
+
+/// A validated derived inference that is still waiting for human judgement.
+///
+/// This is deliberately NOT a `CognitiveClaim`. Nuwa may infer a useful
+/// cognitive pattern from one or more real evidence assertions, but schema and
+/// provenance validation do not make that inference canonical. Human review is
+/// the boundary that may promote it into a claim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingCognitiveCandidate {
+    pub candidate_id: String,
+    pub adapter: String,
+    pub kind: CognitiveCandidateKind,
+    pub statement: String,
+    pub confidence: f32,
+    pub evidence_ids: Vec<String>,
+    pub contradictory_evidence_ids: Vec<String>,
+}
+
 /// Which Distilly artifact a narrative section came from. Distilly writes the
 /// work and persona documents separately and also a combined skill document;
 /// keeping them apart lets a reviewer see what the creator actually said in each
@@ -80,6 +111,11 @@ pub(crate) struct PersonDistillationProfile {
     /// human review is what moves them into the categorised fields above.
     #[serde(default)]
     pub unclassified_claims: Vec<CognitiveClaim>,
+    /// Validated cognitive inferences that are still candidates, not claims.
+    /// Human review must explicitly accept or reject every one before this
+    /// revision can become Reviewed.
+    #[serde(default)]
+    pub pending_cognitive_candidates: Vec<PendingCognitiveCandidate>,
     /// Creator prose awaiting review. Never a claim; see `DraftNarrativeSection`.
     #[serde(default)]
     pub draft_narrative: Vec<DraftNarrativeSection>,
@@ -119,7 +155,7 @@ impl fmt::Display for ProfileError {
                 formatter.write_str("Human review is required before profile activation.")
             }
             Self::UnreviewedMaterialRemains => formatter.write_str(
-                "Profile still carries unclassified claims or creator narrative that review has not resolved.",
+                "Profile still carries unclassified claims, cognitive candidates, or creator narrative that review has not resolved.",
             ),
             Self::IncompleteReview => formatter.write_str(
                 "Every drafted claim must be decided before the profile leaves review.",
@@ -150,7 +186,10 @@ impl AiOsProfileAuthority {
         // unclassified and the creator's prose attached; if either is still present
         // the reviewer has not actually categorised the material, whatever the
         // review flag says.
-        if !profile.unclassified_claims.is_empty() || !profile.draft_narrative.is_empty() {
+        if !profile.unclassified_claims.is_empty()
+            || !profile.pending_cognitive_candidates.is_empty()
+            || !profile.draft_narrative.is_empty()
+        {
             return Err(ProfileError::UnreviewedMaterialRemains);
         }
         if profile.profile_id.trim().is_empty()
@@ -221,6 +260,7 @@ mod tests {
             communication_style: Vec::new(),
             representative_examples: Vec::new(),
             unclassified_claims: Vec::new(),
+            pending_cognitive_candidates: Vec::new(),
             draft_narrative: Vec::new(),
             evidence_bundle_id: "bundle".to_owned(),
             contradictions: Vec::new(),
@@ -245,6 +285,40 @@ mod tests {
                 .unwrap()
                 .status,
             ProfileStatus::Active
+        );
+    }
+
+    #[test]
+    fn older_profile_json_without_pending_cognitive_candidates_still_loads() {
+        let (profile, _) = profile_and_bundle();
+        let mut value = serde_json::to_value(&profile).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("pendingCognitiveCandidates");
+
+        let loaded: PersonDistillationProfile = serde_json::from_value(value).unwrap();
+        assert!(loaded.pending_cognitive_candidates.is_empty());
+    }
+
+    #[test]
+    fn activation_refuses_an_unreviewed_cognitive_candidate() {
+        let (mut profile, bundle) = profile_and_bundle();
+        profile
+            .pending_cognitive_candidates
+            .push(PendingCognitiveCandidate {
+                candidate_id: "nuwa-mental-model-1".to_owned(),
+                adapter: "nuwa".to_owned(),
+                kind: CognitiveCandidateKind::MentalModel,
+                statement: "Tests alternatives before committing.".to_owned(),
+                confidence: 0.8,
+                evidence_ids: vec!["evidence".to_owned()],
+                contradictory_evidence_ids: Vec::new(),
+            });
+
+        assert_eq!(
+            AiOsProfileAuthority::activate(profile, &bundle, true).unwrap_err(),
+            ProfileError::UnreviewedMaterialRemains
         );
     }
 

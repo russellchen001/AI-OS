@@ -482,6 +482,107 @@ mod lifecycle_tests {
         (store, directory)
     }
 
+    #[test]
+    fn nuwa_candidate_survives_store_review_activation_and_persona_packaging() {
+        use crate::cognitive_distillation::{
+            profile::{CognitiveCandidateKind, PendingCognitiveCandidate, ProfileStatus},
+            review::{ClaimCategory, CognitiveCandidateDecision},
+        };
+
+        let (store, _directory) = store();
+        let evidence_bundle = bundle("nuwa-store-bundle");
+        let mut draft = drafted(&evidence_bundle);
+
+        let evidence_id = evidence_bundle
+            .evidence
+            .first()
+            .expect("test bundle must carry evidence")
+            .evidence_id
+            .clone();
+
+        draft
+            .pending_cognitive_candidates
+            .push(PendingCognitiveCandidate {
+                candidate_id: "nuwa-mental-model-store-1".to_owned(),
+                adapter: "nuwa".to_owned(),
+                kind: CognitiveCandidateKind::MentalModel,
+                statement: "Compares alternatives before committing.".to_owned(),
+                confidence: 0.84,
+                evidence_ids: vec![evidence_id],
+                contradictory_evidence_ids: Vec::new(),
+            });
+
+        store.append(&draft, &evidence_bundle).unwrap();
+
+        // The pending cognitive inference must survive the actual persistence
+        // boundary and remain non-canonical.
+        let (stored_draft, stored_bundle) = store.latest("profile-alice").unwrap();
+        assert_eq!(stored_draft.status, ProfileStatus::Draft);
+        assert_eq!(stored_draft.pending_cognitive_candidates.len(), 1);
+        assert!(stored_draft.reasoning_frameworks.is_empty());
+        assert!(stored_draft.decision_patterns.is_empty());
+
+        // A caller cannot silently omit the Nuwa decision while deciding all
+        // ordinary Distilly claims.
+        let mut incomplete = crate::cognitive_distillation::review::test_support::decide_all(
+            &stored_draft,
+            Some(ClaimCategory::ReasoningFrameworks),
+        );
+        incomplete.cognitive_candidate_decisions.clear();
+
+        assert!(review_in(&store, "profile-alice", &incomplete).is_err());
+
+        // Explicit human acceptance is the promotion boundary.
+        let mut decisions = crate::cognitive_distillation::review::test_support::decide_all(
+            &stored_draft,
+            Some(ClaimCategory::ReasoningFrameworks),
+        );
+
+        assert_eq!(decisions.cognitive_candidate_decisions.len(), 1);
+        decisions.cognitive_candidate_decisions[0] = CognitiveCandidateDecision {
+            candidate_id: "nuwa-mental-model-store-1".to_owned(),
+            category: Some(ClaimCategory::ReasoningFrameworks),
+            corrected_statement: None,
+        };
+
+        let reviewed = review_in(&store, "profile-alice", &decisions).unwrap();
+
+        assert_eq!(reviewed.profile.status, ProfileStatus::Reviewed);
+        assert!(reviewed.profile.pending_cognitive_candidates.is_empty());
+
+        let promoted = reviewed
+            .profile
+            .reasoning_frameworks
+            .iter()
+            .find(|claim| claim.claim_id == "nuwa-mental-model-store-1")
+            .expect("review must promote the accepted Nuwa candidate");
+
+        // Human acceptance permits the inference into the profile but never
+        // upgrades model-derived material into directly confirmed fact.
+        assert!(!promoted.confirmed);
+        assert_eq!(
+            promoted.statement,
+            "Compares alternatives before committing."
+        );
+
+        // Reviewed is still not runnable.
+        assert!(persona_skill_in(&store, "profile-alice").is_err());
+
+        let active = activate_in(&store, "profile-alice").unwrap();
+        assert_eq!(active.profile.status, ProfileStatus::Active);
+
+        let skill = persona_skill_in(&store, "profile-alice").unwrap();
+        assert_eq!(skill.profile_revision, active.profile.revision);
+        assert!(skill
+            .instructions
+            .contains("Compares alternatives before committing. (unconfirmed)"));
+        assert!(skill.raw_media_assets.is_empty());
+
+        // Ensure review used the exact stored bundle, not some reconstructed
+        // source of truth.
+        assert_eq!(stored_bundle.bundle_id, evidence_bundle.bundle_id);
+    }
+
     /// The whole product path, across the storage boundary at every step.
     #[test]
     fn a_profile_goes_from_draft_to_runnable_skill_and_back_again() {

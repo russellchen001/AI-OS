@@ -50,11 +50,30 @@ pub(crate) struct ClaimDecision {
     pub corrected_statement: Option<String>,
 }
 
+/// What a reviewer decided about one derived cognitive candidate.
+///
+/// A separate contract keeps derived Nuwa material distinguishable from
+/// evidence-derived Distilly claims all the way to the human-review boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CognitiveCandidateDecision {
+    pub candidate_id: String,
+    /// `None` rejects the candidate.
+    pub category: Option<ClaimCategory>,
+    /// Optional human correction. Evidence links remain immutable.
+    #[serde(default)]
+    pub corrected_statement: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReviewDecisions {
     pub reviewer: String,
     pub decisions: Vec<ClaimDecision>,
+    /// Backward-compatible: old review callers and stored request fixtures that
+    /// predate Nuwa candidate review deserialize as an empty candidate decision set.
+    #[serde(default)]
+    pub cognitive_candidate_decisions: Vec<CognitiveCandidateDecision>,
 }
 
 /// Apply a reviewer's decisions to a drafted profile.
@@ -75,6 +94,8 @@ pub(crate) fn apply_review(
     }
 
     let drafted = std::mem::take(&mut profile.unclassified_claims);
+    let cognitive_drafts = std::mem::take(&mut profile.pending_cognitive_candidates);
+
     let drafted_ids = drafted
         .iter()
         .map(|claim| claim.claim_id.as_str())
@@ -85,8 +106,23 @@ pub(crate) fn apply_review(
         .map(|decision| decision.claim_id.as_str())
         .collect::<BTreeSet<_>>();
 
-    // Every drafted claim decided, and no decision about a claim that is not there.
-    if drafted_ids != decided_ids || decided_ids.len() != review.decisions.len() {
+    let cognitive_ids = cognitive_drafts
+        .iter()
+        .map(|candidate| candidate.candidate_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let cognitive_decided_ids = review
+        .cognitive_candidate_decisions
+        .iter()
+        .map(|decision| decision.candidate_id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    // Every pending item must be decided, and a caller may not submit decisions
+    // for material that is not actually present in this draft.
+    if drafted_ids != decided_ids
+        || decided_ids.len() != review.decisions.len()
+        || cognitive_ids != cognitive_decided_ids
+        || cognitive_decided_ids.len() != review.cognitive_candidate_decisions.len()
+    {
         return Err(ProfileError::IncompleteReview);
     }
 
@@ -127,6 +163,61 @@ pub(crate) fn apply_review(
         accepted += 1;
     }
 
+    let mut cognitive_rejected = 0_usize;
+    let mut cognitive_accepted = 0_usize;
+
+    for candidate in cognitive_drafts {
+        let decision = review
+            .cognitive_candidate_decisions
+            .iter()
+            .find(|decision| decision.candidate_id == candidate.candidate_id)
+            .ok_or(ProfileError::IncompleteReview)?;
+
+        let Some(category) = decision.category else {
+            cognitive_rejected += 1;
+            continue;
+        };
+
+        // At this boundary AI-OS still treats the stored candidate as
+        // user-reachable data. Re-check the parts of the contract that matter
+        // before promoting it.
+        if candidate.adapter != "nuwa"
+            || !candidate.confidence.is_finite()
+            || !(0.0..=1.0).contains(&candidate.confidence)
+        {
+            return Err(ProfileError::InvalidProfile);
+        }
+
+        let mut statement = candidate.statement.clone();
+        if let Some(corrected) = decision.corrected_statement.as_deref() {
+            if corrected.trim().is_empty() {
+                return Err(ProfileError::InvalidProfile);
+            }
+            statement = corrected.trim().to_owned();
+        }
+
+        let claim = CognitiveClaim {
+            // Keep the stable Nuwa-prefixed id so the canonical claim remains
+            // traceable to the reviewed candidate without expanding the mature
+            // CognitiveClaim schema.
+            claim_id: candidate.candidate_id.clone(),
+            statement,
+            // Human acceptance means "allow this inference into the profile".
+            // It does not transform an inference into directly observed fact.
+            confirmed: false,
+            confidence: candidate.confidence,
+            evidence_ids: candidate.evidence_ids.clone(),
+            contradictory_evidence_ids: candidate.contradictory_evidence_ids.clone(),
+        };
+
+        if !claim_is_evidence_backed(&claim, &known_evidence) {
+            return Err(ProfileError::UnsupportedClaim);
+        }
+
+        category_slot(&mut profile, category).push(claim);
+        cognitive_accepted += 1;
+    }
+
     // The narrative has been read; it is no longer pending material. It is not
     // retained, because keeping unattributed prose inside an active profile is
     // exactly the thing the claim/narrative split exists to avoid.
@@ -135,7 +226,7 @@ pub(crate) fn apply_review(
     profile.revision_history.push(RevisionRecord {
         revision: profile.revision,
         reason: format!(
-            "reviewed by {}: {accepted} categorised, {rejected} rejected",
+            "reviewed by {}: {accepted} categorised, {rejected} rejected; {cognitive_accepted} cognitive candidates accepted, {cognitive_rejected} rejected",
             review.reviewer.trim()
         ),
         evidence_bundle_id: bundle.bundle_id.clone(),
@@ -426,6 +517,15 @@ pub(crate) mod test_support {
                     corrected_statement: None,
                 })
                 .collect(),
+            cognitive_candidate_decisions: profile
+                .pending_cognitive_candidates
+                .iter()
+                .map(|candidate| CognitiveCandidateDecision {
+                    candidate_id: candidate.candidate_id.clone(),
+                    category,
+                    corrected_statement: None,
+                })
+                .collect(),
         }
     }
 
@@ -492,6 +592,75 @@ mod tests {
             apply_review(draft, &bundle, &decisions).unwrap_err(),
             ProfileError::IncompleteReview
         );
+    }
+
+    #[test]
+    fn nuwa_candidate_requires_explicit_review_before_promotion() {
+        let bundle = bundle("alice-bundle");
+        let mut draft = drafted(&bundle);
+        let evidence_id = bundle.evidence[0].evidence_id.clone();
+
+        draft.pending_cognitive_candidates.push(
+            crate::cognitive_distillation::profile::PendingCognitiveCandidate {
+                candidate_id: "nuwa-mental-model-1".to_owned(),
+                adapter: "nuwa".to_owned(),
+                kind: crate::cognitive_distillation::profile::CognitiveCandidateKind::MentalModel,
+                statement: "Tests alternatives before committing.".to_owned(),
+                confidence: 0.82,
+                evidence_ids: vec![evidence_id],
+                contradictory_evidence_ids: Vec::new(),
+            },
+        );
+
+        let mut incomplete = decide_all(&draft, Some(ClaimCategory::ReasoningFrameworks));
+        incomplete.cognitive_candidate_decisions.clear();
+        assert_eq!(
+            apply_review(draft.clone(), &bundle, &incomplete).unwrap_err(),
+            ProfileError::IncompleteReview
+        );
+
+        let decisions = decide_all(&draft, Some(ClaimCategory::ReasoningFrameworks));
+        let reviewed = apply_review(draft, &bundle, &decisions).unwrap();
+
+        assert!(reviewed.pending_cognitive_candidates.is_empty());
+
+        let promoted = reviewed
+            .reasoning_frameworks
+            .iter()
+            .find(|claim| claim.claim_id == "nuwa-mental-model-1")
+            .expect("accepted Nuwa candidate should become a canonical CognitiveClaim");
+
+        assert!(!promoted.confirmed);
+        assert_eq!(promoted.statement, "Tests alternatives before committing.");
+    }
+
+    #[test]
+    fn rejecting_a_nuwa_candidate_does_not_promote_it() {
+        let bundle = bundle("alice-bundle");
+        let mut draft = drafted(&bundle);
+
+        draft
+            .pending_cognitive_candidates
+            .push(crate::cognitive_distillation::profile::PendingCognitiveCandidate {
+            candidate_id: "nuwa-decision-heuristic-1".to_owned(),
+            adapter: "nuwa".to_owned(),
+            kind: crate::cognitive_distillation::profile::CognitiveCandidateKind::DecisionHeuristic,
+            statement: "Prefers reversible decisions.".to_owned(),
+            confidence: 0.7,
+            evidence_ids: vec![bundle.evidence[0].evidence_id.clone()],
+            contradictory_evidence_ids: Vec::new(),
+        });
+
+        let mut decisions = decide_all(&draft, Some(ClaimCategory::DecisionPatterns));
+        decisions.cognitive_candidate_decisions[0].category = None;
+
+        let reviewed = apply_review(draft, &bundle, &decisions).unwrap();
+
+        assert!(reviewed.pending_cognitive_candidates.is_empty());
+        assert!(reviewed
+            .decision_patterns
+            .iter()
+            .all(|claim| claim.claim_id != "nuwa-decision-heuristic-1"));
     }
 
     #[test]

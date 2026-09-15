@@ -34,6 +34,23 @@ export type CognitiveClaim = {
   contradictoryEvidenceIds: string[];
 };
 
+export type CognitiveCandidateKind =
+  | "mental-model"
+  | "decision-heuristic"
+  | "value-priority"
+  | "cognitive-tension"
+  | "communication-pattern";
+
+export type PendingCognitiveCandidate = {
+  candidateId: string;
+  adapter: string;
+  kind: CognitiveCandidateKind;
+  statement: string;
+  confidence: number;
+  evidenceIds: string[];
+  contradictoryEvidenceIds: string[];
+};
+
 /** Creator prose. Never a claim — it carries no evidence links. */
 export type DraftNarrativeSection = {
   origin: NarrativeOrigin;
@@ -63,6 +80,7 @@ export type PersonDistillationProfile = {
   communicationStyle: CognitiveClaim[];
   representativeExamples: CognitiveClaim[];
   unclassifiedClaims: CognitiveClaim[];
+  pendingCognitiveCandidates: PendingCognitiveCandidate[];
   draftNarrative: DraftNarrativeSection[];
   evidenceBundleId: string;
   contradictions: string[];
@@ -90,9 +108,16 @@ export type ClaimDecision = {
   correctedStatement?: string | null;
 };
 
+export type CognitiveCandidateDecision = {
+  candidateId: string;
+  category: ClaimCategory | null;
+  correctedStatement?: string | null;
+};
+
 export type ReviewDecisions = {
   reviewer: string;
   decisions: ClaimDecision[];
+  cognitiveCandidateDecisions: CognitiveCandidateDecision[];
 };
 
 export type RunnablePersonaSkill = {

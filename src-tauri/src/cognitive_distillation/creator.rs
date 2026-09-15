@@ -1,7 +1,7 @@
 use super::{
     adapters::{AdapterAvailability, AdapterCatalog, CreatorAdapterId},
     import::{draft_profile, import_quarantined_distillation},
-    profile::PersonDistillationProfile,
+    profile::{CognitiveCandidateKind, PendingCognitiveCandidate, PersonDistillationProfile},
     route_distillation, CognitiveDistillationRouteRequest,
 };
 use serde::{Deserialize, Serialize};
@@ -39,11 +39,12 @@ pub(crate) struct EnrichmentOutcome {
     candidate_count: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct NuwaEnrichmentReceipt {
     quarantine_root: String,
     artifact: String,
     candidate_count: usize,
+    candidates: Vec<PendingCognitiveCandidate>,
 }
 
 // No `Eq`: a profile carries f32 confidence values.
@@ -84,10 +85,12 @@ pub(crate) fn invoke_from_value(
         },
         |bundle, operation_id| {
             let result = super::nuwa::execute_nuwa(bundle, operation_id)?;
+            let candidates = pending_candidates_from_nuwa(&result.result);
             Ok(NuwaEnrichmentReceipt {
                 quarantine_root: result.quarantine_root,
                 artifact: result.artifact,
                 candidate_count: result.candidate_count,
+                candidates,
             })
         },
     )
@@ -109,6 +112,64 @@ pub(crate) fn invoke_from_value(
         super::store::ProfileStore::open_default()?.append(&result.draft_profile, &bundle)?;
         serde_json::to_value(result).map_err(|_| "Distilly result serialization failed.".to_owned())
     })
+}
+
+fn pending_candidates_from_nuwa(
+    result: &super::nuwa::NuwaResult,
+) -> Vec<PendingCognitiveCandidate> {
+    let mut pending = Vec::with_capacity(result.candidate_count());
+
+    append_nuwa_candidates(
+        &mut pending,
+        CognitiveCandidateKind::MentalModel,
+        "mental-model",
+        &result.mental_models,
+    );
+    append_nuwa_candidates(
+        &mut pending,
+        CognitiveCandidateKind::DecisionHeuristic,
+        "decision-heuristic",
+        &result.decision_heuristics,
+    );
+    append_nuwa_candidates(
+        &mut pending,
+        CognitiveCandidateKind::ValuePriority,
+        "value-priority",
+        &result.value_priorities,
+    );
+    append_nuwa_candidates(
+        &mut pending,
+        CognitiveCandidateKind::CognitiveTension,
+        "cognitive-tension",
+        &result.cognitive_tensions,
+    );
+    append_nuwa_candidates(
+        &mut pending,
+        CognitiveCandidateKind::CommunicationPattern,
+        "communication-pattern",
+        &result.communication_patterns,
+    );
+
+    pending
+}
+
+fn append_nuwa_candidates(
+    pending: &mut Vec<PendingCognitiveCandidate>,
+    kind: CognitiveCandidateKind,
+    kind_id: &str,
+    candidates: &[super::nuwa::NuwaClaimCandidate],
+) {
+    for (index, candidate) in candidates.iter().enumerate() {
+        pending.push(PendingCognitiveCandidate {
+            candidate_id: format!("nuwa-{kind_id}-{}", index + 1),
+            adapter: "nuwa".to_owned(),
+            kind,
+            statement: candidate.statement.clone(),
+            confidence: candidate.confidence,
+            evidence_ids: candidate.evidence_ids.clone(),
+            contradictory_evidence_ids: candidate.contradictory_evidence_ids.clone(),
+        });
+    }
 }
 
 fn invoke_with(
@@ -195,7 +256,7 @@ fn invoke_with_enrichment(
             )?;
             Ok((artifacts, drafted))
         })();
-    let (artifacts, drafted) = creator_outcome.map_err(|error| {
+    let (artifacts, mut drafted) = creator_outcome.map_err(|error| {
         format!(
             "{error} [creator turn ran {}s; optional pipelines: {}; evidence carried {} item(s)]",
             creator_started.elapsed().as_secs(),
@@ -219,15 +280,29 @@ fn invoke_with_enrichment(
         .filter(|pipeline| pipeline.adapter != CreatorAdapterId::Distilly)
         .map(|pipeline| match pipeline.adapter {
             CreatorAdapterId::Nuwa => match invoke_nuwa(&bundle, operation_id) {
-                Ok(receipt) => EnrichmentOutcome {
-                    adapter: CreatorAdapterId::Nuwa,
-                    executed: true,
-                    evidence_added: 0,
-                    reason: None,
-                    quarantine_root: Some(receipt.quarantine_root),
-                    artifact: Some(receipt.artifact),
-                    candidate_count: Some(receipt.candidate_count),
-                },
+                Ok(receipt) => {
+                    let NuwaEnrichmentReceipt {
+                        quarantine_root,
+                        artifact,
+                        candidate_count,
+                        candidates,
+                    } = receipt;
+
+                    // Validated Nuwa output becomes reviewable candidate material,
+                    // never a canonical claim. Human review is the only promotion
+                    // boundary.
+                    drafted.pending_cognitive_candidates.extend(candidates);
+
+                    EnrichmentOutcome {
+                        adapter: CreatorAdapterId::Nuwa,
+                        executed: true,
+                        evidence_added: 0,
+                        reason: None,
+                        quarantine_root: Some(quarantine_root),
+                        artifact: Some(artifact),
+                        candidate_count: Some(candidate_count),
+                    }
+                }
                 Err(error) => EnrichmentOutcome {
                     adapter: CreatorAdapterId::Nuwa,
                     executed: false,
@@ -699,7 +774,16 @@ mod tests {
                 Ok(NuwaEnrichmentReceipt {
                     quarantine_root: "/test/nuwa-quarantine".to_owned(),
                     artifact: "nuwa-result.json".to_owned(),
-                    candidate_count: 3,
+                    candidate_count: 1,
+                    candidates: vec![PendingCognitiveCandidate {
+                        candidate_id: "nuwa-mental-model-1".to_owned(),
+                        adapter: "nuwa".to_owned(),
+                        kind: CognitiveCandidateKind::MentalModel,
+                        statement: "Tests alternatives before committing.".to_owned(),
+                        confidence: 0.8,
+                        evidence_ids: vec![bundle.evidence[0].evidence_id.clone()],
+                        contradictory_evidence_ids: Vec::new(),
+                    }],
                 })
             },
         )
@@ -720,14 +804,22 @@ mod tests {
             Some("/test/nuwa-quarantine")
         );
         assert_eq!(outcome.artifact.as_deref(), Some("nuwa-result.json"));
-        assert_eq!(outcome.candidate_count, Some(3));
+        assert_eq!(outcome.candidate_count, Some(1));
 
-        // Nuwa enrichment is metadata only at this stage. It does not activate
-        // or canonicalise the Distilly draft.
+        // The validated Nuwa inference is now persisted in the Draft as pending
+        // human-review material. It is still not a canonical CognitiveClaim and
+        // cannot activate the profile.
         assert_eq!(
             result.draft_profile.status,
             crate::cognitive_distillation::profile::ProfileStatus::Draft
         );
+        assert_eq!(result.draft_profile.pending_cognitive_candidates.len(), 1);
+        assert_eq!(
+            result.draft_profile.pending_cognitive_candidates[0].candidate_id,
+            "nuwa-mental-model-1"
+        );
+        assert!(result.draft_profile.reasoning_frameworks.is_empty());
+        assert!(result.draft_profile.decision_patterns.is_empty());
 
         fs::remove_dir_all(result.quarantine_root).unwrap();
     }
@@ -767,6 +859,7 @@ mod tests {
             result.draft_profile.status,
             crate::cognitive_distillation::profile::ProfileStatus::Draft
         );
+        assert!(result.draft_profile.pending_cognitive_candidates.is_empty());
 
         fs::remove_dir_all(result.quarantine_root).unwrap();
     }

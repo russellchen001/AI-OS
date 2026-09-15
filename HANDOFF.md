@@ -11049,3 +11049,47 @@ Product interpretation:
 Scenario Simulation / MiroFish remains deferred to P16 and is not a dependency of Cognitive Distillation.
 
 <!-- /COGNITIVE_DISTILLATION_DISTILLY_NUWA_VERIFIED_2026_09_15 -->
+
+## Cognitive Distillation — Human Review Lifecycle Verified
+
+Marker: `COGNITIVE_DISTILLATION_HUMAN_REVIEW_VERIFIED_2026_09_16`
+
+CD-HR2 is complete.
+
+Verified product path:
+
+`Distilly draft + Nuwa cognitive candidates -> Person Profiles -> explicit human review -> canonical reviewed profile -> AI-OS activation -> Runnable Persona Skill`
+
+Rules now enforced:
+
+- Nuwa output enters `pendingCognitiveCandidates`; it does not enter canonical cognitive claim categories before review.
+- Distilly evidence-derived claims and Nuwa cognitive candidates must all receive an explicit human decision.
+- A Nuwa candidate may be categorised or rejected.
+- Accepted Nuwa candidates become canonical `CognitiveClaim` values only at the human-review boundary.
+- Accepted Nuwa-derived claims remain `confirmed=false`; human acceptance does not rewrite model inference as observed fact.
+- Activation is refused while unclassified evidence claims, creator narrative, or pending cognitive candidates remain.
+- Runnable Persona Skill packaging occurs only from an Active profile and preserves accepted Nuwa inference as `(unconfirmed)`.
+- Contradictory evidence remains preserved rather than silently resolved.
+- No SQLite schema migration was required; pending cognitive candidates remain inside the existing serialized profile JSON contract.
+- Older profile JSON without `pendingCognitiveCandidates` remains backward-compatible.
+
+Verification completed:
+
+- Stored lifecycle acceptance:
+  `Nuwa pending -> ProfileStore reopen -> incomplete review refused -> explicit acceptance/rejection -> Reviewed -> Active -> Persona Skill`
+- Review tests: 13 passed, 0 failed.
+- Profile tests: 4 passed, 0 failed.
+- Creator tests: 8 passed, 0 failed, 2 ignored.
+- Full Cognitive Distillation suite: 98 passed, 0 failed, 7 ignored.
+- `cargo check` passed.
+- Frontend production build passed.
+- `git diff --check` passed.
+- Real Person Profiles UI acceptance passed:
+  - Distilly and Nuwa review material displayed separately.
+  - Undecided gate covered both sources.
+  - Accepted Nuwa mental-model candidate entered the selected canonical category.
+  - Rejected Nuwa candidate was not promoted.
+  - Accepted Nuwa inference remained `(unconfirmed)` after activation and inside the generated Persona Skill.
+- Temporary UI acceptance profile was removed after verification.
+
+Next Cognitive Distillation work should build on this reviewed/active profile boundary rather than bypassing it.

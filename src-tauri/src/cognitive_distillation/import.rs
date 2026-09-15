@@ -168,6 +168,7 @@ pub(crate) fn draft_profile(
         communication_style: Vec::new(),
         representative_examples: Vec::new(),
         unclassified_claims,
+        pending_cognitive_candidates: Vec::new(),
         draft_narrative: import.narrative.clone(),
         evidence_bundle_id: bundle.bundle_id.clone(),
         contradictions,

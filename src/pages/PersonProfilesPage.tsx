@@ -12,6 +12,7 @@ import {
   CLAIM_CATEGORIES,
   type ClaimCategory,
   type CognitiveClaim,
+  type PendingCognitiveCandidate,
   type PersonProfileView,
   type ProfileSummary,
   type RunnablePersonaSkill,
@@ -63,12 +64,16 @@ function PersonProfilesPage({ onMessage }: PersonProfilesPageProps) {
         setView(next);
         setSkill(null);
         setDecisions(
-          Object.fromEntries(
-            next.profile.unclassifiedClaims.map((claim) => [
+          Object.fromEntries([
+            ...next.profile.unclassifiedClaims.map((claim) => [
               claim.claimId,
               { category: "", correctedStatement: "" } as PendingDecision,
             ]),
-          ),
+            ...next.profile.pendingCognitiveCandidates.map((candidate) => [
+              candidate.candidateId,
+              { category: "", correctedStatement: "" } as PendingDecision,
+            ]),
+          ]),
         );
       })
       .catch((error) => {
@@ -81,10 +86,15 @@ function PersonProfilesPage({ onMessage }: PersonProfilesPageProps) {
 
   const profile = view?.profile ?? null;
   const pending = profile?.unclassifiedClaims ?? [];
+  const cognitivePending = profile?.pendingCognitiveCandidates ?? [];
 
   const undecidedCount = useMemo(
-    () => pending.filter((claim) => !decisions[claim.claimId]?.category).length,
-    [pending, decisions],
+    () =>
+      pending.filter((claim) => !decisions[claim.claimId]?.category).length +
+      cognitivePending.filter(
+        (candidate) => !decisions[candidate.candidateId]?.category,
+      ).length,
+    [pending, cognitivePending, decisions],
   );
 
   async function run(
@@ -130,6 +140,16 @@ function PersonProfilesPage({ onMessage }: PersonProfilesPageProps) {
               category: decision.category === "reject" ? null : (decision.category as ClaimCategory),
               correctedStatement:
                 corrected && corrected !== claim.statement ? corrected : null,
+            };
+          }),
+          cognitiveCandidateDecisions: cognitivePending.map((candidate) => {
+            const decision = decisions[candidate.candidateId];
+            const corrected = decision.correctedStatement.trim();
+            return {
+              candidateId: candidate.candidateId,
+              category: decision.category === "reject" ? null : (decision.category as ClaimCategory),
+              correctedStatement:
+                corrected && corrected !== candidate.statement ? corrected : null,
             };
           }),
         }),
@@ -262,14 +282,15 @@ function PersonProfilesPage({ onMessage }: PersonProfilesPageProps) {
             </article>
           )}
 
-          {pending.length > 0 && (
+          {(pending.length > 0 || cognitivePending.length > 0) && (
             <article className="person-profile-review">
-              <h3>Claims awaiting your decision</h3>
+              <h3>Profile material awaiting your decision</h3>
               <p className="person-profile-note">
-                Each claim below is backed by evidence AI-OS actually collected. Choose where it
-                belongs, or reject it — real evidence can still not belong in a profile. You may
-                reword a claim, but you cannot move it onto different evidence.
+                Distilly claims come directly from evidence observations. Nuwa items are derived
+                cognitive inferences. Neither becomes canonical until you categorise or reject it,
+                and evidence links cannot be changed during review.
               </p>
+
               <label className="person-profile-reviewer">
                 <span>Reviewer</span>
                 <input
@@ -279,19 +300,49 @@ function PersonProfilesPage({ onMessage }: PersonProfilesPageProps) {
                 />
               </label>
 
-              {pending.map((claim) => (
-                <ClaimRow
-                  key={claim.claimId}
-                  claim={claim}
-                  decision={decisions[claim.claimId] ?? { category: "", correctedStatement: "" }}
-                  onChange={(patch) => setDecision(claim.claimId, patch)}
-                />
-              ))}
+              {pending.length > 0 && (
+                <div>
+                  <h4>Evidence-derived claims</h4>
+                  {pending.map((claim) => (
+                    <ClaimRow
+                      key={claim.claimId}
+                      claim={claim}
+                      decision={
+                        decisions[claim.claimId] ?? { category: "", correctedStatement: "" }
+                      }
+                      onChange={(patch) => setDecision(claim.claimId, patch)}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {cognitivePending.length > 0 && (
+                <div>
+                  <h4>Nuwa cognitive candidates</h4>
+                  <p className="person-profile-note">
+                    These passed AI-OS schema and evidence-reference validation, but they remain
+                    model-derived inferences. Accepting one keeps it marked unconfirmed.
+                  </p>
+                  {cognitivePending.map((candidate) => (
+                    <CognitiveCandidateRow
+                      key={candidate.candidateId}
+                      candidate={candidate}
+                      decision={
+                        decisions[candidate.candidateId] ?? {
+                          category: "",
+                          correctedStatement: "",
+                        }
+                      }
+                      onChange={(patch) => setDecision(candidate.candidateId, patch)}
+                    />
+                  ))}
+                </div>
+              )}
 
               <div className="person-profile-review-footer">
                 <span>
                   {undecidedCount === 0
-                    ? "Every claim decided."
+                    ? "Every review item decided."
                     : `${undecidedCount} still undecided.`}
                 </span>
                 <button type="button" disabled={busy || undecidedCount > 0} onClick={submitReview}>
@@ -363,6 +414,56 @@ function PersonProfilesPage({ onMessage }: PersonProfilesPageProps) {
         </>
       )}
     </section>
+  );
+}
+
+type CognitiveCandidateRowProps = {
+  candidate: PendingCognitiveCandidate;
+  decision: PendingDecision;
+  onChange: (patch: Partial<PendingDecision>) => void;
+};
+
+function CognitiveCandidateRow({
+  candidate,
+  decision,
+  onChange,
+}: CognitiveCandidateRowProps) {
+  const evidenceCount =
+    candidate.evidenceIds.length + candidate.contradictoryEvidenceIds.length;
+
+  return (
+    <div className="person-profile-claim">
+      <textarea
+        value={decision.correctedStatement || candidate.statement}
+        onChange={(event) => onChange({ correctedStatement: event.target.value })}
+        rows={2}
+      />
+      <div className="person-profile-claim-meta">
+        <span>
+          {candidate.adapter} · {candidate.kind.split("-").join(" ")}
+        </span>
+        <span>
+          {evidenceCount} evidence reference{evidenceCount === 1 ? "" : "s"}
+        </span>
+        <span>confidence {Math.round(candidate.confidence * 100)}%</span>
+        <span>derived inference · unconfirmed if accepted</span>
+        {candidate.contradictoryEvidenceIds.length > 0 && <span>contradicted</span>}
+      </div>
+      <select
+        value={decision.category}
+        onChange={(event) =>
+          onChange({ category: event.target.value as PendingDecision["category"] })
+        }
+      >
+        <option value="">Undecided…</option>
+        {CLAIM_CATEGORIES.map((category) => (
+          <option key={category.value} value={category.value}>
+            {category.label}
+          </option>
+        ))}
+        <option value="reject">Reject this candidate</option>
+      </select>
+    </div>
   );
 }
 
