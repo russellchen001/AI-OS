@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const OPENCLAW_EXECUTION_AGENT_ID: &str = "ai-os-files";
+const COGNITIVE_DISTILLATION_AGENT_ID: &str = "ai-os-cognitive-distillation";
 const AGENT_WAIT_ATTEMPTS: usize = 35;
 const AGENT_WAIT_INTERVAL_MILLISECONDS: u64 = 9_000;
 /// Budget for one Agent turn on the generic Skill transport path, where the
@@ -41,12 +42,9 @@ const AGENT_RUN_TIMEOUT_SECONDS: u64 = 120;
 /// writer CLI, so it needs more than one generic Skill-selection turn. This is
 /// a longer bound, not an unbounded one, and it widens no permission.
 const DISTILLY_RUN_TIMEOUT_SECONDS: u64 = 600;
-/// Budget for one public-web research turn. This turn reads public sources
-/// before it can grade a single claim, so it is bounded by how fast the open web
-/// answers rather than by how fast the Agent thinks. Measured: a 600s budget was
-/// spent without finishing, while the creator turn that followed it needed under
-/// 300s. This is a wider bound, not an unbounded one.
-const RESEARCH_RUN_TIMEOUT_SECONDS: u64 = 1_500;
+/// Nuwa receives already-normalized evidence and audited methodology in one
+/// zero-tool Agent turn. It needs no browser, shell, file or Skill execution.
+const NUWA_RUN_TIMEOUT_SECONDS: u64 = 600;
 
 /// Agent-facing Skill transport. It translates one Agent protocol into the
 /// generic SkillInvocationGateway contract; it never owns permission policy or
@@ -312,16 +310,20 @@ impl OpenClawAgentSkillTransport {
 /// which turn this is, so a failure says which half of the pipeline refused
 /// rather than blaming whichever half was written first.
 fn invoke_distillation_turn(
+    agent_id: &str,
+    namespace: &str,
     purpose: &str,
     session_id: &str,
     prompt: &str,
     run_timeout_seconds: u64,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let invoker = ProductionOpenClawAgentMethodInvoker;
-    let session_key = format!("agent:{OPENCLAW_EXECUTION_AGENT_ID}:ai-os-distilly-{session_id}");
-    let idempotency_key = format!("{session_id}:distilly");
+    let session_key = format!("agent:{agent_id}:ai-os-{namespace}-{session_id}");
+    let idempotency_key = format!("{session_id}:{namespace}");
+
     run_agent(
         &invoker,
+        agent_id,
         &session_key,
         prompt,
         &idempotency_key,
@@ -329,10 +331,11 @@ fn invoke_distillation_turn(
     )
     .map_err(|error| {
         format!(
-            "OpenClaw could not run the {purpose} turn (session {session_key}, idempotency {idempotency_key}, budget {run_timeout_seconds}s): {}",
+            "OpenClaw could not run the {purpose} turn (agent {agent_id}, session {session_key}, idempotency {idempotency_key}, budget {run_timeout_seconds}s): {}",
             error.message
         )
     })?;
+
     latest_assistant_text(&history(&invoker, &session_key).map_err(|error| {
         format!(
             "OpenClaw could not read the {purpose} transcript (session {session_key}): {}",
@@ -340,7 +343,6 @@ fn invoke_distillation_turn(
         )
     })?)
     .filter(|text| !text.trim().is_empty())
-    .map(|_| ())
     .ok_or_else(|| {
         format!("The OpenClaw {purpose} turn (session {session_key}) returned no completion.")
     })
@@ -348,10 +350,24 @@ fn invoke_distillation_turn(
 
 pub(crate) fn invoke_distilly_skill(session_id: &str, prompt: &str) -> Result<(), String> {
     invoke_distillation_turn(
+        OPENCLAW_EXECUTION_AGENT_ID,
+        "distilly",
         "Distilly creator",
         session_id,
         prompt,
         DISTILLY_RUN_TIMEOUT_SECONDS,
+    )
+    .map(|_| ())
+}
+
+pub(crate) fn invoke_nuwa_skill(session_id: &str, prompt: &str) -> Result<String, String> {
+    invoke_distillation_turn(
+        COGNITIVE_DISTILLATION_AGENT_ID,
+        "nuwa",
+        "Nuwa cognitive analyzer",
+        session_id,
+        prompt,
+        NUWA_RUN_TIMEOUT_SECONDS,
     )
 }
 
@@ -364,15 +380,6 @@ pub(crate) fn distillation_turn_completion(session_id: &str) -> Option<String> {
     let invoker = ProductionOpenClawAgentMethodInvoker;
     let session_key = format!("agent:{OPENCLAW_EXECUTION_AGENT_ID}:ai-os-distilly-{session_id}");
     latest_assistant_text(&history(&invoker, &session_key).ok()?)
-}
-
-pub(crate) fn invoke_research_skill(session_id: &str, prompt: &str) -> Result<(), String> {
-    invoke_distillation_turn(
-        "public-web research",
-        session_id,
-        prompt,
-        RESEARCH_RUN_TIMEOUT_SECONDS,
-    )
 }
 
 impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
@@ -407,6 +414,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
         });
         run_agent(
             self.invoker.as_ref(),
+            OPENCLAW_EXECUTION_AGENT_ID,
             &session_key,
             &first_message,
             &format!("{}:request", request.execution_id),
@@ -469,6 +477,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
                     );
                     run_agent(
                         self.invoker.as_ref(),
+                        OPENCLAW_EXECUTION_AGENT_ID,
                         &session_key,
                         &failure_message,
                         &format!(
@@ -494,6 +503,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
         );
         run_agent(
             self.invoker.as_ref(),
+            OPENCLAW_EXECUTION_AGENT_ID,
             &session_key,
             &result_message,
             &format!("{}:result", request.execution_id),
@@ -528,6 +538,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
 
 fn run_agent(
     invoker: &dyn OpenClawAgentMethodInvoker,
+    agent_id: &str,
     session_key: &str,
     message: &str,
     idempotency_key: &str,
@@ -538,7 +549,7 @@ fn run_agent(
             "agent",
             Some(json!({
                 "message": message,
-                "agentId": OPENCLAW_EXECUTION_AGENT_ID,
+                "agentId": agent_id,
                 "sessionKey": session_key,
                 "thinking": "off",
                 "deliver": false,

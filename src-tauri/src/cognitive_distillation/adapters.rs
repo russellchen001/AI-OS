@@ -195,6 +195,14 @@ fn probe_nuwa() -> AdapterStatus {
     probe_nuwa_candidates(nuwa_candidates())
 }
 
+/// Resolve the exact local Nuwa installation accepted by the capability probe.
+/// Execution must use the same installation readiness semantics as status probing.
+pub(crate) fn resolve_nuwa_directory() -> Option<PathBuf> {
+    nuwa_candidates()
+        .into_iter()
+        .find(|directory| nuwa_installation_is_usable(directory))
+}
+
 fn probe_nuwa_candidates(candidates: Vec<PathBuf>) -> AdapterStatus {
     for directory in candidates {
         if nuwa_installation_is_usable(&directory) {

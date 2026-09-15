@@ -31,6 +31,19 @@ pub(crate) struct EnrichmentOutcome {
     executed: bool,
     evidence_added: usize,
     reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quarantine_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifact: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    candidate_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NuwaEnrichmentReceipt {
+    quarantine_root: String,
+    artifact: String,
+    candidate_count: usize,
 }
 
 // No `Eq`: a profile carries f32 confidence values.
@@ -61,13 +74,21 @@ pub(crate) fn invoke_from_value(
     let writer = super::adapters::resolve_distilly_writer().ok_or_else(|| {
         "No usable Distilly installation was found to execute the creator.".to_owned()
     })?;
-    invoke_with(
+    invoke_with_enrichment(
         input,
         operation_id,
         &AdapterCatalog::probe(),
         &writer,
         |session_id, prompt| {
             crate::runtime::agent_skill_transport::invoke_distilly_skill(session_id, prompt)
+        },
+        |bundle, operation_id| {
+            let result = super::nuwa::execute_nuwa(bundle, operation_id)?;
+            Ok(NuwaEnrichmentReceipt {
+                quarantine_root: result.quarantine_root,
+                artifact: result.artifact,
+                candidate_count: result.candidate_count,
+            })
         },
     )
     .and_then(|result| {
@@ -97,6 +118,22 @@ fn invoke_with(
     writer: &Path,
     invoke: impl Fn(&str, &str) -> Result<(), String>,
 ) -> Result<DistillyCreatorResult, String> {
+    invoke_with_enrichment(input, operation_id, catalog, writer, invoke, |_, _| {
+        Err("No executor is implemented for this enrichment adapter.".to_owned())
+    })
+}
+
+fn invoke_with_enrichment(
+    input: &serde_json::Value,
+    operation_id: &str,
+    catalog: &AdapterCatalog,
+    writer: &Path,
+    invoke_distilly: impl Fn(&str, &str) -> Result<(), String>,
+    mut invoke_nuwa: impl FnMut(
+        &super::evidence::EvidenceBundle,
+        &str,
+    ) -> Result<NuwaEnrichmentReceipt, String>,
+) -> Result<DistillyCreatorResult, String> {
     let serialized =
         serde_json::to_vec(input).map_err(|_| "Distilly creator input is invalid.".to_owned())?;
     if serialized.len() > MAX_CREATOR_INPUT_BYTES {
@@ -119,10 +156,11 @@ fn invoke_with(
         .map_err(|_| "Could not create the Distilly quarantine.".to_owned())?;
     let root = quarantine.path().to_path_buf();
     let bundle = request.route.evidence_bundle.clone();
-    // Every optional pipeline the route selected but cannot execute is reported
-    // rather than dropped: a result must never be narrower than it claims. There
-    // is no research executor at all — see the note on this module.
-    let enrichment_outcomes: Vec<EnrichmentOutcome> = route
+    // Optional enrichment never runs before the primary creator has completed.
+    // These pending outcomes are used only if Distilly itself fails, so the
+    // diagnostic still names every selected optional pipeline without falsely
+    // claiming that it ran.
+    let pending_enrichment_outcomes: Vec<EnrichmentOutcome> = route
         .pipelines
         .iter()
         .filter(|pipeline| pipeline.adapter != CreatorAdapterId::Distilly)
@@ -130,7 +168,13 @@ fn invoke_with(
             adapter: pipeline.adapter,
             executed: false,
             evidence_added: 0,
-            reason: Some("No executor is implemented for this enrichment adapter.".to_owned()),
+            reason: Some(
+                "Selected but not executed because the primary creator did not complete."
+                    .to_owned(),
+            ),
+            quarantine_root: None,
+            artifact: None,
+            candidate_count: None,
         })
         .collect();
 
@@ -140,7 +184,7 @@ fn invoke_with(
     let creator_started = std::time::Instant::now();
     let creator_outcome =
         (|| -> Result<(Vec<QuarantinedArtifact>, PersonDistillationProfile), String> {
-            invoke(operation_id, &prompt)?;
+            invoke_distilly(operation_id, &prompt)?;
             let artifacts = inventory(&root)?;
             require_creator_artifacts(&artifacts, &request.profile_slug)?;
             let imported = import_quarantined_distillation(&root, &request.profile_slug)?;
@@ -155,13 +199,56 @@ fn invoke_with(
         format!(
             "{error} [creator turn ran {}s; optional pipelines: {}; evidence carried {} item(s)]",
             creator_started.elapsed().as_secs(),
-            describe_enrichment(&enrichment_outcomes),
+            describe_enrichment(&pending_enrichment_outcomes),
             bundle.evidence.len()
         )
     })?;
     // Importing before the quarantine is persisted means a creator run that
     // produced unusable artifacts leaves nothing behind.
     let persisted_root = quarantine.keep();
+
+    // Nuwa is optional enrichment. It receives the SAME AI-OS EvidenceBundle,
+    // never Distilly-authored prose as new evidence. Its output remains in its
+    // own quarantine and is not merged into the canonical profile here.
+    //
+    // An enrichment failure is visible in the result but cannot erase a valid
+    // Distilly draft.
+    let enrichment_outcomes: Vec<EnrichmentOutcome> = route
+        .pipelines
+        .iter()
+        .filter(|pipeline| pipeline.adapter != CreatorAdapterId::Distilly)
+        .map(|pipeline| match pipeline.adapter {
+            CreatorAdapterId::Nuwa => match invoke_nuwa(&bundle, operation_id) {
+                Ok(receipt) => EnrichmentOutcome {
+                    adapter: CreatorAdapterId::Nuwa,
+                    executed: true,
+                    evidence_added: 0,
+                    reason: None,
+                    quarantine_root: Some(receipt.quarantine_root),
+                    artifact: Some(receipt.artifact),
+                    candidate_count: Some(receipt.candidate_count),
+                },
+                Err(error) => EnrichmentOutcome {
+                    adapter: CreatorAdapterId::Nuwa,
+                    executed: false,
+                    evidence_added: 0,
+                    reason: Some(error),
+                    quarantine_root: None,
+                    artifact: None,
+                    candidate_count: None,
+                },
+            },
+            adapter => EnrichmentOutcome {
+                adapter,
+                executed: false,
+                evidence_added: 0,
+                reason: Some("No executor is implemented for this enrichment adapter.".to_owned()),
+                quarantine_root: None,
+                artifact: None,
+                candidate_count: None,
+            },
+        })
+        .collect();
 
     Ok(DistillyCreatorResult {
         status: "quarantined".to_owned(),
@@ -496,6 +583,23 @@ mod tests {
         }])
     }
 
+    fn ready_catalog_with_nuwa() -> AdapterCatalog {
+        AdapterCatalog::for_test(vec![
+            AdapterStatus {
+                id: CreatorAdapterId::Distilly,
+                availability: AdapterAvailability::Ready,
+                capability_probe: "test-distilly".to_owned(),
+                reason: None,
+            },
+            AdapterStatus {
+                id: CreatorAdapterId::Nuwa,
+                availability: AdapterAvailability::Ready,
+                capability_probe: "test-nuwa".to_owned(),
+                reason: None,
+            },
+        ])
+    }
+
     fn quarantine_root_from(prompt: &str) -> std::path::PathBuf {
         let marker = "QUARANTINE_ROOT=";
         let start = prompt.find(marker).unwrap() + marker.len();
@@ -572,6 +676,117 @@ mod tests {
         assert!(!drafted.draft_narrative.is_empty());
 
         fs::remove_dir_all(result.quarantine_root).unwrap();
+    }
+
+    #[test]
+    fn ready_nuwa_runs_after_distilly_and_remains_separate_quarantined_enrichment() {
+        let mut nuwa_saw_bundle = false;
+
+        let result = invoke_with_enrichment(
+            &fixture(),
+            "test-operation",
+            &ready_catalog_with_nuwa(),
+            &test_writer(),
+            |_, prompt| {
+                write_writer_shaped_artifacts(&quarantine_root_from(prompt), "alice-synthetic");
+                Ok(())
+            },
+            |bundle, operation_id| {
+                assert_eq!(operation_id, "test-operation");
+                assert_eq!(bundle.bundle_id, "alice-bundle");
+                nuwa_saw_bundle = true;
+
+                Ok(NuwaEnrichmentReceipt {
+                    quarantine_root: "/test/nuwa-quarantine".to_owned(),
+                    artifact: "nuwa-result.json".to_owned(),
+                    candidate_count: 3,
+                })
+            },
+        )
+        .unwrap();
+
+        assert!(nuwa_saw_bundle);
+        assert_eq!(result.status, "quarantined");
+        assert!(!result.active_profile_created);
+        assert_eq!(result.enrichment.len(), 1);
+
+        let outcome = &result.enrichment[0];
+        assert_eq!(outcome.adapter, CreatorAdapterId::Nuwa);
+        assert!(outcome.executed);
+        assert_eq!(outcome.evidence_added, 0);
+        assert_eq!(outcome.reason, None);
+        assert_eq!(
+            outcome.quarantine_root.as_deref(),
+            Some("/test/nuwa-quarantine")
+        );
+        assert_eq!(outcome.artifact.as_deref(), Some("nuwa-result.json"));
+        assert_eq!(outcome.candidate_count, Some(3));
+
+        // Nuwa enrichment is metadata only at this stage. It does not activate
+        // or canonicalise the Distilly draft.
+        assert_eq!(
+            result.draft_profile.status,
+            crate::cognitive_distillation::profile::ProfileStatus::Draft
+        );
+
+        fs::remove_dir_all(result.quarantine_root).unwrap();
+    }
+
+    #[test]
+    fn nuwa_failure_is_reported_without_failing_valid_distilly_draft() {
+        let result = invoke_with_enrichment(
+            &fixture(),
+            "test-operation",
+            &ready_catalog_with_nuwa(),
+            &test_writer(),
+            |_, prompt| {
+                write_writer_shaped_artifacts(&quarantine_root_from(prompt), "alice-synthetic");
+                Ok(())
+            },
+            |_, _| Err("Nuwa validation rejected the candidate.".to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(result.status, "quarantined");
+        assert!(!result.active_profile_created);
+        assert_eq!(result.enrichment.len(), 1);
+
+        let outcome = &result.enrichment[0];
+        assert_eq!(outcome.adapter, CreatorAdapterId::Nuwa);
+        assert!(!outcome.executed);
+        assert_eq!(outcome.evidence_added, 0);
+        assert_eq!(
+            outcome.reason.as_deref(),
+            Some("Nuwa validation rejected the candidate.")
+        );
+        assert!(outcome.quarantine_root.is_none());
+        assert!(outcome.artifact.is_none());
+        assert!(outcome.candidate_count.is_none());
+
+        assert_eq!(
+            result.draft_profile.status,
+            crate::cognitive_distillation::profile::ProfileStatus::Draft
+        );
+
+        fs::remove_dir_all(result.quarantine_root).unwrap();
+    }
+
+    #[test]
+    fn nuwa_never_runs_when_primary_distilly_creator_fails() {
+        let error = invoke_with_enrichment(
+            &fixture(),
+            "test-operation",
+            &ready_catalog_with_nuwa(),
+            &test_writer(),
+            |_, _| Err("Distilly transport failed".to_owned()),
+            |_, _| panic!("Nuwa must not execute after a failed primary creator"),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Distilly transport failed"), "{error}");
+        assert!(error.contains("optional pipelines:"), "{error}");
+        assert!(error.contains("Nuwa"), "{error}");
+        assert!(error.contains("executed=false"), "{error}");
     }
 
     /// The acceptance question CD-1B-1 actually asks is whether the validated
@@ -750,15 +965,118 @@ mod tests {
     /// observation worth having. Same boundaries as the full smoke: quick mode,
     /// public sources, nothing activated.
 
-    /// The second real smoke: the research-enrichment path, end to end.
+    /// Real end-to-end smoke for the Distilly primary creator plus Nuwa
+    /// cognitive enrichment path.
     ///
-    /// Unlike the Distilly smoke, this one causes a REAL public web search about a
-    /// REAL named person, so it is gated behind its own environment variable and
-    /// never runs as part of any suite. The subject was chosen by the owner.
-    ///
-    /// It stays inside the boundaries the adapter enforces: quick mode only, so no
-    /// browser, no Douyin, no login; public sources only; and the result is a
-    /// quarantined Draft that is never activated.
+    /// Both analyzers receive the bounded AI-OS EvidenceBundle. Nuwa runs through
+    /// the dedicated zero-tool cognitive-distillation identity and its output must
+    /// pass AI-OS validation before AI-OS persists it into a separate quarantine.
+    /// Neither analyzer may activate or silently merge a canonical profile here.
+
+    #[test]
+    #[ignore = "requires installed Distilly, Nuwa, local OpenClaw, and zero-tool cognitive identity"]
+    fn real_distilly_and_nuwa_joint_smoke() {
+        assert_eq!(
+            std::env::var("AI_OS_RUN_DISTILLATION_JOINT_SMOKE").as_deref(),
+            Ok("1")
+        );
+
+        let operation_id = format!(
+            "cd-joint-real-smoke-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the clock must be after the epoch")
+                .as_millis()
+        );
+
+        let result = invoke_from_value(&fixture(), &operation_id).unwrap_or_else(|error| {
+            panic!("DISTILLATION_JOINT_SMOKE_FAILED operation_id={operation_id}: {error}")
+        });
+
+        println!("JOINT_SMOKE_OPERATION_ID={operation_id}");
+
+        assert_eq!(
+            result.get("status").and_then(|value| value.as_str()),
+            Some("quarantined")
+        );
+
+        assert_eq!(
+            result
+                .get("activeProfileCreated")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+
+        let enrichment = result
+            .get("enrichment")
+            .and_then(|value| value.as_array())
+            .expect("joint smoke must return enrichment outcomes");
+
+        let nuwa = enrichment
+            .iter()
+            .find(|entry| entry.get("adapter").and_then(|value| value.as_str()) == Some("nuwa"))
+            .expect("joint smoke must report Nuwa enrichment");
+
+        assert_eq!(
+            nuwa.get("executed").and_then(|value| value.as_bool()),
+            Some(true),
+            "real Nuwa enrichment must execute successfully"
+        );
+
+        assert_eq!(
+            nuwa.get("evidenceAdded").and_then(|value| value.as_u64()),
+            Some(0),
+            "Nuwa derives candidates but must not invent new evidence"
+        );
+
+        assert_eq!(
+            nuwa.get("artifact").and_then(|value| value.as_str()),
+            Some("nuwa-result.json")
+        );
+
+        let nuwa_root = nuwa
+            .get("quarantineRoot")
+            .and_then(|value| value.as_str())
+            .expect("Nuwa enrichment must expose its quarantine root");
+
+        let nuwa_artifact = std::path::Path::new(nuwa_root).join("nuwa-result.json");
+        assert!(
+            nuwa_artifact.is_file(),
+            "Nuwa validated quarantine artifact must exist"
+        );
+
+        let persisted: super::super::nuwa::NuwaResult = serde_json::from_slice(
+            &std::fs::read(&nuwa_artifact).expect("Nuwa quarantine artifact must be readable"),
+        )
+        .expect("Nuwa quarantine artifact must satisfy the strict contract");
+
+        super::super::nuwa::validate_nuwa_result(
+            &persisted,
+            &serde_json::from_value::<DistillyCreatorRequest>(fixture())
+                .unwrap()
+                .route
+                .evidence_bundle,
+        )
+        .expect("AI-OS must independently validate the persisted Nuwa result");
+
+        println!(
+            "JOINT_SMOKE_NUWA_CANDIDATES={}",
+            persisted.candidate_count()
+        );
+
+        let distilly_root = result
+            .get("quarantineRoot")
+            .and_then(|value| value.as_str())
+            .expect("Distilly quarantine root must exist");
+
+        assert_ne!(
+            distilly_root, nuwa_root,
+            "Distilly and Nuwa must remain in separate quarantines"
+        );
+
+        println!("JOINT_SMOKE_QUARANTINES_SEPARATE=true");
+        println!("JOINT_SMOKE_STATUS=PASS");
+    }
 
     #[test]
     #[ignore = "requires installed Distilly and a reachable local OpenClaw gateway"]
@@ -783,8 +1101,18 @@ mod tests {
             Err(error) => panic!("DISTILLY_REAL_SMOKE_FAILED operation_id={operation_id}: {error}"),
         };
         println!(
-            "DISTILLY_REAL_RESULT={}",
-            serde_json::to_string(&result).unwrap()
+            "DISTILLY_REAL_STATUS={}",
+            result
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+        );
+        println!(
+            "DISTILLY_REAL_ACTIVE_PROFILE_CREATED={}",
+            result
+                .get("activeProfileCreated")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
         );
     }
 }

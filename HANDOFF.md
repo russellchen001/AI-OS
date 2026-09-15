@@ -10845,3 +10845,207 @@ Nuwa does not replace the AI-OS media ingestion layer.
 Nuwa is responsible for cognitive analysis, not for solving macOS executable distribution/signing.
 
 <!-- P15-EXTERNAL-TOOLCHAIN-UNSIGNED-V1-2026-09-14-END -->
+
+<!-- MIROFISH_SCENARIO_SIMULATION_DECISION -->
+
+## P16 — Scenario Simulation / MiroFish
+
+Architecture decision:
+
+- Cognitive Distillation does **not** depend on MiroFish.
+- MiroFish is **not part of P15 implementation scope**.
+- Scenario Simulation is deferred to **P16 AI Council**.
+- MiroFish is the current preferred first provider candidate for this capability, but AI-OS must remain simulator-independent.
+
+Target architecture:
+
+AI-OS
+  |
+  +-- Scenario Simulation Adapter
+        |
+        +-- MiroFish Provider
+        +-- Future Simulator Providers
+
+Intended flow:
+
+Observed evidence / Person Profiles / Cognitive Models
+        |
+        v
+Scenario Simulation
+        |
+        v
+MiroFish or another simulator
+        |
+        v
+Hypothetical scenario paths
+        |
+        v
+Scenario Distillation
+        |
+        v
+AI Council / Planner reasoning support
+
+MiroFish is intended to provide synthetic scenario exploration such as:
+
+- multi-role interaction
+- alternative decision paths
+- counterfactual outcomes
+- failure paths
+- edge cases
+- conflict evolution
+- second-order effects
+- scenario branches
+
+It is **not** treated as a calibrated prediction oracle.
+
+### Evidence boundary
+
+AI-OS must permanently distinguish observed evidence from simulated evidence.
+
+Observed evidence:
+
+source_type: observed
+ground_truth: true or independently verified
+
+Simulated evidence:
+
+source_type: simulation
+confidence: hypothetical
+ground_truth: false
+
+Mandatory invariants:
+
+- simulated evidence must never be silently promoted to observed evidence;
+- simulated behavior must never become a factual Person Profile claim merely because a simulator generated it;
+- simulated results must not directly update canonical person identity, biography, historical behavior, or verified memory;
+- Scenario Distillation may derive hypotheses, counterfactuals, failure patterns, second-order risks, and reusable scenario lessons;
+- any later promotion from simulation-derived hypothesis to factual knowledge requires independent real-world evidence.
+
+### Relationship to Cognitive Distillation
+
+Current P15 Cognitive Distillation remains focused on real authorized evidence:
+
+- Distilly: person/profile characteristics;
+- Nuwa: cognitive models, decision heuristics, reasoning patterns and honest uncertainty.
+
+Future P16 can add:
+
+Person Profile
+    +
+Cognitive Model
+    +
+Scenario Context
+        |
+        v
+Scenario Simulation
+        |
+        v
+Scenario Distillation
+        |
+        v
+AI Council
+
+This supports the longer-term product goal:
+
+Person
+  -> Cognitive Model
+  -> Predictive Simulation
+
+without making Cognitive Distillation dependent on any particular simulator.
+
+### Integration boundary
+
+MiroFish should be integrated through a provider/adapter boundary rather than copied into AI-OS Core.
+
+Reason:
+
+- replaceability;
+- simulator independence;
+- isolation of synthetic data;
+- easier future provider comparison;
+- licensing boundary.
+
+MiroFish is currently treated as an external provider candidate because of its AGPL-3.0 licensing model. A fresh license and architecture audit must be performed before P16 implementation.
+
+### Implementation timing
+
+Do not implement MiroFish during current P15 Cognitive Distillation work.
+
+Revisit during P16 AI Council after:
+
+1. Distilly + Nuwa enrichment is complete;
+2. Cognitive Distillation quarantine/review/profile lifecycle is complete;
+3. P15 Cognitive Distillation Foundation is closed.
+
+At P16, first define the generic `ScenarioSimulationAdapter` contract, then evaluate the current MiroFish release against that contract before integration.
+
+<!-- /MIROFISH_SCENARIO_SIMULATION_DECISION -->
+
+<!-- COGNITIVE_DISTILLATION_DISTILLY_NUWA_VERIFIED_2026_09_15 -->
+
+## P15 Cognitive Distillation — Distilly + Nuwa production path verified
+
+Status: **Verified**
+
+Verified on 2026-09-15.
+
+Architecture now proven end to end:
+
+`EvidenceBundle -> Distilly PrimaryCreator -> Draft Person Profile -> Nuwa CognitiveAnalyzer -> AI-OS validation -> separate Nuwa quarantine`
+
+Production boundaries:
+
+- Distilly remains the required `PrimaryCreator`.
+- Nuwa is the optional `CognitiveAnalyzer`.
+- Nuwa runs only after the Distilly primary creator succeeds.
+- Nuwa runs through the dedicated `ai-os-cognitive-distillation` OpenClaw identity.
+- The cognitive-distillation identity is configured as zero-tool / zero-skill with elevated execution disabled.
+- Nuwa receives the bounded AI-OS `EvidenceBundle` plus audited Nuwa methodology.
+- Nuwa does not perform uncontrolled public research in the private-person path.
+- Nuwa output is candidate analysis only.
+- AI-OS independently validates Nuwa evidence IDs, contradiction references, confidence bounds, schema, and output envelope before persistence.
+- A Nuwa failure is explicit enrichment failure and does not invalidate an otherwise valid Distilly draft.
+- If Distilly fails, Nuwa does not run.
+- Nuwa adds derived cognitive candidates, not new evidence, so `evidenceAdded = 0`.
+- Distilly and Nuwa artifacts remain in separate quarantines.
+- Nuwa candidates are not automatically merged into the canonical `PersonDistillationProfile`.
+- No Person Profile is automatically activated.
+- Human review remains required before canonical promotion or activation.
+- Full/raw model completions and complete private profile payloads are not printed by committed smoke diagnostics.
+
+Real production joint smoke:
+
+- oMLX runtime restored and authenticated.
+- Model: `Qwen3.5-9B-4bit`.
+- Real Distilly execution succeeded.
+- Real Nuwa zero-tool enrichment succeeded.
+- Nuwa produced `nuwa-result.json`.
+- Nuwa candidate count in the verified smoke: 9.
+- `evidenceAdded = 0`.
+- Distilly and Nuwa quarantine roots were independently verified to be different.
+- `activeProfileCreated = false`.
+- Final result remained `quarantined`.
+- `JOINT_SMOKE_STATUS=PASS`.
+
+Final pre-checkpoint verification:
+
+- Creator tests: 8 passed, 0 failed, 2 ignored.
+- Nuwa tests: 11 passed, 0 failed, 1 ignored.
+- Cognitive Distillation suite: 93 passed, 0 failed, 7 ignored.
+- `cargo check`: passed.
+- Joint real-smoke target compilation: passed.
+- `git diff --check`: passed.
+- Private/raw smoke logging audit: passed.
+
+Product interpretation:
+
+- Distilly answers primarily: **“这个人是什么样的人”**.
+- Nuwa answers primarily: **“这个人怎么思考、怎么判断”**.
+- AI-OS remains the canonical authority for evidence provenance, validation, review state, and activation.
+- The established product direction remains:
+
+  `Person -> Cognitive Model -> Predictive Simulation`
+
+Scenario Simulation / MiroFish remains deferred to P16 and is not a dependency of Cognitive Distillation.
+
+<!-- /COGNITIVE_DISTILLATION_DISTILLY_NUWA_VERIFIED_2026_09_15 -->
