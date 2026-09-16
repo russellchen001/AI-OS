@@ -180,20 +180,81 @@ pub(crate) fn requirement(tier: MediaTier, profile: ModelProfile) -> TierRequire
         }
     }
 
-    let ready = outstanding == 0;
+    // A downloaded model is not the same thing as a usable capability.
+    //
+    // These executors are part of the AI-OS media installation rather than
+    // managed model assets. Reporting Ready while one is absent would make the
+    // status command disagree with the production reader that actually executes
+    // them.
+    let missing_engine = missing_engine_for(tier);
+
+    let ready = outstanding == 0 && missing_engine.is_none();
+    let message = if outstanding > 0 {
+        Some(format!(
+            "Reading {} needs a one-time {} download. It runs entirely on this machine and nothing is sent anywhere.",
+            tier.label(),
+            human_size(outstanding)
+        ))
+    } else {
+        missing_engine
+            .map(|_| "The AI-OS media tools are missing from this installation.".to_owned())
+    };
+
     TierRequirement {
         tier,
         ready,
         download_bytes: outstanding,
         profile,
-        message: (!ready).then(|| {
-            format!(
-                "Reading {} needs a one-time {} download. It runs entirely on this machine and nothing is sent anywhere.",
-                tier.label(),
-                human_size(outstanding)
-            )
-        }),
+        message,
     }
+}
+
+/// The executable part of each media tier.
+///
+/// Text needs nothing. Screen text covers both screenshots and video frames, so
+/// it needs OCR plus frame extraction. Speech needs demuxing plus whisper.cpp.
+/// Pure pictures are described by llama.cpp's multimodal CLI.
+///
+/// Model files are deliberately NOT checked here; `requirement` already verifies
+/// them against their pinned hashes.
+fn missing_engine_for(tier: MediaTier) -> Option<&'static str> {
+    match tier {
+        MediaTier::Text => None,
+        MediaTier::ScreenText => {
+            if !binary_available("ffmpeg") {
+                Some("ffmpeg")
+            } else if !binary_available("tesseract") {
+                Some("tesseract")
+            } else {
+                None
+            }
+        }
+        MediaTier::Speech => {
+            if !binary_available("ffmpeg") {
+                Some("ffmpeg")
+            } else if !binary_available("whisper-cli") {
+                Some("whisper-cli")
+            } else {
+                None
+            }
+        }
+        MediaTier::Picture => {
+            if !binary_available("llama-mtmd-cli") {
+                Some("llama-mtmd-cli")
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn binary_available(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .any(|candidate| candidate.is_file())
 }
 
 /// Fetch whatever a tier is missing. Called only after a person has agreed.
@@ -224,18 +285,53 @@ fn human_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    /// The point of the whole tiering scheme: someone distilling chat logs and
-    /// screenshots is never asked to download anything.
+    /// Chat logs need neither a model nor an external media engine.
     #[test]
-    fn text_and_screenshots_need_no_download_on_any_machine() {
+    fn text_needs_no_download_or_media_engine_on_any_machine() {
         for profile in [ModelProfile::Compact, ModelProfile::Accurate] {
-            for tier in [MediaTier::Text, MediaTier::ScreenText] {
-                assert!(assets_for(tier, profile).is_empty());
-                let requirement = requirement(tier, profile);
-                assert!(requirement.ready);
-                assert_eq!(requirement.download_bytes, 0);
+            assert!(assets_for(MediaTier::Text, profile).is_empty());
+            let requirement = requirement(MediaTier::Text, profile);
+            assert!(requirement.ready);
+            assert_eq!(requirement.download_bytes, 0);
+            assert!(requirement.message.is_none());
+        }
+    }
+
+    /// Screen text has no model download, but Ready still means its external
+    /// execution tools are actually present.
+    #[test]
+    fn screen_text_never_requests_a_model_download() {
+        for profile in [ModelProfile::Compact, ModelProfile::Accurate] {
+            assert!(assets_for(MediaTier::ScreenText, profile).is_empty());
+            let requirement = requirement(MediaTier::ScreenText, profile);
+            assert_eq!(requirement.download_bytes, 0);
+
+            let engines_present = binary_available("ffmpeg") && binary_available("tesseract");
+            assert_eq!(requirement.ready, engines_present);
+
+            if engines_present {
                 assert!(requirement.message.is_none());
+            } else {
+                assert!(requirement
+                    .message
+                    .as_deref()
+                    .is_some_and(|message| message.contains("AI-OS media tools")));
             }
+        }
+    }
+
+    /// A tier with downloaded assets must still not claim Ready when its
+    /// execution engine is absent.
+    #[test]
+    fn readiness_includes_the_execution_engine() {
+        let speech = requirement(MediaTier::Speech, ModelProfile::for_this_machine());
+        if !binary_available("ffmpeg") || !binary_available("whisper-cli") {
+            assert!(!speech.ready);
+        }
+
+        let picture = requirement(MediaTier::Picture, ModelProfile::for_this_machine());
+        if !binary_available("llama-mtmd-cli") {
+            assert!(!picture.ready);
         }
     }
 
@@ -312,7 +408,10 @@ mod tests {
             "developer instructions leaked: {text}"
         );
         assert!(!text.contains("cargo"));
-        assert!(text.contains("this machine"));
+        assert!(
+            text.contains("this machine") || text.contains("AI-OS media tools"),
+            "message must describe either the model setup or the installation state: {text}"
+        );
     }
 
     /// The setup script resolves this path independently, so the two can drift.

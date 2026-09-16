@@ -17,11 +17,12 @@
 //! kneading dough has no speech and nothing written on screen, and would yield
 //! nothing at all.
 //!
-//! For that case a local vision model (llama.cpp + InternVL3-2B) is asked to
-//! describe sampled frames. It is a FALLBACK, used only when neither speech nor
-//! screen text was found, because a vision model costs seconds per frame while
-//! OCR costs milliseconds. Its output is a visual observation and never
-//! `extracted_text`: a generated description is not text that was in the source.
+//! A local vision model (llama.cpp + InternVL3-2B) describes sampled frames when
+//! visual understanding is required. Silent textless video depends on it entirely;
+//! talking video also uses it alongside speech and OCR because readable text does
+//! not describe the people, objects, or actions visible in the picture. Its output
+//! is a visual observation and never `extracted_text`: generated description is
+//! not source text.
 
 use std::{
     collections::BTreeMap,
@@ -54,6 +55,20 @@ pub(crate) struct VisualReading {
 }
 
 /// Sample a video's frames and read the text on each.
+/// Extract the same bounded frame sample used by screen-text reading without
+/// requiring OCR. Purely visual video uses this before local vision description.
+pub(crate) fn prepare_video_frames(
+    video: &Path,
+    work_dir: &Path,
+    ffmpeg: &Path,
+) -> Result<(), String> {
+    let frames_dir = work_dir.join("frames");
+    fs::create_dir_all(&frames_dir)
+        .map_err(|_| "Could not prepare the frame working directory.".to_owned())?;
+
+    extract_frames(ffmpeg, video, &frames_dir)
+}
+
 pub(crate) fn read_screen_text(
     video: &Path,
     work_dir: &Path,
@@ -257,6 +272,57 @@ fn describe_frame(vision: &VisionModel, frame: &Path) -> Option<String> {
     Some(text)
 }
 
+/// Prepare a still image for local OCR / vision without changing the source.
+///
+/// iPhone photos commonly arrive as HEIC/HEIF, while the local VLM and OCR
+/// engines are most reliable with ordinary raster input. The converted PNG is
+/// temporary working state only; provenance and hashing continue to refer to the
+/// original owner-supplied file.
+pub(crate) fn prepare_still_image(image: &Path, work_dir: &Path) -> Result<PathBuf, String> {
+    let staged = work_dir.join("image-normalized.png");
+
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("/usr/bin/sips")
+            .args(["-s", "format", "png"])
+            .arg(image)
+            .arg("--out")
+            .arg(&staged)
+            .output()
+            .map_err(|_| "The image could not be prepared for local reading.".to_owned())?;
+
+        if !output.status.success() || !staged.is_file() {
+            return Err(
+                "The image could not be converted into a readable local format.".to_owned(),
+            );
+        }
+
+        let metadata = fs::metadata(&staged)
+            .map_err(|_| "The prepared image could not be read.".to_owned())?;
+
+        if metadata.len() == 0 {
+            return Err("The prepared image was empty.".to_owned());
+        }
+
+        return Ok(staged);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let extension = image
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("img");
+
+        let staged = work_dir.join(format!("image-normalized.{extension}"));
+
+        fs::copy(image, &staged)
+            .map_err(|_| "The image could not be prepared for local reading.".to_owned())?;
+
+        Ok(staged)
+    }
+}
+
 /// Read the text in a single still image. Empty when there is none legible,
 /// which is a normal thing for a photograph to be.
 pub(crate) fn read_image_text(image: &Path, tesseract: &Path, languages: &str) -> String {
@@ -266,14 +332,10 @@ pub(crate) fn read_image_text(image: &Path, tesseract: &Path, languages: &str) -
 /// Describe a single still image with the local vision model.
 pub(crate) fn describe_image(
     image: &Path,
-    work_dir: &Path,
+    _work_dir: &Path,
     vision: &VisionModel,
 ) -> Result<String, String> {
-    // Copied into the working directory first so the model is never pointed at a
-    // path outside it, and so an odd filename cannot reach the command line.
-    let staged = work_dir.join("image-to-describe");
-    fs::copy(image, &staged).map_err(|_| "The image could not be prepared.".to_owned())?;
-    describe_frame(vision, &staged)
+    describe_frame(vision, image)
         .ok_or_else(|| "The vision model produced no description of this image.".to_owned())
 }
 

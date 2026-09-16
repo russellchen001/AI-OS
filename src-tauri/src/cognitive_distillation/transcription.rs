@@ -119,30 +119,22 @@ impl TranscriptionTools {
     /// A vague "transcription unavailable" would leave a person guessing which of
     /// three things to install, so each is reported by name.
     pub(crate) fn resolve() -> Result<Self, String> {
-        // These ship inside AI-OS. If one is missing the installation itself is
-        // damaged, which is a different thing from a model not being downloaded
-        // yet, and is worded so the two are never confused.
+        // ffmpeg is the common media transport. Speech, OCR and vision are
+        // resolved opportunistically because the actual file decides which
+        // capability is required. A photograph must not depend on Whisper.
         let ffmpeg = which("ffmpeg").ok_or_else(|| {
             "The AI-OS media tools are missing from this installation.".to_owned()
         })?;
-        let whisper = which("whisper-cli").ok_or_else(|| {
-            "The AI-OS media tools are missing from this installation.".to_owned()
-        })?;
-        // A model, by contrast, is downloaded on demand, so its absence is a
-        // normal state with an action attached rather than a failure.
-        let model = resolve_model().ok_or_else(|| {
-            super::toolchain::requirement(
-                super::toolchain::MediaTier::Speech,
-                super::toolchain::ModelProfile::for_this_machine(),
-            )
-            .message
-            .unwrap_or_else(|| "Speech reading is not set up yet.".to_owned())
-        })?;
+
+        let whisper = which("whisper-cli").unwrap_or_default();
+        let model = resolve_model().unwrap_or_default();
+
         let tesseract = super::visual::find_tesseract();
         let ocr_languages = tesseract
             .as_deref()
             .map(super::visual::ocr_languages)
             .unwrap_or_else(|| "eng".to_owned());
+
         Ok(Self {
             ffmpeg,
             whisper,
@@ -272,13 +264,16 @@ pub(crate) fn evidence_from_image(
 ) -> Result<MediaTranscription, String> {
     let digest = validated_digest(media)?;
 
+    let prepared = super::visual::prepare_still_image(media, work_dir)?;
+
     let text = tools
         .tesseract
         .as_deref()
-        .map(|tesseract| super::visual::read_image_text(media, tesseract, &tools.ocr_languages))
+        .map(|tesseract| super::visual::read_image_text(&prepared, tesseract, &tools.ocr_languages))
         .unwrap_or_default();
 
     let mut note = None;
+
     let item = if !text.is_empty() {
         ExtractedEvidenceItem {
             evidence_id: "image-text".to_owned(),
@@ -298,17 +293,18 @@ pub(crate) fn evidence_from_image(
             confidence: 0.5,
         }
     } else {
-        // Nothing legible. Describing the picture is the only thing left, and it
-        // is the same last resort a soundless, textless video falls back to.
         let vision = tools
             .vision
             .as_ref()
             .ok_or_else(|| picture_reading_not_set_up("This image has no legible text."))?;
-        let described = super::visual::describe_image(media, work_dir, vision)?;
+
+        let described = super::visual::describe_image(&prepared, work_dir, vision)?;
+
         note = Some(
             "No legible text was found in this image, so it was described by a local vision model; what follows is a description of the picture, not something written in it."
                 .to_owned(),
         );
+
         ExtractedEvidenceItem {
             evidence_id: "image-description".to_owned(),
             location: EvidenceLocation {
@@ -319,7 +315,6 @@ pub(crate) fn evidence_from_image(
                 region: None,
             },
             speaker: None,
-            // A description is not text that was in the picture.
             extracted_text: None,
             visual_observations: vec![described],
             structural_relations: Vec::new(),
@@ -407,27 +402,52 @@ pub(crate) fn evidence_from_media(
         return Err("The media file exceeds the bounded transcription limit.".to_owned());
     }
 
-    // The ORIGINAL file is the source of record. The demuxed wav is a derived
-    // working file, so digesting the wav would record provenance for something the
-    // person never gave us.
     let digest = file_digest(media)?;
 
     let carries_picture = has_video_stream(tools, media).unwrap_or(false);
+    let carries_audio = has_audio_stream(tools, media).unwrap_or(!carries_picture);
 
-    // Audio first: a video may also be spoken over, and the soundtrack is read
-    // the same way either way.
-    let wav = work_dir.join("audio-16k-mono.wav");
-    demux_to_wav(tools, media, &wav)?;
-    let prefix = work_dir.join("transcript");
-    run_whisper(tools, &wav, &prefix)?;
-    let output: WhisperOutput = serde_json::from_str(
-        &fs::read_to_string(prefix.with_extension("json"))
-            .map_err(|_| "whisper-cli produced no JSON transcript.".to_owned())?,
-    )
-    .map_err(|_| {
-        "The whisper-cli transcript did not match its documented JSON contract.".to_owned()
-    })?;
-    let speech = segments_to_items(&output).unwrap_or_default();
+    let (speech, speech_revision) = if carries_audio {
+        if !tools.whisper.is_file() || !tools.model.is_file() {
+            let requirement = super::toolchain::requirement(
+                super::toolchain::MediaTier::Speech,
+                super::toolchain::ModelProfile::for_this_machine(),
+            );
+            return Err(requirement
+                .message
+                .unwrap_or_else(|| "Speech reading is not set up yet.".to_owned()));
+        }
+
+        let wav = work_dir.join("audio-16k-mono.wav");
+        demux_to_wav(tools, media, &wav)?;
+
+        let prefix = work_dir.join("transcript");
+        run_whisper(tools, &wav, &prefix)?;
+
+        let output: WhisperOutput = serde_json::from_str(
+            &fs::read_to_string(prefix.with_extension("json"))
+                .map_err(|_| "The local speech reader produced no JSON transcript.".to_owned())?,
+        )
+        .map_err(|_| {
+            "The local speech transcript did not match its documented JSON contract.".to_owned()
+        })?;
+
+        let revision = format!(
+            "{} ({})",
+            output.model.kind,
+            Path::new(&output.params.model)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "unknown-model".to_owned())
+        );
+
+        (
+            segments_to_items(&output).unwrap_or_default(),
+            Some(revision),
+        )
+    } else {
+        (Vec::new(), None)
+    };
 
     let media_kind = if carries_picture {
         SourceMediaKind::Video
@@ -437,37 +457,80 @@ pub(crate) fn evidence_from_media(
 
     let mut note = None;
     let mut screen_states_read = 0;
+
     let items = if carries_picture {
-        let tesseract = tools.tesseract.as_deref().ok_or_else(|| {
-            "The AI-OS media tools are missing from this installation.".to_owned()
-        })?;
-        let reading = super::visual::read_screen_text(
-            media,
-            work_dir,
-            &tools.ffmpeg,
-            tesseract,
-            &tools.ocr_languages,
-        )?;
-        screen_states_read = reading.states.len();
-        if reading.no_legible_text {
+        let (states, no_legible_text) = if let Some(tesseract) = tools.tesseract.as_deref() {
+            let reading = super::visual::read_screen_text(
+                media,
+                work_dir,
+                &tools.ffmpeg,
+                tesseract,
+                &tools.ocr_languages,
+            )?;
+
+            screen_states_read = reading.states.len();
+            (reading.states, reading.no_legible_text)
+        } else if tools.vision.is_some() {
+            super::visual::prepare_video_frames(media, work_dir, &tools.ffmpeg)?;
+            (Vec::new(), true)
+        } else {
+            return Err("The AI-OS media tools are missing from this installation.".to_owned());
+        };
+
+        let mut items = video_items(&speech, &states);
+
+        // A talking video is intrinsically multimodal. OCR answers only
+        // "what text was visible"; it does not answer what people, objects, or
+        // actions were visible. Therefore readable OCR must never suppress
+        // picture understanding for video that also contains speech.
+        //
+        // When local vision is available, every talking video gets sampled
+        // visual descriptions in addition to its transcript. OCR remains useful
+        // evidence when present, but is not a substitute for visual grounding.
+        if !speech.is_empty() {
+            if let Some(vision) = tools.vision.as_ref() {
+                let described = super::visual::describe_frames(work_dir, vision)?;
+
+                screen_states_read = screen_states_read.max(described.len());
+
+                add_frame_descriptions_to_items(&mut items, &described);
+
+                note = Some(if states.is_empty() {
+                    format!(
+                        "Speech was transcribed and {} sampled video frames were also described by the local vision model.",
+                        described.len()
+                    )
+                } else {
+                    format!(
+                        "Speech was transcribed, {} screen-text states were read, and {} sampled video frames were also described by the local vision model.",
+                        states.len(),
+                        described.len()
+                    )
+                });
+            } else if no_legible_text {
+                note = Some(
+                    "Speech was transcribed, but no legible text was found on screen and local picture understanding is not set up."
+                        .to_owned(),
+                );
+            }
+        } else if no_legible_text {
             note = Some(
-                "No legible text was found on screen. Only text can be read from the picture; imagery, gestures and physical demonstrations are not described."
+                "No legible text was found on screen. Visual description is used when the local picture model is available."
                     .to_owned(),
             );
         }
-        let mut items = video_items(&speech, &reading.states);
 
-        // Nothing said and nothing written: the only thing left is to look at the
-        // picture. This is the soundless demonstration case — hands showing a
-        // technique — which every other path returns empty for.
+        // Truly silent + textless video: visual description is the evidence.
         if items.is_empty() {
             if let Some(vision) = tools.vision.as_ref() {
                 let described = super::visual::describe_frames(work_dir, vision)?;
                 screen_states_read = described.len();
+
                 note = Some(format!(
                     "No speech and no legible text on screen. {} sampled frames were described by a local vision model; everything here is a description of the picture, not something written or said.",
                     described.len()
                 ));
+
                 items = described_items(&described);
             }
         }
@@ -477,12 +540,14 @@ pub(crate) fn evidence_from_media(
                 "This video has no speech and no legible text on screen.",
             ));
         }
+
         items
     } else {
         if speech.is_empty() {
             return Err("The transcript contained no usable speech.".to_owned());
         }
-        speech
+
+        speech.clone()
     };
 
     let source = SourceArtifact {
@@ -497,9 +562,22 @@ pub(crate) fn evidence_from_media(
         source_digest: digest,
         correlation_group: correlation_group.to_owned(),
         authorized: true,
-        // Media someone hands to AI-OS is private unless they say otherwise, and
-        // private media must never trigger public research.
         private: true,
+    };
+
+    let uses_visual_model = items
+        .iter()
+        .any(|item| !item.visual_observations.is_empty());
+
+    let (extractor_identity, extractor_revision) = if !speech.is_empty() {
+        (
+            TRANSCRIPTION_EXTRACTOR.to_owned(),
+            speech_revision.unwrap_or_else(|| "local".to_owned()),
+        )
+    } else if uses_visual_model {
+        ("llama.cpp vision".to_owned(), "local".to_owned())
+    } else {
+        ("tesseract".to_owned(), "local".to_owned())
     };
 
     let evidence = normalize_extraction(
@@ -511,15 +589,8 @@ pub(crate) fn evidence_from_media(
             public_research_authorized: false,
         },
         EvidenceExtraction {
-            extractor_identity: TRANSCRIPTION_EXTRACTOR.to_owned(),
-            extractor_revision: format!(
-                "{} ({})",
-                output.model.kind,
-                Path::new(&output.params.model)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "unknown-model".to_owned())
-            ),
+            extractor_identity,
+            extractor_revision,
             asserted_sensitive_traits: Vec::new(),
             items,
         },
@@ -573,6 +644,45 @@ fn described_items(described: &[super::visual::FrameDescription]) -> Vec<Extract
 /// A spoken segment records the screen text visible while it was said; a stretch
 /// of screen with nothing spoken over it becomes an item in its own right. That
 /// second case is what makes a silent tutorial distillable at all.
+fn add_frame_descriptions_to_items(
+    items: &mut [ExtractedEvidenceItem],
+    descriptions: &[super::visual::FrameDescription],
+) {
+    for item in items {
+        let Some(start) = item.location.time_start_ms else {
+            continue;
+        };
+        let Some(end) = item.location.time_end_ms else {
+            continue;
+        };
+
+        let visible = descriptions
+            .iter()
+            .filter(|description| description.start_ms < end && description.end_ms > start)
+            .map(|description| description.text.as_str())
+            .collect::<Vec<_>>();
+
+        if visible.is_empty() {
+            continue;
+        }
+
+        // Replace the synthetic "no legible text" placeholder when we actually
+        // have local visual observations of the same stretch of recording.
+        item.visual_observations
+            .retain(|observation| observation != "no legible text on screen while this was said");
+
+        for observation in visible {
+            if !item
+                .visual_observations
+                .iter()
+                .any(|existing| existing == observation)
+            {
+                item.visual_observations.push(observation.to_owned());
+            }
+        }
+    }
+}
+
 fn video_items(
     speech: &[ExtractedEvidenceItem],
     states: &[super::visual::ScreenState],
@@ -657,18 +767,33 @@ pub(crate) struct MediaTranscription {
 
 /// Does this file carry a video stream? `None` when it could not be determined.
 fn has_video_stream(tools: &TranscriptionTools, media: &Path) -> Option<bool> {
+    has_stream(tools, media, "video")
+}
+
+fn has_audio_stream(tools: &TranscriptionTools, media: &Path) -> Option<bool> {
+    has_stream(tools, media, "audio")
+}
+
+fn has_stream(tools: &TranscriptionTools, media: &Path, stream: &str) -> Option<bool> {
     let ffprobe = tools.ffmpeg.parent()?.join("ffprobe");
     let ffprobe = if ffprobe.is_file() {
         ffprobe
     } else {
         which("ffprobe")?
     };
+
+    let selector = match stream {
+        "video" => "v:0",
+        "audio" => "a:0",
+        _ => return None,
+    };
+
     let output = Command::new(ffprobe)
         .args([
             "-v",
             "error",
             "-select_streams",
-            "v:0",
+            selector,
             "-show_entries",
             "stream=codec_type",
             "-of",
@@ -677,10 +802,12 @@ fn has_video_stream(tools: &TranscriptionTools, media: &Path) -> Option<bool> {
         .arg(media)
         .output()
         .ok()?;
+
     if !output.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&output.stdout).contains("video"))
+
+    Some(String::from_utf8_lossy(&output.stdout).contains(stream))
 }
 
 fn segments_to_items(output: &WhisperOutput) -> Result<Vec<ExtractedEvidenceItem>, String> {
@@ -766,9 +893,9 @@ fn run_whisper(tools: &TranscriptionTools, wav: &Path, prefix: &Path) -> Result<
         .arg("-of")
         .arg(prefix)
         .output()
-        .map_err(|_| "whisper-cli could not be executed.".to_owned())?;
+        .map_err(|_| "The local speech reader could not be executed.".to_owned())?;
     if !output.status.success() {
-        return Err("whisper-cli failed to transcribe the audio.".to_owned());
+        return Err("The local speech reader failed to transcribe the audio.".to_owned());
     }
     Ok(())
 }
@@ -1010,6 +1137,47 @@ mod tests {
 
     /// A screen already covered by speech must not also appear as a second,
     /// standalone item, or the same moment would be counted twice.
+
+    #[test]
+    fn talking_video_can_add_real_frame_descriptions_to_spoken_evidence() {
+        let spoken = item_at(1_000, 5_000, "The speaker explains the object.");
+
+        let mut items = video_items(&[spoken], &[]);
+
+        assert_eq!(
+            items[0].visual_observations,
+            vec!["no legible text on screen while this was said"]
+        );
+
+        let descriptions = vec![
+            FrameDescription {
+                start_ms: 0,
+                end_ms: 4_000,
+                text: "a person holds a blue mug near the camera".to_owned(),
+            },
+            FrameDescription {
+                start_ms: 4_000,
+                end_ms: 8_000,
+                text: "the mug is placed on the table".to_owned(),
+            },
+        ];
+
+        add_frame_descriptions_to_items(&mut items, &descriptions);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].extracted_text.as_deref(),
+            Some("The speaker explains the object.")
+        );
+        assert_eq!(items[0].visual_observations.len(), 2);
+        assert!(items[0].visual_observations[0].contains("blue mug"));
+        assert!(items[0].visual_observations[1].contains("placed on the table"));
+        assert!(!items[0]
+            .visual_observations
+            .iter()
+            .any(|value| value.contains("no legible text")));
+    }
+
     #[test]
     fn a_screen_spoken_over_is_not_also_emitted_on_its_own() {
         let spoken = item_at(0, 4_000, " talking over the first screen");
@@ -1349,6 +1517,232 @@ mod shape_detection {
             detect_shape(&tools, Path::new("/x/no-extension")),
             MediaShape::Video
         );
+    }
+}
+
+#[cfg(test)]
+mod talking_video_real_smoke {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the complete local media toolchain and AI_OS_TALKING_VIDEO"]
+    fn real_talking_video_contains_speech_and_visual_evidence() {
+        assert_eq!(
+            std::env::var("AI_OS_RUN_TALKING_VIDEO_REAL_SMOKE").as_deref(),
+            Ok("1")
+        );
+
+        let video = std::env::var("AI_OS_TALKING_VIDEO")
+            .expect("set AI_OS_TALKING_VIDEO to an owner-supplied talking video");
+
+        let tools = TranscriptionTools::resolve().expect("local media toolchain");
+
+        let path = Path::new(&video);
+
+        assert_eq!(
+            has_video_stream(&tools, path),
+            Some(true),
+            "fixture must contain video"
+        );
+        assert_eq!(
+            has_audio_stream(&tools, path),
+            Some(true),
+            "fixture must contain audio"
+        );
+
+        let work = tempfile::tempdir().unwrap();
+
+        let result = evidence_from_any_media(
+            path,
+            SubjectKind::PrivatePerson,
+            "talking-video-real-smoke",
+            work.path(),
+            &tools,
+        )
+        .unwrap();
+
+        assert!(!result.evidence.is_empty());
+
+        let spoken = result
+            .evidence
+            .iter()
+            .filter(|item| {
+                item.extracted_text
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            !spoken.is_empty(),
+            "talking video produced no timestamped speech evidence"
+        );
+
+        let visually_grounded_spoken = spoken
+            .iter()
+            .filter(|item| {
+                item.visual_observations.iter().any(|observation| {
+                    !observation.trim().is_empty()
+                        && !observation.contains("no legible text on screen")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            !visually_grounded_spoken.is_empty(),
+            "speech was transcribed but no real visual description was attached"
+        );
+
+        println!("EVIDENCE_ITEMS={}", result.evidence.len());
+        println!("SPOKEN_ITEMS={}", spoken.len());
+        println!(
+            "VISUALLY_GROUNDED_SPOKEN_ITEMS={}",
+            visually_grounded_spoken.len()
+        );
+        println!("VISUAL_STATES={}", result.screen_states_read);
+
+        if let Some(note) = &result.note {
+            println!("NOTE={note}");
+        }
+
+        for item in visually_grounded_spoken.iter().take(3) {
+            println!(
+                "TALKING_VIDEO [{}ms-{}ms] speech={:?} visual={:?}",
+                item.location.time_start_ms.unwrap_or(0),
+                item.location.time_end_ms.unwrap_or(0),
+                item.extracted_text.as_deref().unwrap_or_default(),
+                item.visual_observations
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod pure_visual_real_smoke {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires llama-mtmd-cli, managed VLM assets, and AI_OS_PURE_VISUAL_IMAGE"]
+    fn real_pure_visual_image_becomes_visual_evidence() {
+        assert_eq!(
+            std::env::var("AI_OS_RUN_PURE_VISUAL_REAL_SMOKE").as_deref(),
+            Ok("1")
+        );
+
+        let image = std::env::var("AI_OS_PURE_VISUAL_IMAGE")
+            .expect("set AI_OS_PURE_VISUAL_IMAGE to an owner-supplied photograph");
+
+        let vision = super::super::visual::find_vision_model().expect("local vision toolchain");
+
+        let tools = TranscriptionTools {
+            ffmpeg: which("ffmpeg").expect("ffmpeg"),
+            whisper: PathBuf::from("/must/not/be/used"),
+            model: PathBuf::from("/must/not/be/used"),
+            tesseract: None,
+            ocr_languages: "eng".to_owned(),
+            vision: Some(vision),
+        };
+
+        let work = tempfile::tempdir().unwrap();
+
+        let result = evidence_from_any_media(
+            Path::new(&image),
+            SubjectKind::PrivatePerson,
+            "pure-visual-image-smoke",
+            work.path(),
+            &tools,
+        )
+        .unwrap();
+
+        assert_eq!(result.evidence.len(), 1);
+
+        let item = &result.evidence[0];
+
+        println!("MEDIA_KIND={:?}", item.media_kind);
+        println!("EXTRACTOR={}", item.extractor_identity);
+        println!("VISUAL={:?}", item.visual_observations);
+
+        assert_eq!(item.media_kind, SourceMediaKind::Image);
+        assert_eq!(item.extractor_identity, "llama.cpp vision");
+
+        // Generated VLM prose must never masquerade as source text.
+        assert!(item.extracted_text.is_none());
+        assert!(!item.visual_observations.is_empty());
+        assert_eq!(item.assertion, EvidenceAssertion::Inferred);
+
+        assert!(item.location.time_start_ms.is_none());
+        assert!(item.location.time_end_ms.is_none());
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg, llama-mtmd-cli, managed VLM assets, and AI_OS_PURE_VISUAL_VIDEO"]
+    fn real_silent_pure_visual_video_becomes_timed_visual_evidence() {
+        assert_eq!(
+            std::env::var("AI_OS_RUN_PURE_VISUAL_REAL_SMOKE").as_deref(),
+            Ok("1")
+        );
+
+        let video = std::env::var("AI_OS_PURE_VISUAL_VIDEO")
+            .expect("set AI_OS_PURE_VISUAL_VIDEO to an owner-supplied silent video");
+
+        let vision = super::super::visual::find_vision_model().expect("local vision toolchain");
+
+        let tools = TranscriptionTools {
+            ffmpeg: which("ffmpeg").expect("ffmpeg"),
+            whisper: PathBuf::from("/must/not/be/used"),
+            model: PathBuf::from("/must/not/be/used"),
+            // This proves vision does not require OCR to be installed.
+            tesseract: None,
+            ocr_languages: "eng".to_owned(),
+            vision: Some(vision),
+        };
+
+        assert_eq!(
+            has_video_stream(&tools, Path::new(&video)),
+            Some(true),
+            "fixture must contain video"
+        );
+
+        assert_eq!(
+            has_audio_stream(&tools, Path::new(&video)),
+            Some(false),
+            "fixture must genuinely have no audio stream"
+        );
+
+        let work = tempfile::tempdir().unwrap();
+
+        let result = evidence_from_any_media(
+            Path::new(&video),
+            SubjectKind::PrivatePerson,
+            "pure-visual-video-smoke",
+            work.path(),
+            &tools,
+        )
+        .unwrap();
+
+        assert!(!result.evidence.is_empty());
+        assert!(result.screen_states_read > 0);
+
+        println!("ITEMS={}", result.evidence.len());
+        println!("VISUAL_STATES={}", result.screen_states_read);
+
+        if let Some(note) = &result.note {
+            println!("NOTE={note}");
+        }
+
+        for item in &result.evidence {
+            assert_eq!(item.media_kind, SourceMediaKind::Video);
+            assert_eq!(item.extractor_identity, "llama.cpp vision");
+
+            assert!(item.extracted_text.is_none());
+            assert!(!item.visual_observations.is_empty());
+            assert_eq!(item.assertion, EvidenceAssertion::Inferred);
+
+            let start = item.location.time_start_ms.expect("start timestamp");
+            let end = item.location.time_end_ms.expect("end timestamp");
+
+            assert!(end > start);
+        }
     }
 }
 

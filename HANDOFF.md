@@ -11093,3 +11093,123 @@ Verification completed:
 - Temporary UI acceptance profile was removed after verification.
 
 Next Cognitive Distillation work should build on this reviewed/active profile boundary rather than bypassing it.
+
+
+<!-- COGNITIVE_DISTILLATION_MEDIA_FINAL_VERIFIED_2026_09_17 -->
+
+## Cognitive Distillation — Multimodal Evidence Final Verified
+
+Marker: `COGNITIVE_DISTILLATION_MEDIA_FINAL_VERIFIED_2026_09_17`
+
+CD-MEDIA-FINAL is complete.
+
+The Cognitive Distillation evidence-ingestion layer now has a verified local
+multimodal production path for owner-authorized audio, still images, talking
+video, and silent visual video.
+
+Production architecture:
+
+`owner material -> AI-OS local media readers -> normalized EvidenceBundle -> Distilly / Nuwa -> AI-OS validation -> Person Profile`
+
+External/local media toolchain:
+
+- `ffmpeg` / `ffprobe` for bounded local media inspection, demuxing, and frame extraction
+- `whisper-cli` from whisper.cpp for local speech transcription
+- `tesseract` for local screen/image OCR
+- `llama-mtmd-cli` + InternVL3-2B for local visual description
+- executors are external system tools rather than bundled application binaries
+- model assets remain managed under AI-OS platform cache
+- Compact vs Accurate profile follows the Rust hardware rule: Accurate at >=24 GiB RAM, Compact otherwise
+- managed Whisper/VLM assets are pinned by filename, byte size, and SHA-256
+- setup performs real speech, OCR, and vision engine smoke tests before reporting `MEDIA_TOOLCHAIN_SETUP=PASS`
+
+Readiness boundary:
+
+- downloaded model assets alone do not imply capability readiness
+- the required execution engine must also be present
+- Text has no media-engine dependency
+- ScreenText requires `ffmpeg` + `tesseract`
+- Speech requires `ffmpeg` + `whisper-cli`
+- Picture requires `llama-mtmd-cli`
+- Runtime status still represents installed/executable readiness; successful functional setup smoke and real-media acceptance provide the stronger execution evidence
+
+Still-image path:
+
+- original owner file remains the provenance and digest source
+- macOS still images are normalized into a temporary PNG before OCR/VLM execution
+- this makes normal iPhone HEIC/HEIF input usable without requiring the person to convert it manually
+- normalized derivatives are working files only and do not replace source provenance
+- VLM-generated prose remains `visual_observations`, never `extracted_text`
+
+Video path:
+
+- media streams are detected independently rather than assuming every video has speech
+- silent video does not require Whisper
+- pure visual video does not require OCR when local vision is available
+- talking video is intrinsically multimodal:
+  - Whisper records what was said
+  - Tesseract may record readable screen text
+  - InternVL3 describes visible people, objects, and actions
+  - timestamp overlap associates visual descriptions with spoken evidence
+- readable OCR must not suppress picture understanding for talking video
+- synthetic `no legible text` placeholders are removed when real local visual observations exist
+
+Evidence semantics remain unchanged:
+
+- generated VLM descriptions are `EvidenceAssertion::Inferred`
+- generated descriptions never masquerade as source text
+- owner media remains private
+- private-person media does not trigger uncontrolled public research
+- no cloud fallback is silently introduced
+- raw media is not packaged into Runnable Persona Skills
+- contradictions remain preserved
+- Cognitive Distillation does not bypass the existing human-review / activation boundary
+
+Real owner-media acceptance completed:
+
+1. Owner audio:
+   - real Whisper execution passed
+   - timestamped speech evidence produced
+
+2. Talking video:
+   - real file contained both video and audio streams
+   - Whisper speech evidence produced
+   - OCR screen-text evidence was preserved when present
+   - InternVL3 independently described sampled frames
+   - real visual observations were time-associated with spoken evidence
+   - final strict acceptance: `CD_MEDIA_TALKING_VIDEO_FINAL=PASS`
+
+3. Pure visual still image:
+   - real iPhone HEIC input normalized locally to PNG
+   - InternVL3 produced visual evidence
+   - extractor identity remained `llama.cpp vision`
+   - generated description remained visual inference rather than extracted text
+
+4. Silent pure visual video:
+   - fixture genuinely contained no audio stream
+   - sampled frames were described by the local VLM
+   - timed visual evidence was produced without Whisper or OCR dependency
+
+Verified regression state before closeout:
+
+- Visual tests: 5 passed, 0 failed, 1 ignored
+- Transcription tests: 15 passed, 0 failed, 6 ignored
+- Full Cognitive Distillation suite: 100 passed, 0 failed, 10 ignored
+- `cargo check` passed
+- `git diff --check` passed
+- real HEIC production smoke passed
+- real talking-video Whisper + OCR + InternVL3 merge passed
+- real silent visual-video smoke passed
+- media real-smoke registrations verified
+
+The four real multimodal acceptance targets are therefore closed.
+
+Do not reopen CD-MEDIA-FINAL merely to add more media features. Future work should
+build on the canonical reviewed/active Person Profile boundary and preserve the
+same provenance distinction between observed source material, extracted text,
+and model-generated visual inference.
+
+Scenario Simulation / MiroFish remains P16 work and is not a dependency of this
+P15 Cognitive Distillation closeout.
+
+<!-- /COGNITIVE_DISTILLATION_MEDIA_FINAL_VERIFIED_2026_09_17 -->
