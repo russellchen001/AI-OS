@@ -11213,3 +11213,80 @@ Scenario Simulation / MiroFish remains P16 work and is not a dependency of this
 P15 Cognitive Distillation closeout.
 
 <!-- /COGNITIVE_DISTILLATION_MEDIA_FINAL_VERIFIED_2026_09_17 -->
+
+
+<!-- P15_FINAL_CLOSEOUT_INVENTORY_2026_09_17 -->
+
+## P15 Final Closeout Inventory — 2026-09-17
+
+Marker: `P15_FINAL_CLOSEOUT_INVENTORY_2026_09_17`
+
+This section is authoritative for the current overall P15 completion count and
+supersedes older intermediate counts such as 5/11, 6/11, 7/10, or 8/10.
+
+### Current status
+
+**P15 Core Skills: 9 / 10 active capability areas complete.**
+
+Completed:
+
+1. Email & Calendar
+2. Browser / Search
+3. File Management
+4. Downloads
+5. Office — Document / Spreadsheet / Presentation
+6. Local Model Management
+7. Computer Control v1
+8. Generative Media
+9. Cognitive Distillation Foundation
+
+Not yet closed:
+
+10. NAS Foundation
+
+### NAS is the sole remaining P15 blocker
+
+NAS remains hardware-blocked for real hardware E2E.
+
+Do not mark NAS Complete merely because contracts, adapters, mocks, or unit tests
+exist. Completion requires the accepted P15 NAS production path to be exercised
+against real supported NAS hardware.
+
+If supported NAS hardware becomes available, finish NAS Foundation and real
+hardware E2E, then perform P15 final acceptance.
+
+If the owner explicitly decides to defer NAS from v1, record that product-scope
+decision first and recalculate the active P15 denominator before closing P15.
+
+Until one of those two paths occurs:
+
+- do not create a `p15-complete` tag;
+- do not describe P15 as fully complete;
+- do not reopen already accepted Email, Browser, File, Download, Office,
+  Local Model, Computer Control, Generative Media, or Cognitive Distillation
+  work without an actual regression.
+
+### Scope already removed / deferred
+
+Vehicle Control remains outside active P15 / v1 scope after its feasibility gate.
+
+Native Computer Control notification delivery remains deferred / out of v1.
+
+Scenario Simulation / MiroFish remains P16 work.
+
+Social / Community Intelligence remains v2.0 work.
+
+### Current checkpoint
+
+Cognitive Distillation multimodal evidence is closed at:
+
+`18c26814c224e061225782f648575c69f23f3c53`
+
+Tag:
+
+`p15-cognitive-distillation-media-complete`
+
+Next P15 work is **NAS Foundation**, unless the owner explicitly defers NAS from
+v1.
+
+<!-- /P15_FINAL_CLOSEOUT_INVENTORY_2026_09_17 -->
