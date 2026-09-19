@@ -20,7 +20,11 @@ export type SkillCapability =
   | "email.send"
   | "calendar.read"
   | "calendar.write"
-  | "nas.manage"
+  | "nas.discover"
+  | "nas.list"
+  | "nas.status"
+  | "nas.resolve"
+  | "nas.capacity"
   | (string & {});
 
 export type SkillPermission =

@@ -319,7 +319,7 @@ impl PlanRuntimeExecutor for RuntimeBackedPlanExecutor {
         }
 
         let allowed_capabilities = if capability == CONTROL_PLANE_AGENT_EXECUTE {
-            Vec::new()
+            skills::registry::agent_exposed_capabilities()
         } else {
             skills::resolver::resolve(&capability).ok_or_else(|| {
                 PlanRuntimeExecutionError::SkillNotFound {
@@ -469,6 +469,10 @@ fn operation_identity(plan_id: &PlanId, step_id: &PlanStepId, attempt_id: &str) 
 fn agent_error(error: AgentExecutionError) -> PlanRuntimeExecutionError {
     match error.kind {
         AgentExecutionErrorKind::InvalidRequest => PlanRuntimeExecutionError::InvalidRequest,
+        AgentExecutionErrorKind::PermissionRequired => PlanRuntimeExecutionError::Admission {
+            message: error.message,
+            retryable: false,
+        },
         AgentExecutionErrorKind::PermissionDenied => PlanRuntimeExecutionError::PermissionDenied,
         AgentExecutionErrorKind::NoViableExecutionPath => {
             PlanRuntimeExecutionError::NoViableExecutionPath {
@@ -567,6 +571,11 @@ mod mano_fallback_error_contract_tests {
 
     #[test]
     fn permission_and_invalid_request_never_become_mano_fallback_signal() {
+        assert!(matches!(
+            agent_error_of(AgentExecutionErrorKind::PermissionRequired),
+            PlanRuntimeExecutionError::Admission { .. }
+        ));
+
         assert_eq!(
             agent_error_of(AgentExecutionErrorKind::PermissionDenied),
             PlanRuntimeExecutionError::PermissionDenied
@@ -1002,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn control_plane_agent_execute_requires_no_fake_skill() {
+    fn control_plane_agent_execute_exposes_registered_user_skills_for_agent_selection() {
         let agent = Arc::new(RecordingAgent::compatible("openclaw"));
         let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
 
@@ -1011,8 +1020,25 @@ mod tests {
             .unwrap();
 
         let received = agent.requests.lock().unwrap();
-        assert!(received[0].allowed_capabilities.is_empty());
+        assert_eq!(received.len(), 1);
+
+        let capabilities = &received[0].allowed_capabilities;
+
+        assert!(capabilities.contains(&"nas.capacity".to_owned()));
+        assert!(capabilities.contains(&"nas.discover".to_owned()));
+        assert!(capabilities.contains(&"filesystem.scan".to_owned()));
+        assert!(capabilities.contains(&"browser.search".to_owned()));
+        assert!(capabilities.contains(&"models.list".to_owned()));
+
+        assert!(!capabilities.contains(&"sessions.create".to_owned()));
+        assert!(!capabilities.contains(&"ai.openclaw.gateway".to_owned()));
+
         assert!(received[0].context.get("requestedSkill").is_none());
+
+        assert_eq!(
+            received[0].skill_invocation_context.exposed_capabilities,
+            *capabilities
+        );
     }
 
     #[test]

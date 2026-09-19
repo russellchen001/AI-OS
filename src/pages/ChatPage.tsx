@@ -10,6 +10,7 @@ import {
   describeChatTaskError,
   describeDownloadResult,
   parseDownloadRequestText,
+  parseWorkTaskApproval,
   type ChatTaskType,
 } from "../services/tasks";
 import {
@@ -18,6 +19,7 @@ import {
   type AiCenterStream,
   type AiCenterModelChoice,
 } from "../services/aiCenter";
+import { classifyAutomaticIntent } from "../services/intentRouting";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { useDialog } from "../components/DialogProvider";
 import { PROVIDERS_CHANGED_EVENT } from "../services/providers";
@@ -321,6 +323,42 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  function openAttachmentPicker() {
+    const input = fileInputRef.current;
+    if (!input) return;
+
+    /*
+     * Tauri/WebKit can ignore a synthetic click on a visually hidden file input.
+     * showPicker() preserves the direct user gesture when the WebView supports it.
+     */
+    const picker = input as HTMLInputElement & {
+      showPicker?: () => void;
+    };
+
+    if (typeof picker.showPicker === "function") {
+      picker.showPicker();
+      return;
+    }
+
+    input.click();
+  }
+
+  /*
+   * AIR-1 migration guard.
+   * Legacy shortcut state is retained for one verification cycle only.
+   * It does not participate in routing or execution and is not rendered.
+   * AIR-2 removes it after behavioral acceptance.
+   */
+  void taskType;
+  void agentMenuOpen;
+  void scanFolderPath;
+  void readFilePath;
+  void writeFilePath;
+  void moveFilePaths;
+  void localModelWork;
+  void downloadWork;
+  void chooseLocalModelCapability;
+
   useEffect(() => {
     setMessages(getConversation(conversationId)?.messages ?? []);
     setAttachments([]);
@@ -450,14 +488,22 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     event.preventDefault();
     const content = draft.trim();
     if (!content || isSubmitting) return;
-    const isWorkRequest = Boolean(
-      scanFolderPath ||
-        readFilePath ||
-        writeFilePath ||
-        moveFilePaths ||
-        localModelWork ||
-        downloadWork,
-    ) || taskType === "DO";
+
+    /*
+     * Give immediate UI feedback before intent classification starts.
+     * Without this, a slow classifier makes Enter/Send appear broken.
+     */
+    setIsSubmitting(true);
+
+    /*
+     * AIR-1:
+     * User text, not composer buttons, determines whether this is conversation
+     * or executable work. The router chooses ASK/DO only; it never chooses a
+     * Skill, capability, parameters, permission, or confirmation.
+     */
+    const automaticIntent = await classifyAutomaticIntent(content, selectedModel);
+    const routedTaskType = automaticIntent.taskType;
+    const isWorkRequest = routedTaskType === "DO";
 
     if (scanFolderPath) {
       const confirmed = await dialog.confirm({
@@ -615,13 +661,12 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       ...(outboundCurrentMessage ? [outboundCurrentMessage] : []),
     ];
     setDraft("");
-    setIsSubmitting(true);
 
     let activeTaskId: string | undefined;
     let activeAssistantMessageId: string | undefined;
     let activeAssistantText = "";
     try {
-      const task = await submitChatTask(content, isWorkRequest ? "DO" : "ASK");
+      const task = await submitChatTask(content, routedTaskType);
       activeTaskId = task.taskId;
       if (task.status === "READY") {
         await startChatTaskExecution(task.taskId);
@@ -710,80 +755,27 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         });
         return;
       }
+      /*
+       * No capability is supplied here.
+       *
+       * The existing Task Engine therefore builds the generic agent.execute
+       * Plan step. Planner/Agent/Skill Registry decide how to satisfy the
+       * request; the composer no longer dictates a Skill.
+       *
+       * userConfirmed intentionally remains false. Runtime permission policy
+       * continues to own authorization for any downstream side effect.
+       */
       const execution = await executeChatWorkTask(
         task.taskId,
         "openclaw",
-        downloadWork
-          ? {
-              capability: "download.start",
-              input: {
-                source: downloadWork.source,
-                destination: downloadWork.destination,
-                selectionHint: downloadWork.selectionHint,
-                ...(downloadWork.extractionCode
-                  ? { extractionCode: downloadWork.extractionCode }
-                  : {}),
-              },
-              userConfirmed: true,
-            }
-          : localModelWork
-            ? {
-              capability: localModelWork.capability,
-              input: localModelWork.model
-                ? { model: localModelWork.model }
-                : {},
-              userConfirmed:
-                localModelWork.capability === "models.pull" ||
-                localModelWork.capability === "models.delete",
-            }
-          : moveFilePaths
-            ? {
-                capability: "filesystem.move",
-                input: {
-                  source: moveFilePaths.source,
-                  destination: moveFilePaths.destination,
-                  overwrite: false,
-                },
-                userConfirmed: true,
-              }
-            : writeFilePath
-              ? {
-                  capability: "filesystem.write",
-                  input: { path: writeFilePath, content: draft, overwrite: false },
-                  userConfirmed: true,
-                }
-              : readFilePath
-                ? {
-                    capability: "filesystem.read",
-                    input: { path: readFilePath },
-                    userConfirmed: true,
-                  }
-                : scanFolderPath
-                  ? {
-                      capability: "filesystem.scan",
-                      input: { path: scanFolderPath },
-                      userConfirmed: true,
-                    }
-                  : undefined,
       );
+
       const workMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: downloadWork
-          ? describeDownloadResult(execution.output)
-          : localModelWork
-            ? formatLocalModelResult(localModelWork.capability, execution.output)
-          : moveFilePaths
-            ? formatFilesystemMoveResult(execution.output)
-            : writeFilePath
-              ? formatFilesystemWriteResult(execution.output)
-              : readFilePath
-                ? formatFilesystemReadResult(execution.output)
-                : scanFolderPath
-                  ? formatFilesystemScanResult(execution.output)
-                  : execution.output
-                    ? `OpenClaw completed the plan.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
-                    : `OpenClaw completed plan ${execution.planId}.`,
+        content: execution.output
+          ? `AI-OS completed the task.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
+          : `AI-OS completed plan ${execution.planId}.`,
         createdAt: new Date().toISOString(),
       };
       const completedMessages = [...nextMessages, workMessage];
@@ -799,22 +791,95 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         messages: completedMessages,
       });
     } catch (error) {
+      let effectiveError: unknown = error;
+
+      const approval = isWorkRequest
+        ? parseWorkTaskApproval(error)
+        : undefined;
+
+      if (approval) {
+        const inputPreview = JSON.stringify(approval.input, null, 2);
+        const boundedPreview =
+          inputPreview.length > 2000
+            ? `${inputPreview.slice(0, 2000)}\n…`
+            : inputPreview;
+
+        const confirmed = await dialog.confirm({
+          title: "Allow this action?",
+          message: [
+            "AI-OS selected the following Skill for this task:",
+            "",
+            approval.capability,
+            "",
+            "Input:",
+            boundedPreview,
+            "",
+            "Allow this exact capability and input once?",
+          ].join("\n"),
+          confirmLabel: "Allow once",
+          cancelLabel: "Cancel",
+          tone: "warning",
+        });
+
+        if (!confirmed) {
+          const cancelledMessage: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: `Cancelled. AI-OS did not run ${approval.capability}.`,
+            createdAt: new Date().toISOString(),
+          };
+
+          const cancelledMessages = [...nextMessages, cancelledMessage];
+          setMessages(cancelledMessages);
+          saveConversation({
+            ...nextConversation,
+            messages: cancelledMessages,
+          });
+          return;
+        }
+
+        try {
+          /*
+           * Approval is bound to the Agent-selected capability + input from
+           * the first pass. The retry does NOT give generic agent.execute a
+           * blanket userConfirmed=true.
+           */
+          const approvedTask = await submitChatTask(content, "DO");
+          activeTaskId = approvedTask.taskId;
+
+          const execution = await executeChatWorkTask(
+            approvedTask.taskId,
+            "openclaw",
+            {
+              capability: approval.capability,
+              input: approval.input,
+              userConfirmed: true,
+            },
+          );
+
+          const approvedMessage: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: execution.output
+              ? `AI-OS completed the task.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
+              : `AI-OS completed plan ${execution.planId}.`,
+            createdAt: new Date().toISOString(),
+          };
+
+          const approvedMessages = [...nextMessages, approvedMessage];
+          setMessages(approvedMessages);
+          saveConversation({
+            ...nextConversation,
+            messages: approvedMessages,
+          });
+          return;
+        } catch (approvedError) {
+          effectiveError = approvedError;
+        }
+      }
+
       const workFailureMessage = isWorkRequest
-        ? describeChatTaskError(
-            error,
-            true,
-            downloadWork
-              ? "download"
-              : localModelWork
-                ? "local model operation"
-              : moveFilePaths
-                ? "file move"
-                : writeFilePath
-                ? "file write"
-                : readFilePath
-                  ? "file read"
-                  : "folder scan",
-          )
+        ? describeChatTaskError(effectiveError, true, "task")
         : undefined;
       if (activeTaskId) {
         await failChatTaskExecution(
@@ -823,19 +888,9 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         ).catch(() => undefined);
       }
       const failureMessage = describeChatTaskError(
-        error,
+        effectiveError,
         isWorkRequest,
-        downloadWork
-          ? "download"
-          : localModelWork
-            ? "local model operation"
-          : moveFilePaths
-            ? "file move"
-            : writeFilePath
-            ? "file write"
-            : readFilePath
-              ? "file read"
-              : "folder scan",
+        isWorkRequest ? "task" : undefined,
       );
       setMessages((current) =>
         activeAssistantMessageId
@@ -965,6 +1020,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 event.currentTarget.form?.requestSubmit();
@@ -976,7 +1033,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
           />
           <div className="composer-rail">
             <div className="composer-tools">
-              <button type="button" className="composer-icon-button" aria-label="Attach files" onClick={() => fileInputRef.current?.click()}>
+              <button type="button" className="composer-icon-button" aria-label="Attach files" onClick={openAttachmentPicker}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
               </button>
               <input
@@ -1038,156 +1095,6 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                         <small>Open My AI to add a Provider</small>
                       </button>
                     )}
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className="task-mode-pill"
-                onClick={() =>
-                  setTaskType((current) => {
-                    const next = current === "ASK" ? "DO" : "ASK";
-                    if (next === "ASK") {
-                      setScanFolderPath(undefined);
-                      setReadFilePath(undefined);
-                      setWriteFilePath(undefined);
-                      setMoveFilePaths(undefined);
-                    }
-                    return next;
-                  })
-                }
-                aria-label={`Task mode: ${taskType === "ASK" ? "Chat" : "Work"}`}
-              >
-                {taskType === "ASK" ? "Chat" : "Work"}
-              </button>
-              <button
-                type="button"
-                className={scanFolderPath ? "tool-pill tool-pill-active" : "tool-pill"}
-                aria-label="Choose a folder to scan"
-                onClick={() => void chooseFolderToScan()}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5H3zM3 7.5V5h7l2 2" /></svg>
-                Scan folder
-              </button>
-              <button
-                type="button"
-                className={readFilePath ? "tool-pill tool-pill-active" : "tool-pill"}
-                aria-label="Choose a file to read"
-                onClick={() => void chooseFileToRead()}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6" /></svg>
-                Read file
-              </button>
-              <button
-                type="button"
-                className={writeFilePath ? "tool-pill tool-pill-active" : "tool-pill"}
-                aria-label="Choose where to create a text file"
-                onClick={() => void chooseFileToWrite()}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6zM9 13h6M12 10v6" /></svg>
-                Write file
-              </button>
-              <button
-                type="button"
-                className={moveFilePaths ? "tool-pill tool-pill-active" : "tool-pill"}
-                aria-label="Choose a file and destination to move"
-                onClick={() => void chooseFileToMove()}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12M13 8l4 4-4 4M6 5h12v14H6" /></svg>
-                Move file
-              </button>
-
-              <button
-                type="button"
-                className={downloadWork ? "tool-pill tool-pill-active" : "tool-pill"}
-                aria-label="Start a download"
-                onClick={() => void chooseDownload()}
-              >
-                Download
-              </button>
-
-              <button
-                type="button"
-                className={localModelWork ? "tool-pill tool-pill-active" : "tool-pill"}
-                onClick={() =>
-                  chooseLocalModelCapability(
-                    "models.list",
-                    setLocalModelWork,
-                    setTaskType,
-                    setDraft,
-                  )
-                }
-              >
-                List models
-              </button>
-              <button
-                type="button"
-                className="tool-pill"
-                onClick={() =>
-                  chooseLocalModelCapability(
-                    "models.show",
-                    setLocalModelWork,
-                    setTaskType,
-                    setDraft,
-                  )
-                }
-              >
-                Inspect model
-              </button>
-              <button
-                type="button"
-                className="tool-pill"
-                onClick={() =>
-                  chooseLocalModelCapability(
-                    "models.pull",
-                    setLocalModelWork,
-                    setTaskType,
-                    setDraft,
-                  )
-                }
-              >
-                Download model
-              </button>
-              <button
-                type="button"
-                className="tool-pill"
-                onClick={() =>
-                  chooseLocalModelCapability(
-                    "models.delete",
-                    setLocalModelWork,
-                    setTaskType,
-                    setDraft,
-                  )
-                }
-              >
-                Delete model
-              </button>
-              <div className="agent-picker">
-                <button
-                  type="button"
-                  className="agent-pill"
-                  aria-expanded={agentMenuOpen}
-                  onClick={() => setAgentMenuOpen((current) => !current)}
-                >
-                  <span className="agent-glyph">O</span>
-                  OpenClaw
-                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4" /></svg>
-                </button>
-                {agentMenuOpen && (
-                  <div className="agent-menu" role="menu">
-                    <p>Run this task with</p>
-                    <button type="button" className="agent-menu-item agent-menu-active" role="menuitem" onClick={() => setAgentMenuOpen(false)}>
-                      <span className="agent-menu-mark">O</span>
-                      <span><strong>OpenClaw</strong><small>Default · Ready</small></span>
-                      <span className="agent-check">✓</span>
-                    </button>
-                    <button type="button" className="agent-menu-item" role="menuitem" onClick={onAddAgent}>
-                      <span className="agent-menu-mark agent-menu-mark-muted">H</span>
-                      <span><strong>Hermes Agent</strong><small>Not added</small></span>
-                    </button>
-                    <button type="button" className="add-agent-item" role="menuitem" onClick={onAddAgent}>
-                      <span>+</span> Add an agent
-                    </button>
                   </div>
                 )}
               </div>

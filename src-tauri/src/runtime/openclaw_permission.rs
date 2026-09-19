@@ -1,5 +1,5 @@
-pub(crate) use super::capability_permission::ConfiguredCapabilityPermissionGate;
 use super::capability_permission::CapabilityPermissionDecision;
+pub(crate) use super::capability_permission::ConfiguredCapabilityPermissionGate;
 use super::openclaw_execution::{
     OpenClawExecutionAdapter, OpenClawExecutionError, OpenClawExecutionErrorKind,
     OpenClawExecutionProgress, OpenClawExecutionRequest, OpenClawExecutionResult,
@@ -135,15 +135,11 @@ impl OpenClawPermissionGate for ConfiguredCapabilityPermissionGate {
         );
 
         Ok(match decision {
-            CapabilityPermissionDecision::Allowed => {
-                OpenClawPermissionDecision::Allowed
-            }
+            CapabilityPermissionDecision::Allowed => OpenClawPermissionDecision::Allowed,
             CapabilityPermissionDecision::RequiresApproval => {
                 OpenClawPermissionDecision::RequiresApproval
             }
-            CapabilityPermissionDecision::Denied => {
-                OpenClawPermissionDecision::Denied
-            }
+            CapabilityPermissionDecision::Denied => OpenClawPermissionDecision::Denied,
         })
     }
 }
@@ -519,16 +515,11 @@ mod tests {
             "system.power.restart",
             "system.power.shutdown",
         ] {
-            let gate =
-                ConfiguredCapabilityPermissionGate::new([action.to_owned()]);
+            let gate = ConfiguredCapabilityPermissionGate::new([action.to_owned()]);
 
             let unconfirmed =
-                OpenClawExecutionRequest::new(
-                    "execution-power-unconfirmed",
-                    action,
-                    json!({}),
-                )
-                .unwrap();
+                OpenClawExecutionRequest::new("execution-power-unconfirmed", action, json!({}))
+                    .unwrap();
 
             assert_eq!(
                 gate.authorize(&unconfirmed).unwrap(),
@@ -537,10 +528,8 @@ mod tests {
             );
 
             assert_eq!(
-                gate.authorize(
-                    &unconfirmed.with_user_confirmation(true)
-                )
-                .unwrap(),
+                gate.authorize(&unconfirmed.with_user_confirmation(true))
+                    .unwrap(),
                 OpenClawPermissionDecision::Allowed,
                 "{action} should run after current user confirmation"
             );
@@ -549,10 +538,7 @@ mod tests {
 
     #[test]
     fn ordinary_trusted_automation_behavior_is_unchanged() {
-        let gate =
-            ConfiguredCapabilityPermissionGate::new([
-                "filesystem.scan".to_owned()
-            ]);
+        let gate = ConfiguredCapabilityPermissionGate::new(["filesystem.scan".to_owned()]);
 
         assert_eq!(
             gate.authorize(&request(json!({}))).unwrap(),
@@ -571,22 +557,22 @@ mod tests {
     }
 
     #[test]
-    fn unconfigured_or_empty_allowlist_denies() {
+    fn unconfigured_or_empty_allowlist_requires_current_approval() {
         let empty = ConfiguredCapabilityPermissionGate::new(Vec::new());
         let configured = ConfiguredCapabilityPermissionGate::new(["filesystem.read".to_owned()]);
 
         assert_eq!(
             empty.authorize(&request(json!({}))).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             configured.authorize(&request(json!({}))).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
     }
 
     #[test]
-    fn one_time_user_confirmation_allows_scan_while_unconfirmed_move_is_denied() {
+    fn one_time_user_confirmation_allows_scan_while_unconfirmed_move_requires_approval() {
         let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
         let confirmed_scan = request(json!({"path": "/safe/example"})).with_user_confirmation(true);
         let unconfirmed_move = OpenClawExecutionRequest::new(
@@ -602,12 +588,12 @@ mod tests {
         );
         assert_eq!(
             gate.authorize(&unconfirmed_move).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
     }
 
     #[test]
-    fn one_time_user_confirmation_allows_read_while_unconfirmed_move_is_denied() {
+    fn one_time_user_confirmation_allows_read_while_unconfirmed_move_requires_approval() {
         let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
         let confirmed_read = OpenClawExecutionRequest::new(
             "execution-123",
@@ -629,7 +615,7 @@ mod tests {
         );
         assert_eq!(
             gate.authorize(&unconfirmed_move).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
     }
 
@@ -645,7 +631,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -669,7 +655,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -693,7 +679,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -717,7 +703,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -738,7 +724,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -762,7 +748,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -787,7 +773,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -808,7 +794,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -833,7 +819,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -854,7 +840,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 gate.authorize(&request).unwrap(),
-                OpenClawPermissionDecision::Denied
+                OpenClawPermissionDecision::RequiresApproval
             );
             assert_eq!(
                 gate.authorize(&request.with_user_confirmation(true))
@@ -865,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn one_time_user_confirmation_allows_write_while_unconfirmed_move_is_denied() {
+    fn one_time_user_confirmation_allows_write_while_unconfirmed_move_requires_approval() {
         let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
         let confirmed_write = OpenClawExecutionRequest::new(
             "execution-123",
@@ -887,7 +873,7 @@ mod tests {
         );
         assert_eq!(
             gate.authorize(&unconfirmed_move).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
     }
 
@@ -920,7 +906,7 @@ mod tests {
 
         assert_eq!(
             gate.authorize(&request).unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
         assert_eq!(
             gate.authorize(&request.with_user_confirmation(true))
@@ -930,18 +916,18 @@ mod tests {
     }
 
     #[test]
-    fn unconfirmed_filesystem_scan_remains_denied_without_trusted_automation() {
+    fn unconfirmed_filesystem_scan_requires_approval_without_trusted_automation() {
         let gate = ConfiguredCapabilityPermissionGate::new(Vec::new());
 
         assert_eq!(
             gate.authorize(&request(json!({"path": "/safe/example"})))
                 .unwrap(),
-            OpenClawPermissionDecision::Denied
+            OpenClawPermissionDecision::RequiresApproval
         );
     }
 
     #[test]
-    fn configured_capability_matching_is_exact() {
+    fn nonmatching_configured_capability_still_requires_current_approval() {
         for configured in [
             "Filesystem.Scan",
             "filesystem",
@@ -951,7 +937,7 @@ mod tests {
             let gate = ConfiguredCapabilityPermissionGate::new([configured.to_owned()]);
             assert_eq!(
                 gate.authorize(&request(json!({}))).unwrap(),
-                OpenClawPermissionDecision::Denied
+                OpenClawPermissionDecision::RequiresApproval
             );
         }
     }
@@ -978,12 +964,10 @@ mod tests {
         .unwrap()
         .with_user_confirmation(true);
 
-        let empty =
-            ConfiguredCapabilityPermissionGate::new(Vec::new());
+        let empty = ConfiguredCapabilityPermissionGate::new(Vec::new());
 
-        let trusted = ConfiguredCapabilityPermissionGate::new([
-            "system.process.terminate".to_owned()
-        ]);
+        let trusted =
+            ConfiguredCapabilityPermissionGate::new(["system.process.terminate".to_owned()]);
 
         for gate in [&empty, &trusted] {
             assert_eq!(

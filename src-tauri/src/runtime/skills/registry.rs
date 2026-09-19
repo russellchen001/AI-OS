@@ -143,6 +143,22 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "router",
         ),
         skill(
+            "nas",
+            "Network Storage",
+            "storage",
+            "Discover and resolve mounted network storage through replaceable protocol-neutral providers.",
+            &[
+                "nas.discover",
+                "nas.list",
+                "nas.status",
+                "nas.resolve",
+                "nas.capacity",
+            ],
+            &["network.storage"],
+            "nas",
+            "network-storage",
+        ),
+        skill(
             "downloads",
             "Downloads",
             "network",
@@ -164,6 +180,41 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "downloads",
         ),
     ]
+}
+
+/// Capabilities that Runtime may expose to a generic execution Agent.
+///
+/// This is an exposure catalog, not capability selection. The Agent chooses
+/// among these capabilities according to the task goal, while Runtime retains
+/// permission, confirmation, Skill resolution and backend authority.
+///
+/// Control-plane-only Skills are deliberately excluded from generic task
+/// execution so an Agent cannot select AI-OS session-management plumbing as
+/// though it were a user capability.
+
+pub(crate) fn agent_exposed_capability_contracts() -> Vec<super::contracts::CapabilityInputContract>
+{
+    agent_exposed_capabilities()
+        .into_iter()
+        .filter_map(|capability| super::contracts::input_contract_for_capability(&capability))
+        .collect()
+}
+
+pub(crate) fn agent_exposed_capabilities() -> Vec<String> {
+    let mut capabilities = Vec::new();
+
+    for skill in built_in_skills()
+        .into_iter()
+        .filter(|skill| skill.enabled && skill.id != "openclaw-session")
+    {
+        for capability in skill.capabilities {
+            if !capabilities.contains(&capability) {
+                capabilities.push(capability);
+            }
+        }
+    }
+
+    capabilities
 }
 
 pub(crate) fn find_by_capability(capability: &str) -> Option<SkillManifest> {
@@ -208,6 +259,25 @@ pub fn get_skill(skill_id: String) -> Result<SkillManifest, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn generic_agent_exposure_contains_user_skills_but_not_control_plane_session_capabilities() {
+        let capabilities = agent_exposed_capabilities();
+
+        assert!(capabilities.contains(&"nas.capacity".to_owned()));
+        assert!(capabilities.contains(&"filesystem.scan".to_owned()));
+        assert!(capabilities.contains(&"browser.search".to_owned()));
+        assert!(capabilities.contains(&"models.list".to_owned()));
+
+        assert!(!capabilities.contains(&"sessions.create".to_owned()));
+        assert!(!capabilities.contains(&"ai.openclaw.gateway".to_owned()));
+
+        let mut deduped = capabilities.clone();
+        deduped.sort();
+        deduped.dedup();
+
+        assert_eq!(deduped.len(), capabilities.len());
+    }
 
     #[test]
     fn mp0_computer_use_execute_is_registered_as_one_skill_capability() {
@@ -303,8 +373,8 @@ mod tests {
             "media.reference.video.analyze",
             "media.reference.generate",
         ] {
-            let skill = find_by_capability(capability)
-                .expect("Generative Media capability should resolve");
+            let skill =
+                find_by_capability(capability).expect("Generative Media capability should resolve");
 
             assert_eq!(skill.id, "generative-media");
             assert_eq!(skill.executor.kind, "media");
@@ -357,7 +427,7 @@ mod tests {
     fn list_command_returns_canonical_registry() {
         let skills = list_skills();
 
-        assert_eq!(skills.len(), 9);
+        assert_eq!(skills.len(), 10);
 
         assert_eq!(skills[0].id, "document");
         assert_eq!(skills[0].executor.kind, "openclaw");
@@ -367,9 +437,9 @@ mod tests {
         assert_eq!(skills[2].id, "openclaw-session");
         assert_eq!(skills[3].id, "browser");
 
-    assert_eq!(skills[4].id, "computer-use");
-    assert_eq!(skills[4].executor.kind, "computer-use");
-    assert_eq!(skills[4].executor.handler, "computer-use");
+        assert_eq!(skills[4].id, "computer-use");
+        assert_eq!(skills[4].executor.kind, "computer-use");
+        assert_eq!(skills[4].executor.handler, "computer-use");
 
         assert_eq!(skills[5].id, "local-models");
         assert_eq!(skills[5].executor.kind, "local");
@@ -383,9 +453,13 @@ mod tests {
         assert_eq!(skills[7].executor.kind, "cognitive-distillation");
         assert_eq!(skills[7].executor.handler, "router");
 
-        assert_eq!(skills[8].id, "downloads");
-        assert_eq!(skills[8].executor.kind, "openclaw");
-        assert_eq!(skills[8].executor.handler, "downloads");
+        assert_eq!(skills[8].id, "nas");
+        assert_eq!(skills[8].executor.kind, "nas");
+        assert_eq!(skills[8].executor.handler, "network-storage");
+
+        assert_eq!(skills[9].id, "downloads");
+        assert_eq!(skills[9].executor.kind, "openclaw");
+        assert_eq!(skills[9].executor.handler, "downloads");
     }
 
     #[test]

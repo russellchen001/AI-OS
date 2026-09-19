@@ -39,7 +39,7 @@ run_test_group \
 run_test_group \
   'automatic routing, private/public isolation and optional-adapter fallback' \
   'cognitive_distillation::router::tests' \
-  'test cognitive_distillation::router::tests::unavailable_specialized_adapter_falls_back_to_valid_primary ... ok'
+  'test cognitive_distillation::router::tests::unavailable_nuwa_is_reported_as_optional_and_does_not_block_distilly ... ok'
 
 run_test_group \
   'AI-OS-only activation and raw-media-free persona packaging' \

@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
  * "OpenClaw is unavailable" and cost days of misdirected debugging.
  */
 function extractErrorKind(detail: string): string | null {
-  const match = detail.match(/^\[([A-Za-z]+)\]/);
+  const match = detail.match(/\[([A-Za-z]+)\]/);
   return match ? match[1] : null;
 }
 
@@ -65,6 +65,52 @@ export type ExecuteWorkTaskOptions = {
   input?: Record<string, unknown>;
   userConfirmed?: boolean;
 };
+
+export type WorkTaskApproval = {
+  capability: string;
+  input: Record<string, unknown>;
+};
+
+export function parseWorkTaskApproval(
+  error: unknown,
+): WorkTaskApproval | undefined {
+  const detail =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "";
+
+  const match = detail.match(
+    /AI_OS_APPROVAL_REQUIRED_BEGIN([\s\S]*?)AI_OS_APPROVAL_REQUIRED_END/,
+  );
+
+  if (!match) return undefined;
+
+  try {
+    const value = JSON.parse(match[1]) as {
+      capability?: unknown;
+      input?: unknown;
+    };
+
+    if (
+      typeof value.capability !== "string" ||
+      !value.capability.trim() ||
+      !value.input ||
+      typeof value.input !== "object" ||
+      Array.isArray(value.input)
+    ) {
+      return undefined;
+    }
+
+    return {
+      capability: value.capability.trim(),
+      input: value.input as Record<string, unknown>,
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 export type ParsedDownloadRequest = {
   source: string;

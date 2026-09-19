@@ -11290,3 +11290,48 @@ Next P15 work is **NAS Foundation**, unless the owner explicitly defers NAS from
 v1.
 
 <!-- /P15_FINAL_CLOSEOUT_INVENTORY_2026_09_17 -->
+
+## 2026-09-20 — P15 Automatic Routing closeout acceptance
+
+Status: implementation and local acceptance are green; ready for the owner's
+final commit/tag step. No commit, staging, tag, or final completion marker was
+created in this worktree.
+
+### Technical decision
+
+- Generic DO remains Agent-selected: Runtime exposes candidate capabilities,
+  the OpenClaw execution Agent selects one, and Runtime requests input in a
+  second schema-bound turn before validation and approval.
+- Approval is bound to exactly one selected capability and input. The approved
+  retry invokes that request directly and never reruns Agent selection.
+- Agent-authored NAS selectors and filesystem paths are not trusted. NAS values
+  must be verbatim-grounded in the user goal; well-known local folders
+  (`Downloads`, `Desktop`, `Documents`) are resolved by Runtime instead of by
+  model-authored usernames or paths.
+- `filesystem.scan` uses a Runtime-owned, read-only, one-directory native
+  backend after approval. It does not restore shell or file tools to the lean
+  `ai-os-files` Agent. Results are sorted, bounded to 1,000 entries, and expose
+  truncation explicitly. Other filesystem capabilities retain their existing
+  providers.
+
+### Acceptance evidence
+
+- Real UI: NAS capacity selected `nas.capacity`, approved `{}`, and returned the
+  real mounted SMB target and capacity.
+- Real UI: Downloads selected `filesystem.scan`, approved the resolved absolute
+  path, and returned real entries through `backend: local` /
+  `provider: rust-filesystem`.
+- Real UI: installed models selected `models.list`, approved `{}`, and returned
+  the real Ollama model inventory.
+- `verify/verify_ar1c_agent_skill_transport.sh`: `PASS=15 FAIL=0`, including the
+  real OpenClaw Agent-to-Skill-backend round trip.
+- `verify/verify_p15_nas_foundation.sh`: PASS (17 passed, 1 explicit real-hardware
+  fixture test ignored by default), plus cargo check and diff check.
+- `verify/verify_p15_local_model_core_skill.sh`: PASS, including live Ollama API.
+- `verify/gate_p15_computer_control.sh`: PASS, including the full Rust suite.
+- Frontend production build and `git diff --check`: PASS.
+
+The authenticated external-provider aggregate verifier was not rerun because it
+would execute multiple live account integrations. Existing Core PASS and
+provider-specific PASS/SKIP/FAIL evidence remain separate; a SKIP is not counted
+as a live external integration pass.

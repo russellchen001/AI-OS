@@ -106,6 +106,7 @@ pub(crate) struct AgentExecutionResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentExecutionErrorKind {
     InvalidRequest,
+    PermissionRequired,
     PermissionDenied,
     AuthenticationRequired,
     PairingRequired,

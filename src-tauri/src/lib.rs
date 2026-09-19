@@ -28,6 +28,7 @@ mod memory_service;
 mod microsoft_graph;
 mod models;
 mod multillm;
+mod nas;
 mod openclaw;
 pub mod planner;
 mod provider_selection;

@@ -46,8 +46,8 @@ run_test \
   "Agent cannot self-authorize confirmation" \
   runtime::skill_invocation::tests::agent_skill_request_cannot_self_authorize_confirmation
 run_test \
-  "permission denial occurs before backend invocation" \
-  runtime::agent_skill_transport::tests::permission_denial_happens_before_backend_invocation
+  "current approval is required before backend invocation" \
+  runtime::agent_skill_transport::tests::untrusted_request_requires_approval_before_backend_invocation
 run_test \
   "non-exposed capability is denied before backend invocation" \
   runtime::agent_skill_transport::tests::non_exposed_capability_is_rejected_before_backend_invocation

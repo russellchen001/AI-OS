@@ -27,8 +27,7 @@ pub(crate) const GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES: &[&str] = &[
 
 /// Visual GUI control observes the screen and injects input. Persistent trust
 /// never substitutes for confirmation attached to the current execution.
-pub(crate) const COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES: &[&str] =
-    &["computer.use.execute"];
+pub(crate) const COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES: &[&str] = &["computer.use.execute"];
 
 /// Executor-neutral Runtime permission policy.
 ///
@@ -40,9 +39,7 @@ pub(crate) struct ConfiguredCapabilityPermissionGate {
 }
 
 impl ConfiguredCapabilityPermissionGate {
-    pub(crate) fn new(
-        allowed_capabilities: impl IntoIterator<Item = String>,
-    ) -> Self {
+    pub(crate) fn new(allowed_capabilities: impl IntoIterator<Item = String>) -> Self {
         Self {
             allowed_capabilities: allowed_capabilities
                 .into_iter()
@@ -73,14 +70,19 @@ impl ConfiguredCapabilityPermissionGate {
             };
         }
 
-        if self.allowed_capabilities.contains(capability)
-            || (confirmable_capabilities.contains(&capability)
-                && user_confirmed)
-        {
-            CapabilityPermissionDecision::Allowed
-        } else {
-            CapabilityPermissionDecision::Denied
+        if self.allowed_capabilities.contains(capability) {
+            return CapabilityPermissionDecision::Allowed;
         }
+
+        if confirmable_capabilities.contains(&capability) {
+            return if user_confirmed {
+                CapabilityPermissionDecision::Allowed
+            } else {
+                CapabilityPermissionDecision::RequiresApproval
+            };
+        }
+
+        CapabilityPermissionDecision::Denied
     }
 }
 
@@ -90,9 +92,7 @@ mod tests {
 
     #[test]
     fn existing_trusted_automation_behavior_is_preserved() {
-        let gate = ConfiguredCapabilityPermissionGate::new([
-            "filesystem.scan".to_owned(),
-        ]);
+        let gate = ConfiguredCapabilityPermissionGate::new(["filesystem.scan".to_owned()]);
 
         assert_eq!(
             gate.authorize_with_policy(
@@ -111,7 +111,7 @@ mod tests {
                 &["filesystem.scan", "filesystem.read"],
                 &[],
             ),
-            CapabilityPermissionDecision::Denied
+            CapabilityPermissionDecision::RequiresApproval
         );
 
         assert_eq!(
@@ -127,9 +127,7 @@ mod tests {
 
     #[test]
     fn always_confirm_overrides_persistent_trust() {
-        let gate = ConfiguredCapabilityPermissionGate::new([
-            "system.power.shutdown".to_owned(),
-        ]);
+        let gate = ConfiguredCapabilityPermissionGate::new(["system.power.shutdown".to_owned()]);
 
         assert_eq!(
             gate.authorize_with_policy(

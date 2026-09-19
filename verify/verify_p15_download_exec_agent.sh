@@ -21,11 +21,13 @@ else
   bad "执行 agent 可见 ${VISIBLE:-未知} 个 Skill（应为 1）"
 fi
 
-FILESYSTEM_AGENT=$(jq -r '.agents.list[] | select(.id == "ai-os-files") | .id' "$HOME/.openclaw/openclaw.json")
-if [ "$FILESYSTEM_AGENT" = "ai-os-files" ]; then
-  ok "文件操作仍使用 ai-os-files"
+AI_OS_FILES_PROFILE=$(openclaw config get agents.entries.ai-os-files --json 2>/dev/null)
+if [ "$(jq -r '(.tools.allow // []) | length' <<<"$AI_OS_FILES_PROFILE")" = "0" ] && \
+   [ "$(jq -r '(.skills // []) | length' <<<"$AI_OS_FILES_PROFILE")" = "0" ] && \
+   [ "$(jq -r '.contextInjection // empty' <<<"$AI_OS_FILES_PROFILE")" = "never" ]; then
+  ok "ai-os-files 保持无工具、无 Skill、无 context injection 的选择边界"
 else
-  bad "FILESYSTEM_AGENT_ID 被改动"
+  bad "ai-os-files execution-only 选择边界不符合要求"
 fi
 
 if (cd src-tauri && cargo test 2>&1 | grep -q "^test result: ok"); then
