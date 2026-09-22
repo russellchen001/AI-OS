@@ -33,6 +33,7 @@ mod openclaw;
 pub mod planner;
 mod provider_selection;
 mod providers;
+mod remote_linco;
 mod runtime;
 mod system;
 mod task_execution;
@@ -136,6 +137,7 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .manage(runtime_state)
+        .manage(remote_linco::RemoteLincoBridgeState::default())
         .setup(move |app| {
             let emitter = std::sync::Arc::new(runtime::executor::TauriEventEmitter::new(
                 app.handle().clone(),
@@ -150,6 +152,7 @@ pub fn run() {
             // User-added sites must be known before anything is restored.
             connections::refresh_browser_site_registry(&app.handle().clone());
             connections::begin_authenticated_browser_recovery(app.handle().clone());
+            remote_linco::start(app.handle().clone())?;
             Ok(())
         })
         .plugin(tauri_plugin_fs::init())
@@ -326,6 +329,8 @@ pub fn run() {
             memory::save_memory,
             memory::list_memory,
             memory::delete_memory,
+            remote_linco::get_remote_linco_bridge_status,
+            remote_linco::complete_remote_linco_request,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Tauri application");

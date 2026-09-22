@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
  * matching prose made "destination is unavailable" render as
  * "OpenClaw is unavailable" and cost days of misdirected debugging.
  */
-function extractErrorKind(detail: string): string | null {
+export function extractErrorKind(detail: string): string | null {
   const match = detail.match(/\[([A-Za-z]+)\]/);
   return match ? match[1] : null;
 }
@@ -44,7 +44,10 @@ export type ChatTaskStatus =
   | "EXECUTING"
   | "VERIFYING"
   | "COMPLETED"
+  | "RECOVERY"
   | "FAILED";
+
+export type ChatTaskContext = Record<string, unknown>;
 
 export type SubmitChatTaskResponse = {
   taskId: string;
@@ -263,9 +266,10 @@ export function describeChatTaskError(
 export async function submitChatTask(
   prompt: string,
   taskType: ChatTaskType = "ASK",
+  context: ChatTaskContext = {},
 ): Promise<SubmitChatTaskResponse> {
   return invoke<SubmitChatTaskResponse>("submit_chat_task", {
-    request: { prompt, taskType },
+    request: { prompt, taskType, context },
   });
 }
 

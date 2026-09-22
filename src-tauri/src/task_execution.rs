@@ -5,7 +5,7 @@ use crate::{
         plan_runtime_bridge::{PlanRuntimeExecutor, RuntimeBackedPlanExecutor},
     },
     task_engine::{
-        InMemoryTaskEventBus, InMemoryTaskRepository, Task, TaskId, TaskLifecycleManager,
+        InMemoryTaskEventBus, InMemoryTaskRepository, Task, TaskContext, TaskId, TaskLifecycleManager,
         TaskRepository, TaskRepositoryError, TaskStatus, TaskType,
     },
     task_plan_orchestration::{
@@ -47,6 +47,8 @@ impl TaskExecutionState {
 pub(crate) struct SubmitChatTaskRequest {
     prompt: String,
     task_type: TaskType,
+    #[serde(default)]
+    context: TaskContext,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,7 +185,8 @@ fn submit_chat_task_inner(
     state: &TaskExecutionState,
     request: SubmitChatTaskRequest,
 ) -> Result<SubmitChatTaskResponse, String> {
-    let task = Task::new(request.task_type, request.prompt).map_err(|error| error.to_string())?;
+    let mut task = Task::new(request.task_type, request.prompt).map_err(|error| error.to_string())?;
+    task.context = request.context;
     let task_id = state
         .lifecycle
         .create(task)
@@ -461,6 +464,10 @@ mod tests {
             SubmitChatTaskRequest {
                 prompt: "Explain this file".to_owned(),
                 task_type: TaskType::Ask,
+                context: TaskContext::from([
+                    ("councilSessionId".to_owned(), json!("council-1")),
+                    ("recommendationId".to_owned(), json!("recommendation-1")),
+                ]),
             },
         )
         .unwrap();
@@ -468,9 +475,12 @@ mod tests {
         assert_eq!(response.status, TaskStatus::Ready);
         assert_eq!(response.task_type, TaskType::Ask);
         let stored = state.task_repository().list().unwrap();
-        assert!(stored
+        let stored = stored
             .iter()
-            .any(|task| task.id.to_string() == response.task_id));
+            .find(|task| task.id.to_string() == response.task_id)
+            .unwrap();
+        assert_eq!(stored.context["councilSessionId"], json!("council-1"));
+        assert_eq!(stored.context["recommendationId"], json!("recommendation-1"));
     }
 
     #[test]
@@ -484,6 +494,7 @@ mod tests {
             SubmitChatTaskRequest {
                 prompt: "Explain this file".to_owned(),
                 task_type: TaskType::Ask,
+                context: TaskContext::new(),
             },
         )
         .unwrap();
@@ -534,6 +545,7 @@ mod tests {
             SubmitChatTaskRequest {
                 prompt: "Explain this file".to_owned(),
                 task_type: TaskType::Ask,
+                context: TaskContext::new(),
             },
         )
         .unwrap();
@@ -596,6 +608,7 @@ mod tests {
             SubmitChatTaskRequest {
                 prompt: "scan the requested folder".to_owned(),
                 task_type: TaskType::Do,
+                context: TaskContext::new(),
             },
         )
         .unwrap();
@@ -667,6 +680,90 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an active, paired OpenClaw gateway"]
+    fn real_council_recommendation_runs_read_only_skill_through_openclaw() {
+        let state = build_task_execution_state(
+            RuntimeExecutionState::default(),
+            Arc::new(RecordingEmitter::default()),
+        );
+        let submitted = submit_chat_task_inner(
+            &state,
+            SubmitChatTaskRequest {
+                prompt: "List the currently mounted network storage targets. Read only; do not modify anything."
+                    .to_owned(),
+                task_type: TaskType::Do,
+                context: TaskContext::from([
+                    ("source".to_owned(), json!("ai-council")),
+                    ("councilSessionId".to_owned(), json!("council-real-e2e")),
+                    ("recommendationId".to_owned(), json!("recommendation-real-e2e")),
+                ]),
+            },
+        )
+        .unwrap();
+
+        let approval_error = execute_chat_work_task_inner(
+            &state,
+            ExecuteWorkTaskInput {
+                task_id: submitted.task_id,
+                agent_id: "openclaw".to_owned(),
+                capability: None,
+                input: None,
+                user_confirmed: false,
+            },
+        )
+        .unwrap_err();
+        assert!(approval_error.contains("[PermissionRequired]"));
+        let approval_json = approval_error
+            .split("AI_OS_APPROVAL_REQUIRED_BEGIN")
+            .nth(1)
+            .and_then(|value| value.split("AI_OS_APPROVAL_REQUIRED_END").next())
+            .expect("approval payload missing");
+        let approval: serde_json::Value =
+            serde_json::from_str(approval_json).expect("approval payload invalid");
+        let capability = approval["capability"]
+            .as_str()
+            .expect("approval capability missing")
+            .to_owned();
+        let input = approval["input"]
+            .as_object()
+            .expect("approval input missing")
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+
+        let approved = submit_chat_task_inner(
+            &state,
+            SubmitChatTaskRequest {
+                prompt: "List the currently mounted network storage targets. Read only; do not modify anything."
+                    .to_owned(),
+                task_type: TaskType::Do,
+                context: TaskContext::from([
+                    ("source".to_owned(), json!("ai-council")),
+                    ("councilSessionId".to_owned(), json!("council-real-e2e")),
+                    ("recommendationId".to_owned(), json!("recommendation-real-e2e")),
+                ]),
+            },
+        )
+        .unwrap();
+        let response = execute_chat_work_task_inner(
+            &state,
+            ExecuteWorkTaskInput {
+                task_id: approved.task_id,
+                agent_id: "openclaw".to_owned(),
+                capability: Some(capability.clone()),
+                input: Some(input),
+                user_confirmed: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.status, TaskStatus::Verifying);
+        let output = response.output.expect("OpenClaw result missing");
+        assert_eq!(output["skillInvocation"]["capability"], capability);
+        assert!(output["skillInvocation"]["output"].is_object());
+    }
+
+    #[test]
     #[ignore = "requires an active OpenClaw gateway and P15 download fixture"]
     fn real_download_runs_through_task_plan_runtime_and_openclaw() {
         let source = std::env::var("AI_OS_DOWNLOAD_E2E_SOURCE").expect("source missing");
@@ -681,6 +778,7 @@ mod tests {
             SubmitChatTaskRequest {
                 prompt: format!("Download {source}"),
                 task_type: TaskType::Do,
+                context: TaskContext::new(),
             },
         )
         .unwrap();

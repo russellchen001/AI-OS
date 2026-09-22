@@ -36,6 +36,7 @@ import {
   initializeProviderInstances,
 } from "./services/providers";
 import { setLocalOllamaModels } from "./services/aiCenter";
+import { startDesktopLincoInboundBridge } from "./services/desktopLincoInbound";
 
 import useMcp from "./hooks/useMcp";
 import useMetrics from "./hooks/useMetrics";
@@ -147,6 +148,7 @@ function App() {
 
   useEffect(() => {
     void initializeProviderInstances();
+    void startDesktopLincoInboundBridge();
   }, []);
 
   useEffect(() => {

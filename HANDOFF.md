@@ -11335,3 +11335,668 @@ The authenticated external-provider aggregate verifier was not rerun because it
 would execute multiple live account integrations. Existing Core PASS and
 provider-specific PASS/SKIP/FAIL evidence remain separate; a SKIP is not counted
 as a live external integration pass.
+
+## 2026-09-20 — P16-2 AI Council Runtime and execution handoff
+
+Status: implemented and locally verified, uncommitted. P16-1 integration files
+remain preserved in the same worktree.
+
+### Technical decisions
+
+- `src/services/councilRuntime.ts` is the sole owner of Council sequencing,
+  integration-aware context, AI Center streaming, provider failover,
+  cancellation, step lifecycle, Judge synthesis and `CouncilSession`
+  construction. React consumes runtime callbacks and owns rendering and local
+  session persistence only.
+- The canonical default order remains Planner → Engineer → Researcher → Critic
+  → Judge. Additional member ids may be inserted before the Judge, so the
+  runtime is not permanently limited to five roles and the Judge remains the
+  explicit termination point.
+- Paperclip supplies orchestration/governance context only. Agency Agents
+  profiles cross an explicit markdown/profile-to-context boundary and retain
+  slug, division, path and pinned source commit. Linco Bridge supplies
+  connectivity/session/OpenClaw bridge context only. None can execute an AI-OS
+  Skill or replace Planner, Runtime, AgentExecutionAdapter or
+  SkillInvocationGateway.
+- Distilled personas are accepted only when the current profile revision is
+  Active and matches the packaged persona revision. Council context retains the
+  profile id/revision, evidence bundle, evidence ids, confidence and explicit
+  human-reviewed state; it is not reduced to an ungrounded system prompt.
+- `CouncilRecommendation` hands a Council session to the existing Task Engine
+  by creating a `DO` Task. It carries the session id, recommendation, bounded
+  step summaries and provenance references. Council never invokes a Skill or
+  OpenClaw directly; Planner, user confirmation, Runtime permission, selected
+  Agent and Skill confirmation remain mandatory.
+- `CouncilMember` and `CouncilSession` extensions are optional. Existing v1
+  localStorage records continue to normalize as built-in members and load
+  without migration.
+
+### Acceptance evidence
+
+- `verify/verify_p16_council_integrations.sh`: `PASS=15 FAIL=0`.
+- `verify/verify_p16_council_runtime.sh`: verifies runtime role order, provider
+  failover, streaming completion, Judge synthesis, context/provenance metadata,
+  cancellation, production build, P16-1 regression and whitespace.
+- Frontend production build: PASS.
+- `git diff --check`: PASS.
+
+No commit, tag or push was performed.
+
+## 2026-09-21 — P16-3 live integration acceptance
+
+Status: implemented and locally verified, uncommitted. P16-1 and P16-2 changes
+remain preserved in the same worktree. This is not a final P16 completion marker.
+
+### Technical decisions
+
+- Live acceptance uses the actual AI-OS integration adapters and classifies each
+  dependency as PASS, SKIP or FAIL. An unreachable optional local service is a
+  SKIP; a reachable service with an invalid contract is a FAIL.
+- Linco visitor authentication is bootstrapped through
+  `/api/visitor/bootstrap`. The session token stays in adapter memory, is sent
+  only in `X-Linco-Visitor-Session`, is refreshed once after a 401, and is never
+  persisted or logged.
+- Paperclip remains a separate orchestration/governance adapter. Live checks
+  accept a healthy zero-company response and do not create fake company data.
+- The live verifier invokes esbuild and the frontend production build directly
+  and captures each command's zsh `$?`; it does not infer success through a
+  pipeline or `pipestatus`.
+
+### Pinned sources and live startup
+
+- Agency Agents source commit:
+  `f0b095822caed66e9e42e97acb1c060e7a3b87b2`.
+- Paperclip source commit:
+  `b19307758285e22ef3386cac56031f36ed39815d`.
+  The live API was started in the repository-supported API-only mode with
+  `PAPERCLIP_TELEMETRY_DISABLED=1 PAPERCLIP_UI_DEV_MIDDLEWARE=false npx --yes pnpm@9.15.4 dev:once -- --data-dir /private/tmp/ai-os-p16-paperclip`.
+  It used embedded PostgreSQL, completed migrations and served
+  `127.0.0.1:3100`.
+- Linco Bridge source commit:
+  `3a7375858eb17de3db45cd9896578d371c6df9be`.
+  The live server was started from `linco-bridge-platform/server` with
+  `SQLITE_PATH=/private/tmp/ai-os-p16-linco.db npm run start:dev` and served
+  `127.0.0.1:3300`.
+
+### Acceptance evidence
+
+- `verify/verify_p16_live_integrations.sh`: `PASS=6 SKIP=0 FAIL=0`.
+  Agency Agents loaded one live division and four live runbooks. Paperclip
+  `/api/health` and `/api/companies` returned HTTP 200; zero companies was
+  handled successfully. Linco bootstrap, sessions and OpenClaw status calls
+  returned valid live contracts.
+- A bounded same-visitor Linco connector smoke used the existing local OpenClaw,
+  reached `connected=true`, printed no credential, then stopped cleanly. A new
+  anonymous visitor correctly sees its own isolated connection as
+  `openClawConnected=false`.
+- Frontend production build: PASS. The live verifier performs this build with a
+  direct exit-code check, fixing the earlier zsh pipeline-status false failure.
+- Final P16-1 integration verifier: `PASS=15 FAIL=0`.
+- Final P16-2 runtime verifier: `PASS=6 FAIL=0`.
+- Standalone TypeScript check, standalone production build and
+  `git diff --check`: PASS.
+
+### Known local-only limitations
+
+- Paperclip's pinned worktree currently has a mismatch between its patch
+  configuration and committed pnpm lockfile, so a frozen install is rejected.
+  The API-only live path was used because the non-frozen dependency resolution
+  also makes Vite UI pre-bundling fail on an upstream `assistant-cloud` export.
+  This did not affect the API endpoints exercised by the AI-OS adapter.
+- Dependency installation reported upstream audit findings for the external
+  reference projects. No audit fix, dependency upgrade or external-reference
+  source change was made.
+
+No staging, commit, tag or push was performed.
+
+## P16 — AI Council — Completed
+
+Status: **Completed**
+
+P16 delivers the production AI Council decision-support layer while preserving
+the existing AI-OS execution architecture.
+
+Implemented and accepted:
+
+- Council execution was extracted from the React page into a reusable Council
+  Runtime.
+- The existing AI Center provider/model infrastructure remains the canonical
+  model invocation layer.
+- Provider failover, streaming, cancellation, bounded Council execution and
+  Judge synthesis are preserved.
+- Council recommendations do not directly execute Skills or OpenClaw.
+- Execution handoff is Council Recommendation → DO Task → Planner → user
+  confirmation → Runtime → selected Agent → Skills.
+- Existing Council localStorage data remains compatible.
+- Cognitive Distillation profiles can participate as Council member context
+  while retaining provenance, confidence/evidence and reviewed-profile
+  boundaries.
+- Paperclip is integrated as a real Council orchestration/governance context
+  integration.
+- Agency Agents is integrated as a real machine-readable role/team/runbook
+  source.
+- Linco Bridge is integrated as a real Agent connectivity layer and does not
+  replace AgentExecutionAdapter, Task Engine, Runtime or SkillInvocationGateway.
+
+Pinned external integration baselines:
+
+- Paperclip:
+  `b19307758285e22ef3386cac56031f36ed39815d`
+- Agency Agents:
+  `ad9264e309bd5e5422c04784372d7841b1e5d604`
+- Linco Bridge:
+  `3a7375858eb17de3db45cd9896578d371c6df9be`
+
+Final live acceptance:
+
+- Agency Agents real pinned catalog: PASS.
+- Paperclip local API integration: PASS.
+  - `/api/health` HTTP 200.
+  - `/api/companies` HTTP 200.
+  - zero-company state handled correctly.
+- Linco Bridge local integration: PASS.
+  - anonymous visitor authentication path verified.
+  - session/auth refresh behavior verified.
+- Linco Bridge → OpenClaw real connector smoke: PASS.
+  - same-visitor connector reached `connected=true`.
+  - connector was safely stopped after verification.
+  - test credentials were neither logged nor persisted.
+- P16-1 integration verifier: PASS.
+- P16-2 Council Runtime verifier: PASS.
+- P16-3 live integration verifier: PASS with zero SKIP and zero FAIL.
+- TypeScript: PASS.
+- frontend production build: PASS.
+- `git diff --check`: PASS.
+
+Known limitation:
+
+The pinned Paperclip source revision contains a pnpm patch configuration /
+committed lockfile mismatch. P16 live acceptance therefore used Paperclip's
+supported API-only local mode. This does not affect the API contract consumed
+by the AI-OS Paperclip adapter. No dependency upgrades or `npm audit fix` were
+performed.
+
+`p15-complete` remains the immutable P15 baseline.
+
+### P16 Dynamic Council Core — Completed
+
+The primary Council path is now dynamic. The legacy Planner → Engineer →
+Researcher → Critic → Judge sequence remains available only when dynamic
+assembly cannot be produced or when loading an older saved Council.
+
+Technical decisions:
+
+- `CouncilChiefOfStaff` is a first-class assembly service. It classifies the
+  objective locally, consumes real Paperclip company/governance availability,
+  resolves specialist requirements against the complete pinned Agency Agents
+  role index, assigns connected AI Center models and creates a bounded
+  `CouncilAssemblyPlan`. It is not Runtime, Task Engine, OpenClaw or a Skill
+  executor.
+- Paperclip affects the assembly rationale, governance scope and provenance.
+  Its context is not automatically forwarded to an arbitrary model provider.
+  When unavailable, the Chief of Staff records a traceable governance fallback.
+- Agency Agents catalog normalization now exposes the real pinned corpus:
+  18 divisions, 4 runbooks and 264 role definitions. Each selected seat loads
+  only its own real markdown definition and retains slug, division, source path,
+  pinned commit and provenance. The whole repository is never concatenated into
+  a prompt.
+- AI Center model assignment is dynamic and provider-diverse when multiple
+  providers are connected, local-first for privacy-sensitive objectives, and
+  valid in single-model mode. No provider-to-role mapping or new provider client
+  was added.
+- `CouncilRuntime` accepts arbitrary dynamic seats. It runs one independent
+  analysis round, one cross-review round and one synthesis step. The two
+  deliberation rounds are hard-bounded; member/provider failures remain isolated,
+  streaming and cancellation remain active, and successful individual
+  contributions are retained.
+- Synthesis produces a structured `CouncilRecommendation` with summary,
+  recommended plan, rationale, disagreements, risks, assumptions, uncertainty,
+  provenance and timestamp. `finalAnswer` remains for UI and saved-session
+  compatibility.
+- `AiCouncilPage` shows “Assembling Council…”, the assembled team, Agency source,
+  assigned model, per-stage progress and the structured result. Existing history,
+  favorite and export paths remain intact. Dynamic recommendations deliberately
+  do not expose the existing execution handoff button in this round.
+- `CouncilSeat` includes `builtin`, `agency-agent` and `distilled-persona` type
+  support. Full distilled-persona simulation is intentionally deferred.
+
+Acceptance evidence:
+
+- `verify/verify_p16_dynamic_council.sh`: `PASS=6 FAIL=0`.
+- Behavior coverage proves objective-specific non-legacy assembly, actual
+  Paperclip consumption, real Agency role-context instantiation and provenance,
+  dynamic and single-provider model assignment, arbitrary-seat execution,
+  independent analysis, cross-review, synthesis, retained contributions,
+  disagreement/uncertainty preservation, failure isolation, cancellation,
+  bounded rounds, old localStorage compatibility and legacy five-role fallback.
+- `verify/verify_p16_live_integrations.sh`: `PASS=7 SKIP=0 FAIL=0`.
+  Live assembly consumed Paperclip and instantiated four specialist seats from
+  the real 264-role Agency Agents index without creating Paperclip data or
+  invoking Task Engine/Skills.
+- P16-1 integrations: `PASS=15 FAIL=0`.
+- P16-2 runtime regression: `PASS=6 FAIL=0`.
+- TypeScript, frontend production build and `git diff --check`: PASS.
+
+Remaining after this round:
+
+- approved recommendation → real Agent execution;
+- execution feedback and selective Council replanning;
+- Simulation Council using real P15 distilled outputs;
+- Linco remote workflow;
+- final product-level P16 E2E.
+
+No staging, commit, tag or push was performed. Overall P16 remains in progress.
+
+### P16 Council Execution Core — Completed
+
+The approved-recommendation path now closes the bounded product loop through
+the existing AI-OS execution architecture. Council recommendations remain
+advisory until the user explicitly approves them.
+
+Technical decisions:
+
+- `CouncilExecutionCoordinator` owns only Council-facing orchestration. User
+  approval creates a real `DO` Task through `submit_chat_task`; the Council has
+  no Runtime, OpenClaw or Skill gateway dependency and cannot execute a Skill.
+- Task submission now accepts backward-compatible optional `context` metadata.
+  Council handoff stores `source`, `councilSessionId` and `recommendationId` in
+  the real Task while the bounded intent carries the objective, structured plan,
+  assumptions, risks and provenance. Raw Council transcripts are not copied.
+- The existing `PlannerService`, `TaskPlanExecutionOrchestrator`,
+  `RuntimeBackedPlanExecutor`, `AgentExecutionAdapter` and v1 `openclaw` Agent
+  remain the only execution path. The first pass supplies no capability, so the
+  Planner creates `agent.execute` and OpenClaw selects among exposed Skills.
+- Council approval and action confirmation remain separate. When Runtime asks
+  for approval, the UI presents the exact Agent-selected capability and input.
+  A confirmed retry creates a fresh planning Task and sets `userConfirmed` only
+  on that exact capability/input pair; generic `agent.execute` is never blanket
+  authorized. Previous and active Task ids remain linked.
+- `ExecutionFeedback` is a focused discriminated contract covering progress,
+  success, failure and blocker states. Every event carries
+  `councilSessionId`, `recommendationId`, `taskId` and timestamp; blocker data
+  can additionally carry the blocked step, observed reality, invalidated
+  assumptions and suggested expertise.
+- Council UI now shows task/planning, awaiting-confirmation, running, blocked,
+  failed and completed states without introducing a second Task dashboard.
+  Saved legacy Council sessions synthesize a stable legacy recommendation id
+  and remain executable.
+- A blocker can be passed to `CouncilChiefOfStaff.evaluateExecutionBlocker`.
+  It returns a bounded targeted reconvene/user-decision result with matching
+  existing seats, at most four new expertise requirements and relevant
+  execution context. It always requires user approval and neither launches a
+  Council nor resumes execution automatically.
+
+Acceptance evidence:
+
+- `verify/verify_p16_council_execution.sh`: `PASS=7 FAIL=0`.
+- Behavior coverage proves no authority before approval, real DO Task handoff,
+  retained linkage, generic Agent-owned execution, exact confirmation, progress,
+  success, failure, blocker classification, targeted reconvene decision,
+  required future approval and legacy-history compatibility.
+- The real harmless E2E started from a Council-linked DO Task, reached Planner's
+  generic `agent.execute`, received the real OpenClaw-selected read-only NAS
+  capability confirmation request, created a fresh Task for the exact confirmed
+  capability/input, and completed through Runtime and
+  `RuntimeSkillInvocationGateway` with structured Skill output returned to the
+  Task response.
+- Dynamic Council verifier: `PASS=6 FAIL=0`.
+- P16-1 integration verifier: `PASS=15 FAIL=0`.
+- P16-2 runtime verifier: `PASS=6 FAIL=0`.
+- TypeScript, frontend production build and `git diff --check`: PASS.
+
+Remaining after this block:
+
+- Simulation Council using real P15 distillation outputs;
+- full execution-feedback replanning loop if product acceptance requires it;
+- Linco remote workflow;
+- final product-level P16 E2E;
+- P16 closeout.
+
+No staging, commit, tag or push was performed. Overall P16 remains in progress.
+
+
+## P16 Product-Level Completion Criteria
+
+P16 is NOT complete when adapters, runtime extraction, or live connectivity alone pass.
+
+The product-level P16 goal is a complete AI Council decision-and-execution loop.
+
+### 1. Dynamic AI Council
+
+User asks AI-OS a complex question.
+
+Flow:
+
+User
+→ Chief of Staff
+→ Paperclip
+→ dynamic Council composition
+→ Agency Agents
+→ specialist role/persona/expertise assignment
+→ AI Center
+→ suitable LLM assignment per Council member
+→ multi-member deliberation
+→ synthesis
+→ recommendation/report
+
+Requirements:
+
+- Chief of Staff is a first-class Council orchestration concept.
+- Paperclip determines what expertise / Council structure is required.
+- Agency Agents supplies specialist personas, knowledge, methodology, workflows and role behavior.
+- AI Center supplies the model "brain" for each dynamically created Council member.
+- The existing fixed Planner / Engineer / Researcher / Critic / Judge sequence remains only a fallback/default template.
+- Council composition must not be permanently locked to five roles.
+- Council execution must be bounded and terminate in explicit synthesis.
+
+### 2. Simulation / Forecast Council
+
+When the user asks for scenario analysis, behavioral prediction or future-response simulation:
+
+User request
+→ Chief of Staff detects simulation requirement
+→ load P15 Cognitive Distillation output
+→ Paperclip determines supporting expert Council
+→ Agency Agents supplies expert roles
+→ distilled persona participates as a simulated-person Council member
+→ expert cross-examination
+→ scenario analysis / forecast report
+
+The report should preserve, where available:
+
+- provenance
+- evidence grounding
+- assumptions
+- confidence / uncertainty
+- alternate scenarios
+- trigger conditions
+- evidence that would change the forecast
+
+Distilled personas must reuse P15 Cognitive Distillation outputs rather than create a second persona store.
+
+### 3. Council Recommendation → Agent Execution
+
+Council analysis is only the first half of P16.
+
+After the user approves the proposed solution:
+
+CouncilRecommendation
+→ DO Task
+→ Task Engine
+→ Planner
+→ executable task decomposition
+→ user execution confirmation
+→ Runtime
+→ selected Agent
+→ v1 OpenClaw
+→ Agent-selected Skills
+→ SkillInvocationGateway
+→ real execution
+
+Council must never bypass:
+
+- Task Engine
+- Planner
+- Runtime
+- permission / confirmation policy
+- SkillInvocationGateway
+
+The Council itself must not directly execute Skills or OpenClaw actions.
+
+### 4. Execution Feedback / Replanning Loop
+
+Execution must report progress, results, failures and blockers back into the control plane.
+
+When execution invalidates assumptions or reaches a blocker:
+
+Agent / Runtime
+→ Task Engine
+→ Chief of Staff
+→ reassemble only the necessary Council expertise
+→ revised recommendation / plan
+→ user approval where required
+→ resume execution
+
+Canonical loop:
+
+Think
+→ Plan
+→ Approve
+→ Do
+→ Observe
+→ Re-think when necessary
+→ Continue
+
+### 5. Linco Bridge Remote Interaction
+
+Linco Bridge is not a Council reasoning member and not a Core Skill.
+
+Its role is Remote Interaction / Agent Connectivity.
+
+Remote user
+↔ Linco Bridge
+↔ AI-OS
+
+The user must be able to continue interacting with the same AI-OS while away from the main Mac.
+
+P16 remote E2E should support:
+
+- ordinary ASK
+- start AI Council
+- receive Council progress/result
+- approve recommendation
+- initiate DO flow
+- receive confirmation request
+- confirm execution
+- receive Agent execution progress
+- receive final result
+
+Linco Bridge must not replace:
+
+- Task Engine
+- AgentExecutionAdapter
+- Runtime
+- SkillInvocationGateway
+
+### Current P16 Status
+
+Completed foundation:
+
+- Council runtime extraction
+- Paperclip connectivity
+- Agency Agents connectivity
+- Linco Bridge connectivity
+- P15 Distilled Persona context adapter
+- Council → Task Engine handoff foundation
+- live integration verification infrastructure
+- Dynamic Council Core: Chief of Staff, dynamic assembly, Agency role
+  instantiation, AI Center assignment, bounded deliberation and structured
+  recommendation
+- Council Execution Core with real Task Engine / Planner / Runtime / OpenClaw
+  read-only E2E and exact confirmation
+- Council Replanning Core with bounded targeted reconvening
+- Simulation Council using active human-reviewed P15 distilled personas
+- Remote AI-OS / Linco production adapter and behavioral orchestration coverage
+
+Still required before P16 completion:
+
+- live Linco transport/session validation while the local service is available
+- live desktop-bound Linco → AI-OS orchestration injection and reconnect E2E
+- final product-level P16 acceptance with currently unavailable external services
+- P16 closeout
+
+Do not mark P16 complete until all above product-level acceptance requirements pass.
+
+
+### P16 Simulation Council Core — Completed
+
+Status: product-level P16 remains In Progress.
+
+Implemented:
+
+- Reuses the P15 Cognitive Distillation person-profile lifecycle and persona-skill output.
+- Simulation accepts only the current active, human-reviewed profile revision through `distilledPersonaToCouncilContext`.
+- A validated distilled profile becomes a first-class `distilled-persona` Council seat.
+- Paperclip/Chief-of-Staff dynamic assembly remains responsible for the supporting expert Council.
+- Agency Agents specialist seats remain in the Council and cross-examine the simulated-person reasoning.
+- Existing AI Center model assignments are reused; no second model/provider layer was introduced.
+- Existing Dynamic Council Runtime executes simulation mode.
+- Simulation remains bounded to the existing two-round deliberation ceiling.
+- Provenance includes person profile revision, evidence bundle and individual evidence references.
+- Synthesis distinguishes evidence, assumptions, likely responses, alternative scenarios, trigger conditions, counterarguments, confidence, uncertainty, evidence that would change the forecast, and recommended response.
+- Simulation output is explicitly framed as scenario analysis rather than future certainty.
+- No duplicate persona store was introduced.
+- Simulation Council itself grants no execution authority.
+
+Remaining P16 work:
+
+- minimal user-facing profile selection / Simulation Council entry flow
+- complete execution-feedback replanning loop
+- Linco Bridge remote AI-OS workflow
+- final product-level P16 E2E and closeout
+
+
+## P16 Council Replanning Core — Completed
+
+Execution feedback now supports a bounded Council replanning loop without granting autonomous execution authority.
+
+Canonical flow:
+
+Agent / Runtime execution
+→ ExecutionBlocker
+→ Chief of Staff blocker evaluation
+→ targeted expert reconvening
+→ bounded Dynamic Council deliberation
+→ revised CouncilRecommendation
+→ user approval required
+→ normal DO Task / Planner / Runtime / OpenClaw path
+
+Implemented:
+
+- `CouncilReplanningCoordinator`
+- execution blocker → Chief of Staff decision
+- targeted expert Council assembly
+- existing Dynamic Council Runtime reuse
+- maximum two deliberation rounds
+- original Council / recommendation / Task linkage retained
+- blocker provenance retained
+- revised recommendation explicitly requires user approval
+- successful execution does not trigger replanning
+- replanning service cannot invoke Task Engine, Runtime, OpenClaw or Skills directly
+
+Important boundary:
+
+A revised recommendation is advisory only. It does not automatically resume execution and does not inherit execution permission from the previous Task.
+
+Final P16 product scope is now accepted through the closeout evidence recorded
+below.
+
+## P16 — AI Council — Completed
+
+
+### P16 Remote AI-OS / Linco — Completed
+
+Linco is transport only. Remote inbound messages are normalized by
+`LincoRemoteTransportAdapter` and enter `RemoteAiOsGateway`; neither component
+imports or directly invokes OpenClaw, AgentExecutionAdapter,
+SkillInvocationGateway or a Skill backend.
+
+Implemented boundaries:
+
+- `sessionKey` maps to an AI-OS conversation id through a minimal bounded local
+  mapping. It remains distinct from Council session, recommendation, Task,
+  Plan/execution and Agent session identifiers. The same transport key resumes
+  the same conversation; different keys are isolated.
+- Remote ASK creates the normal ASK Task, starts it through Task Engine and uses
+  AI Center streaming. Remote DO uses automatic ASK/DO intent classification,
+  real DO Task submission and `executeChatWorkTask`, preserving Planner,
+  Runtime, selected Agent and SkillInvocationGateway ownership.
+- Remote Dynamic Council calls the existing Chief of Staff and Council Runtime.
+  Structured recommendation state returns Council/recommendation identifiers,
+  summary, actions, assumptions and risks. Approval delegates to the existing
+  `CouncilExecutionCoordinator`; it does not authorize execution by itself.
+- Runtime confirmation is represented by an opaque confirmation id plus Task id
+  and a bounded action/target summary. The exact Agent-selected capability and
+  input remain in an AI-OS-owned in-memory pending record. A response must match
+  session, confirmation and Task, is consumed once, and cannot supply or alter
+  capability/input. Missing, mismatched and replayed responses fail closed.
+- Council execution progress/result retains Council session, recommendation and
+  Task provenance. A blocker delegates to the existing
+  `CouncilReplanningCoordinator`; a revised recommendation is returned with a
+  fresh approval-required boundary and is never auto-executed.
+- Remote Simulation delegates to the existing Simulation Council and P15
+  distilled persona path. `stop_turn` delegates only to supported ASK, Dynamic
+  Council or Simulation cancellation and otherwise returns nothing-to-cancel.
+- Council sessions are saved through the existing Council store so references
+  can be restored after reconnect. Exact pending confirmation data remains
+  process-local because Task Engine execution state is process-local; no new
+  persistence or secret store was invented.
+- Linco was removed from Council member/reasoning context. Paperclip and Agency
+  Agents remain Council construction/context sources; Linco remains health,
+  authentication, session and transport infrastructure.
+- The Desktop owns an opt-in local inbound service. It binds only to
+  `127.0.0.1`, requires a process-supplied bearer token, rejects unknown fields
+  and unsupported event types, and forwards accepted envelopes over the
+  existing Tauri event bridge to `LincoRemoteBridge`. Transport authentication
+  does not grant Task, Runtime or execution permission.
+- Remote ASK cancellation now ends the Remote operation when AI Center cancel
+  is requested even if a provider does not promptly emit its terminal event;
+  the existing provider cancellation command is still invoked.
+
+Verification:
+
+- `verify/verify_p16_remote_ai_os.sh`: `PASS=6 FAIL=0`.
+- Session continuity/isolation, normal ASK and DO routing, Dynamic Council,
+  recommendation approval, exact one-time confirmation, mismatched/replayed
+  rejection, provenance, replanning, Simulation and cancellation all pass with
+  transport/external dependencies replaced by bounded fakes.
+- Linco recommendation responses are normalized at the transport boundary.
+  Ordinary DO confirmation continues the exact pending Task rather than
+  creating a second Task, while the trusted capability/input remains owned by
+  AI-OS.
+- Full P16 regression is green: integrations `15/0`, runtime `6/0`, Dynamic
+  Council `6/0`, Council Execution `7/0`, Replanning `8/0`, Simulation `7/0`,
+  Remote `6/0`; TypeScript, production build and whitespace validation pass.
+- Agency Agents live pinned catalog remains PASS (18 divisions, 4 runbooks,
+  264 agents).
+- Live Paperclip and Linco validation is PASS. Paperclip health/companies and
+  Paperclip-informed Dynamic Council assembly passed. Linco visitor auth plus
+  session create/list/resume/messages passed through the production adapter.
+  The live verifier created only a temporary transport session, sent no Agent
+  message, and bound its session id through `LincoRemoteBridge`; this validates
+  Linco transport → AI-OS adapter rather than Linco → OpenClaw.
+- The Linco conversation endpoint is `/api/agent-chat/:type/conversations` in
+  the pinned live server; the production adapter now uses that exact contract.
+- `verify/verify_p16_desktop_linco.sh`: `PASS=7 FAIL=0`, including the focused
+  Rust envelope/auth tests, loopback bind guard, Desktop adapter routing,
+  TypeScript and whitespace checks.
+- `verify/verify_p16_desktop_linco_live.sh`: PASS against a normally running
+  Tauri dev Desktop and the real local Linco service. A real Linco transport
+  session id entered the Desktop endpoint, mapped to one AI-OS conversation,
+  entered normal Remote ASK orchestration, returned normalized events, retained
+  the same conversation on reconnect, rejected a duplicate message, and
+  accepted `stop_turn` through existing cancellation semantics. Unauthorized
+  and malformed local requests were rejected.
+- The Desktop endpoint returned the response directly to the authenticated
+  transport caller. No Linco Agent-chat message was sent, and no direct
+  Linco → OpenClaw route exists.
+
+Product-level acceptance at this snapshot:
+
+- Dynamic Council: behavior/regression and live Paperclip-informed assembly PASS.
+- Council → DO: PASS including real OpenClaw, read-only Agent-selected Skill and
+  exact confirmation.
+- blocker → replanning: PASS behaviorally with bounded reconvening and renewed
+  approval.
+- Simulation: PASS behaviorally using the existing P15 distilled-persona path.
+- Remote Linco: production adapter, behavioral E2E, live transport/session
+  contract and live Desktop-bound inbound ASK/reconnect/cancellation PASS.
+- Remote Council, DO, exact confirmation and confirmation replay remain covered
+  by the existing Remote behavior verifier and the already accepted product
+  Council → DO E2E. They were not repeated through the final Desktop live probe
+  because the local OpenClaw service was offline during that probe; this is a
+  non-blocking environment limitation, not a missing product route.
+
+Overall P16 is **Completed**. Dynamic Council, Council Execution, Replanning,
+Simulation, Remote Linco transport and the Desktop-bound inbound product path
+are accepted. No staging, commit, tag or push was performed.

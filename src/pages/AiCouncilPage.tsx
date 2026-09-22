@@ -1,14 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
   useMemo,
   useRef,
   useState,
   type CSSProperties,
 } from "react";
-import {
-  listen,
-  type UnlistenFn,
-} from "@tauri-apps/api/event";
 import {
   save,
 } from "@tauri-apps/plugin-dialog";
@@ -17,14 +12,9 @@ import {
 } from "@tauri-apps/plugin-fs";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import {
-  useDialog,
-} from "../components/DialogProvider";
-import {
   recordAnalyticsEvent,
 } from "../services/analytics";
 import {
-  streamThroughAiCenter,
-  type AiCenterConversationMessage,
   listAiCenterModels,
 } from "../services/aiCenter";
 import {
@@ -35,15 +25,28 @@ import {
   saveCouncilMembers,
   upsertCouncilSession,
 } from "../services/council";
+import {
+  CouncilCancelledError,
+  createCouncilRuntime,
+} from "../services/councilRuntime";
+import {
+  createCouncilChiefOfStaff,
+} from "../services/councilChiefOfStaff";
+import {
+  createCouncilExecutionCoordinator,
+} from "../services/councilExecution";
 import type {
   CouncilMember,
-  CouncilRole,
   CouncilSession,
   CouncilStepResult,
 } from "../types/council";
 import type {
   ProviderId,
 } from "../types/provider";
+import type {
+  CouncilAssemblyPlan,
+  CouncilRecommendation,
+} from "../types/councilAssembly";
 
 type AiCouncilPageProps = {
   cardStyle: CSSProperties;
@@ -51,47 +54,6 @@ type AiCouncilPageProps = {
     message: string,
   ) => void;
 };
-
-type ChunkEvent = {
-  operationId: string;
-  providerId: ProviderId;
-  text: string;
-};
-
-type DoneEvent = {
-  operationId: string;
-  providerId: ProviderId;
-  cancelled: boolean;
-};
-
-type ErrorEvent = {
-  operationId: string;
-  providerId: ProviderId;
-  message: string;
-};
-
-
-
-const ROLE_ORDER:
-  CouncilRole[] = [
-  "planner",
-  "engineer",
-  "researcher",
-  "critic",
-  "judge",
-];
-
-function createSessionTitle(
-  prompt: string,
-): string {
-  const value =
-    prompt.trim() ||
-    "Untitled Council Session";
-
-  return value.length > 60
-    ? `${value.slice(0, 60)}…`
-    : value;
-}
 
 function safeFilename(
   title: string,
@@ -116,9 +78,6 @@ function AiCouncilPage({
   cardStyle,
   onMessage,
 }: AiCouncilPageProps) {
-  const dialog =
-    useDialog();
-
   const [
     members,
     setMembers,
@@ -158,6 +117,21 @@ function AiCouncilPage({
   ] = useState("");
 
   const [
+    assemblyPlan,
+    setAssemblyPlan,
+  ] = useState<CouncilAssemblyPlan | null>(null);
+
+  const [
+    recommendation,
+    setRecommendation,
+  ] = useState<CouncilRecommendation | null>(null);
+
+  const [
+    isAssembling,
+    setIsAssembling,
+  ] = useState(false);
+
+  const [
     isRunning,
     setIsRunning,
   ] = useState(false);
@@ -166,20 +140,32 @@ function AiCouncilPage({
     editingMember,
     setEditingMember,
   ] = useState<
-    CouncilRole | null
+    string | null
   >(null);
+
+  const [
+    isCreatingTask,
+    setIsCreatingTask,
+  ] = useState(false);
 
   const [
     sessionSearch,
     setSessionSearch,
   ] = useState("");
 
-  const cancelledRef =
-    useRef(false);
+  const councilRuntimeRef =
+    useRef(
+      createCouncilRuntime(),
+    );
 
-  const currentOperationRef =
-    useRef<string | null>(
-      null,
+  const chiefOfStaffRef =
+    useRef(
+      createCouncilChiefOfStaff(),
+    );
+
+  const executionCoordinatorRef =
+    useRef(
+      createCouncilExecutionCoordinator(),
     );
 
   const filteredSessions =
@@ -209,7 +195,7 @@ function AiCouncilPage({
 
   const updateMember =
     <K extends keyof CouncilMember>(
-      id: CouncilRole,
+      id: string,
       key: K,
       value:
         CouncilMember[K],
@@ -228,6 +214,168 @@ function AiCouncilPage({
       );
     };
 
+  const runCouncil = async () => {
+    const userPrompt = prompt.trim();
+    if (!userPrompt || isRunning) return;
+
+    const startedAt = Date.now();
+    setIsRunning(true);
+    setFinalAnswer("");
+    setRecommendation(null);
+    setAssemblyPlan(null);
+    setIsAssembling(true);
+
+    try {
+      let nextAssemblyPlan: CouncilAssemblyPlan | undefined;
+      try {
+        nextAssemblyPlan = await chiefOfStaffRef.current.assemble({
+          objective: userPrompt,
+        });
+        setAssemblyPlan(nextAssemblyPlan);
+      } catch (error) {
+        onMessage(
+          `Dynamic assembly unavailable; using the legacy Council fallback: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      } finally {
+        setIsAssembling(false);
+      }
+
+      const result = await councilRuntimeRef.current.run({
+        prompt: userPrompt,
+        members,
+        assemblyPlan: nextAssemblyPlan,
+        callbacks: {
+          onCouncilStarted: (sessionId, initialSteps) => {
+            setSteps(initialSteps);
+            recordAnalyticsEvent({
+              module: "council",
+              type: "started",
+              title: "AI Council started",
+              description: `${initialSteps.length} active member(s)`,
+              inputTokens: Math.ceil(userPrompt.length / 4),
+              metadata: {
+                sessionId,
+                memberCount: initialSteps.length,
+                tokenEstimate: true,
+              },
+            });
+          },
+          onMemberStarted: (nextStep) => {
+            setSteps((current) =>
+              current.map((step) =>
+                step.role === nextStep.role ? nextStep : step,
+              ),
+            );
+          },
+          onProviderChanged: (memberId, providerId, attempt, total) => {
+            setSteps((current) =>
+              current.map((step) =>
+                step.role === memberId
+                  ? {
+                      ...step,
+                      providerId,
+                      status: "running",
+                      output: "",
+                      error:
+                        total > 1
+                          ? `Trying ${providerId} (${attempt}/${total})…`
+                          : `Using ${providerId}…`,
+                    }
+                  : step,
+              ),
+            );
+          },
+          onChunk: (memberId, providerId, text) => {
+            setSteps((current) =>
+              current.map((step) =>
+                step.role === memberId
+                  ? {
+                      ...step,
+                      providerId,
+                      output: step.output + text,
+                    }
+                  : step,
+              ),
+            );
+          },
+          onMemberCompleted: (nextStep) => {
+            setSteps((current) =>
+              current.map((step) =>
+                step.role === nextStep.role ? nextStep : step,
+              ),
+            );
+            recordAnalyticsEvent({
+              module: "council",
+              type: "success",
+              title: `Council ${nextStep.memberName} completed`,
+              description: `${nextStep.providerId} · ${nextStep.role}`,
+              provider: nextStep.providerId,
+              outputTokens: Math.ceil(nextStep.output.length / 4),
+              latencyMs:
+                nextStep.completedAt && nextStep.startedAt
+                  ? nextStep.completedAt - nextStep.startedAt
+                  : undefined,
+              metadata: { role: nextStep.role, tokenEstimate: true },
+            });
+          },
+          onMemberFailed: (nextStep) => {
+            setSteps((current) =>
+              current.map((step) =>
+                step.role === nextStep.role ? nextStep : step,
+              ),
+            );
+          },
+        },
+      });
+
+      setSteps(result.steps);
+      setFinalAnswer(result.finalAnswer);
+      setRecommendation(result.recommendation ?? null);
+      const next = upsertCouncilSession(result.session);
+      setSessions(next);
+      setSelectedSessionId(result.session.id);
+      recordAnalyticsEvent({
+        module: "council",
+        type: "completed",
+        title: "AI Council completed",
+        description: result.session.title,
+        outputTokens: Math.ceil(result.finalAnswer.length / 4),
+        latencyMs: Date.now() - startedAt,
+        metadata: {
+          sessionId: result.session.id,
+          memberCount: result.steps.length,
+          successfulMembers: result.steps.filter((step) => step.status === "done").length,
+          integrationIds: result.metadata.integrationIds.join(","),
+          tokenEstimate: true,
+        },
+      });
+      onMessage("AI Council completed successfully.");
+    } catch (error) {
+      if (error instanceof CouncilCancelledError) {
+        onMessage("AI Council stopped.");
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        setSteps((current) =>
+          current.map((step) =>
+            step.status === "running"
+              ? { ...step, status: "error", error: message, completedAt: Date.now() }
+              : step,
+          ),
+        );
+        onMessage(`AI Council failed: ${message}`);
+      }
+    } finally {
+      setIsAssembling(false);
+      setIsRunning(false);
+    }
+  };
+
+  const stopCouncil = async () => {
+    await councilRuntimeRef.current.cancel();
+  };
+
   const persistMembers =
     () => {
       saveCouncilMembers(
@@ -239,732 +387,102 @@ function AiCouncilPage({
       );
     };
 
-  const runMemberWithFailover =
-    async (
-      member:
-        CouncilMember,
-      messages:
-        AiCenterConversationMessage[],
-      onProviderChange: (
-        providerId:
-          ProviderId,
-        attempt:
-          number,
-        total:
-          number,
-      ) => void,
-      onChunk: (
-        text: string,
-      ) => void,
-    ): Promise<{
-      output: string;
-      providerId:
-        ProviderId;
-      errors: string[];
-    }> => {
-      const availableModels =
-        listAiCenterModels();
 
-      if (
-        availableModels.length === 0
-      ) {
-        throw new Error(
-          `${member.name}: no AI Center models are connected.`,
-        );
-      }
-
-      const preferred =
-        availableModels.find(
-          (model) =>
-            model.providerId ===
-            member.providerId,
-        );
-
-      const candidates = [
-        ...(preferred
-          ? [preferred]
-          : []),
-        ...availableModels.filter(
-          (model) =>
-            model !== preferred,
-        ),
-      ];
-
-      const errors:
-        string[] = [];
-
-      for (
-        let index = 0;
-        index <
-        candidates.length;
-        index += 1
-      ) {
-        if (
-          cancelledRef.current
-        ) {
-          throw new Error(
-            "Council execution cancelled.",
-          );
-        }
-
-        const choice =
-          candidates[index];
-
-        onProviderChange(
-          choice.providerId as ProviderId,
-          index + 1,
-          candidates.length,
-        );
-
-        try {
-          const stream =
-            streamThroughAiCenter(
-              messages,
-              choice,
-              onChunk,
-            );
-
-          currentOperationRef.current =
-            stream.operationId;
-
-          const result =
-            await stream.result;
-
-          if (
-            result.cancelled
-          ) {
-            throw new Error(
-              "Council execution cancelled.",
-            );
-          }
-
-          return {
-            output:
-              result.response.text,
-            providerId:
-              choice.providerId as ProviderId,
-            errors,
-          };
-        } catch (error) {
-          const message =
-            error instanceof Error
-              ? error.message
-              : String(error);
-
-          if (
-            cancelledRef.current ||
-            message
-              .toLowerCase()
-              .includes(
-                "cancelled",
-              )
-          ) {
-            throw error;
-          }
-
-          errors.push(
-            `${choice.label}: ${message}`,
-          );
-
-          console.warn(
-            `Council ${member.name} AI Center model ${choice.label} failed:`,
-            error,
-          );
-        }
-      }
-
-      throw new Error(
-        `${member.name}: all AI Center models failed. ${errors.join(
-          " | ",
-        )}`,
-      );
-    };
-
-  const runCouncil =
-    async () => {
-      const userPrompt =
-        prompt.trim();
-
-      if (
-        !userPrompt ||
-        isRunning
-      ) {
-        return;
-      }
-
-      if (listAiCenterModels().length === 0) {
-        onMessage(
-          "Unable to run Council: no AI Center model is connected. Connect a model from My AI first.",
-        );
-        return;
-      }
-
-      const activeMembers =
-        ROLE_ORDER
-          .map((role) =>
-            members.find(
-              (member) =>
-                member.id ===
-                role,
-            ),
-          )
-          .filter(
-            (
-              member,
-            ): member is CouncilMember =>
-              Boolean(
-                member?.enabled,
-              ),
-          );
-
-      if (
-        activeMembers.length ===
-        0
-      ) {
-        onMessage(
-          "Unable to run Council: enable at least one member.",
-        );
-        return;
-      }
-
-      const judge =
-        activeMembers.find(
-          (member) =>
-            member.id ===
-            "judge",
-        );
-
-      if (!judge) {
-        onMessage(
-          "Unable to run Council: the Judge must be enabled.",
-        );
-        return;
-      }
-
-      const councilStartedAt =
-        Date.now();
-
-      cancelledRef.current =
-        false;
-      setIsRunning(true);
-
-      recordAnalyticsEvent({
-        module:
-          "council",
-        type:
-          "started",
-        title:
-          "AI Council started",
-        description:
-          `${activeMembers.length} active member(s)`,
-        inputTokens:
-          Math.ceil(
-            userPrompt.length / 4,
-          ),
-        metadata: {
-          sessionId:
-            crypto.randomUUID(),
-          memberCount:
-            activeMembers.length,
-          tokenEstimate:
-            true,
-        },
-      });
-      setFinalAnswer("");
-
-      const initialSteps =
-        activeMembers.map(
-          (
-            member,
-          ): CouncilStepResult => ({
-            role: member.id,
-            memberName:
-              member.name,
-            providerId:
-              member.providerId,
-            status: "idle",
-            output: "",
-          }),
-        );
-
-      setSteps(initialSteps);
-
-      const completed:
-        CouncilStepResult[] = [];
-
-      const sessionId =
-        crypto.randomUUID();
-
-      try {
-        for (
-          const member
-          of activeMembers
-        ) {
-          if (
-            cancelledRef.current
-          ) {
-            throw new Error(
-              "Council execution cancelled.",
-            );
-          }
-
-          const startedAt =
-            Date.now();
-
-          setSteps(
-            (current) =>
-              current.map(
-                (step) =>
-                  step.role ===
-                  member.id
-                    ? {
-                        ...step,
-                        status:
-                          "running",
-                        startedAt,
-                      }
-                    : step,
-              ),
-          );
-
-          const previousWork =
-            completed.length ===
-            0
-              ? "No previous council work is available."
-              : completed
-                  .map(
-                    (step) =>
-                      [
-                        `## ${step.memberName}`,
-                        `Provider: ${step.providerId}`,
-                        "",
-                        step.status ===
-                        "done"
-                          ? step.output
-                          : `FAILED: ${
-                              step.error ??
-                              "No usable output."
-                            }`,
-                      ].join(
-                        "\n",
-                      ),
-                  )
-                  .join(
-                    "\n\n---\n\n",
-                  );
-
-          const messages:
-            AiCenterConversationMessage[] = [
-            {
-              role: "system",
-              content:
-                member.systemPrompt,
-            },
-            {
-              role: "user",
-              content: [
-                "# Original User Request",
-                "",
-                userPrompt,
-                "",
-                "# Previous Council Work",
-                "",
-                previousWork,
-                "",
-                "# Your Task",
-                "",
-                member.id ===
-                "judge"
-                  ? [
-                      "Produce the final polished answer.",
-                      "Ignore failed council members and use only successful outputs.",
-                      "Do not invent missing analysis.",
-                      "Briefly mention important missing coverage only when necessary.",
-                    ].join("\n")
-                  : `Complete your responsibilities as the ${member.name}.`,
-              ].join("\n"),
-            },
-          ];
-
-          let activeProviderId =
-            member.providerId;
-
-          let attemptLabel = "";
-
-          try {
-            const result =
-              await runMemberWithFailover(
-                member,
-                messages,
-                (
-                  providerId,
-                  attempt,
-                  total,
-                ) => {
-                  activeProviderId =
-                    providerId;
-
-                  attemptLabel =
-                    total > 1
-                      ? `Trying ${providerId} (${attempt}/${total})…`
-                      : `Using ${providerId}…`;
-
-                  setSteps(
-                    (current) =>
-                      current.map(
-                        (step) =>
-                          step.role ===
-                          member.id
-                            ? {
-                                ...step,
-                                providerId,
-                                status:
-                                  "running",
-                                error:
-                                  attemptLabel,
-                                output:
-                                  "",
-                              }
-                            : step,
-                      ),
-                  );
-                },
-                (chunk) => {
-                  setSteps(
-                    (current) =>
-                      current.map(
-                        (step) =>
-                          step.role ===
-                          member.id
-                            ? {
-                                ...step,
-                                providerId:
-                                  activeProviderId,
-                                error:
-                                  attemptLabel,
-                                output:
-                                  step.output +
-                                  chunk,
-                              }
-                            : step,
-                      ),
-                  );
-                },
-              );
-
-            const completedStep:
-              CouncilStepResult = {
-              role: member.id,
-              memberName:
-                member.name,
-              providerId:
-                result.providerId,
-              status: "done",
-              output:
-                result.output,
-              startedAt,
-              completedAt:
-                Date.now(),
-            };
-
-            completed.push(
-              completedStep,
-            );
-
-            recordAnalyticsEvent({
-              module:
-                "council",
-              type:
-                "success",
-              title:
-                `Council ${member.name} completed`,
-              description:
-                `${result.providerId} · ${member.id}`,
-              provider:
-                result.providerId,
-              outputTokens:
-                Math.ceil(
-                  result.output.length /
-                  4,
-                ),
-              latencyMs:
-                Date.now() -
-                startedAt,
-              metadata: {
-                role:
-                  member.id,
-                sessionId,
-                tokenEstimate:
-                  true,
-              },
-            });
-
-            setSteps(
-              (current) =>
-                current.map(
-                  (step) =>
-                    step.role ===
-                    member.id
-                      ? completedStep
-                      : step,
-                ),
-            );
-
-            if (
-              member.id ===
-              "judge"
-            ) {
-              setFinalAnswer(
-                result.output,
-              );
-            }
-          } catch (error) {
-            if (
-              cancelledRef.current
-            ) {
-              throw error;
-            }
-
-            const failure =
-              error instanceof Error
-                ? error.message
-                : String(error);
-
-            const failedStep:
-              CouncilStepResult = {
-              role: member.id,
-              memberName:
-                member.name,
-              providerId:
-                activeProviderId,
-              status: "error",
-              output: "",
-              error:
-                failure,
-              startedAt,
-              completedAt:
-                Date.now(),
-            };
-
-            completed.push(
-              failedStep,
-            );
-
-            recordAnalyticsEvent({
-              module:
-                "council",
-              type:
-                "failure",
-              title:
-                `Council ${member.name} failed`,
-              description:
-                failure,
-              provider:
-                activeProviderId,
-              latencyMs:
-                Date.now() -
-                startedAt,
-              metadata: {
-                role:
-                  member.id,
-                sessionId,
-              },
-            });
-
-            setSteps(
-              (current) =>
-                current.map(
-                  (step) =>
-                    step.role ===
-                    member.id
-                      ? failedStep
-                      : step,
-                ),
-            );
-
-            console.warn(
-              `Council member ${member.name} failed; continuing.`,
-              error,
-            );
-          }
-
-        }
-
-        const judgeOutput =
-          completed.find(
-            (step) =>
-              step.role ===
-                "judge" &&
-              step.status ===
-                "done",
-          )?.output ??
-          [...completed]
-            .reverse()
-            .find(
-              (step) =>
-                step.status ===
-                  "done" &&
-                step.output.trim(),
-            )?.output ??
-          "";
-
-        if (
-          !finalAnswer &&
-          judgeOutput
-        ) {
-          setFinalAnswer(
-            judgeOutput,
-          );
-        }
-
-        const timestamp =
-          Date.now();
-
-        const session:
-          CouncilSession = {
-          id: sessionId,
-          title:
-            createSessionTitle(
-              userPrompt,
-            ),
-          prompt:
-            userPrompt,
-          createdAt:
-            timestamp,
-          updatedAt:
-            timestamp,
-          favorite:
-            false,
-          steps:
-            completed,
-          finalAnswer:
-            judgeOutput,
-        };
-
-        const next =
-          upsertCouncilSession(
-            session,
-          );
-
-        setSessions(next);
-        setSelectedSessionId(
-          session.id,
-        );
-
-        recordAnalyticsEvent({
-          module:
-            "council",
-          type:
-            "completed",
-          title:
-            "AI Council completed",
-          description:
-            session.title,
-          outputTokens:
-            Math.ceil(
-              judgeOutput.length / 4,
-            ),
-          latencyMs:
-            Date.now() -
-            councilStartedAt,
-          metadata: {
-            sessionId:
-              session.id,
-            memberCount:
-              completed.length,
-            successfulMembers:
-              completed.filter(
-                (step) =>
-                  step.status ===
-                  "done",
-              ).length,
-            tokenEstimate:
-              true,
-          },
-        });
-
-        onMessage(
-          "AI Council completed successfully.",
-        );
-      } catch (error) {
-        const message =
-          String(error);
-
-        setSteps(
-          (current) =>
-            current.map(
-              (step) =>
-                step.status ===
-                "running"
-                  ? {
-                      ...step,
-                      status:
-                        "error",
-                      error:
-                        message,
-                      completedAt:
-                        Date.now(),
-                    }
-                  : step,
-            ),
-        );
-
-        recordAnalyticsEvent({
-          module:
-            "council",
-          type:
-            "failure",
-          title:
-            "AI Council failed",
-          description:
-            message,
-          latencyMs:
-            Date.now() -
-            councilStartedAt,
-          metadata: {
-            sessionId,
-          },
-        });
-
-        onMessage(
-          `AI Council failed: ${message}`,
-        );
-      } finally {
-        setIsRunning(false);
-        currentOperationRef.current =
-          null;
-      }
-    };
-
-  const stopCouncil =
-    async () => {
-      cancelledRef.current =
-        true;
-
-      const operationId =
-        currentOperationRef.current;
-
-      if (operationId) {
-        try {
-          if (currentOperationRef.current) {
-            await invoke(
-              "cancel_provider_response_stream",
-              {
-                operationId:
-                  currentOperationRef.current,
-              },
-            );
-          }
-        } catch {
-          // Ignore cancellation race.
-        }
-      }
-
-      setIsRunning(false);
+  const persistExecution = (
+    session: CouncilSession,
+    execution: NonNullable<CouncilSession["execution"]>,
+  ): void => {
+    const next = upsertCouncilSession({
+      ...session,
+      execution,
+      updatedAt: Date.now(),
+    });
+    setSessions(next);
+  };
+
+  const approveRecommendation = async () => {
+    if (!selectedSession || isCreatingTask) return;
+    setIsCreatingTask(true);
+    try {
+      const execution = await executionCoordinatorRef.current.approve(selectedSession);
+      persistExecution(selectedSession, execution);
       onMessage(
-        "AI Council stopped.",
+        `Council recommendation approved and handed to Task Engine as ${execution.linkage.taskId}.`,
       );
-    };
+    } catch (error) {
+      onMessage(
+        `Council recommendation handoff failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } finally {
+      setIsCreatingTask(false);
+    }
+  };
+
+  const executeRecommendation = async () => {
+    if (!selectedSession?.execution || isCreatingTask) return;
+    let approval;
+    const current = selectedSession.execution;
+    if (
+      current.feedback.kind === "progress" &&
+      current.feedback.status === "awaiting-confirmation" &&
+      current.feedback.approval
+    ) {
+      const requested = current.feedback.approval;
+      const confirmed = window.confirm([
+        "Allow this exact Agent-selected Skill once?",
+        "",
+        requested.capability,
+        "",
+        JSON.stringify(requested.input, null, 2).slice(0, 2_000),
+      ].join("\n"));
+      if (!confirmed) {
+        onMessage("Execution confirmation cancelled; no Skill was invoked.");
+        return;
+      }
+      approval = {
+        capability: requested.capability,
+        input: requested.input,
+        userConfirmed: true,
+      };
+    }
+    setIsCreatingTask(true);
+    try {
+      let execution = await executionCoordinatorRef.current.execute(
+        selectedSession,
+        current,
+        approval,
+        (feedback) => {
+          persistExecution(selectedSession, {
+            linkage: {
+              councilSessionId: feedback.councilSessionId,
+              recommendationId: feedback.recommendationId,
+              taskId: feedback.taskId,
+              previousTaskId:
+                feedback.taskId === current.linkage.taskId
+                  ? current.linkage.previousTaskId
+                  : current.linkage.taskId,
+            },
+            feedback,
+          });
+        },
+      );
+      if (execution.feedback.kind === "blocker") {
+        execution = {
+          ...execution,
+          reconveneDecision: chiefOfStaffRef.current.evaluateExecutionBlocker(
+            execution.feedback,
+            selectedSession.assemblyPlan,
+          ),
+        };
+      }
+      persistExecution(selectedSession, execution);
+      onMessage(execution.feedback.message);
+    } finally {
+      setIsCreatingTask(false);
+    }
+  };
 
   const loadSession =
     (
@@ -983,6 +501,8 @@ function AiCouncilPage({
       setFinalAnswer(
         session.finalAnswer,
       );
+      setAssemblyPlan(session.assemblyPlan ?? null);
+      setRecommendation(session.recommendation ?? null);
     };
 
   const removeSession =
@@ -1015,6 +535,8 @@ function AiCouncilPage({
         );
         setSteps([]);
         setFinalAnswer("");
+        setAssemblyPlan(null);
+        setRecommendation(null);
       }
 
       onMessage(
@@ -1204,7 +726,7 @@ function AiCouncilPage({
 
       <div className="council-current-note">
         <span>Current workflow</span>
-        <p>This build uses your saved specialist roles. Dynamic Chief of Staff team assembly is planned for P16.</p>
+        <p>Chief of Staff dynamically assembles specialist seats; saved five-role members remain the compatibility fallback.</p>
       </div>
 
 
@@ -1490,13 +1012,9 @@ function AiCouncilPage({
 
             <div className="council-compose-actions">
               <span>
-                {
-                  members.filter(
-                    (member) =>
-                      member.enabled,
-                  ).length
-                }{" "}
-                active member(s)
+                {assemblyPlan
+                  ? `${assemblyPlan.seats.length} assembled seat(s)`
+                  : `${members.filter((member) => member.enabled).length} fallback member(s)`}
               </span>
 
               {isRunning && (
@@ -1523,10 +1041,32 @@ function AiCouncilPage({
                   void runCouncil();
                 }}
               >
-                Run Council
+                {isAssembling ? "Assembling Council…" : "Run Council"}
               </button>
             </div>
           </div>
+
+          {assemblyPlan && (
+            <article className="settings-card council-current-note" style={cardStyle}>
+              <div>
+                <strong>Chief of Staff assembled</strong>
+                <p>{assemblyPlan.rationale}</p>
+              </div>
+              <div className="council-members-grid">
+                {assemblyPlan.seats.map((seat) => (
+                  <div key={seat.id} className="council-member-card">
+                    <strong>{seat.title}</strong>
+                    <small>
+                      {seat.source.fallback
+                        ? "Built-in fallback"
+                        : `Agency Agents: ${seat.source.sourceId}`}
+                    </small>
+                    <small>{seat.assignedModel.label}</small>
+                  </div>
+                ))}
+              </div>
+            </article>
+          )}
 
           {steps.length > 0 && (
             <div className="council-steps">
@@ -1538,6 +1078,9 @@ function AiCouncilPage({
                         item.id ===
                         step.role,
                     );
+                  const seat = assemblyPlan?.seats.find(
+                    (item) => item.id === step.seatId,
+                  );
 
                   return (
                     <article
@@ -1554,16 +1097,14 @@ function AiCouncilPage({
                       <header>
                         <div>
                           <strong>
-                            {member?.icon}{" "}
+                            {member?.icon ?? "●"}{" "}
                             {
                               step.memberName
                             }
                           </strong>
 
                           <small>
-                            {
-                              step.providerId
-                            }
+                            {seat?.source.sourceId ?? step.stage ?? "legacy"} · {step.providerId}
                           </small>
                         </div>
 
@@ -1613,12 +1154,47 @@ function AiCouncilPage({
                     ⚖️ Final Answer
                   </strong>
                   <small>
-                    Synthesised by the Judge
+                    {assemblyPlan
+                      ? "Synthesised by the assembled Council"
+                      : "Synthesised by the Judge"}
                   </small>
                 </div>
 
                 {selectedSession && (
                   <div className="council-export-actions">
+                    {!selectedSession.execution && (
+                      <button
+                        type="button"
+                        className="action-button"
+                        disabled={isCreatingTask}
+                        onClick={() => {
+                          void approveRecommendation();
+                        }}
+                      >
+                        {isCreatingTask
+                          ? "Creating Task…"
+                          : "Approve recommendation"}
+                      </button>
+                    )}
+
+                    {selectedSession.execution &&
+                      selectedSession.execution.feedback.kind === "progress" && (
+                      <button
+                        type="button"
+                        className="action-button"
+                        disabled={isCreatingTask}
+                        onClick={() => {
+                          void executeRecommendation();
+                        }}
+                      >
+                        {isCreatingTask
+                          ? "Executing…"
+                          : selectedSession.execution.feedback.status === "awaiting-confirmation"
+                            ? "Confirm selected Skill"
+                            : "Start Agent execution"}
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       className="secondary-button"
@@ -1662,6 +1238,25 @@ function AiCouncilPage({
                     finalAnswer
                   }
                 />
+                {recommendation && (
+                  <small>
+                    Structured recommendation · {recommendation.risks.length} risk(s) · {recommendation.uncertainty.length} uncertainty item(s)
+                  </small>
+                )}
+                {selectedSession?.execution && (
+                  <div className="council-current-note">
+                    <span>Execution · {selectedSession.execution.feedback.status}</span>
+                    <p>{selectedSession.execution.feedback.message}</p>
+                    <small>
+                      Council {selectedSession.execution.linkage.councilSessionId} · Recommendation {selectedSession.execution.linkage.recommendationId} · Task {selectedSession.execution.linkage.taskId}
+                    </small>
+                    {selectedSession.execution.reconveneDecision && (
+                      <small>
+                        Chief of Staff: {selectedSession.execution.reconveneDecision.action}; user approval is required before any Council reconvenes or execution resumes.
+                      </small>
+                    )}
+                  </div>
+                )}
               </div>
             </article>
           )}

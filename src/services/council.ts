@@ -1,5 +1,6 @@
 import type {
   CouncilMember,
+  CouncilRole,
   CouncilSession,
 } from "../types/council";
 
@@ -143,6 +144,15 @@ function normalizeMembers(
         ...defaultMember,
         ...stored,
         id: defaultMember.id,
+        role:
+          typeof stored?.role === "string"
+            ? stored.role
+            : (defaultMember.id as CouncilRole),
+        kind:
+          stored?.kind === "agency-agent" ||
+          stored?.kind === "distilled-persona"
+            ? stored.kind
+            : "builtin",
         name:
           typeof stored?.name ===
           "string"
