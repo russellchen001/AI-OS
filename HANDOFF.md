@@ -12000,3 +12000,39 @@ Product-level acceptance at this snapshot:
 Overall P16 is **Completed**. Dynamic Council, Council Execution, Replanning,
 Simulation, Remote Linco transport and the Desktop-bound inbound product path
 are accepted. No staging, commit, tag or push was performed.
+
+## Pre-P17 Shared Chief of Staff Upgrade — Completed
+
+Technical decision:
+
+- `ChiefOfStaffOrchestrator` is the shared, domain-aware assembly boundary for
+  P16 Council now and P17 Arena later. P17 Arena implementation has not started.
+- P16 Dynamic Council now asks an AI Center-selected Chief-of-Staff model for a
+  bounded structured seat plan. Chief-of-Staff model selection is separate from
+  the existing participant-seat model assignment and never hardcodes a provider
+  or model.
+- LLM output is untrusted: schema, field, text, uniqueness, seat-count and
+  exactly-one-synthesizer policy checks run before Council use. The role cannot
+  execute Tasks, Skills or OpenClaw and cannot grant authorization.
+- The original P16 objective heuristics remain the deterministic fallback for
+  missing eligible models, invocation failure/timeout, malformed output or
+  policy rejection. Assembly provenance records whether the accepted plan used
+  `llm-chief-of-staff` or `deterministic-fallback`, plus bounded selection and
+  failure rationale.
+- Paperclip remains bounded organizational/governance context. Agency Agents
+  still maps accepted seat requirements to professional role profiles after
+  assembly. AI Center still assigns participant models separately.
+- The shared input permits optional distilled context for future explicit use;
+  P16 Council does not load P15 persona data and no persona storage changed.
+- Council Runtime, Simulation, Replanning, Execution, Task Engine, Runtime,
+  AgentExecutionAdapter and SkillInvocationGateway remain unchanged.
+- The immutable `p16-complete` tag remains the historical P16 baseline.
+
+Focused verification:
+
+- `verify/verify_shared_chief_of_staff.sh`: LLM primary path, dynamic/local-first
+  selection, bounded model fallback, strict output policy, deterministic
+  fallback, Paperclip/Agency ordering and separate participant assignment PASS.
+- Existing Dynamic Council and Council Runtime behavior: PASS.
+- Simulation Council: `PASS=7 FAIL=0`.
+- Council Replanning: `PASS=8 FAIL=0`.

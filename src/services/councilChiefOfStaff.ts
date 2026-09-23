@@ -1,7 +1,12 @@
 import {
+  answerThroughAiCenter,
   listAiCenterModels,
   type AiCenterModelChoice,
 } from "./aiCenter";
+import {
+  ChiefOfStaffOrchestrator,
+  type ChiefOfStaffModelInvoker,
+} from "./chiefOfStaffOrchestrator";
 import { AgencyAgentsAdapter } from "./integrations/agencyAgentsAdapter";
 import {
   PAPERCLIP_SOURCE_COMMIT,
@@ -33,6 +38,8 @@ export type ChiefOfStaffDependencies = {
   agencyAgents: Pick<AgencyAgentsAdapter, "loadCatalog" | "loadAgent">;
   listModels: typeof listAiCenterModels;
   deriveRequirements?: (objective: string) => CouncilSeatRequirement[];
+  invokeChiefOfStaff?: ChiefOfStaffModelInvoker;
+  chiefOfStaffTimeoutMs?: number;
   uuid: () => string;
 };
 
@@ -199,6 +206,12 @@ function paperclipSummary(companies: PaperclipCompany[], available: boolean): st
   return `Paperclip governance scope includes ${companies.length} configured company context(s).`;
 }
 
+function agencySummary(catalog?: AgencyAgentsCatalog): string {
+  if (!catalog) return "Agency Agents unavailable; built-in role contexts remain available.";
+  const divisions = catalog.divisions.slice(0, 24).map((division) => division.name).join(", ");
+  return `${catalog.agents.length} professional roles across ${catalog.divisions.length} divisions. Divisions: ${divisions}`;
+}
+
 export class CouncilChiefOfStaff {
   constructor(
     private readonly dependencies: ChiefOfStaffDependencies = {
@@ -284,9 +297,30 @@ export class CouncilChiefOfStaff {
       MAX_DYNAMIC_SEATS,
       Math.max(MIN_DYNAMIC_SEATS, request.maxSeats ?? MAX_DYNAMIC_SEATS),
     );
-    const derived = (
+    const deterministicFallback = (): CouncilSeatRequirement[] => (
       this.dependencies.deriveRequirements?.(objective) ?? deriveRequirements(objective)
     ).slice(0, seatLimit);
+    const localFirst = /private|privacy|confidential|local|隐私|机密|本地/.test(
+      objective.toLowerCase(),
+    );
+    const orchestrator = new ChiefOfStaffOrchestrator({
+      invokeModel: this.dependencies.invokeChiefOfStaff ?? answerThroughAiCenter,
+      timeoutMs: this.dependencies.chiefOfStaffTimeoutMs ?? 20_000,
+    });
+    const assemblyDecision = await orchestrator.assemble({
+      objective,
+      domain: "council",
+      availableModels: models,
+      governanceContext,
+      agencyContext: agencySummary(catalog),
+      constraints: {
+        minSeats: MIN_DYNAMIC_SEATS,
+        maxSeats: seatLimit,
+        localFirst,
+      },
+      deterministicFallback,
+    });
+    const derived = assemblyDecision.requirements.slice(0, seatLimit);
     let requirements = derived;
     if (!requirements.some((requirement) => requirement.synthesizer)) {
       requirements = [
@@ -369,6 +403,21 @@ export class CouncilChiefOfStaff {
       .map((seat) => seat.source.sourcePath)
       .filter((path): path is string => Boolean(path));
     const provenance: CouncilAssemblyProvenance = {
+      chiefOfStaff: assemblyDecision.provenance.mode === "llm-chief-of-staff"
+        ? {
+            mode: assemblyDecision.provenance.mode,
+            providerId: assemblyDecision.provenance.model.providerId,
+            providerInstanceId: assemblyDecision.provenance.model.providerInstanceId,
+            modelId: assemblyDecision.provenance.model.modelId,
+            selectionRationale: assemblyDecision.provenance.selectionRationale,
+            attempts: assemblyDecision.provenance.attempts,
+          }
+        : {
+            mode: assemblyDecision.provenance.mode,
+            selectionRationale: assemblyDecision.provenance.selectionRationale,
+            fallbackReason: assemblyDecision.provenance.fallbackReason,
+            attempts: assemblyDecision.provenance.attempts,
+          },
       paperclip: {
         status: paperclipAvailable ? "consumed" : "fallback",
         sourceCommit: paperclipCommit,
@@ -384,6 +433,9 @@ export class CouncilChiefOfStaff {
           : "Agency Agents unavailable; generic bounded expert contexts were used.",
       },
       references: [
+        assemblyDecision.provenance.mode === "llm-chief-of-staff"
+          ? `chief-of-staff:ai-center:${assemblyDecision.provenance.model.providerId}:${assemblyDecision.provenance.model.modelId}`
+          : "chief-of-staff:deterministic-fallback",
         paperclipAvailable ? "paperclip:api" : "paperclip:fallback",
         ...seats.flatMap((seat) => seat.source.provenanceReferences),
       ],
@@ -393,7 +445,7 @@ export class CouncilChiefOfStaff {
       id: this.dependencies.uuid(),
       objective,
       mode: "dynamic",
-      rationale: `Chief of Staff selected objective-specific complementary expertise. ${governanceContext}`,
+      rationale: `${assemblyDecision.rationale} ${governanceContext}`,
       seats,
       deliberation: {
         maxRounds: 2,

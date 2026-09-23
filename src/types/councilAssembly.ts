@@ -53,6 +53,15 @@ export type CouncilDeliberationPlan = {
 };
 
 export type CouncilAssemblyProvenance = {
+  chiefOfStaff?: {
+    mode: "llm-chief-of-staff" | "deterministic-fallback";
+    providerId?: string;
+    providerInstanceId?: string;
+    modelId?: string;
+    selectionRationale: string;
+    fallbackReason?: string;
+    attempts: number;
+  };
   paperclip: {
     status: "consumed" | "fallback";
     sourceCommit?: string;
