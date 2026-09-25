@@ -6197,3 +6197,286 @@ select:focus-visible {
   .person-profiles-page { padding: 24px 16px 64px; }
   .person-profile-status { flex-direction: column; }
 }
+
+/* ============================================================
+   P17 AI Arena — Block 1
+   ============================================================ */
+
+.arena-intent-card,
+.arena-plan-card {
+  margin-top: 22px;
+  overflow: hidden;
+  border: 1px solid var(--border, #e3e8e4);
+  border-radius: 18px;
+  background: var(--surface, #fff);
+  box-shadow: 0 1px 2px rgba(20, 29, 24, .025),
+    0 12px 32px rgba(20, 29, 24, .045);
+}
+
+.arena-intent-heading,
+.arena-plan-card > header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--border, #e8ece9);
+}
+
+.arena-intent-heading h2,
+.arena-plan-card > header h2 {
+  margin: 2px 0 0;
+  color: var(--text, #202923);
+  font-size: 20px;
+  letter-spacing: -.025em;
+}
+
+.arena-intent-heading > span,
+.arena-plan-card > header > span {
+  color: var(--text-secondary, #7a847e);
+  font-size: 11px;
+}
+
+.arena-intent-card > textarea {
+  display: block;
+  width: calc(100% - 44px);
+  min-height: 150px;
+  margin: 22px;
+  padding: 16px;
+  resize: vertical;
+  border: 1px solid var(--border, #dfe5e1);
+  border-radius: 13px;
+  outline: none;
+  background: var(--surface-secondary, #fafbfa);
+  color: var(--text, #26302a);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+  box-sizing: border-box;
+}
+
+.arena-intent-card > textarea:focus {
+  border-color: #7aa994;
+  box-shadow: 0 0 0 3px rgba(23, 107, 82, .08);
+}
+
+.arena-model-preference {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: end;
+  gap: 18px;
+  padding: 0 22px 22px;
+}
+
+.arena-model-preference label > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--text-secondary, #7d8781);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.arena-model-preference select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border, #dfe5e1);
+  border-radius: 10px;
+  background: var(--surface-secondary, #fafbfa);
+  color: var(--text, #303a34);
+}
+
+.arena-pin-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+
+.arena-pin-control > span {
+  margin: 0 !important;
+  font-weight: 600 !important;
+}
+
+.arena-intent-footer,
+.arena-block1-boundary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 22px;
+  border-top: 1px solid var(--border, #e8ece9);
+}
+
+.arena-intent-footer span {
+  color: var(--text-secondary, #7a847e);
+  font-size: 11px;
+}
+
+.arena-intent-footer button {
+  min-height: 40px;
+  padding: 0 15px;
+  border: 1px solid #1b241f;
+  border-radius: 10px;
+  background: #1b241f;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.arena-intent-footer button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.arena-planning-error {
+  margin: 0;
+  padding: 14px 22px;
+  border-top: 1px solid #ead7d7;
+  background: #fff8f8;
+  color: #9a3e46;
+  font-size: 12px;
+}
+
+.arena-strategy-summary,
+.arena-formation-summary {
+  padding: 20px 22px;
+}
+
+.arena-strategy-summary {
+  border-bottom: 1px solid var(--border, #e8ece9);
+}
+
+.arena-strategy-summary > strong,
+.arena-formation-summary > div:first-child > strong {
+  color: var(--text, #222b26);
+  font-size: 13px;
+}
+
+.arena-strategy-summary > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.arena-strategy-summary > div span {
+  padding: 6px 9px;
+  border: 1px solid var(--border, #dfe5e1);
+  border-radius: 999px;
+  background: var(--surface-secondary, #f7f9f7);
+  color: #176b52;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.arena-strategy-summary p {
+  margin: 12px 0 0;
+  color: var(--text-secondary, #707b75);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.arena-formation-summary > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+
+.arena-formation-summary > div:first-child > span {
+  color: var(--text-secondary, #7a847e);
+  font-size: 11px;
+}
+
+.arena-planned-seat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.arena-planned-seat-grid article {
+  padding: 16px;
+  border: 1px solid var(--border, #e3e8e4);
+  border-radius: 13px;
+  background: var(--surface-secondary, #fafbfa);
+}
+
+.arena-seat-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #176b52;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.arena-planned-seat-grid h3 {
+  margin: 10px 0 6px;
+  color: var(--text, #26302a);
+  font-size: 14px;
+}
+
+.arena-planned-seat-grid p {
+  min-height: 38px;
+  margin: 0 0 13px;
+  color: var(--text-secondary, #727d77);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.arena-planned-seat-grid article > strong,
+.arena-planned-seat-grid article > small {
+  display: block;
+}
+
+.arena-planned-seat-grid article > strong {
+  color: var(--text, #303a34);
+  font-size: 11px;
+}
+
+.arena-planned-seat-grid article > small {
+  margin-top: 4px;
+  color: var(--text-secondary, #89928d);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.arena-block1-boundary {
+  align-items: flex-start;
+  background: var(--surface-secondary, #fafbfa);
+}
+
+.arena-block1-boundary strong {
+  color: #176b52;
+  font-size: 11px;
+}
+
+.arena-block1-boundary span {
+  max-width: 720px;
+  color: var(--text-secondary, #79847d);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+@media (max-width: 760px) {
+  .arena-intent-heading,
+  .arena-plan-card > header,
+  .arena-intent-footer,
+  .arena-block1-boundary,
+  .arena-formation-summary > div:first-child {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .arena-model-preference {
+    grid-template-columns: 1fr;
+  }
+
+  .arena-planned-seat-grid {
+    grid-template-columns: 1fr;
+  }
+}
