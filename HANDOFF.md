@@ -12039,3 +12039,96 @@ Focused verification:
 - Simulation Council: `PASS=7 FAIL=0`.
 - Council Replanning: `PASS=8 FAIL=0`.
 - 2026-09-27 20:31  P17 Block 2 complete: add shared Arena Runtime, seven strategy drivers, isolated public/private/team/runtime context, pause/resume/stop/cancel lifecycle, runtime events and latency metrics, AI Center participant invocation, pinned-assignment zero-fallback behavior, and Block 2 structural/behavior verification. Also repair repository verification gate drift: respect verifier shebangs, treat exit 2 as SKIP for environment-dependent E2E, update llmfit/Magnitude direction checks, align MCP verification with Agent-owned Skill Transport, restore AIR-1C committed behavior coverage, and resolve targeted Rust formatting debt. Final acceptance: Core 156/156, P17 Block 2 structural 24/24, behavior 10/10.
+
+## P17 Block 3 — Arena Governance & Evaluation — Completed
+
+Status: Completed.
+
+Acceptance:
+
+- Shared Governance / Evaluation contract completed.
+- Moderator / Judge / Evaluator outputs use one bounded structured evaluation protocol.
+- Participant-, team- and strategy-level scores are normalized and aggregated.
+- Voting, ties, no-consensus, degraded runs and deterministic fixed-seed tie resolution are covered.
+- `ArenaOutcome` is produced by the Shared Arena Runtime and preserves winner scope, scores, votes, rationale and evaluation provenance.
+- Governance validates evaluator subjects and criteria before aggregation.
+- Evaluation provenance retains evaluator/model identity without exposing participant-private, team-private or runtime-private context.
+- All seven Arena strategies use the shared governance path rather than strategy-specific runtimes.
+- Block 2 runtime semantics remain unchanged and regression-green.
+- P17 Block 3 behavior: `PASS=7 FAIL=0`.
+- Arena Governance behavior: `PASS=5 FAIL=0`.
+- Arena Structured Evaluation behavior: `PASS=5 FAIL=0`.
+- Block 2 structural regression: `PASS=24 FAIL=0`.
+- Block 2 behavior regression: `PASS=10 FAIL=0`.
+- Frontend TypeScript production build: PASS.
+- `git diff --check`: PASS.
+- Full repository gate: Core `PASS 158/159 SKIP 1`; `verify_all` PASS.
+- The single Core SKIP is the real GM-2 ComfyUI production E2E when no live ComfyUI runtime is available. Deterministic GM-2 tests still run and must pass; the live test runs when ComfyUI is available.
+
+Purpose:
+
+P17 Block 3 adds governance and evaluation above the completed Shared Arena Runtime.
+Block 2 runtime semantics are closed and must not be reopened without a failing
+acceptance case.
+
+Scope:
+
+- Shared Arena governance contract
+- Moderator / Judge / Evaluator roles
+- Voting and scoring contracts
+- Participant-, team- and strategy-level evaluation
+- Strategy-specific completion / stop / win conditions
+- Structured `ArenaOutcome`
+- Tie, no-consensus and degraded-run handling
+- Evaluation provenance
+- Deterministic evaluation behavior under a fixed Arena seed
+
+Architecture boundary:
+
+`Strategy Router
+→ Shared Chief of Staff
+→ ArenaAssemblyPlan
+→ AI Center participant assignment
+→ Shared Arena Runtime
+→ Arena Governance / Evaluation
+→ ArenaOutcome`
+
+Block 3 does not add:
+
+- Task Engine execution
+- OpenClaw execution
+- Skill execution
+- Arena UI redesign
+- Replay / history UI
+- persistence
+- final product-level P17 E2E
+
+Authority rules:
+
+- Governance may evaluate Arena behavior but grants no Task / Skill / OpenClaw authority.
+- Participant model assignment remains owned by AI Center.
+- Pinned participant assignments continue to receive zero model fallback inside Arena.
+- Evaluation must not expose participant-private, team-private or runtime-private context
+  outside the visibility rules accepted in Block 2.
+- Block 3 must reuse the Shared Arena Runtime and strategy-driver contract rather than
+  introducing strategy-specific runtimes.
+
+Acceptance target:
+
+1. one shared governance/evaluation contract;
+2. moderator/judge/evaluator behavior is explicit and bounded;
+3. voting/scoring supports the seven accepted Arena strategies where applicable;
+4. completion/stop/win conditions terminate deterministically;
+5. structured `ArenaOutcome` preserves scores, rationale, provenance and degraded state;
+6. private/runtime context isolation remains intact during evaluation;
+7. fixed-seed evaluation is reproducible;
+8. Block 2 structural `24/24` and behavior `10/10` remain green;
+9. TypeScript and `git diff --check` pass.
+
+Out of scope for this block:
+
+- Arena replay/history
+- Arena persistence
+- Arena product UI completion
+- final P17 product-level E2E
+- 2026-09-28 00:45  P17 Block 3 complete: add Arena Governance and Evaluation above the Shared Arena Runtime, with bounded structured evaluator output, participant/team/strategy scoring, voting and deterministic aggregation, tie/no-consensus/degraded handling, evaluation provenance, privacy-safe context handling, and structured ArenaOutcome production. Preserve Block 2 runtime semantics and all seven shared strategy drivers. Also repair GM-2 verification semantics so deterministic provider tests remain Core while the real local ComfyUI production E2E reports SKIP when the live runtime is unavailable. Acceptance: P17 Block 3 behavior 7/7, Governance 5/5, Structured Evaluation 5/5, Block 2 structural 24/24, Block 2 behavior 10/10, frontend build PASS, diff check PASS, full verify_all PASS with Core 158/159 and one environment-dependent GM-2 live E2E SKIP.

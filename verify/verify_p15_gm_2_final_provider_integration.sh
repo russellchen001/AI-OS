@@ -14,6 +14,12 @@ fail() {
   exit 1
 }
 
+skip_live() {
+  echo "PASS GM-2 deterministic provider integration"
+  echo "SKIP GM-2 Final Provider Integration live E2E: $1"
+  exit 2
+}
+
 echo "GM-2 Final Provider Integration"
 
 cargo test \
@@ -56,6 +62,59 @@ cargo test \
   fail "Runtime media confirmation boundary"
 
 echo "✓ Runtime confirmation still occurs before media execution"
+
+LIVE_ENDPOINT="${AI_OS_GM2_LIVE_ENDPOINT:-http://127.0.0.1:8188}"
+LIVE_ENDPOINT="${LIVE_ENDPOINT%/}"
+
+echo
+echo "---- Real production ComfyUI E2E pre-flight ----"
+echo "Endpoint: $LIVE_ENDPOINT"
+
+if ! command -v curl >/dev/null 2>&1; then
+  skip_live "CURL_UNAVAILABLE"
+fi
+
+STATS_FILE="$(mktemp)"
+OBJECT_FILE="$(mktemp)"
+
+cleanup_live_probe() {
+  rm -f "$STATS_FILE" "$OBJECT_FILE"
+}
+
+trap cleanup_live_probe EXIT
+
+if ! curl \
+  --silent \
+  --show-error \
+  --fail \
+  --max-time 5 \
+  "$LIVE_ENDPOINT/system_stats" \
+  >"$STATS_FILE" 2>/dev/null
+then
+  skip_live "COMFYUI_RUNTIME_UNAVAILABLE endpoint=$LIVE_ENDPOINT"
+fi
+
+if ! curl \
+  --silent \
+  --show-error \
+  --fail \
+  --max-time 5 \
+  "$LIVE_ENDPOINT/object_info" \
+  >"$OBJECT_FILE" 2>/dev/null
+then
+  skip_live "COMFYUI_OBJECT_INFO_UNAVAILABLE endpoint=$LIVE_ENDPOINT"
+fi
+
+if ! grep -q '"comfyui_version"' "$STATS_FILE"; then
+  skip_live "COMFYUI_HEALTH_NOT_CONFIRMED endpoint=$LIVE_ENDPOINT"
+fi
+
+if [ ! -s "$OBJECT_FILE" ]; then
+  skip_live "COMFYUI_OBJECT_INFO_EMPTY endpoint=$LIVE_ENDPOINT"
+fi
+
+echo "✓ live ComfyUI API is available"
+echo "✓ running real production MediaProviderRegistry E2E"
 
 cargo test \
   --manifest-path "$MANIFEST" \

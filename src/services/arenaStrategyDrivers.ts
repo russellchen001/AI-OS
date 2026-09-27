@@ -4,6 +4,9 @@ import type {
   ArenaStrategyAction,
   ArenaStrategyDriverPlan,
 } from "../types/arena";
+import {
+  buildArenaEvaluationInstruction,
+} from "./arenaEvaluationPolicy";
 
 function seatsByRole(
   assembly: ArenaAssemblyPlan,
@@ -79,7 +82,11 @@ function compareDriver(
         3,
         "compare",
         evaluators,
-        "Evaluate the candidate work against the objective without relying on provider identity. Synthesize strengths, weaknesses and unresolved disagreement.",
+        buildArenaEvaluationInstruction(
+          "compare",
+          assembly,
+          "Evaluate the candidate work against the objective without relying on provider identity. Preserve strengths, weaknesses and unresolved disagreement.",
+        ),
         "public",
         false,
       ),
@@ -126,7 +133,11 @@ function debateDriver(
         4,
         "debate",
         judges,
-        "Assess argument quality, evidence, rebuttals and remaining uncertainty. Preserve dissent instead of forcing false consensus.",
+        buildArenaEvaluationInstruction(
+          "debate",
+          assembly,
+          "Assess argument quality, evidence, rebuttals and remaining uncertainty. Preserve dissent instead of forcing false consensus.",
+        ),
         "public",
         false,
       ),
@@ -165,7 +176,11 @@ function collaborationDriver(
         3,
         "collaboration",
         synthesizers,
-        "Produce an integrated result from the shared work while preserving material disagreement, assumptions and uncertainty.",
+        buildArenaEvaluationInstruction(
+          "collaboration",
+          assembly,
+          "Evaluate and summarize the integrated shared result while preserving material disagreement, assumptions and uncertainty.",
+        ),
         "public",
         false,
       ),
@@ -197,7 +212,11 @@ function competitionDriver(
         2,
         "competition",
         evaluators,
-        "Blindly evaluate the public candidate results using objective-specific criteria. Record ties and evaluator disagreement when appropriate.",
+        buildArenaEvaluationInstruction(
+          "competition",
+          assembly,
+          "Blindly evaluate the public candidate results using objective-specific criteria. Record ties and evaluator disagreement when appropriate.",
+        ),
         "public",
         false,
       ),
@@ -236,7 +255,11 @@ function rolePlayDriver(
         3,
         "role-play",
         observers,
-        "Summarize the interaction, stakeholder tensions and insights. Do not invent access to participant-private context.",
+        buildArenaEvaluationInstruction(
+          "role-play",
+          assembly,
+          "Evaluate the interaction, stakeholder tensions, role consistency and insights without inventing access to participant-private context.",
+        ),
         "public",
         false,
       ),
@@ -288,7 +311,11 @@ function gameDriver(
         4,
         "game",
         observers,
-        "Evaluate legal play and summarize the public game state without revealing runtime-private or participant-private information.",
+        buildArenaEvaluationInstruction(
+          "game",
+          assembly,
+          "Evaluate legal play and the public game state without revealing runtime-private or participant-private information.",
+        ),
         "public",
         false,
       ),
@@ -339,7 +366,11 @@ function simulationDriver(
         4,
         "simulation",
         evaluators,
-        "Evaluate outcomes, uncertainty, counterfactuals and limitations. Separate observed evidence from simulated inference.",
+        buildArenaEvaluationInstruction(
+          "simulation",
+          assembly,
+          "Evaluate outcomes, uncertainty, counterfactuals and limitations. Separate observed evidence from simulated inference.",
+        ),
         "public",
         false,
       ),

@@ -263,6 +263,7 @@ export type ArenaRuntimeResult = {
   events: ArenaRuntimeEvent[];
   degraded: boolean;
   errors: string[];
+  outcome: import("./arenaGovernance").ArenaOutcome;
 };
 
 

@@ -5,6 +5,7 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { ArenaContextStore } from "./arenaContextStore";
+import { collectArenaOutcome } from "./arenaOutcome";
 import { buildArenaStrategyDriver } from "./arenaStrategyDrivers";
 import type {
   ArenaAssemblyPlan,
@@ -771,6 +772,24 @@ export class ArenaRuntime {
       onEvent,
     );
 
+    const contexts = context.all();
+
+    const governance = collectArenaOutcome({
+      assembly,
+      driver,
+      contexts,
+      runtimeStatus: this.status,
+      roundsCompleted,
+      seed,
+      degraded,
+    });
+
+    errors.push(...governance.errors);
+
+    const finalDegraded =
+      degraded ||
+      governance.outcome.status === "degraded";
+
     return {
       sessionId,
       status: this.status,
@@ -778,11 +797,12 @@ export class ArenaRuntime {
       startedAt,
       completedAt,
       roundsCompleted,
-      contexts: context.all(),
+      contexts,
       metrics,
       events,
-      degraded,
+      degraded: finalDegraded,
       errors,
+      outcome: governance.outcome,
     };
   }
 }
