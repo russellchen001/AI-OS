@@ -1,13 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   listAiCenterModels,
   type AiCenterModelChoice,
 } from "../services/aiCenter";
-import { planArena } from "../services/arenaPlanner";
+import {
+  createArenaProductSession,
+} from "../services/arenaProductSession";
+import {
+  ArenaRuntimeControls,
+} from "../components/arena/ArenaRuntimeControls";
+import {
+  ArenaOutcomePanel,
+} from "../components/arena/ArenaOutcomePanel";
 import { PROVIDERS_CHANGED_EVENT } from "../services/providers";
 import type {
   ArenaAssemblyPlan,
   ArenaModelConstraint,
+  ArenaRuntimeResult,
+  ArenaSessionStatus,
 } from "../types/arena";
 
 type AiArenaPageProps = {
@@ -38,7 +48,13 @@ function AiArenaPage({ onOpenMyAi }: AiArenaPageProps) {
   const [plan, setPlan] =
     useState<ArenaAssemblyPlan | null>(null);
   const [error, setError] = useState("");
-  const [isPlanning, setIsPlanning] = useState(false);
+const [isPlanning, setIsPlanning] = useState(false);
+  const arenaSessionRef = useRef(createArenaProductSession());
+  const [runtimeStatus, setRuntimeStatus] =
+    useState<ArenaSessionStatus>("created");
+  const [result, setResult] =
+    useState<ArenaRuntimeResult | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
 
   useEffect(() => {
     const refreshModels = () => {
@@ -88,6 +104,8 @@ function AiArenaPage({ onOpenMyAi }: AiArenaPageProps) {
     setIsPlanning(true);
     setError("");
     setPlan(null);
+    setResult(null);
+    setRuntimeStatus("created");
 
     try {
       const explicitConstraints: ArenaModelConstraint[] =
@@ -113,7 +131,7 @@ function AiArenaPage({ onOpenMyAi }: AiArenaPageProps) {
             ]
           : [];
 
-      const nextPlan = await planArena(
+      const nextPlan = await arenaSessionRef.current.plan(
         normalized,
         explicitConstraints,
       );
@@ -130,6 +148,50 @@ function AiArenaPage({ onOpenMyAi }: AiArenaPageProps) {
     }
   }
 
+  async function runArena() {
+    if (!plan || isRunning) return;
+    setError("");
+    setResult(null);
+    setIsRunning(true);
+    setRuntimeStatus("running");
+
+    try {
+      const nextResult = await arenaSessionRef.current.run(
+        plan,
+        {},
+        () => setRuntimeStatus(arenaSessionRef.current.getStatus()),
+      );
+      setResult(nextResult);
+      setRuntimeStatus(nextResult.status);
+    } catch (runtimeError) {
+      const status = arenaSessionRef.current.getStatus();
+      setRuntimeStatus(status === "running" ? "failed" : status);
+      setError(runtimeError instanceof Error ? runtimeError.message : String(runtimeError));
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  function pauseArena() {
+    arenaSessionRef.current.pause();
+    setRuntimeStatus(arenaSessionRef.current.getStatus());
+  }
+
+  function resumeArena() {
+    arenaSessionRef.current.resume();
+    setRuntimeStatus(arenaSessionRef.current.getStatus());
+  }
+
+  async function stopArena() {
+    await arenaSessionRef.current.stop();
+    setRuntimeStatus(arenaSessionRef.current.getStatus());
+  }
+
+  async function cancelArena() {
+    await arenaSessionRef.current.cancel();
+    setRuntimeStatus(arenaSessionRef.current.getStatus());
+  }
+
   return (
     <section className="arena-page">
       <header className="arena-header">
@@ -144,7 +206,7 @@ function AiArenaPage({ onOpenMyAi }: AiArenaPageProps) {
           </p>
         </div>
         <span className="roadmap-badge">
-          P17 · Block 1
+          P17 · Final integration
         </span>
       </header>
 
@@ -239,6 +301,7 @@ function AiArenaPage({ onOpenMyAi }: AiArenaPageProps) {
             onClick={buildPlan}
             disabled={
               isPlanning ||
+              isRunning ||
               !objective.trim() ||
               !availableModels.length
             }
@@ -333,16 +396,17 @@ function AiArenaPage({ onOpenMyAi }: AiArenaPageProps) {
             </div>
           </div>
 
-          <footer className="arena-block1-boundary">
-            <strong>
-              Block 1 planning complete
-            </strong>
-            <span>
-              Multi-round execution, hidden state,
-              judging, scoring, cancellation and replay
-              arrive in Arena Runtime / Block 2.
-            </span>
-          </footer>
+          <ArenaRuntimeControls
+            status={runtimeStatus}
+            isRunning={isRunning}
+            onStart={() => void runArena()}
+            onPause={pauseArena}
+            onResume={resumeArena}
+            onStop={() => void stopArena()}
+            onCancel={() => void cancelArena()}
+          />
+
+          <ArenaOutcomePanel result={result} />
         </section>
       )}
     </section>

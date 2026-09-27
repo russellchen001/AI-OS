@@ -6480,3 +6480,63 @@ select:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================
+   P17 Arena Final Integration
+   ============================================================ */
+.arena-runtime-panel,
+.arena-transcript {
+  margin: 20px 22px 22px;
+  padding: 18px;
+  border: 1px solid var(--border, #e3e8e4);
+  border-radius: 14px;
+  background: var(--surface, #fbfcfb);
+}
+.arena-runtime-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.arena-runtime-panel h3,
+.arena-transcript h3 { margin: 2px 0 0; }
+.arena-runtime-panel > header > span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(23, 107, 82, .09);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.arena-runtime-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.arena-runtime-controls button { min-height: 36px; padding: 0 12px; }
+.arena-outcome-panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 22px 22px;
+  overflow: hidden;
+  border: 1px solid var(--border, #e3e8e4);
+  border-radius: 14px;
+  background: var(--border, #e3e8e4);
+}
+.arena-outcome-panel > div,
+.arena-outcome-panel > p { margin: 0; padding: 14px; background: var(--surface, #fbfcfb); }
+.arena-outcome-panel span { display: block; margin-bottom: 5px; color: var(--text-secondary); font-size: 11px; }
+.arena-outcome-wide { grid-column: 1 / -1; }
+.arena-outcome-error { color: #a43d45; }
+.arena-transcript article { padding: 12px 0; border-top: 1px solid var(--border, #e3e8e4); }
+.arena-transcript article span { color: var(--text-secondary); font-size: 11px; }
+.arena-transcript article p { margin: 6px 0 0; white-space: pre-wrap; }
+:root:not([data-theme="light"]) .arena-runtime-panel,
+:root:not([data-theme="light"]) .arena-transcript,
+:root:not([data-theme="light"]) .arena-outcome-panel > div,
+:root:not([data-theme="light"]) .arena-outcome-panel > p { background: #1c211e; }
+@media (max-width: 760px) {
+  .arena-outcome-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .arena-runtime-panel > header { align-items: flex-start; flex-direction: column; }
+}

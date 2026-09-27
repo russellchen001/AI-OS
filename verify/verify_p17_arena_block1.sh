@@ -55,8 +55,8 @@ check "Arena UI supports optional model preference" \
 check "Arena UI supports pinned model" \
   grep -q 'Pin this model' src/pages/AiArenaPage.tsx
 
-check "Arena execution not implemented in Block 1" \
-  grep -q 'Block 2' src/pages/AiArenaPage.tsx
+check "Block 1 planning contract preserved after later P17 integration" \
+  bash -c 'grep -q "Plan Arena" src/pages/AiArenaPage.tsx && grep -q "arenaSessionRef.current.plan" src/pages/AiArenaPage.tsx'
 
 echo
 echo "P17 BLOCK 1 VERIFIER: PASS=$PASS FAIL=$FAIL"

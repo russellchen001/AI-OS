@@ -12132,3 +12132,79 @@ Out of scope for this block:
 - Arena product UI completion
 - final P17 product-level E2E
 - 2026-09-28 00:45  P17 Block 3 complete: add Arena Governance and Evaluation above the Shared Arena Runtime, with bounded structured evaluator output, participant/team/strategy scoring, voting and deterministic aggregation, tie/no-consensus/degraded handling, evaluation provenance, privacy-safe context handling, and structured ArenaOutcome production. Preserve Block 2 runtime semantics and all seven shared strategy drivers. Also repair GM-2 verification semantics so deterministic provider tests remain Core while the real local ComfyUI production E2E reports SKIP when the live runtime is unavailable. Acceptance: P17 Block 3 behavior 7/7, Governance 5/5, Structured Evaluation 5/5, Block 2 structural 24/24, Block 2 behavior 10/10, frontend build PASS, diff check PASS, full verify_all PASS with Core 158/159 and one environment-dependent GM-2 live E2E SKIP.
+
+## P17 — AI Arena — Completed
+
+Status: Completed.
+
+P17 delivers the complete v1 AI Arena product flow:
+
+`User Objective
+→ Strategy Router
+→ Shared Chief of Staff
+→ ArenaAssemblyPlan
+→ AI Center model assignment
+→ Shared Arena Runtime
+→ Arena Governance / Evaluation
+→ ArenaOutcome
+→ Product UI`
+
+Completed scope:
+
+- Seven internal Arena strategies:
+  - compare
+  - debate
+  - collaboration
+  - competition
+  - role-play
+  - game
+  - simulation
+- Shared Chief of Staff assembly
+- AI Center participant model assignment
+- Pinned model zero-fallback semantics
+- Shared Arena Runtime
+- public / participant-private / team-private / runtime-private isolation
+- hidden-role projection
+- stateful game and simulation support
+- pause / resume / stop / cancel
+- runtime events and invocation latency metrics
+- bounded Moderator / Judge / Evaluator governance
+- participant-, team- and strategy-level scoring
+- voting and deterministic aggregation
+- tie / no-consensus / degraded handling
+- structured `ArenaOutcome`
+- evaluation provenance
+- product UI execution controls
+- public Arena transcript
+- outcome / winner / rationale / error presentation
+- UI → planning → Runtime → Governance → Outcome product integration
+
+Final acceptance:
+
+- P17 Block 1 structural: `PASS=13 FAIL=0`
+- P17 Block 1 behavior: `PASS=16 FAIL=0`
+- P17 Block 2 structural: `PASS=24 FAIL=0`
+- P17 Block 2 behavior: `PASS=10 FAIL=0`
+- P17 Block 3 behavior: `PASS=7 FAIL=0`
+- Arena Governance behavior: `PASS=5 FAIL=0`
+- Arena Structured Evaluation behavior: `PASS=5 FAIL=0`
+- P17 Final Product Flow: `PASS=6 FAIL=0`
+- P17 Final Integration verifier: PASS
+- frontend production build: PASS
+- `git diff --check`: PASS
+- full repository gate: Core `PASS 159/160 SKIP 1`
+- `verify_all`: PASS
+
+The single Core SKIP is the environment-dependent real GM-2 ComfyUI
+production E2E when no live ComfyUI runtime is available. Deterministic
+GM-2 verification remains mandatory and passes.
+
+Deferred / not required for P17 v1 closure:
+
+- durable Arena replay/history storage
+- Arena persistence across application restarts
+- dedicated replay/history UI
+
+These may be added in a later phase without reopening the accepted P17
+Runtime, governance, evaluation or product-flow contracts.
+- 2026-09-28 05:20  P17 complete: deliver the full AI Arena v1 product flow from user objective through Strategy Router, Shared Chief of Staff, ArenaAssemblyPlan, AI Center model assignment, Shared Arena Runtime, Governance/Evaluation and structured ArenaOutcome to the product UI. Add live Start/Pause/Resume/Stop/Cancel controls, public Arena transcript, outcome presentation and final Product Session integration while preserving all Block 1-3 contracts. Final acceptance: Block 1 structural 13/13 and behavior 16/16; Block 2 structural 24/24 and behavior 10/10; Block 3 behavior 7/7; Governance 5/5; Structured Evaluation 5/5; Final Product Flow 6/6; frontend build PASS; diff check PASS; verify_all PASS with Core 159/160 and one environment-dependent GM-2 ComfyUI live E2E SKIP. Durable replay/history and persistence are deferred beyond P17 v1.
