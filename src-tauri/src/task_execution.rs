@@ -5,8 +5,8 @@ use crate::{
         plan_runtime_bridge::{PlanRuntimeExecutor, RuntimeBackedPlanExecutor},
     },
     task_engine::{
-        InMemoryTaskEventBus, InMemoryTaskRepository, Task, TaskContext, TaskId, TaskLifecycleManager,
-        TaskRepository, TaskRepositoryError, TaskStatus, TaskType,
+        InMemoryTaskEventBus, InMemoryTaskRepository, Task, TaskContext, TaskId,
+        TaskLifecycleManager, TaskRepository, TaskRepositoryError, TaskStatus, TaskType,
     },
     task_plan_orchestration::{
         TaskPlanExecutionOrchestrator, TaskPlanExecutionStart, TaskPlanOrchestrationError,
@@ -185,7 +185,8 @@ fn submit_chat_task_inner(
     state: &TaskExecutionState,
     request: SubmitChatTaskRequest,
 ) -> Result<SubmitChatTaskResponse, String> {
-    let mut task = Task::new(request.task_type, request.prompt).map_err(|error| error.to_string())?;
+    let mut task =
+        Task::new(request.task_type, request.prompt).map_err(|error| error.to_string())?;
     task.context = request.context;
     let task_id = state
         .lifecycle
@@ -480,7 +481,10 @@ mod tests {
             .find(|task| task.id.to_string() == response.task_id)
             .unwrap();
         assert_eq!(stored.context["councilSessionId"], json!("council-1"));
-        assert_eq!(stored.context["recommendationId"], json!("recommendation-1"));
+        assert_eq!(
+            stored.context["recommendationId"],
+            json!("recommendation-1")
+        );
     }
 
     #[test]

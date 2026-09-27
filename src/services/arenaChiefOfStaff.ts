@@ -328,11 +328,6 @@ export class ArenaChiefOfStaff {
         }));
     }
 
-    const modelAssignments = assignArenaModels(
-      seats,
-      availableModels,
-    );
-
     const fallbackRoles = seats.map((seat) => seat.role);
     const fallbackConstraints = resolveUserConstraintsForSeats(
       fallbackRoles,
@@ -343,6 +338,11 @@ export class ArenaChiefOfStaff {
       modelConstraint:
         fallbackConstraints[index] ?? { mode: "auto" },
     }));
+
+    const modelAssignments = assignArenaModels(
+      seats,
+      availableModels,
+    );
 
     const chiefOfStaff =
       decision.provenance.mode === "llm-chief-of-staff"

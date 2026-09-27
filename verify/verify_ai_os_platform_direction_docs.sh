@@ -51,9 +51,14 @@ grep -Fq \
   fail "Mano-P / Mano-CUA missing"
 
 grep -Fq \
-  '#### Magnitude' \
+  '#### Local Model Optimization — llmfit' \
   AI_OS_MASTER_GUIDE.md ||
-  fail "Magnitude missing"
+  fail "llmfit Local Model Optimization direction missing"
+
+grep -Fq \
+  'Magnitude is not a default planned v1.0 integration.' \
+  AI_OS_MASTER_GUIDE.md ||
+  fail "Magnitude future-only boundary missing"
 
 grep -Fq \
   '## v2.0 Deferred — Social / Community Intelligence' \
@@ -134,9 +139,14 @@ grep -Fq \
   fail "HANDOFF Mano-P decision missing"
 
 grep -Fq \
-  'Accepted as a v1.0 post-Generative-Media Local Model optimization / inference' \
+  '### Local Model Optimization — llmfit primary' \
   HANDOFF.md ||
-  fail "HANDOFF Magnitude decision missing"
+  fail "HANDOFF llmfit primary decision missing"
+
+grep -Fq \
+  'Magnitude is superseded as the planned v1.0 Local Model optimization' \
+  HANDOFF.md ||
+  fail "HANDOFF Magnitude supersession missing"
 
 grep -Fq \
   'Social / Community Intelligence is explicitly deferred to v2.0.' \
@@ -161,7 +171,8 @@ echo "✓ ComfyUI-Agent-Kit"
 echo "✓ ComfyUI-Mac-Silicon"
 echo "✓ GM-4 reuses P13 / My AI"
 echo "✓ Mano-P / Mano-CUA"
-echo "✓ Magnitude"
+echo "✓ llmfit Local Model Optimization"
+echo "✓ Magnitude future-only"
 echo "✓ Social / Community Intelligence → v2.0"
 echo "✓ Roadmap remains inside AI_OS_MASTER_GUIDE.md"
 echo "✓ HANDOFF remains current-state authority"

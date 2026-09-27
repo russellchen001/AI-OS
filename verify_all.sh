@@ -2,6 +2,7 @@
 
 VERIFY_DIR="$(cd "$(dirname "$0")" && pwd)/verify"
 CORE_PASS=0
+CORE_SKIP=0
 CORE_FAIL=0
 CORE_TOTAL=0
 EXTERNAL_FAIL=0
@@ -26,7 +27,11 @@ is_external() {
     verify_p15_browser_authenticated_session_real_e2e.sh|\
     verify_p15_presentation_real_e2e.sh|\
     verify_p15_structured_office_interop_real_e2e.sh|\
-    verify_p15_word_real_e2e.sh)
+    verify_p15_word_real_e2e.sh|\
+    verify_p15_mano_cloud_e2e.sh|\
+    verify_p16_desktop_linco_live.sh|\
+    verify_p16_live_integrations.sh|\
+    verify_p16_remote_linco_live.sh)
       return 0
       ;;
     *)
@@ -42,12 +47,16 @@ for script in "$VERIFY_DIR"/verify_*.sh; do
 
   CORE_TOTAL=$((CORE_TOTAL + 1))
 
-  OUTPUT=$(bash "$script" 2>&1)
+  OUTPUT=$("$script" 2>&1)
   CODE=$?
 
   if [ "$CODE" -eq 0 ]; then
     CORE_PASS=$((CORE_PASS + 1))
     echo "  PASS $(basename "$script" .sh)"
+  elif [ "$CODE" -eq 2 ]; then
+    CORE_SKIP=$((CORE_SKIP + 1))
+    echo "  SKIP $(basename "$script" .sh)"
+    echo "$OUTPUT" | sed 's/^/     /'
   else
     CORE_FAIL=$((CORE_FAIL + 1))
     echo "  FAIL $(basename "$script" .sh)"
@@ -55,7 +64,7 @@ for script in "$VERIFY_DIR"/verify_*.sh; do
   fi
 done
 
-echo "Core Suite: PASS $CORE_PASS/$CORE_TOTAL"
+echo "Core Suite: PASS $CORE_PASS/$CORE_TOTAL SKIP $CORE_SKIP"
 
 echo "External E2E:"
 
@@ -68,10 +77,16 @@ run_external() {
     return
   fi
 
-  OUTPUT=$(bash "$SCRIPT" 2>&1)
+  OUTPUT=$("$SCRIPT" 2>&1)
   CODE=$?
 
-  if [ "$CODE" -ne 0 ]; then
+  if [ "$CODE" -eq 2 ]; then
+    REASON=$(echo "$OUTPUT" | grep "SKIP" | tail -1)
+    if [ -z "$REASON" ]; then
+      REASON="environment or explicit authorization unavailable"
+    fi
+    echo "  $LABEL SKIP — $REASON"
+  elif [ "$CODE" -ne 0 ]; then
     echo "  $LABEL FAIL"
     echo "$OUTPUT" | sed 's/^/    /'
     EXTERNAL_FAIL=$((EXTERNAL_FAIL + 1))
@@ -101,6 +116,11 @@ run_external "Amazon" "$VERIFY_DIR/verify_p15_browser_authenticated_session_real
 run_external "Taobao" "$VERIFY_DIR/verify_p15_browser_authenticated_session_real_e2e.sh"
 run_external "JD" "$VERIFY_DIR/verify_p15_browser_authenticated_session_real_e2e.sh"
 run_external "Pinduoduo" "$VERIFY_DIR/verify_p15_browser_authenticated_session_real_e2e.sh"
+
+run_external "Mano Cloud" "$VERIFY_DIR/verify_p15_mano_cloud_e2e.sh"
+run_external "P16 Desktop Linco" "$VERIFY_DIR/verify_p16_desktop_linco_live.sh"
+run_external "P16 Live Integrations" "$VERIFY_DIR/verify_p16_live_integrations.sh"
+run_external "P16 Remote Linco" "$VERIFY_DIR/verify_p16_remote_linco_live.sh"
 
 if [ "$CORE_FAIL" -eq 0 ] && [ "$EXTERNAL_FAIL" -eq 0 ]; then
   echo "PASS verify_all: core passed; external PASS/SKIP reported separately"

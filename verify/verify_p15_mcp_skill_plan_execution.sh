@@ -13,16 +13,23 @@ fail() {
 }
 
 
-echo "---- Check MCP runtime bridge ----"
+echo "---- Check MCP Agent Skill Transport bridge ----"
+
+if rg -q \
+"execute_mcp_runtime_task" \
+src-tauri/src/runtime/plan_runtime_bridge.rs
+then
+    fail "legacy direct Runtime MCP branch still exists"
+fi
 
 if rg -n \
-"execute_mcp_runtime_task|executor_kind\\.as_str\\(\\)|\"mcp\"" \
-src-tauri/src/runtime/plan_runtime_bridge.rs \
+"execute_mcp_runtime_task" \
+src-tauri/src/runtime/agent_skill_transport.rs \
 >"$TMP/bridge.log"
 then
-    echo "✓ Plan runtime MCP executor path exists"
+    echo "✓ MCP execution is owned by Agent Skill Transport"
 else
-    fail "plan runtime MCP branch missing"
+    fail "Agent Skill Transport MCP branch missing"
 fi
 
 

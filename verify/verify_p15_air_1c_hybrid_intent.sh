@@ -53,7 +53,7 @@ echo
 echo "--- canonical behavior cases ---"
 
 node --experimental-strip-types \
-  verify/.air_intent_semantic_test.ts \
+  verify/p15_air_1c_hybrid_intent.behavior.mjs \
   2>&1 | tee /tmp/ai-os-air-intent-test.log
 
 TEST_RC=$pipestatus[1]

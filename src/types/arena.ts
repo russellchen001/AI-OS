@@ -107,6 +107,165 @@ export type ArenaPlanRequest = {
   maxParticipants?: number;
 };
 
+export type ArenaSessionStatus =
+  | "created"
+  | "running"
+  | "paused"
+  | "completed"
+  | "stopped"
+  | "cancelled"
+  | "failed";
+
+export type ArenaRoundStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "degraded"
+  | "cancelled"
+  | "failed";
+
+export type ArenaVisibility =
+  | { kind: "public" }
+  | { kind: "participant-private"; participantId: string }
+  | { kind: "team-private"; teamId: string }
+  | { kind: "runtime-private" };
+
+export type ArenaContextEntry = {
+  id: string;
+  createdAt: number;
+  round: number;
+  authorId?: string;
+  visibility: ArenaVisibility;
+  content: string;
+  tags?: string[];
+};
+
+export type ArenaParticipantRuntime = {
+  seatId: string;
+  title: string;
+  role: ArenaSeatRole;
+  team?: string;
+  assignedModel: ArenaModelAssignment["choice"];
+};
+
+export type ArenaInvocationMetrics = {
+  seatId: string;
+  round: number;
+  providerId: string;
+  providerInstanceId: string;
+  modelId: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status: "success" | "failed" | "cancelled";
+  metadata?: unknown;
+  error?: string;
+};
+
+export type ArenaRuntimeEvent =
+  | {
+      type: "session-started";
+      sessionId: string;
+      at: number;
+    }
+  | {
+      type: "session-status";
+      sessionId: string;
+      status: ArenaSessionStatus;
+      at: number;
+    }
+  | {
+      type: "round-started";
+      sessionId: string;
+      round: number;
+      strategy: ArenaStrategy;
+      at: number;
+    }
+  | {
+      type: "round-completed";
+      sessionId: string;
+      round: number;
+      strategy: ArenaStrategy;
+      status: ArenaRoundStatus;
+      at: number;
+    }
+  | {
+      type: "participant-started";
+      sessionId: string;
+      round: number;
+      seatId: string;
+      at: number;
+    }
+  | {
+      type: "participant-completed";
+      sessionId: string;
+      round: number;
+      seatId: string;
+      at: number;
+    }
+  | {
+      type: "participant-failed";
+      sessionId: string;
+      round: number;
+      seatId: string;
+      error: string;
+      at: number;
+    }
+  | {
+      type: "context-added";
+      sessionId: string;
+      round: number;
+      entryId: string;
+      visibility: ArenaVisibility;
+      at: number;
+    };
+
+export type ArenaStrategyAction = {
+  id: string;
+  round: number;
+  strategy: ArenaStrategy;
+  actorSeatIds: string[];
+  instruction: string;
+  outputVisibility:
+    | "public"
+    | "participant-private"
+    | "team-private";
+  allowFailure: boolean;
+};
+
+export type ArenaStrategyDriverPlan = {
+  strategy: ArenaStrategy;
+  maxRounds: number;
+  actions: ArenaStrategyAction[];
+  requiresHiddenState: boolean;
+  requiresWorldState: boolean;
+};
+
+export type ArenaRuntimeConfig = {
+  maxRetriesPerInvocation?: number;
+  seed?: number;
+  initialPublicContext?: string[];
+  participantPrivateContext?: Record<string, string[]>;
+  teamPrivateContext?: Record<string, string[]>;
+  hiddenRoles?: Record<string, string>;
+  worldState?: Record<string, unknown>;
+};
+
+export type ArenaRuntimeResult = {
+  sessionId: string;
+  status: ArenaSessionStatus;
+  strategy: ArenaStrategy;
+  startedAt: number;
+  completedAt: number;
+  roundsCompleted: number;
+  contexts: ArenaContextEntry[];
+  metrics: ArenaInvocationMetrics[];
+  events: ArenaRuntimeEvent[];
+  degraded: boolean;
+  errors: string[];
+};
+
+
 export function arenaModelKey(
   model: Pick<AiCenterModelChoice, "providerId" | "providerInstanceId" | "modelId">,
 ): string {

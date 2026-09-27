@@ -2,8 +2,8 @@
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
 if [ -z "${AI_OS_REMOTE_LINCO_TOKEN:-}" ]; then
-  echo "FAIL: AI_OS_REMOTE_LINCO_TOKEN is required"
-  exit 1
+  echo "SKIP: P16 Desktop Linco live E2E — AI_OS_REMOTE_LINCO_TOKEN is not configured"
+  exit 2
 fi
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT

@@ -33,8 +33,11 @@ if grep -Fq '2. Magnitude' HANDOFF.md; then
   fail "HANDOFF still schedules Magnitude as active post-GM integration"
 fi
 
-grep -Fq '1. GM-5 — Prompt / Reference Intelligence' HANDOFF.md \
-  || fail "HANDOFF current GM next milestone is stale"
+grep -Fq '**Generative Media — Complete**' HANDOFF.md \
+  || fail "HANDOFF Generative Media completion state missing"
+
+grep -Fq 'GM-6 is complete.' HANDOFF.md \
+  || fail "HANDOFF GM-6 completion state missing"
 
 grep -Fq '## 2026-09-09 — Local Model Optimization — llmfit Primary' HANDOFF.md \
   || fail "HANDOFF decision record missing"

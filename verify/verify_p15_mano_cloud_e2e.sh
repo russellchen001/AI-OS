@@ -19,10 +19,15 @@ fail() {
   exit 1
 }
 
-[ "${AI_OS_MANO_MODE:-}" = "cloud" ] \
-  || fail 'AI_OS_MANO_MODE is not cloud'
-[ "${AI_OS_MANO_CLOUD_AUTHORIZED:-}" = "true" ] \
-  || fail 'Mano Cloud is not explicitly authorized'
+if [ "${AI_OS_MANO_MODE:-}" != "cloud" ]; then
+  printf 'SKIP: P15 Mano Cloud E2E — AI_OS_MANO_MODE is not cloud\n'
+  exit 2
+fi
+
+if [ "${AI_OS_MANO_CLOUD_AUTHORIZED:-}" != "true" ]; then
+  printf 'SKIP: P15 Mano Cloud E2E — Mano Cloud is not explicitly authorized\n'
+  exit 2
+fi
 [ "$(mano-cua config --get disable-bash 2>/dev/null)" = "true" ] \
   || fail 'Mano Cloud bash capability is not disabled'
 [ "$(mano-cua config --get save-trajectory 2>/dev/null)" = "false" ] \
