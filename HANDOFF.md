@@ -1,5 +1,102 @@
 # AI-OS — Current State
 
+<!-- AI_OS_V1_RELEASE_ACCEPTANCE_2026_09_29 -->
+
+## CURRENT AI-OS V1 RELEASE STATE — 2026-09-29
+
+> **Authoritative global project state.**
+> This section supersedes older intermediate P15 completion counts and blocker
+> language elsewhere in this historical HANDOFF. Historical implementation and
+> acceptance records remain valid evidence and are intentionally preserved.
+
+### Overall status
+
+- **AI-OS v1 Release Acceptance: Completed.**
+- **P15 Core Skills: 10 / 10 active capability areas Complete.**
+- **P16 AI Council: Complete.**
+- **P17 AI Arena: Complete.**
+- There is no active P18 phase implied by this closure.
+- Current work after this point is release/distribution or explicitly approved
+  post-v1 work, not continuation of P17.
+
+### P15 final scope
+
+The ten active v1 capability areas are Complete:
+
+1. Email & Calendar
+2. Browser / Search
+3. File Management
+4. Downloads
+5. Office / document / spreadsheet / presentation workflows
+6. Local Model Management
+7. Computer Control v1
+8. Generative Media
+9. Cognitive Distillation Foundation
+10. NAS Foundation
+
+Vehicle Control remains Deferred / out of v1 by prior product decision.
+
+NAS Foundation is no longer hardware-blocked. The accepted production path has
+been exercised against a real mounted supported SMB network share, including
+dynamic production discovery and an isolated real-storage lifecycle covering
+write, read-back, rename, move, integrity verification and cleanup.
+
+### Release acceptance
+
+Release Gate A: **PASS**
+
+- production Tauri release build
+- `AI OS.app` produced
+- installable DMG produced
+- DMG verification PASS
+- DMG real mount PASS
+- application and Applications-link contents verified
+- release application startup smoke PASS
+- source integrity PASS
+
+The accepted v1 DMG uses Tauri's supported CI-mode packaging path, which skips
+Finder cosmetic layout. Installer aesthetics are not a functional release gate.
+
+Release Gate B: **PASS**
+
+- real NAS/network-storage discovery PASS
+- real NAS isolated storage I/O lifecycle PASS
+- NAS Foundation regression PASS
+- full repository regression PASS
+- source integrity PASS
+
+Final repository regression:
+
+- AC-BACKEND-1 Routing: PASS
+- full `verify_all.sh`: PASS
+- Core suite: `159 / 160 PASS`, `1 SKIP`
+- the single Core SKIP is the already accepted environment-dependent real GM-2
+  ComfyUI production E2E; deterministic GM-2 verification remains mandatory
+  and passes
+- external account/application E2E SKIPs remain environment-dependent evidence
+  and are not converted into product blockers
+- `git diff --check`: PASS
+
+During release verification, the live oMLX AC-BACKEND-1 probe twice observed a
+transient non-OK chat response while routing contract tests remained green.
+Direct HTTP diagnosis subsequently returned HTTP 200 for both model discovery
+and chat completion, and the final AC-BACKEND-1 verifier plus full repository
+gate passed. No routing source change was required.
+
+### Release boundaries retained
+
+- v1 operational general execution Agent remains OpenClaw.
+- Hermes and other real Agent adapters remain post-v1 work; their reserved
+  interfaces/placeholders are retained.
+- P17 durable Arena replay/history storage, restart persistence and dedicated
+  replay/history UI remain deferred beyond P17 v1.
+- Formal Apple Developer ID signing/notarization remains outside the accepted
+  v1 release requirement under the existing distribution decision.
+- Existing historical completion tags, including `p15-complete`,
+  `p16-complete` and `p17-complete`, are immutable historical milestones and
+  must not be moved to this release-closeout commit.
+
+
 <!-- COMPUTER_CONTROL_STATE_START -->
 
 ## CURRENT COMPUTER CONTROL STATE — 2026-09-06
@@ -12208,3 +12305,34 @@ Deferred / not required for P17 v1 closure:
 These may be added in a later phase without reopening the accepted P17
 Runtime, governance, evaluation or product-flow contracts.
 - 2026-09-28 05:20  P17 complete: deliver the full AI Arena v1 product flow from user objective through Strategy Router, Shared Chief of Staff, ArenaAssemblyPlan, AI Center model assignment, Shared Arena Runtime, Governance/Evaluation and structured ArenaOutcome to the product UI. Add live Start/Pause/Resume/Stop/Cancel controls, public Arena transcript, outcome presentation and final Product Session integration while preserving all Block 1-3 contracts. Final acceptance: Block 1 structural 13/13 and behavior 16/16; Block 2 structural 24/24 and behavior 10/10; Block 3 behavior 7/7; Governance 5/5; Structured Evaluation 5/5; Final Product Flow 6/6; frontend build PASS; diff check PASS; verify_all PASS with Core 159/160 and one environment-dependent GM-2 ComfyUI live E2E SKIP. Durable replay/history and persistence are deferred beyond P17 v1.
+
+## AI-OS V1 Final Release Acceptance — Completed — 2026-09-29
+
+Marker: `AI_OS_V1_RELEASE_ACCEPTANCE_2026_09_29`
+
+The project-wide Final Debug & Release Acceptance stage is complete.
+
+Acceptance evidence:
+
+- P15 final active capability count: `10 / 10 Complete`
+- real NAS hardware production discovery: PASS
+- isolated NAS write/read/rename/move/integrity/cleanup: PASS
+- P16 AI Council: Complete
+- P17 AI Arena: Complete
+- Tauri production application bundle: PASS
+- production DMG build / verify / mount: PASS
+- production application startup smoke: PASS
+- AC-BACKEND-1 final live routing verification: PASS
+- complete `verify_all.sh`: PASS
+- Core: `159 / 160 PASS`, `1 environment-dependent SKIP`
+- `git diff --check`: PASS
+- release acceptance source tree was clean before closeout
+
+No new product capability is introduced by this closeout. This record changes
+project status only and preserves all previously accepted architecture,
+permissions, execution boundaries and deferred scope.
+
+The next action after this documentation commit is to inspect the resulting
+commit and choose a non-conflicting final release tag. Do not move existing
+phase-completion tags and do not push without explicit owner confirmation.
+- 2026-09-29 01:42  docs: close AI-OS v1 release acceptance
