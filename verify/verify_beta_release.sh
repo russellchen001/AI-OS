@@ -18,6 +18,7 @@ run_step() {
 run_step "Managed OpenClaw lifecycle" verify/verify_beta_openclaw_lifecycle.sh
 run_step "Clean-profile isolation" verify/verify_beta_clean_profile.sh
 run_step "Beta version consistency" verify/verify_beta_version.sh
+run_step "macOS bundle signature" verify/verify_beta_macos_bundle_signature.sh
 run_step "Package/data hygiene" verify/verify_beta_package_hygiene.sh
 
 echo "===== Frontend production build ====="

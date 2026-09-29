@@ -22,6 +22,7 @@ else
 fi
 
 APP='src-tauri/target/release/bundle/macos/AI OS.app'
+DMG='src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.2_aarch64.dmg'
 if [ -d "$APP" ]; then
   bundled_data=$(
     find "$APP" -type f \
@@ -37,6 +38,43 @@ if [ -d "$APP" ]; then
   fi
 else
   echo "✓ app bundle hygiene deferred until Beta artifact build"
+fi
+
+if [ -f "$DMG" ]; then
+  mount_dir=$(mktemp -d "${TMPDIR:-/tmp}/ai-os-beta-hygiene.XXXXXX")
+  mounted=0
+  cleanup() {
+    if [ "$mounted" -eq 1 ]; then
+      hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
+    fi
+    rmdir "$mount_dir" >/dev/null 2>&1 || true
+  }
+  trap cleanup EXIT
+
+  if hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$DMG" >/dev/null; then
+    mounted=1
+    dmg_runtime_data=$(
+      find "$mount_dir" -type f \
+        \( -name 'conversations.sqlite3' -o \
+           -name 'openclaw-servers.json' -o \
+           -name 'mcp-servers.json' -o \
+           -name '*.keychain-db' \) \
+        -print
+    )
+    if [ -n "$dmg_runtime_data" ]; then
+      echo "✗ Beta DMG contains user runtime data"
+      printf '%s\n' "$dmg_runtime_data"
+      failures=$((failures + 1))
+    else
+      echo "✓ Beta DMG contains no user chats, runtime config or keychain database"
+    fi
+  else
+    echo "✗ Beta DMG could not be mounted for distribution hygiene verification"
+    failures=$((failures + 1))
+  fi
+else
+  echo "✗ Beta DMG is missing: $DMG"
+  failures=$((failures + 1))
 fi
 
 if [ "$failures" -ne 0 ]; then

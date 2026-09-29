@@ -1,7 +1,7 @@
 {
   "name": "ai-os",
   "private": true,
-  "version": "1.0.1-beta.1",
+  "version": "1.0.1-beta.2",
   "description": "AI OS Personal AI Workspace",
   "author": "Russell Chen",
   "type": "module",
@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "bash scripts/build_beta_macos.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

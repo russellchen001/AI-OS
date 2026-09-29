@@ -1,6 +1,6 @@
 [package]
 name = "dashboard"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 description = "AI OS Personal AI Workspace"
 authors = ["Russell Chen"]
 edition = "2021"

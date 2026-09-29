@@ -154,6 +154,35 @@ Known non-blocker: formal Apple Developer ID signing/notarization remains out of
 scope unless distribution credentials are provided. Existing repository-wide
 Rust unused-code warnings remain non-failing historical warnings.
 
+## POST-V1 BETA.2 GATEKEEPER BUNDLE-SIGNING FIX — 2026-09-29
+
+Status: **PASS — AI-OS 1.0.1-beta.2 supersedes beta.1 for Beta distribution.**
+This remains post-v1 release hardening and does not reopen P15, P16 or P17.
+
+- Beta.1 could be reported as damaged by macOS on some downloaded-user
+  machines. Its main Mach-O carried only a linker ad-hoc signature; the app
+  bundle itself had `Info.plist=not bound` and `Sealed Resources=none`.
+- Root cause: the Tauri macOS bundle had no signing identity configured, so the
+  DMG was created from an app bundle without a complete resource seal.
+- Technical decision: set Tauri `bundle.macOS.signingIdentity` to `-` and route
+  `npm run tauri:build` through `scripts/build_beta_macos.sh`. The release flow
+  performs an app-only Tauri build, applies the required final
+  `codesign --force --deep --sign - --timestamp=none`, runs strict verification,
+  packages that verified app into the DMG, then verifies both final artifacts.
+  Developer ID signing and notarization remain intentionally out of scope.
+- `verify/verify_beta_macos_bundle_signature.sh` performs strict codesign
+  verification against both the built app and the app mounted from the final
+  DMG. It requires identifier `com.russellchen.aios`, `Signature=adhoc`, a bound
+  Info.plist and version 2 sealed resources.
+- `verify/verify_beta_package_hygiene.sh` mounts the beta.2 DMG read-only and
+  verifies that it contains no conversation database, AI-OS OpenClaw server
+  record, runtime MCP configuration or keychain database.
+- Acceptance: all `verify/verify_beta_*.sh` **PASS 14 / 14, FAIL 0**; frontend
+  production build, Rust `cargo check`, source integrity, app signature, DMG
+  embedded-app signature and clean distribution checks all PASS.
+- Artifact: `src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.2_aarch64.dmg`.
+- Historical `ai-os-v1.0.0` and `ai-os-v1.0.1-beta.1` tags remain immutable.
+
 
 <!-- COMPUTER_CONTROL_STATE_START -->
 
