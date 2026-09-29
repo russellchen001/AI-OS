@@ -70,6 +70,8 @@ pub(crate) struct OpenClawRuntimeSnapshot {
     pub location: OpenClawRuntimeLocation,
     pub connection_state: String,
     pub last_checked_at: Option<String>,
+    pub active_server_name: Option<String>,
+    pub active_token_reference: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,6 +417,8 @@ pub(crate) fn runtime_snapshot() -> Result<OpenClawRuntimeSnapshot, String> {
             location: OpenClawRuntimeLocation::Invalid,
             connection_state: "unknown".to_string(),
             last_checked_at: None,
+            active_server_name: None,
+            active_token_reference: None,
         });
     };
 
@@ -427,6 +431,11 @@ pub(crate) fn runtime_snapshot() -> Result<OpenClawRuntimeSnapshot, String> {
             active.connection_state.clone()
         },
         last_checked_at: active.last_checked_at.clone(),
+        active_server_name: Some(active.name.clone()),
+        active_token_reference: active
+            .gateway_token
+            .starts_with("keychain://")
+            .then(|| active.gateway_token.clone()),
     })
 }
 
@@ -1113,6 +1122,15 @@ fn open_gateway_session(
     gateway_token: &str,
 ) -> Result<GatewaySession, GatewayFailure> {
     let started_at = Instant::now();
+
+    let gateway_token =
+        crate::managed_openclaw_secret::resolve_gateway_token(gateway_token)
+            .map_err(|message| GatewayFailure {
+                state: "error".to_string(),
+                message,
+                payload: None,
+                latency_ms: None,
+            })?;
 
     let ws_url = websocket_url(server_url).map_err(|message| GatewayFailure {
         state: "error".to_string(),

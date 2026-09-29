@@ -11,6 +11,7 @@ import "./App.css";
 import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import CommandPalette from "./components/CommandPalette";
+import ManagedOpenClawOnboarding from "./components/ManagedOpenClawOnboarding";
 
 import McpPage from "./pages/McpPage";
 import ModelsPage from "./pages/ModelsPage";
@@ -601,6 +602,7 @@ function App() {
 
   return (
     <div style={appStyle}>
+      <ManagedOpenClawOnboarding />
       <Sidebar
         activePage={
           activePage

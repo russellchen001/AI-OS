@@ -4405,7 +4405,7 @@ select:focus-visible {
 .conversation-history-item:focus-within .conversation-history-actions {
   opacity: 1;
 }
-.conversation-history-actions button {
+.conversation-history-actions > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4420,7 +4420,7 @@ select:focus-visible {
   line-height: 1;
   cursor: pointer;
 }
-.conversation-history-actions button:hover {
+.conversation-history-actions > button:hover {
   background: #dde2df;
   color: #202523;
 }

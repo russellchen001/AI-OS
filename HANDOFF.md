@@ -96,6 +96,64 @@ gate passed. No routing source change was required.
   `p16-complete` and `p17-complete`, are immutable historical milestones and
   must not be moved to this release-closeout commit.
 
+## POST-V1 BETA HARDENING / BETA RELEASE CANDIDATE — 2026-09-29
+
+Status: **PASS — AI-OS 1.0.1-beta.1 is ready for Beta tester distribution.**
+This is post-v1 release hardening and does not reopen P15, P16 or P17.
+
+### Accepted changes
+
+- The Chat history action selector remains direct-child scoped, preserving the
+  accepted delete-menu hit area fix.
+- Clean-profile verification covers every AI-OS support, WebKit, cache, HTTP
+  storage, saved-state, preferences and cookies location, including both
+  `Application Support/AI-OS` and `Application Support/AI OS`.
+- Managed OpenClaw now exposes deterministic `not-installed`,
+  `installed-not-configured`, `configured-no-gateway`, `gateway-stopped`,
+  `existing-unmanaged`, `broken` and `ready` states with state-specific UI.
+- Fresh install, Start, Complete Setup, Adopt Existing and bounded Repair are
+  separate actions. Adopt preserves the user's native OpenClaw installation;
+  Repair diagnoses and fails closed instead of reinstalling, rotating tokens,
+  replacing services or overwriting configuration.
+
+### Technical decisions
+
+- AI-OS-managed Gateway credentials are generated once, stored in macOS
+  Keychain, bridged into the OpenClaw Secret Store through stdin, and persisted
+  by AI-OS only as a `keychain://` reference. Managed production commands never
+  place the token in argv or logs.
+- Gateway readiness is derived from live service/connectivity evidence rather
+  than installation artifacts alone. Potentially blocking probes execute on a
+  blocking worker rather than the UI async runtime.
+- Existing user-managed OpenClaw records retain the manual-token compatibility
+  path; adoption verifies connectivity before saving an AI-OS server record and
+  never edits the native OpenClaw configuration.
+
+### Acceptance evidence
+
+- All `verify/verify_beta_*.sh`: **PASS 13 / 13, FAIL 0**.
+- `verify/verify_beta_release.sh`: **PASS** (Managed OpenClaw lifecycle,
+  clean-profile isolation/restore, version consistency, package hygiene,
+  frontend production build, Rust `cargo check`, source integrity).
+- Isolated fresh-profile application startup: **PASS**; only a new empty
+  `New conversation` was created and no prior chat or AI-OS OpenClaw server
+  record appeared.
+- Existing-user preservation: **PASS**; the real Home OpenClaw remained version
+  `2026.8.2`, LaunchAgent loaded, Gateway running and listening on loopback after
+  acceptance.
+- DMG read-only mount and embedded application version check: **PASS**.
+- Historical `ai-os-v1.0.0` tag was not modified.
+
+### Beta artifacts
+
+- App: `src-tauri/target/release/bundle/macos/AI OS.app`
+- DMG: `src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.1_aarch64.dmg`
+- Version: `1.0.1-beta.1`; architecture: Apple Silicon `arm64`.
+
+Known non-blocker: formal Apple Developer ID signing/notarization remains out of
+scope unless distribution credentials are provided. Existing repository-wide
+Rust unused-code warnings remain non-failing historical warnings.
+
 
 <!-- COMPUTER_CONTROL_STATE_START -->
 

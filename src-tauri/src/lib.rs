@@ -20,6 +20,11 @@ mod keychain_trace;
 mod local_model_advisor;
 mod logs;
 mod macos_permissions;
+mod managed_openclaw;
+mod managed_openclaw_actions;
+mod managed_openclaw_complete;
+mod managed_openclaw_secret;
+mod managed_openclaw_start;
 mod managed_assets;
 mod mcp;
 mod mcp_runtime;
@@ -264,6 +269,13 @@ pub fn run() {
             openclaw::get_active_openclaw_status,
             openclaw::get_openclaw_dashboard_summary,
             openclaw::get_openclaw_runtime_config,
+            managed_openclaw::get_managed_openclaw_status,
+            managed_openclaw::install_managed_openclaw,
+            managed_openclaw_actions::adopt_existing_openclaw,
+            managed_openclaw_actions::finish_managed_openclaw_setup,
+            managed_openclaw_actions::repair_managed_openclaw,
+            managed_openclaw_complete::complete_managed_openclaw_setup,
+            managed_openclaw_start::start_managed_openclaw,
             openclaw::export_openclaw_servers,
             openclaw::import_openclaw_servers,
             openclaw::invoke_active_openclaw_gateway,

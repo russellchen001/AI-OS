@@ -368,6 +368,8 @@ mod tests {
             location,
             connection_state: state.to_string(),
             last_checked_at: last_checked_at.map(str::to_string),
+            active_server_name: None,
+            active_token_reference: None,
         }
     }
 
