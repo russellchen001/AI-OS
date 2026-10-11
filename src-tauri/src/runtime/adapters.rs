@@ -8,7 +8,7 @@ use super::{
     models::{
         NormalizedRuntimeError, RuntimeAvailability, RuntimeCapability, RuntimeDefinition,
         RuntimeErrorCode, RuntimeHealth, RuntimeLifecycle, RuntimeLocation, RuntimePlatform,
-        RuntimeReadiness, RuntimeStatus, RuntimeStatusRequest,
+        RuntimeReadiness, RuntimeStatus,
     },
     registry,
 };
@@ -280,64 +280,13 @@ fn runtime_error(code: RuntimeErrorCode, message: &str, retryable: bool) -> Norm
     }
 }
 
-pub fn statuses(request: RuntimeStatusRequest) -> Vec<RuntimeStatus> {
-    let ollama_url = request
-        .ollama_url
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("http://localhost:11434");
-    let open_web_ui_url = request
-        .open_web_ui_url
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("http://localhost:3000");
-
-    let ollama_endpoint_healthy = health::probe_ollama_endpoint(ollama_url);
-    let ollama_process_running = health::probe_ollama_process();
-    let docker_daemon_ready = health::probe_docker();
-    let docker_process_running = health::probe_docker_process();
-    let open_webui_endpoint_healthy = health::probe_open_webui_endpoint(open_web_ui_url);
-    let open_webui_container_running = health::probe_open_webui_container();
-    let open_webui_container_exists = health::open_webui_container_exists();
+pub fn statuses() -> Vec<RuntimeStatus> {
     let cherry_process_running = health::probe_cherry_studio();
-
-    let ollama_installed = ollama_process_running
-        || Path::new("/opt/homebrew/bin/ollama").exists()
-        || Path::new("/usr/local/bin/ollama").exists()
-        || health::command_success("command -v ollama >/dev/null 2>&1");
-    let docker_installed = docker_process_running || Path::new("/Applications/Docker.app").exists();
-    let cherry_installed =
-        cherry_process_running || Path::new("/Applications/Cherry Studio.app").exists();
+    let cherry_installed = cherry_process_running
+        || Path::new("/Applications/Cherry Studio.app").exists();
 
     vec![
         openclaw_status(),
-        map_probe_facts(
-            definition("ollama"),
-            RuntimeProbeFacts {
-                installed: ollama_installed,
-                process_running: ollama_process_running,
-                endpoint_healthy: ollama_endpoint_healthy,
-            },
-            RuntimeProbeKind::EndpointService,
-        ),
-        map_probe_facts(
-            definition("docker-desktop"),
-            RuntimeProbeFacts {
-                installed: docker_installed,
-                process_running: docker_process_running,
-                endpoint_healthy: docker_daemon_ready,
-            },
-            RuntimeProbeKind::EndpointService,
-        ),
-        map_probe_facts(
-            definition("open-webui"),
-            RuntimeProbeFacts {
-                installed: open_webui_container_exists,
-                process_running: open_webui_container_running,
-                endpoint_healthy: open_webui_endpoint_healthy,
-            },
-            RuntimeProbeKind::EndpointService,
-        ),
         map_probe_facts(
             definition("cherry-studio"),
             RuntimeProbeFacts {
@@ -388,7 +337,7 @@ mod tests {
     #[test]
     fn endpoint_process_and_installation_facts_map_independently() {
         let endpoint_ready = map_probe_facts(
-            definition("ollama"),
+            definition("cherry-studio"),
             RuntimeProbeFacts {
                 installed: false,
                 process_running: false,
@@ -402,7 +351,7 @@ mod tests {
         assert_eq!(endpoint_ready.readiness, RuntimeReadiness::Ready);
 
         let process_only = map_probe_facts(
-            definition("ollama"),
+            definition("cherry-studio"),
             RuntimeProbeFacts {
                 installed: true,
                 process_running: true,
@@ -415,7 +364,7 @@ mod tests {
         assert_eq!(process_only.readiness, RuntimeReadiness::NotReady);
 
         let stopped = map_probe_facts(
-            definition("ollama"),
+            definition("cherry-studio"),
             RuntimeProbeFacts {
                 installed: true,
                 process_running: false,
@@ -432,7 +381,7 @@ mod tests {
     #[test]
     fn not_installed_never_claims_a_stopped_lifecycle() {
         let status = map_probe_facts(
-            definition("docker-desktop"),
+            definition("cherry-studio"),
             RuntimeProbeFacts {
                 installed: false,
                 process_running: false,

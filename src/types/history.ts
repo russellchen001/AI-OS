@@ -3,8 +3,7 @@ export type HistoryProviderId =
   | "grok"
   | "gemini"
   | "claude"
-  | "deepseek"
-  | "ollama";
+  | "deepseek";
 
 export type HistoryCategory =
   | "coding"

@@ -36,7 +36,7 @@ export function createProviderRuntime(
   }
 
   if (
-    provider.id !== "ollama" &&
+    provider.id !== "omlx" &&
     !provider.apiKey.trim()
   ) {
     return {
@@ -45,7 +45,7 @@ export function createProviderRuntime(
     };
   }
 
-  if (provider.id === "ollama") {
+  if (provider.id === "omlx") {
     return {
       health: "unknown",
       message: "Local provider not checked",

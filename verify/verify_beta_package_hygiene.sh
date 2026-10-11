@@ -9,7 +9,7 @@ unexpected_data=$(
     -path './node_modules' -prune -o \
     -path './dist' -prune -o \
     -path './src-tauri/target' -prune -o \
-    -type f \( -name 'conversations.sqlite3' -o -name 'openclaw-servers.json' \) \
+    -type f \( -name 'conversations.sqlite3' -o -name 'memory.sqlite3' -o -name 'openclaw-servers.json' \) \
     -print
 )
 
@@ -18,15 +18,16 @@ if [ -n "$unexpected_data" ]; then
   printf '%s\n' "$unexpected_data"
   failures=$((failures + 1))
 else
-  echo "✓ repository contains no conversation DB or OpenClaw server record"
+  echo "✓ repository contains no conversation, Memory/knowledge DB or OpenClaw server record"
 fi
 
 APP='src-tauri/target/release/bundle/macos/AI OS.app'
-DMG='src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.2_aarch64.dmg'
+version=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version")
+DMG="src-tauri/target/release/bundle/dmg/AI OS_${version}_aarch64.dmg"
 if [ -d "$APP" ]; then
   bundled_data=$(
     find "$APP" -type f \
-      \( -name 'conversations.sqlite3' -o -name 'openclaw-servers.json' \) \
+      \( -name 'conversations.sqlite3' -o -name 'memory.sqlite3' -o -name 'openclaw-servers.json' \) \
       -print
   )
   if [ -n "$bundled_data" ]; then
@@ -34,7 +35,7 @@ if [ -d "$APP" ]; then
     printf '%s\n' "$bundled_data"
     failures=$((failures + 1))
   else
-    echo "✓ app bundle contains no user runtime data"
+    echo "✓ app bundle contains no user conversation, Memory/knowledge or runtime data"
   fi
 else
   echo "✓ app bundle hygiene deferred until Beta artifact build"
@@ -56,6 +57,7 @@ if [ -f "$DMG" ]; then
     dmg_runtime_data=$(
       find "$mount_dir" -type f \
         \( -name 'conversations.sqlite3' -o \
+           -name 'memory.sqlite3' -o \
            -name 'openclaw-servers.json' -o \
            -name 'mcp-servers.json' -o \
            -name '*.keychain-db' \) \

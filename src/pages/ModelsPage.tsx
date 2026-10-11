@@ -7,23 +7,17 @@ import {
 
 import InlineAlert from "../components/InlineAlert";
 import ConfirmDialog from "../components/ConfirmDialog";
-import {
-  POPULAR_OLLAMA_MODELS,
-} from "../config/constants";
 
-import type {
-  ModelActionStatus,
-  OllamaModel,
-  OllamaPullProgress,
-} from "../types/index";
+import type { ModelActionStatus } from "../types/index";
+import type { LocalModel, LocalDownloadStatus } from "../services/models";
 
 type ModelsPageProps = {
-  models: OllamaModel[];
+  models: LocalModel[];
   totalSize: number;
   status: ModelActionStatus;
   activeModel: string | null;
   pullProgress:
-    | OllamaPullProgress
+    | LocalDownloadStatus
     | null;
   error: string;
   searchText: string;
@@ -88,26 +82,9 @@ function formatBytes(
   )} ${units[index]}`;
 }
 
-function formatDate(
-  value: string,
-): string {
-  const date =
-    new Date(value);
-
-  if (
-    Number.isNaN(
-      date.getTime(),
-    )
-  ) {
-    return value;
-  }
-
-  return date.toLocaleString();
-}
-
 function progressPercent(
   progress:
-    | OllamaPullProgress
+    | LocalDownloadStatus
     | null,
 ): number {
   if (
@@ -211,7 +188,7 @@ function ModelsPage({
     );
 
   async function openModel(
-    model: OllamaModel,
+    model: LocalModel,
   ) {
     setSelectedModel(
       model.name,
@@ -267,7 +244,7 @@ function ModelsPage({
       <div className="section-header">
         <div>
           <h2>
-            Ollama Models
+            oMLX Models
           </h2>
 
           <p>
@@ -328,7 +305,7 @@ function ModelsPage({
           </span>
 
           <strong>
-            Ollama
+            oMLX
           </strong>
         </div>
       </div>
@@ -344,8 +321,8 @@ function ModelsPage({
             </h3>
 
             <p>
-              Enter an Ollama model tag,
-              such as llama3.2:3b.
+              Enter a Hugging Face repository ID,
+              such as mlx-community/Qwen2.5-3B-Instruct-4bit.
             </p>
           </div>
 
@@ -359,7 +336,7 @@ function ModelsPage({
             type="text"
             value={modelInput}
             disabled={isBusy}
-            placeholder="llama3.2:3b"
+            placeholder="mlx-community/Qwen2.5-3B-Instruct-4bit"
             onChange={(
               event,
             ) =>
@@ -396,33 +373,6 @@ function ModelsPage({
               ? "Downloading..."
               : "Download"}
           </button>
-        </div>
-
-        <div className="popular-models">
-          <span>
-            Popular:
-          </span>
-
-          {POPULAR_OLLAMA_MODELS.map(
-            (model) => (
-              <button
-                key={model.name}
-                type="button"
-                className="model-suggestion"
-                disabled={isBusy}
-                title={
-                  model.description
-                }
-                onClick={() =>
-                  setModelInput(
-                    model.name,
-                  )
-                }
-              >
-                {model.name}
-              </button>
-            ),
-          )}
         </div>
 
         {status === "pulling" &&
@@ -471,7 +421,7 @@ function ModelsPage({
 
           <p>
             Models currently available
-            to Ollama.
+            to oMLX.
           </p>
         </div>
 
@@ -548,7 +498,7 @@ function ModelsPage({
                       <p>
                         {model.details
                           ?.family ??
-                          "Ollama model"}
+                          "oMLX model"}
                       </p>
                     </div>
                   </div>
@@ -591,12 +541,7 @@ function ModelsPage({
                     </div>
                   </div>
 
-                  <small className="model-modified">
-                    Updated{" "}
-                    {formatDate(
-                      model.modifiedAt,
-                    )}
-                  </small>
+
 
                   <div className="model-card-actions">
                     <button

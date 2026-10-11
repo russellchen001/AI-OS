@@ -19,12 +19,18 @@ else
  fail "frontend build"
 fi
 
+OMLX_KEY_FILE="$HOME/.openclaw/ai-os-secrets/omlx-api-key"
+if [ ! -s "$OMLX_KEY_FILE" ]; then
+ fail "oMLX API key is unavailable"
+fi
+
 if curl --silent --fail --max-time 5 \
- http://127.0.0.1:11434/api/tags \
+ -H "Authorization: Bearer $(<"$OMLX_KEY_FILE")" \
+ http://127.0.0.1:8000/v1/models \
  >/dev/null; then
- echo "✓ Ollama API reachable"
+ echo "✓ oMLX API reachable"
 else
- fail "Ollama unavailable"
+ fail "oMLX unavailable"
 fi
 
 echo "PASS P15 local model step 3"

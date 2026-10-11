@@ -177,7 +177,7 @@ function assignModels(
   ];
 
   return requirements.map((requirement, index) => {
-    const local = models.find((model) => model.providerId === "ollama");
+    const local = models.find((model) => model.providerId === "omlx");
     const preferred =
       (requirement.localFirst || localFirstObjective) && local
         ? local
@@ -188,7 +188,7 @@ function assignModels(
       rationale:
         providerRepresentatives.length === 1
           ? "Only one connected AI Center provider is available."
-          : preferred.providerId === "ollama" && (requirement.localFirst || localFirstObjective)
+          : preferred.providerId === "omlx" && (requirement.localFirst || localFirstObjective)
             ? "Local-first assignment for privacy-sensitive work."
             : "Assigned dynamically to preserve useful provider diversity.",
       fallbackModelIds: models

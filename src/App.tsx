@@ -36,7 +36,6 @@ import {
 import {
   initializeProviderInstances,
 } from "./services/providers";
-import { setLocalOllamaModels } from "./services/aiCenter";
 import { startDesktopLincoInboundBridge } from "./services/desktopLincoInbound";
 
 import useMcp from "./hooks/useMcp";
@@ -74,24 +73,6 @@ function runtimePresentation(
         name: "OpenClaw",
         icon: "🤖",
         description: "Local AI gateway",
-      };
-    case "ollama":
-      return {
-        name: "Ollama",
-        icon: "🦙",
-        description: "Local model runtime",
-      };
-    case "docker-desktop":
-      return {
-        name: "Docker",
-        icon: "🐳",
-        description: "Container runtime",
-      };
-    case "open-webui":
-      return {
-        name: "Open WebUI",
-        icon: "🌐",
-        description: "Browser AI workspace",
       };
     case "cherry-studio":
       return {
@@ -326,11 +307,6 @@ function App() {
   });
 
   const runtimes = useRuntimes({
-    request: {
-      ollamaUrl: settings.ollamaUrl,
-      openWebUiUrl:
-        settings.openWebUiUrl,
-    },
     refreshInterval:
       settings.refreshInterval,
   });
@@ -362,7 +338,8 @@ function App() {
     RuntimeServiceView[]
   >(
     () =>
-      runtimes.runtimes.map(
+      runtimes.runtimes
+        .map(
         (definition: RuntimeDefinition) => {
           const status =
             statusesById[definition.id];
@@ -445,10 +422,7 @@ function App() {
   } = useRuntimeBulkActions({
     allRunning,
     runtimes: [
-      { runtimeId: "docker-desktop" },
-      { runtimeId: "ollama", endpointUrl: settings.ollamaUrl },
       { runtimeId: "openclaw" },
-      { runtimeId: "open-webui", endpointUrl: settings.openWebUiUrl },
       { runtimeId: "cherry-studio" },
     ],
     isCanonicalActivityActive:
@@ -473,24 +447,15 @@ function App() {
         return;
       }
 
-      const endpointUrl =
-        runtimeId === "ollama"
-          ? settings.ollamaUrl
-          : runtimeId === "open-webui"
-            ? settings.openWebUiUrl
-            : undefined;
       void runtimeOperations.runRuntimeAction({
         runtimeId,
         action,
-        endpointUrl,
       });
     },
     [
       runtimeOperations,
       runtimes.runtimes,
       isBulkIsolationActive,
-      settings.ollamaUrl,
-      settings.openWebUiUrl,
     ],
   );
 
@@ -518,11 +483,6 @@ function App() {
       onMessage:
         handleMessage,
     });
-
-  useEffect(() => {
-    const ollama = runtimes.statuses.find((runtime) => runtime.id === "ollama");
-    setLocalOllamaModels(ollama?.lifecycle === "running" ? models.models : []);
-  }, [models.models, runtimes.statuses]);
 
   const mcp =
     useMcp({
@@ -669,23 +629,12 @@ function App() {
 
         {activePage === "My AI" && (
           <MyAiPage
-            localModels={models.models}
-            ollamaRuntime={runtimes.statuses.find((runtime) => runtime.id === "ollama")}
-            localModelsLoading={models.status === "loading"}
             onConnect={(provider) =>
               handleMessage(
                 `${provider} is connected and its available models were discovered.`,
                 "info",
               )
             }
-            onManageLocalModels={() =>
-              setActivePage("Models")
-            }
-            onRefreshLocalModels={() => {
-              void runtimes.refreshStatuses().catch(() => undefined);
-              void models.refreshModels();
-            }}
-            onStartOllama={() => startService("ollama")}
           />
         )}
 

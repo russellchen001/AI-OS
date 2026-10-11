@@ -12,7 +12,6 @@ import type {
   RuntimeOperationEvent,
   RuntimeOperationSnapshot,
   RuntimeStatus,
-  RuntimeStatusRequest,
   StartRuntimeBulkOperationRequest,
   StartRuntimeOperationRequest,
 } from "../types/runtime";
@@ -27,14 +26,9 @@ Promise<RuntimeDefinition[]> {
   );
 }
 
-export async function getRuntimeStatuses(
-  request?: RuntimeStatusRequest,
-): Promise<RuntimeStatus[]> {
+export async function getRuntimeStatuses(): Promise<RuntimeStatus[]> {
   return invoke<RuntimeStatus[]>(
     "get_runtime_statuses",
-    {
-      request,
-    },
   );
 }
 

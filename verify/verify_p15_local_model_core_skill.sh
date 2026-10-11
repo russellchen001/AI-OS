@@ -46,11 +46,17 @@ else
   fail "Rust backend compile"
 fi
 
-if curl --silent --fail --max-time 3 \
-  http://127.0.0.1:11434/api/tags >"$TMP/tags.json" 2>/dev/null; then
-  echo "✓ Live Ollama API reachable"
+OMLX_KEY_FILE="$HOME/.openclaw/ai-os-secrets/omlx-api-key"
+if [ ! -s "$OMLX_KEY_FILE" ]; then
+  fail "oMLX API key is unavailable"
+fi
+
+if curl --silent --fail --max-time 5 \
+  -H "Authorization: Bearer $(<"$OMLX_KEY_FILE")" \
+  http://127.0.0.1:8000/v1/models >"$TMP/models.json" 2>/dev/null; then
+  echo "✓ Live oMLX API reachable"
 else
-  fail "Ollama API is not reachable"
+  fail "oMLX API is not reachable"
 fi
 
 echo "PASS P15 local model core skill"

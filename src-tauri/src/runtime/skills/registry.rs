@@ -103,7 +103,7 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             "local-models",
             "Local Models",
             "system",
-            "List, inspect, download and remove local Ollama models.",
+            "List, inspect, download and remove local oMLX models.",
             &[
                 "models.list",
                 "models.show",
@@ -112,7 +112,17 @@ pub(crate) fn built_in_skills() -> Vec<SkillManifest> {
             ],
             &["models.read", "models.manage"],
             "local",
-            "ollama",
+            "omlx",
+        ),
+        skill(
+            "speech",
+            "Speech",
+            "media",
+            "Convert text to speech through an approved Docker-free backend.",
+            &["speech.synthesize"],
+            &["network.access", "filesystem.write"],
+            "speech",
+            "edge-tts",
         ),
         skill(
             "generative-media",
@@ -427,7 +437,7 @@ mod tests {
     fn list_command_returns_canonical_registry() {
         let skills = list_skills();
 
-        assert_eq!(skills.len(), 10);
+        assert_eq!(skills.len(), 11);
 
         assert_eq!(skills[0].id, "document");
         assert_eq!(skills[0].executor.kind, "openclaw");
@@ -443,23 +453,28 @@ mod tests {
 
         assert_eq!(skills[5].id, "local-models");
         assert_eq!(skills[5].executor.kind, "local");
-        assert_eq!(skills[5].executor.handler, "ollama");
+        assert_eq!(skills[5].executor.handler, "omlx");
 
-        assert_eq!(skills[6].id, "generative-media");
-        assert_eq!(skills[6].executor.kind, "media");
-        assert_eq!(skills[6].executor.handler, "generative-media");
 
-        assert_eq!(skills[7].id, "cognitive-distillation");
-        assert_eq!(skills[7].executor.kind, "cognitive-distillation");
-        assert_eq!(skills[7].executor.handler, "router");
+        assert_eq!(skills[6].id, "speech");
+        assert_eq!(skills[6].executor.kind, "speech");
+        assert_eq!(skills[6].executor.handler, "edge-tts");
 
-        assert_eq!(skills[8].id, "nas");
-        assert_eq!(skills[8].executor.kind, "nas");
-        assert_eq!(skills[8].executor.handler, "network-storage");
+        assert_eq!(skills[7].id, "generative-media");
+        assert_eq!(skills[7].executor.kind, "media");
+        assert_eq!(skills[7].executor.handler, "generative-media");
 
-        assert_eq!(skills[9].id, "downloads");
-        assert_eq!(skills[9].executor.kind, "openclaw");
-        assert_eq!(skills[9].executor.handler, "downloads");
+        assert_eq!(skills[8].id, "cognitive-distillation");
+        assert_eq!(skills[8].executor.kind, "cognitive-distillation");
+        assert_eq!(skills[8].executor.handler, "router");
+
+        assert_eq!(skills[9].id, "nas");
+        assert_eq!(skills[9].executor.kind, "nas");
+        assert_eq!(skills[9].executor.handler, "network-storage");
+
+        assert_eq!(skills[10].id, "downloads");
+        assert_eq!(skills[10].executor.kind, "openclaw");
+        assert_eq!(skills[10].executor.handler, "downloads");
     }
 
     #[test]

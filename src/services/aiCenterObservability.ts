@@ -51,8 +51,8 @@ export type ObservableModelChoice = {
 export function executionSource(
   choice: ObservableModelChoice,
 ): AiCenterExecutionSource {
-  return choice.providerId === "ollama" ||
-    choice.providerInstanceId === "ollama-local"
+  return choice.providerId === "omlx" ||
+    choice.providerInstanceId === "omlx-local"
     ? "local"
     : "cloud";
 }

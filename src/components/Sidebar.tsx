@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import type {
   PageName,
 } from "../types/index";
-import type { Conversation } from "../services/conversations";
+import {
+  searchConversationHistory,
+  type Conversation,
+} from "../services/conversations";
 
 type SidebarProps = {
   activePage: PageName;
@@ -88,6 +91,21 @@ function Sidebar({
   const [openMenuConversationId, setOpenMenuConversationId] = useState<string | null>(null);
   const [confirmDeleteConversationId, setConfirmDeleteConversationId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const [conversationSearch, setConversationSearch] = useState("");
+
+  const visibleConversations = (() => {
+    const query = conversationSearch.trim();
+    if (!query) return conversations.slice(0, 20);
+    const matchingIds = new Set(
+      searchConversationHistory(query, { limit: 20 }).map((hit) => hit.conversationId),
+    );
+    for (const conversation of conversations) {
+      if (conversation.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())) {
+        matchingIds.add(conversation.id);
+      }
+    }
+    return conversations.filter((conversation) => matchingIds.has(conversation.id)).slice(0, 20);
+  })();
 
   useEffect(() => {
     const closeMenu = (event: PointerEvent) => {
@@ -193,13 +211,32 @@ function Sidebar({
       <section className="conversation-history" aria-label="Conversation history">
         <div className="conversation-history-heading">
           <span>Recent</span>
-          <button type="button" aria-label="New conversation" onClick={onNewConversation}>+</button>
+          <button
+            type="button"
+            className="conversation-history-new-button"
+            aria-label="New conversation"
+            title="New conversation"
+            onClick={onNewConversation}
+          >
+            <span className="conversation-history-new-icon" aria-hidden="true">+</span>
+            <span className="conversation-history-new-label">New chat</span>
+          </button>
         </div>
+        <input
+          className="conversation-history-search"
+          type="search"
+          value={conversationSearch}
+          onChange={(event) => setConversationSearch(event.target.value)}
+          placeholder="Search full history"
+          aria-label="Search complete conversation history"
+        />
         <div className="conversation-history-list">
-          {conversations.length === 0 && (
-            <p className="conversation-history-empty">Your conversations will appear here.</p>
+          {visibleConversations.length === 0 && (
+            <p className="conversation-history-empty">
+              {conversationSearch ? "No matching conversations." : "Your conversations will appear here."}
+            </p>
           )}
-          {conversations.slice(0, 20).map((conversation) => (
+          {visibleConversations.map((conversation) => (
             <div
               key={conversation.id}
               className={

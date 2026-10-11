@@ -8,7 +8,7 @@ import type {
 
 export const APP_INFO: AppInfo = {
   name: "AI OS",
-  version: "1.0.1-beta.2",
+  version: "1.0.1-beta.4",
   description: "Personal AI Workspace",
   identifier: "com.russellchen.aios",
 };
@@ -26,24 +26,6 @@ export const INITIAL_SERVICES: Service[] = [
     status: "Unknown",
   },
   {
-    name: "Ollama",
-    icon: "🦙",
-    description: "Local model runtime",
-    status: "Unknown",
-  },
-  {
-    name: "Docker",
-    icon: "🐳",
-    description: "Container runtime",
-    status: "Unknown",
-  },
-  {
-    name: "Open WebUI",
-    icon: "🌐",
-    description: "Browser AI workspace",
-    status: "Unknown",
-  },
-  {
     name: "Cherry Studio",
     icon: "🍒",
     description: "Desktop AI client",
@@ -54,8 +36,6 @@ export const INITIAL_SERVICES: Service[] = [
 export const DEFAULT_SETTINGS: Settings = {
   refreshInterval: 5,
   openClawUrl: "http://localhost:18789",
-  ollamaUrl: "http://localhost:11434",
-  openWebUiUrl: "http://localhost:3000",
   theme: "dark",
   logLineLimit: 500,
 };
@@ -114,27 +94,4 @@ export const REFRESH_INTERVAL_OPTIONS = [
   10,
   30,
   60,
-] as const;
-
-export const POPULAR_OLLAMA_MODELS = [
-  {
-    name: "llama3.2:3b",
-    description: "Fast general-purpose model",
-  },
-  {
-    name: "qwen2.5:7b",
-    description: "Strong multilingual assistant",
-  },
-  {
-    name: "deepseek-r1:7b",
-    description: "Reasoning-focused model",
-  },
-  {
-    name: "gemma3:4b",
-    description: "Compact Google model",
-  },
-  {
-    name: "nomic-embed-text",
-    description: "Text embedding model",
-  },
 ] as const;

@@ -180,3 +180,113 @@ mod tests {
         );
     }
 }
+
+
+/// Whether the user has permanently authorized public web search.
+#[tauri::command]
+pub(crate) fn get_web_search_trust() -> Result<bool, String> {
+    load_trusted_automation_settings()
+        .map(|settings| settings.allowed_capabilities().contains("browser.search"))
+        .map_err(|error| error.to_string())
+}
+
+/// Change only the persistent browser.search grant.
+///
+/// Never accept an Agent-supplied capability name here. This command is
+/// intentionally limited to a single capability and does not execute a Skill.
+#[tauri::command]
+pub(crate) fn set_web_search_trust(enabled: bool) -> Result<bool, String> {
+    use std::io::Write;
+
+    let base = dirs::config_dir()
+        .ok_or_else(|| "AI-OS configuration directory unavailable".to_owned())?;
+
+    let directory = base.join("AI OS");
+    let path = directory.join(TRUSTED_AUTOMATION_FILE);
+
+    // Refuse to modify malformed configurations instead of replacing them.
+    let mut document: serde_json::Value = if path.exists() {
+        let contents = std::fs::read_to_string(&path)
+            .map_err(|_| "Unable to read existing AI-OS permissions".to_owned())?;
+
+        serde_json::from_str(&contents)
+            .map_err(|_| "Existing AI-OS permissions are malformed".to_owned())?
+    } else {
+        serde_json::json!({})
+    };
+
+    let object = document.as_object_mut()
+        .ok_or_else(|| "Existing AI-OS permissions must be a JSON object".to_owned())?;
+
+    let old = object.get("trustedAutomationCapabilities").cloned();
+
+    let mut capabilities: Vec<String> = match old {
+        None => Vec::new(),
+        Some(serde_json::Value::Array(items)) => {
+            let mut values = Vec::new();
+            for item in items {
+                let value = item.as_str()
+                    .ok_or_else(|| "Existing permissions contain an invalid capability".to_owned())?;
+                values.push(value.to_owned());
+            }
+            values
+        }
+        Some(_) => {
+            return Err("Existing permissions have an invalid capability list".to_owned());
+        }
+    };
+
+    capabilities.retain(|capability| capability.trim() != "browser.search");
+
+    if enabled {
+        capabilities.push("browser.search".to_owned());
+    }
+
+    object.insert(
+        "trustedAutomationCapabilities".to_owned(),
+        serde_json::json!(capabilities),
+    );
+
+    std::fs::create_dir_all(&directory)
+        .map_err(|_| "Unable to create AI-OS configuration directory".to_owned())?;
+
+    let temporary = directory.join(format!(
+        ".trusted-automation-{}.tmp",
+        uuid::Uuid::new_v4()
+    ));
+
+    let result = (|| -> Result<(), String> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let mut file = options.open(&temporary)
+            .map_err(|_| "Unable to create temporary permissions file".to_owned())?;
+
+        serde_json::to_writer_pretty(&mut file, &document)
+            .map_err(|_| "Unable to serialize permissions".to_owned())?;
+
+        file.write_all(b"\n")
+            .map_err(|_| "Unable to complete permissions file".to_owned())?;
+
+        file.sync_all()
+            .map_err(|_| "Unable to flush permissions file".to_owned())?;
+
+        std::fs::rename(&temporary, &path)
+            .map_err(|_| "Unable to save permissions".to_owned())?;
+
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+
+    result?;
+    Ok(enabled)
+}

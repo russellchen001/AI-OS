@@ -368,7 +368,22 @@ export function oauthConnectionState(
     return instance.connectionState;
   }
 
-  return instance.credential.refreshable ? "refresh-required" : "expired";
+  /*
+   * Refreshable OAuth credentials remain usable after the cached access-token
+   * expiry. The Rust execution path refreshes them from Keychain on demand.
+   *
+   * Do not turn a healthy persisted connection into "refresh-required" merely
+   * because its cached access token expired; doing so removes its models from
+   * AI Center before the backend has a chance to refresh it.
+   *
+   * Explicit refresh-required / expired states written after a real refresh
+   * failure are still preserved.
+   */
+  if (instance.credential.refreshable) {
+    return instance.connectionState;
+  }
+
+  return "expired";
 }
 
 export function withCurrentOAuthState(

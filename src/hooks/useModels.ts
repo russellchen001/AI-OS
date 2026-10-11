@@ -6,18 +6,15 @@ import {
 } from "react";
 
 import {
-  deleteOllamaModel,
-  listOllamaModels,
-  pullOllamaModel,
-  runOllamaModel,
-  showOllamaModel,
+  deleteLocalModel,
+  listLocalModels,
+  pullLocalModel,
+  runLocalModel,
+  showLocalModel,
 } from "../services/models";
 
-import type {
-  ModelActionStatus,
-  OllamaModel,
-  OllamaPullProgress,
-} from "../types/index";
+import type { ModelActionStatus } from "../types/index";
+import type { LocalModel, LocalDownloadStatus } from "../services/models";
 
 type UseModelsOptions = {
   refreshInterval: number;
@@ -34,7 +31,7 @@ function useModels({
   const [
     models,
     setModels,
-  ] = useState<OllamaModel[]>([]);
+  ] = useState<LocalModel[]>([]);
 
   const [
     status,
@@ -53,7 +50,7 @@ function useModels({
   const [
     pullProgress,
     setPullProgress,
-  ] = useState<OllamaPullProgress | null>(
+  ] = useState<LocalDownloadStatus | null>(
     null,
   );
 
@@ -74,13 +71,13 @@ function useModels({
         setError("");
 
         const result =
-          await listOllamaModels();
+          await listLocalModels();
 
         setModels(result);
         setStatus("idle");
       } catch (nextError) {
         const message =
-          `Unable to load Ollama models: ${String(
+          `Unable to load oMLX models: ${String(
             nextError,
           )}`;
 
@@ -154,7 +151,7 @@ function useModels({
           setError("");
 
           const result =
-            await pullOllamaModel(
+            await pullLocalModel(
               normalized,
             );
 
@@ -210,7 +207,7 @@ function useModels({
           setError("");
 
           const result =
-            await deleteOllamaModel(
+            await deleteLocalModel(
               model,
             );
 
@@ -271,7 +268,7 @@ function useModels({
           setError("");
 
           const result =
-            await runOllamaModel(
+            await runLocalModel(
               model,
               normalizedPrompt,
             );
@@ -317,7 +314,7 @@ function useModels({
           setActiveModel(model);
           setError("");
 
-          return await showOllamaModel(
+          return await showLocalModel(
             model,
           );
         } catch (nextError) {

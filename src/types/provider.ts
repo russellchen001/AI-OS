@@ -8,7 +8,6 @@ export type ProviderId =
   | "doubao"
   | "kimi"
   | "meta"
-  | "ollama"
   | (string & {});
 
 export type ProviderCredentialKind =

@@ -3,10 +3,7 @@ FAILED=0
 ok()  { echo "  ✅ $1"; }
 bad() { echo "  ❌ $1"; FAILED=1; }
 
-EXPECTED_MODEL="ollama/qwen3:8b"
-if [ "$(uname -m)" = "arm64" ]; then
-  EXPECTED_MODEL="omlx/Qwen3.5-9B-4bit"
-fi
+EXPECTED_MODEL="omlx/Qwen3.5-9B-4bit"
 RESOLVED_MODEL=$(openclaw models status --agent ai-os-exec-standard --json 2>/dev/null | jq -r '.resolvedDefault // empty')
 if [ "$RESOLVED_MODEL" = "$EXPECTED_MODEL" ]; then
   ok "ai-os-exec-standard 使用 $EXPECTED_MODEL"

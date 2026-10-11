@@ -26,9 +26,9 @@ function expectUnresolved(input) {
 
 expectIntent("", "ASK");
 expectIntent("什么是 KNX？", "ASK");
-expectIntent("比较一下 Ollama 和 oMLX", "ASK");
+expectIntent("比较一下 oMLX 和 ComfyUI", "ASK");
 expectIntent("你建议我怎么整理我的 NAS 文件？", "ASK");
-expectIntent("What is Ollama?", "ASK");
+expectIntent("What is oMLX?", "ASK");
 
 expectIntent("帮我查看这台电脑的磁盘空间", "DO");
 expectIntent("请删除这个文件", "DO");

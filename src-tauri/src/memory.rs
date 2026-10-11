@@ -14,7 +14,7 @@ fn database_path() -> Result<PathBuf, String> {
     Ok(dir.join(DATABASE_FILE))
 }
 
-fn open_database() -> Result<Connection, String> {
+pub(crate) fn open_database() -> Result<Connection, String> {
     let connection = Connection::open(database_path()?)
         .map_err(|_| "AI-OS could not open memory database".to_owned())?;
 
@@ -100,7 +100,9 @@ pub(crate) fn list_memory() -> Result<Vec<Value>, String> {
                 "id": row.get::<_, String>(0)?,
                 "type": row.get::<_, String>(1)?,
                 "content": row.get::<_, String>(2)?,
-                "metadata": row.get::<_, Option<String>>(3)?,
+                "metadata": row
+                    .get::<_, Option<String>>(3)?
+                    .and_then(|value| serde_json::from_str::<Value>(&value).ok()),
                 "createdAt": row.get::<_, String>(4)?,
                 "updatedAt": row.get::<_, String>(5)?
             }))

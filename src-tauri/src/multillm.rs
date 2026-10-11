@@ -60,9 +60,7 @@ struct ErrorEvent {
 fn endpoint(base_url: &str, provider_id: &str) -> String {
     let base = base_url.trim_end_matches('/');
 
-    if provider_id == "ollama" {
-        format!("{base}/api/chat")
-    } else if provider_id == "claude" || base.contains("anthropic.com") {
+    if provider_id == "claude" || base.contains("anthropic.com") {
         format!("{base}/messages")
     } else {
         format!("{base}/chat/completions")
@@ -113,14 +111,8 @@ fn openai_body(request: &StartMultiLlmRequest) -> Value {
     })
 }
 
-fn extract_text(value: &Value, anthropic: bool, ollama: bool) -> Option<String> {
-    if ollama {
-        value
-            .get("message")
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    } else if anthropic {
+fn extract_text(value: &Value, anthropic: bool) -> Option<String> {
+    if anthropic {
         value
             .get("delta")
             .and_then(|delta| delta.get("text"))
@@ -158,7 +150,7 @@ pub async fn start_multillm_stream(
         return Err("Operation ID is required.".to_string());
     }
 
-    if request.provider_id != "ollama" && request.api_key.trim().is_empty() {
+    if request.provider_id != "omlx" && request.api_key.trim().is_empty() {
         return Err("API key is required.".to_string());
     }
 
@@ -170,8 +162,6 @@ pub async fn start_multillm_stream(
         .insert(request.operation_id.clone(), token.clone());
 
     let anthropic = request.provider_id == "claude" || request.base_url.contains("anthropic.com");
-
-    let ollama = request.provider_id == "ollama";
 
     let client = reqwest::Client::builder()
         .build()
@@ -186,6 +176,8 @@ pub async fn start_multillm_stream(
             .header("x-api-key", &request.api_key)
             .header("anthropic-version", "2023-06-01")
             .json(&anthropic_body(&request))
+    } else if request.provider_id == "omlx" {
+        builder.json(&openai_body(&request))
     } else {
         builder
             .bearer_auth(&request.api_key)
@@ -272,15 +264,10 @@ pub async fn start_multillm_stream(
 
             buffer.drain(..=position);
 
-            let data = if ollama {
-                line.as_str()
-            } else {
-                let Some(data) = line.strip_prefix("data:") else {
-                    continue;
-                };
-
-                data.trim()
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
             };
+            let data = data.trim();
 
             if data.is_empty() || data == "[DONE]" {
                 continue;
@@ -290,7 +277,7 @@ pub async fn start_multillm_stream(
                 continue;
             };
 
-            if let Some(text) = extract_text(&value, anthropic, ollama) {
+            if let Some(text) = extract_text(&value, anthropic) {
                 let _ = app.emit(
                     "multillm://chunk",
                     StreamEvent {

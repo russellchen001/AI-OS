@@ -416,12 +416,6 @@ fn provider_compatible(provider_id: &str, model: &Value) -> Option<bool> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     match provider.as_str() {
-        "ollama" => Some(
-            model
-                .get("ollama_name")
-                .is_some_and(|value| !value.is_null())
-                || runtime.contains("llama"),
-        ),
         "omlx" => Some(
             runtime.contains("mlx")
                 || string_field(model, &["best_quant"])
@@ -595,20 +589,11 @@ fn use_case(request: &LocalModelRecommendationRequest) -> Option<&'static str> {
 
 fn provider_compatibility(model: &Value) -> Vec<String> {
     let mut providers = Vec::new();
-    if model
-        .get("ollama_name")
-        .is_some_and(|value| !value.is_null())
-    {
-        providers.push("ollama".to_owned());
-    }
     let runtime = string_field(model, &["runtime"])
         .unwrap_or_default()
         .to_ascii_lowercase();
     if runtime.contains("mlx") {
         providers.push("omlx".to_owned());
-    }
-    if runtime.contains("llama") && !providers.iter().any(|value| value == "ollama") {
-        providers.push("ollama".to_owned());
     }
     providers
 }
@@ -630,7 +615,7 @@ fn recommendation_from_model(rank: usize, model: &Value) -> LocalModelRecommenda
         confidence: string_field(model, &["estimate_confidence"])
             .unwrap_or_else(|| "unknown".to_owned()),
         evidence: model_evidence(model),
-        acquisition_model_id: string_field(model, &["ollama_name"]).or(Some(model_id)),
+        acquisition_model_id: Some(model_id),
     }
 }
 
@@ -655,9 +640,6 @@ pub(crate) fn recommend_local_models(
         }
         match request.preferred_local_provider.as_deref() {
             Some("omlx") => arguments.extend(["--runtime".to_owned(), "mlx".to_owned()]),
-            Some("ollama") => {
-                arguments.extend(["--force-runtime".to_owned(), "llamacpp".to_owned()])
-            }
             _ => {}
         }
         if request
@@ -720,7 +702,6 @@ mod tests {
             "estimated_tps": 24.5,
             "estimate_confidence": "estimated",
             "runtime": runtime,
-            "ollama_name": "qwen-coder:7b",
             "score": 88.0,
             "notes": ["fixture evidence"]
         })
@@ -733,21 +714,6 @@ mod tests {
             parameter_size: None,
             quantization: None,
         }
-    }
-
-    #[test]
-    fn installed_ollama_model_is_assessed_instead_of_assumed_suitable() {
-        let assessment = assessment_from_model(
-            &reference("ollama", "qwen-coder:7b"),
-            &model("Good", "llama.cpp", 5.4, 32768),
-        );
-
-        assert_eq!(assessment.fit, ModelFitLevel::Fit);
-        assert_eq!(assessment.quantization.as_deref(), Some("Q4_K_M"));
-        assert_eq!(assessment.recommended_context, Some(32768));
-        assert_eq!(assessment.estimated_memory_gb, Some(5.4));
-        assert_eq!(assessment.expected_tokens_per_second, Some(24.5));
-        assert_eq!(assessment.provider_compatible, Some(true));
     }
 
     #[test]
@@ -765,8 +731,8 @@ mod tests {
     #[test]
     fn oversized_and_marginal_models_remain_distinct() {
         let oversized = assessment_from_model(
-            &reference("ollama", "large"),
-            &model("TooTight", "llama.cpp", 80.0, 1024),
+            &reference("omlx", "large"),
+            &model("TooTight", "MLX", 80.0, 1024),
         );
         let marginal = assessment_from_model(
             &reference("omlx", "medium"),
@@ -866,10 +832,7 @@ mod tests {
         assert!(machine.total_memory_gb > 0.0);
         assert!(machine.cpu_cores > 0);
 
-        for (provider, runtime_flag, runtime) in [
-            ("omlx", "--runtime", "mlx"),
-            ("ollama", "--force-runtime", "llamacpp"),
-        ] {
+        for (provider, runtime_flag, runtime) in [("omlx", "--runtime", "mlx")] {
             let response = cli
                 .json(&[
                     "recommend".to_owned(),

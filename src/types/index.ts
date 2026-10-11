@@ -7,9 +7,6 @@ export type ServiceStatus =
 
 export type ServiceName =
   | "OpenClaw"
-  | "Ollama"
-  | "Docker"
-  | "Open WebUI"
   | "Cherry Studio";
 
 export type Service = {
@@ -38,8 +35,6 @@ export type ThemeMode =
 export type Settings = {
   refreshInterval: number;
   openClawUrl: string;
-  ollamaUrl: string;
-  openWebUiUrl: string;
   theme: ThemeMode;
   logLineLimit: number;
 };
@@ -74,29 +69,6 @@ export type LogQuery = {
   source?: LogSource | "All";
   level?: LogLevel | "All";
   limit: number;
-};
-
-export type OllamaModel = {
-  name: string;
-  model: string;
-  size: number;
-  digest: string;
-  modifiedAt: string;
-
-  details?: {
-    format?: string;
-    family?: string;
-    families?: string[];
-    parameterSize?: string;
-    quantizationLevel?: string;
-  };
-};
-
-export type OllamaPullProgress = {
-  status: string;
-  digest?: string;
-  total?: number;
-  completed?: number;
 };
 
 export type ModelActionStatus =
@@ -324,5 +296,4 @@ export type {
   RuntimePlatform,
   RuntimeReadiness,
   RuntimeStatus,
-  RuntimeStatusRequest,
 } from "./runtime";

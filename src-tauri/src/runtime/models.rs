@@ -4,9 +4,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeAdapterKind {
     Openclaw,
-    Ollama,
-    DockerDesktop,
-    OpenWebui,
     CherryStudio,
 }
 
@@ -142,13 +139,6 @@ pub struct RuntimeStatus {
     pub readiness: RuntimeReadiness,
     pub observed_at: Option<String>,
     pub error: Option<NormalizedRuntimeError>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeStatusRequest {
-    pub ollama_url: Option<String>,
-    pub open_web_ui_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

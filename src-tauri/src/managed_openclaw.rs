@@ -314,7 +314,7 @@ pub fn get_managed_openclaw_status() -> Result<ManagedOpenClawStatus, String> {
 fn download_official_installer() -> Result<tempfile::NamedTempFile, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60))
-        .user_agent("AI-OS/1.0.1-beta.2 Managed OpenClaw")
+        .user_agent("AI-OS/1.0.1-beta.3 Managed OpenClaw")
         .build()
         .map_err(|_| "AI-OS could not initialize the OpenClaw download client.".to_string())?;
 

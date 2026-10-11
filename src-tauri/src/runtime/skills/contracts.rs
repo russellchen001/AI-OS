@@ -51,6 +51,55 @@ fn optional_nas_selector_schema() -> Value {
     })
 }
 
+fn speech_synthesize_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+            },
+            "backend": {
+                "type": "string",
+                "enum": ["auto", "local", "online"]
+            },
+            "voice": {
+                "type": "string",
+                "enum": [
+                    "zf_xiaobei",
+                    "zm_yunxi",
+                    "af_heart",
+                    "zh-CN-XiaoxiaoNeural",
+                    "en-US-JennyNeural"
+                ]
+            }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+    })
+}
+
+fn web_search_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+            },
+            "maxResults": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10
+            }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
+}
+
 fn filesystem_scan_schema() -> Value {
     json!({
         "type": "object",
@@ -67,6 +116,8 @@ fn filesystem_scan_schema() -> Value {
 
 pub(crate) fn input_contract_for_capability(capability: &str) -> Option<CapabilityInputContract> {
     let schema = match capability {
+        "speech.synthesize" => speech_synthesize_schema(),
+        "browser.search" => web_search_schema(),
         "filesystem.scan" => filesystem_scan_schema(),
 
         "models.list" => empty_object_schema(),

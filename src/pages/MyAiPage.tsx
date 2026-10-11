@@ -2,15 +2,11 @@ import {
   assessInstalledLocalModels,
   assessLocalModel,
   deleteOmlxModel,
-  deleteOllamaModel,
   listOmlxAdminModels,
   pullOmlxModel,
-  pullOllamaModel,
   recommendLocalModels,
   showOmlxModel,
   showOmlxModelInFinder,
-  showOllamaModel,
-  showOllamaModelInFinder,
   type ModelFitAssessment,
   type LocalModelRecommendationReport,
   type OmlxAdminModel,
@@ -22,8 +18,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import { useDialog } from "../components/DialogProvider";
 import ConnectionsCenter from "../components/ConnectionsCenter";
-import type { OllamaModel } from "../types/index";
-import type { RuntimeStatus } from "../types/runtime";
 import type {
   ProviderAdapterDescriptor,
   ProviderModelEntry,
@@ -85,13 +79,7 @@ function assessmentDetails(assessment: ModelFitAssessment): string {
 }
 
 type MyAiPageProps = {
-  localModels: OllamaModel[];
-  ollamaRuntime?: RuntimeStatus;
-  localModelsLoading: boolean;
   onConnect: (provider: string, method: "account" | "api-key") => void;
-  onManageLocalModels: () => void;
-  onRefreshLocalModels: () => void;
-  onStartOllama: () => void;
 };
 
 type CloudProviderCard = {
@@ -180,13 +168,6 @@ const cloudProviders: CloudProviderCard[] = [
 
 const providerCatalog = [
   {
-    id: "ollama",
-    mark: "O",
-    name: "Ollama",
-    description: "Optional local AI engine for non-Apple Silicon computers",
-    connection: "Local service",
-  },
-  {
     id: "doubao",
     mark: "豆",
     name: "Doubao",
@@ -224,61 +205,19 @@ function loadConfiguredProviderIds(): Set<string> {
 }
 
 function MyAiPage({
-  localModels,
-  ollamaRuntime,
-  localModelsLoading,
   onConnect,
-  onManageLocalModels,
-  onRefreshLocalModels,
-  onStartOllama,
 }: MyAiPageProps) {
   const dialog = useDialog();
   const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([]);
   const [providerAdapters, setProviderAdapters] = useState<
     ProviderAdapterDescriptor[]
   >([]);
-  const [ollamaAdapterModels, setOllamaAdapterModels] = useState<ProviderModelEntry[]>([]);
-  const [ollamaAdapterChecked, setOllamaAdapterChecked] = useState(false);
+  const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
   const [omlxRuntime, setOmlxRuntime] = useState<OmlxRuntimeStatus | null>(null);
   const [omlxAdminModels, setOmlxAdminModels] = useState<OmlxAdminModel[]>([]);
   const [omlxLoading, setOmlxLoading] = useState(false);
   const [localModelAssessments, setLocalModelAssessments] = useState<Record<string, ModelFitAssessment>>({});
   const [localModelRecommendations, setLocalModelRecommendations] = useState<LocalModelRecommendationReport | null>(null);
-  const [ollamaEnabled, setOllamaEnabled] = useState(
-    () => window.localStorage.getItem("ai-os:ollama-enabled") === "true",
-  );
-  const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
-  const displayedOllamaModels = ollamaAdapterChecked
-    ? ollamaAdapterModels.map((model) => ({ name: model.remoteModelId, displayName: model.displayName }))
-    : localModels.map((model) => ({ name: model.name, displayName: model.name }));
-  const localModelCount = displayedOllamaModels.length;
-  const ollamaInstalled = ollamaRuntime?.availability !== "not-installed";
-  const ollamaRunning = ollamaRuntime?.lifecycle === "running";
-  const ollamaStarting = ollamaRuntime?.lifecycle === "starting";
-  const ollamaState = !ollamaInstalled
-    ? {
-        badge: "Not installed",
-        description: "Install Ollama to run private models on this Mac.",
-      }
-    : ollamaStarting
-      ? {
-          badge: "Starting",
-          description: "Ollama is starting. Models will appear when it is ready.",
-        }
-      : !ollamaRunning
-        ? {
-            badge: "Stopped",
-            description: "Ollama is installed but not running.",
-          }
-        : localModelCount === 0
-          ? {
-              badge: "No models",
-              description: "Ollama is ready. Download your first local model.",
-            }
-          : {
-              badge: "Ready",
-              description: `${localModelCount} local model${localModelCount === 1 ? "" : "s"} available`,
-            };
   const configuredProviderIds = new Set([
     ...loadConfiguredProviderIds(),
     ...providerInstances
@@ -294,8 +233,6 @@ function MyAiPage({
   const omlxInstance = providerInstances.find(
     (instance) => instance.id === "omlx-local" && instance.connectionState === "connected",
   );
-  const omlxReplacesOllama = omlxRuntime?.supported === true && Boolean(omlxInstance);
-  const showOllamaCard = !omlxReplacesOllama || ollamaEnabled;
   const omlxState = !omlxRuntime?.supported
     ? { badge: "Unavailable", description: "oMLX requires an Apple Silicon Mac." }
     : !omlxRuntime.installed
@@ -308,7 +245,6 @@ function MyAiPage({
               badge: "Ready",
               description: `${omlxInstance?.models.length ?? 0} local model${omlxInstance?.models.length === 1 ? "" : "s"} available`,
             };
-  const ollamaAssessmentKey = displayedOllamaModels.map((model) => model.name).join("|");
   const omlxAssessmentModels = omlxAdminModels.length
     ? omlxAdminModels
     : (omlxInstance?.models ?? []).map((model) => ({
@@ -321,15 +257,6 @@ function MyAiPage({
 
   useEffect(() => {
     const models = [
-      ...displayedOllamaModels.map((model) => {
-        const details = localModels.find((entry) => entry.name === model.name || entry.model === model.name)?.details;
-        return {
-          providerId: "ollama" as const,
-          modelId: model.name,
-          parameterSize: details?.parameterSize,
-          quantization: details?.quantizationLevel,
-        };
-      }),
       ...omlxAssessmentModels.map((model) => ({
         providerId: "omlx" as const,
         modelId: model.name,
@@ -352,7 +279,7 @@ function MyAiPage({
         if (active) setLocalModelAssessments({});
       });
     return () => { active = false; };
-  }, [ollamaAssessmentKey, omlxAssessmentKey]);
+  }, [omlxAssessmentKey]);
 
   useEffect(() => {
     let active = true;
@@ -506,29 +433,6 @@ function MyAiPage({
 
   useEffect(() => {
     let active = true;
-    void getProviderAdapter("ollama")
-      .then((adapter) =>
-        adapter.testConnection("ollama-local"),
-      )
-      .then((result) => {
-        if (active) {
-          setOllamaAdapterModels(result.discoveredModels);
-          setOllamaAdapterChecked(true);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setOllamaAdapterModels([]);
-          setOllamaAdapterChecked(true);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
     void invoke<ClaudeCodeStatus>("get_claude_code_status")
       .then((status) => {
         if (active) setClaudeCodeStatus(status);
@@ -541,70 +445,6 @@ function MyAiPage({
     };
   }, []);
 
-
-  async function inspectLocalModel(model: string) {
-    try {
-      const [details, assessment] = await Promise.all([
-        showOllamaModel(model),
-        assessLocalModel({ providerId: "ollama", modelId: model }),
-      ]);
-      await dialog.alert({
-        title: model,
-        message: `${assessmentDetails(assessment)}\n\nOllama details\n${details}`,
-        confirmLabel: "Done",
-      });
-    } catch (error) {
-      await dialog.alert({ title: "Could not inspect model", message: String(error) });
-    }
-  }
-
-  async function refreshOllamaModels() {
-    try {
-      const result = await (await getProviderAdapter("ollama")).testConnection("ollama-local");
-      setOllamaAdapterModels(result.discoveredModels);
-    } catch {
-      setOllamaAdapterModels([]);
-    }
-    setOllamaAdapterChecked(true);
-    onRefreshLocalModels();
-  }
-
-  async function removeLocalModel(model: string) {
-    const confirmed = await dialog.confirm({
-      title: "Delete local model?",
-      message: `AI-OS will permanently remove this Ollama model:\n\n${model}`,
-      confirmLabel: "Delete model",
-      cancelLabel: "Cancel",
-      tone: "warning",
-    });
-
-    if (!confirmed) return;
-
-    await deleteOllamaModel(model);
-    await refreshOllamaModels();
-  }
-
-  async function revealLocalModel(model: string) {
-    try {
-      await showOllamaModelInFinder(model);
-    } catch (error) {
-      await dialog.alert({ title: "Could not open Finder", message: String(error) });
-    }
-  }
-
-  async function downloadLocalModel() {
-    const model = await dialog.prompt({
-      title: "Download Ollama model",
-      message: "Enter the Ollama model name to download.",
-      confirmLabel: "Download",
-      cancelLabel: "Cancel",
-    });
-
-    if (!model?.trim()) return;
-
-    await pullOllamaModel(model.trim());
-    await refreshOllamaModels();
-  }
 
   async function inspectOmlxModel(model: string) {
     try {
@@ -1306,95 +1146,6 @@ function MyAiPage({
         </div>
       )}
 
-      {showOllamaCard && <article className="local-provider-card">
-        <div className="provider-card-heading">
-          <div className="provider-mark provider-mark-ollama">O</div>
-          <div>
-            <h3>Ollama</h3>
-            <p>{ollamaState.description}</p>
-          </div>
-          <span className={`connection-badge ${ollamaRunning && localModelCount > 0 ? "connection-badge-ready" : ""}`}>
-            {ollamaState.badge}
-          </span>
-        </div>
-        {displayedOllamaModels.length > 0 && (
-          <div className="local-model-list">
-            {displayedOllamaModels.slice(0, 4).map((model) => (
-              <div key={model.name}>
-                <span>{model.displayName}</span>
-                <div className="local-model-actions">
-                  <button
-                    type="button"
-                    onClick={() => void inspectLocalModel(model.name)}
-                  >
-                    Details
-                  </button>
-                  <button type="button" onClick={() => void revealLocalModel(model.name)}>
-                    Show in Finder
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void removeLocalModel(model.name)}
-                  >
-                    Delete
-                  </button>
-                </div>
-                {assessmentBadge(localModelAssessments[`ollama:${model.name}`]) && (
-                  <small>{assessmentBadge(localModelAssessments[`ollama:${model.name}`])}</small>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="local-provider-actions">
-          {ollamaInstalled && !ollamaRunning ? (
-            <button
-              type="button"
-              className="manage-models-button local-provider-primary"
-              disabled={ollamaStarting}
-              onClick={onStartOllama}
-            >
-              {ollamaStarting ? "Starting Ollama…" : "Start Ollama"}
-            </button>
-          ) : ollamaRunning && localModelCount === 0 ? (
-            <button type="button" className="manage-models-button local-provider-primary" onClick={onManageLocalModels}>
-              Add first model <span>→</span>
-            </button>
-          ) : (
-            <button type="button" className="manage-models-button local-provider-primary" onClick={onManageLocalModels}>
-              Manage local models <span>→</span>
-            </button>
-          )}
-          <button
-            type="button"
-            className="local-provider-refresh"
-            onClick={() => void downloadLocalModel()}
-          >
-            Pull model
-          </button>
-          <button
-            type="button"
-            className="local-provider-refresh"
-            disabled={localModelsLoading || ollamaStarting}
-            onClick={() => void refreshOllamaModels()}
-          >
-            {localModelsLoading ? "Checking…" : "Refresh"}
-          </button>
-          {omlxReplacesOllama && (
-            <button
-              type="button"
-              className="local-provider-refresh"
-              onClick={() => {
-                window.localStorage.removeItem("ai-os:ollama-enabled");
-                setOllamaEnabled(false);
-              }}
-            >
-              Disconnect
-            </button>
-          )}
-        </div>
-      </article>}
-
       {omlxInstance && omlxRuntime?.supported && (
         <article className="local-provider-card local-provider-card-omlx">
           <div className="provider-card-heading">
@@ -1491,9 +1242,9 @@ function MyAiPage({
       </div>
 
       <div className="provider-catalog">
-        {providerCatalog.filter((provider) => provider.id === "ollama"
-          ? omlxReplacesOllama && !ollamaEnabled
-          : !configuredProviderIds.has(provider.id)).map((provider) => (
+        {providerCatalog
+          .filter((provider) => !configuredProviderIds.has(provider.id))
+          .map((provider) => (
           <article key={provider.id} className="catalog-provider">
             <div className={`catalog-provider-mark catalog-provider-mark-${provider.id}`}>
               {provider.mark}
@@ -1507,11 +1258,6 @@ function MyAiPage({
               type="button"
               aria-label={`Add ${provider.name}`}
               onClick={() => {
-                if (provider.id === "ollama") {
-                  window.localStorage.setItem("ai-os:ollama-enabled", "true");
-                  setOllamaEnabled(true);
-                  return;
-                }
                 openSetup(provider.name, "api-key", provider.id);
               }}
             >

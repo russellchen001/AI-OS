@@ -36,6 +36,20 @@ export function classifySemanticIntent(
     };
   }
 
+  const standaloneConversationPatterns: RegExp[] = [
+    /^(hi|hello|hey|hello again|hi again|hey again)[!.? ]*$/i,
+    /^(你好|你好啊|你好呀|嗨|在吗)[！!。.?？ ]*$/u,
+    /^(thanks|thank you|thx|谢谢|多谢)[！!。.?？ ]*$/iu,
+  ];
+
+  if (containsAny(text, standaloneConversationPatterns)) {
+    return {
+      taskType: "ASK",
+      reason:
+        "The request is a standalone conversational turn and does not require execution.",
+    };
+  }
+
   const conceptualAskPatterns: RegExp[] = [
     /^(什么是|什么叫|何为|介绍一下|解释一下|解释|为什么|为何|怎么理解)/u,
     /(有什么区别|有何区别|区别是什么|优缺点|利弊|区别在哪)/u,
@@ -57,8 +71,8 @@ export function classifySemanticIntent(
   ];
 
   const systemObjectPatterns: RegExp[] = [
-    /(nas|硬盘|磁盘|存储|空间|容量|文件|文件夹|downloads|下载目录|邮件|邮箱|日历|浏览器|网页|模型|ollama|omlx|comfyui|应用|程序|电脑|mac|系统|服务器|账户|账号)/iu,
-    /\b(nas|disk|drive|storage|file|folder|downloads|email|mail|calendar|browser|webpage|model|ollama|omlx|comfyui|application|computer|server|account)\b/i,
+    /(nas|硬盘|磁盘|存储|空间|容量|文件|文件夹|downloads|下载目录|邮件|邮箱|日历|浏览器|网页|模型|omlx|comfyui|应用|程序|电脑|mac|系统|服务器|账户|账号)/iu,
+    /\b(nas|disk|drive|storage|file|folder|downloads|email|mail|calendar|browser|webpage|model|omlx|comfyui|application|computer|server|account)\b/i,
   ];
 
   const advisoryExecutionConflictPatterns: RegExp[] = [

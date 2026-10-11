@@ -1,3 +1,5 @@
+import { invoke as invokeWebSearchTrust } from "@tauri-apps/api/core";
+import { formatWorkExecutionOutput } from "../services/workOutputFormatter";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listMemory, saveMemory, type MemoryEntry } from "../services/memory";
@@ -15,6 +17,7 @@ import {
 } from "../services/tasks";
 import {
   listAiCenterModels,
+  resolveAiCenterContextLimits,
   streamThroughAiCenter,
   type AiCenterStream,
   type AiCenterModelChoice,
@@ -25,12 +28,25 @@ import { useDialog } from "../components/DialogProvider";
 import { PROVIDERS_CHANGED_EVENT } from "../services/providers";
 import {
   attachmentsFromFiles,
+  buildConversationRetrievalContext,
   buildConversationContext,
+  estimateContextTokens,
   getConversation,
   saveConversation,
   type ConversationAttachment,
   type ConversationMessage,
 } from "../services/conversations";
+import {
+  buildKnowledgeContext,
+  createKnowledgeProject,
+  indexKnowledgeSource,
+  listKnowledgeProjects,
+  listKnowledgeSources,
+  removeKnowledgeSource,
+  searchKnowledge,
+  type KnowledgeProject,
+  type KnowledgeSource,
+} from "../services/knowledge";
 import {
   applyMemoryPolicyToOutbound,
   describeMemoryPolicy,
@@ -178,7 +194,7 @@ function formatLocalModelResult(
 
     return names.length
       ? `Local models:\n\n${names.map((name) => `- ${name}`).join("\n")}`
-      : "No local Ollama models are installed.";
+      : "No local oMLX models are installed.";
   }
 
   if (!output || typeof output !== "object") {
@@ -238,25 +254,44 @@ function extractMemoryCandidate(content: string): string | undefined {
 function buildMemoryContext(
   memories: MemoryEntry[],
   policy: MemoryPolicy,
+  tokenBudget: number,
 ): { role: "system"; content: string } | undefined {
   const policyLines = describeMemoryPolicy(policy);
   if (memories.length === 0 && policyLines.length === 0) return undefined;
+  const selectedMemories: string[] = [];
+  const fixedLines = [
+    "Long-term user memory applies as default context unless the CURRENT user message explicitly overrides it.",
+    "Current-request overrides apply only to this response and must not carry forward.",
+    ...(policyLines.length
+      ? ["", "Resolved runtime policy:", ...policyLines]
+      : []),
+    "Do not mention or repeat these memories unless the user asks.",
+  ];
+  for (const memory of [...memories].reverse()) {
+    const candidate = `- ${memory.content.trim()}`;
+    const content = [
+      ...fixedLines.slice(0, -1),
+      "",
+      "Long-term user memory:",
+      candidate,
+      ...selectedMemories,
+      fixedLines.at(-1)!,
+    ].join("\n");
+    if (estimateContextTokens(content) > tokenBudget) break;
+    selectedMemories.unshift(candidate);
+  }
   return {
     role: "system",
     content: [
-      "Long-term user memory applies as default context unless the CURRENT user message explicitly overrides it.",
-      "Current-request overrides apply only to this response and must not carry forward.",
-      ...(policyLines.length
-        ? ["", "Resolved runtime policy:", ...policyLines]
-        : []),
-      ...(memories.length
+      ...fixedLines.slice(0, -1),
+      ...(selectedMemories.length
         ? [
             "",
             "Long-term user memory:",
-            ...memories.map((entry) => `- ${entry.content.trim()}`),
+            ...selectedMemories,
           ]
         : []),
-      "Do not mention or repeat these memories unless the user asks.",
+      fixedLines.at(-1)!,
     ].join("\n"),
   };
 }
@@ -274,7 +309,7 @@ function chooseLocalModelCapability(
   let model: string | undefined;
 
   if (capability !== "models.list") {
-    model = window.prompt("Ollama model name")?.trim();
+    model = window.prompt("oMLX model name")?.trim();
     if (!model) return;
   }
 
@@ -287,21 +322,53 @@ function chooseLocalModelCapability(
 
   setDraft(
     capability === "models.list"
-      ? "List local Ollama models"
+      ? "List local oMLX models"
       : `${capability} ${model}`,
   );
+}
+
+function isStandaloneConversationTurn(value: string): boolean {
+  const text = value.trim().toLowerCase();
+
+  return (
+    /^(hi|hello|hey|hello again|hi again|hey again)[!.? ]*$/.test(text) ||
+    /^(你好|你好啊|你好呀|嗨|在吗)[！!。.?？ ]*$/u.test(text) ||
+    /^(thanks|thank you|thx|谢谢|多谢)[！!。.?？ ]*$/u.test(text)
+  );
+}
+
+async function shareText(title: string, text: string) {
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, text });
+      return;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+    }
+  }
+  await navigator.clipboard.writeText(text);
 }
 
 function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const dialog = useDialog();
   const [draft, setDraft] = useState("");
+  const [webSearchApproval, setWebSearchApproval] = useState<{
+    inputPreview: string;
+    resolve: (choice: "once" | "always" | "cancel") => void;
+  } | null>(null);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState<AiCenterModelChoice>();
   const [availableModels, setAvailableModels] = useState(() => listAiCenterModels());
+  const [knowledgeProjects, setKnowledgeProjects] = useState<KnowledgeProject[]>([]);
+  const [knowledgeSources, setKnowledgeSources] = useState<KnowledgeSource[]>([]);
+  const [knowledgePanelOpen, setKnowledgePanelOpen] = useState(false);
+  const [knowledgeStatus, setKnowledgeStatus] = useState("");
   const [taskType, setTaskType] = useState<ChatTaskType>("ASK");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string>();
   const [activeStream, setActiveStream] = useState<AiCenterStream>();
   const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
   const [scanFolderPath, setScanFolderPath] = useState<string>();
@@ -322,6 +389,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     selectionHint: string;
   }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
 
   function openAttachmentPicker() {
     const input = fileInputRef.current;
@@ -360,7 +429,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   void chooseLocalModelCapability;
 
   useEffect(() => {
-    setMessages(getConversation(conversationId)?.messages ?? []);
+    const conversation = getConversation(conversationId);
+    setMessages(conversation?.messages ?? []);
+    setEditingMessageId(undefined);
+    setDraft("");
     setAttachments([]);
     setScanFolderPath(undefined);
     setReadFilePath(undefined);
@@ -368,7 +440,79 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setMoveFilePaths(undefined);
     setLocalModelWork(undefined);
     setDownloadWork(undefined);
+    setKnowledgePanelOpen(false);
+    setKnowledgeStatus("");
+    void listKnowledgeProjects()
+      .then(async (projects) => {
+        setKnowledgeProjects(projects);
+        const projectId = conversation?.projectId;
+        setKnowledgeSources(projectId ? await listKnowledgeSources(projectId) : []);
+      })
+      .catch(() => {
+        setKnowledgeProjects([]);
+        setKnowledgeSources([]);
+      });
   }, [conversationId]);
+
+  async function selectKnowledgeProject(projectId: string) {
+    const conversation = getConversation(conversationId);
+    if (!conversation) return;
+    saveConversation({ ...conversation, projectId: projectId || undefined });
+    setKnowledgeSources(projectId ? await listKnowledgeSources(projectId) : []);
+    setKnowledgeStatus("");
+  }
+
+  async function addKnowledgeProject() {
+    const name = window.prompt("Project name")?.trim();
+    if (!name) return;
+    try {
+      const project = await createKnowledgeProject(name);
+      const projects = await listKnowledgeProjects();
+      setKnowledgeProjects(projects);
+      await selectKnowledgeProject(project.id);
+      setKnowledgePanelOpen(true);
+    } catch (error) {
+      setKnowledgeStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function addKnowledgeSource() {
+    const projectId = getConversation(conversationId)?.projectId;
+    if (!projectId) {
+      setKnowledgeStatus("Choose or create a project first.");
+      return;
+    }
+    const selected = await openDialog({
+      directory: false,
+      multiple: false,
+      title: "Add a project knowledge source",
+      filters: [{
+        name: "Documents and code",
+        extensions: [
+          "pdf", "doc", "docx", "pptx", "xlsx", "txt", "md", "json", "csv", "tsv", "js", "jsx", "ts", "tsx",
+          "py", "rs", "go", "java", "kt", "swift", "c", "h", "cpp", "hpp", "html", "css",
+          "yaml", "yml", "toml", "sql", "sh",
+        ],
+      }],
+    });
+    if (typeof selected !== "string") return;
+    setKnowledgeStatus("Indexing…");
+    try {
+      await indexKnowledgeSource(projectId, selected);
+      setKnowledgeSources(await listKnowledgeSources(projectId));
+      setKnowledgeStatus("Source ready. AI-OS will retrieve it only inside this project.");
+    } catch (error) {
+      setKnowledgeStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function revokeKnowledgeSource(sourceId: string) {
+    const projectId = getConversation(conversationId)?.projectId;
+    if (!projectId) return;
+    await removeKnowledgeSource(projectId, sourceId);
+    setKnowledgeSources(await listKnowledgeSources(projectId));
+    setKnowledgeStatus("Source access removed from this project.");
+  }
 
   async function chooseFolderToScan() {
     const selected = await openDialog({
@@ -501,7 +645,13 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
      * or executable work. The router chooses ASK/DO only; it never chooses a
      * Skill, capability, parameters, permission, or confirmation.
      */
-    const automaticIntent = await classifyAutomaticIntent(content, selectedModel);
+    let automaticIntent;
+    try {
+      automaticIntent = await classifyAutomaticIntent(content, selectedModel);
+    } catch {
+      setIsSubmitting(false);
+      return;
+    }
     const routedTaskType = automaticIntent.taskType;
     const isWorkRequest = routedTaskType === "DO";
 
@@ -513,7 +663,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         cancelLabel: "Cancel",
         tone: "warning",
       });
-      if (!confirmed) return;
+      if (!confirmed) {
+        setIsSubmitting(false);
+        return;
+      }
     }
     if (readFilePath) {
       const confirmed = await dialog.confirm({
@@ -523,7 +676,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         cancelLabel: "Cancel",
         tone: "warning",
       });
-      if (!confirmed) return;
+      if (!confirmed) {
+        setIsSubmitting(false);
+        return;
+      }
     }
     if (writeFilePath) {
       const byteLength = new TextEncoder().encode(draft).byteLength;
@@ -534,7 +690,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         cancelLabel: "Cancel",
         tone: "warning",
       });
-      if (!confirmed) return;
+      if (!confirmed) {
+        setIsSubmitting(false);
+        return;
+      }
     }
     if (moveFilePaths) {
       const confirmed = await dialog.confirm({
@@ -544,7 +703,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         cancelLabel: "Cancel",
         tone: "warning",
       });
-      if (!confirmed) return;
+      if (!confirmed) {
+        setIsSubmitting(false);
+        return;
+      }
     }
 
     if (downloadWork) {
@@ -555,7 +717,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         cancelLabel: "Cancel",
         tone: "warning",
       });
-      if (!confirmed) return;
+      if (!confirmed) {
+        setIsSubmitting(false);
+        return;
+      }
     }
 
     if (
@@ -566,26 +731,38 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const confirmed = await dialog.confirm({
         title: deleting ? "Delete this local model?" : "Download this local model?",
         message: deleting
-          ? `AI-OS will permanently delete this Ollama model from this Mac:\n\n${localModelWork.model}`
-          : `AI-OS will download this Ollama model to this Mac:\n\n${localModelWork.model}`,
+          ? `AI-OS will permanently delete this oMLX model from this Mac:\n\n${localModelWork.model}`
+          : `AI-OS will download this oMLX model to this Mac:\n\n${localModelWork.model}`,
         confirmLabel: deleting ? "Delete model" : "Download model",
         cancelLabel: "Cancel",
         tone: "warning",
       });
-      if (!confirmed) return;
+      if (!confirmed) {
+        setIsSubmitting(false);
+        return;
+      }
     }
 
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: editingMessageId ?? crypto.randomUUID(),
       role: "user",
       content,
       createdAt: new Date().toISOString(),
       attachments,
     };
-    const nextMessages = [...messages, userMessage];
+    const editIndex = editingMessageId
+      ? messages.findIndex((message) => message.id === editingMessageId)
+      : -1;
+    const nextMessages = [
+      ...(editIndex >= 0 ? messages.slice(0, editIndex) : messages),
+      userMessage,
+    ];
 
     const conversation = getConversation(conversationId);
-    if (!conversation) return;
+    if (!conversation) {
+      setIsSubmitting(false);
+      return;
+    }
 
     const memoryCandidate = extractMemoryCandidate(content);
     if (memoryCandidate) {
@@ -598,6 +775,9 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
           content: memoryCandidate,
           metadata: {
             source: "chat",
+            projectId: conversation.projectId,
+            conversationId,
+            sourceMessageId: userMessage.id,
             importance: 5,
           },
           createdAt: timestamp,
@@ -638,33 +818,83 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
           : conversation.title,
       messages: nextMessages,
     };
-    const context = buildConversationContext(nextConversation);
+    const userMemories = (await listMemory()).filter((entry) => {
+      if (entry.type !== "user" || !entry.content.trim()) return false;
+      const projectId =
+        entry.metadata && typeof entry.metadata === "object"
+          ? (entry.metadata as { projectId?: unknown }).projectId
+          : undefined;
+      return typeof projectId !== "string" || projectId === conversation.projectId;
+    });
+    const { resolvedPolicy } = resolveMemoryPolicy(userMemories, content);
+    const contextLimits = resolveAiCenterContextLimits(selectedModel);
+    const availableInputTokens =
+      contextLimits.contextWindowTokens - contextLimits.outputReserveTokens - 256;
+    const retrievalBudget = Math.min(4_096, Math.max(128, Math.floor(availableInputTokens * 0.15)));
+    const memoryContext = buildMemoryContext(
+      userMemories,
+      resolvedPolicy,
+      retrievalBudget,
+    );
+    const conversationRetrievalContext = buildConversationRetrievalContext(content, {
+      projectId: conversation.projectId,
+      excludeConversationId: conversation.id,
+      tokenBudget: retrievalBudget,
+    });
+    const project = knowledgeProjects.find((candidate) => candidate.id === conversation.projectId);
+    const knowledgeHits = project
+      ? await searchKnowledge(project.id, content, 8).catch(() => [])
+      : [];
+    const knowledgeContext = project
+      ? buildKnowledgeContext(project, knowledgeHits, retrievalBudget)
+      : undefined;
+    const systemContexts = [memoryContext, conversationRetrievalContext, knowledgeContext].filter(
+      (message): message is { role: "system"; content: string } => Boolean(message),
+    );
+    const context = buildConversationContext(nextConversation, {
+      ...contextLimits,
+      systemTokens: systemContexts.reduce(
+        (total, message) => total + estimateContextTokens(message.content) + 4,
+        0,
+      ),
+    });
     if (context.summary && context.summary !== conversation.summary) {
       nextConversation.summary = context.summary;
     }
     saveConversation(nextConversation);
     setMessages(nextMessages);
     setAttachments([]);
-    const userMemories = (await listMemory()).filter(
-      (entry) => entry.type === "user" && entry.content.trim(),
-    );
-    const { resolvedPolicy } = resolveMemoryPolicy(userMemories, content);
-    const memoryContext = buildMemoryContext(userMemories, resolvedPolicy);
     const currentMessage = context.messages[context.messages.length - 1];
     const priorMessages = context.messages.slice(0, -1);
     const outboundCurrentMessage = currentMessage
       ? applyMemoryPolicyToOutbound(currentMessage, resolvedPolicy)
       : undefined;
     const conversationMessages = [
-      ...(memoryContext ? [memoryContext] : []),
+      ...systemContexts,
       ...priorMessages,
       ...(outboundCurrentMessage ? [outboundCurrentMessage] : []),
     ];
+
+    /*
+     * Standalone greetings must not inherit the previous topic.
+     * Send only the current user turn to the Provider.
+     */
+    const providerMessages = isStandaloneConversationTurn(content)
+      ? [
+          outboundCurrentMessage ?? {
+            role: "user" as const,
+            content,
+          },
+        ]
+      : conversationMessages;
+
     setDraft("");
+    setEditingMessageId(undefined);
 
     let activeTaskId: string | undefined;
     let activeAssistantMessageId: string | undefined;
     let activeAssistantText = "";
+    let streamFrame: number | undefined;
     try {
       const task = await submitChatTask(content, routedTaskType);
       activeTaskId = task.taskId;
@@ -682,21 +912,27 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
           },
         ]);
         const stream = streamThroughAiCenter(
-          conversationMessages,
+          providerMessages,
           selectedModel,
           (chunk) => {
             activeAssistantText += chunk;
-            setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantMessageId
-                  ? { ...message, content: message.content + chunk }
-                  : message,
+            if (streamFrame !== undefined) return;
+            streamFrame = requestAnimationFrame(() => {
+              streamFrame = undefined;
+              setMessages((current) =>
+                current.map((message) =>
+                  message.id === assistantMessageId
+                    ? { ...message, content: activeAssistantText }
+                    : message,
                 ),
-            );
+              );
+            });
           },
         );
         setActiveStream(stream);
         const { response: answer, cancelled } = await stream.result;
+        if (streamFrame !== undefined) cancelAnimationFrame(streamFrame);
+        streamFrame = undefined;
         setActiveStream(undefined);
         if (cancelled) {
           await failChatTaskExecution(task.taskId, "Cancelled by user");
@@ -706,7 +942,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 ? {
                     ...message,
                     content:
-                      message.content || "Response stopped before any text was received.",
+                      answer.text || "Response stopped before any text was received.",
                     invocation: answer.metadata,
                   }
                 : message,
@@ -736,7 +972,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         setMessages((current) =>
           current.map((message) =>
             message.id === assistantMessageId
-              ? { ...message, invocation: answer.metadata }
+                ? { ...message, content: answer.text, invocation: answer.metadata }
               : message,
           ),
         );
@@ -774,7 +1010,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         id: crypto.randomUUID(),
         role: "assistant",
         content: execution.output
-          ? `AI-OS completed the task.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
+          ? formatWorkExecutionOutput(execution.output)
           : `AI-OS completed plan ${execution.planId}.`,
         createdAt: new Date().toISOString(),
       };
@@ -804,22 +1040,37 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
             ? `${inputPreview.slice(0, 2000)}\n…`
             : inputPreview;
 
-        const confirmed = await dialog.confirm({
-          title: "Allow this action?",
-          message: [
-            "AI-OS selected the following Skill for this task:",
-            "",
-            approval.capability,
-            "",
-            "Input:",
-            boundedPreview,
-            "",
-            "Allow this exact capability and input once?",
-          ].join("\n"),
-          confirmLabel: "Allow once",
-          cancelLabel: "Cancel",
-          tone: "warning",
-        });
+        const searchApprovalChoice: "once" | "always" | "cancel" =
+          approval.capability === "browser.search"
+            ? await new Promise<"once" | "always" | "cancel">((resolve) => {
+                setWebSearchApproval({
+                  inputPreview: boundedPreview,
+                  resolve: (choice) => {
+                    setWebSearchApproval(null);
+                    resolve(choice);
+                  },
+                });
+              })
+            : "cancel";
+
+        const confirmed = approval.capability === "browser.search"
+          ? searchApprovalChoice !== "cancel"
+          : await dialog.confirm({
+              title: "Allow this action?",
+              message: [
+                "AI-OS selected the following Skill for this task:",
+                "",
+                approval.capability,
+                "",
+                "Input:",
+                boundedPreview,
+                "",
+                "Allow this exact capability and input once?",
+              ].join("\\n"),
+              confirmLabel: "Allow once",
+              cancelLabel: "Cancel",
+              tone: "warning",
+            });
 
         if (!confirmed) {
           const cancelledMessage: ChatMessage = {
@@ -839,6 +1090,15 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         }
 
         try {
+          if (
+            approval.capability === "browser.search" &&
+            searchApprovalChoice === "always"
+          ) {
+            await invokeWebSearchTrust("set_web_search_trust", {
+              enabled: true,
+            });
+          }
+
           /*
            * Approval is bound to the Agent-selected capability + input from
            * the first pass. The retry does NOT give generic agent.execute a
@@ -861,7 +1121,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
             id: crypto.randomUUID(),
             role: "assistant",
             content: execution.output
-              ? `AI-OS completed the task.\n\n\`\`\`json\n${JSON.stringify(execution.output, null, 2)}\n\`\`\``
+              ? formatWorkExecutionOutput(execution.output)
               : `AI-OS completed plan ${execution.planId}.`,
             createdAt: new Date().toISOString(),
           };
@@ -898,8 +1158,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
               message.id === activeAssistantMessageId
                 ? {
                     ...message,
-                    content: message.content
-                      ? `${message.content}\n\nResponse interrupted.`
+                    content: activeAssistantText
+                      ? `${activeAssistantText}\n\nResponse interrupted.`
                       : failureMessage,
                   }
                 : message,
@@ -932,32 +1192,180 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         });
       }
     } finally {
+      if (streamFrame !== undefined) cancelAnimationFrame(streamFrame);
       setActiveStream(undefined);
       setIsSubmitting(false);
     }
   }
 
+  function editMessage(message: ChatMessage) {
+    if (isSubmitting || message.role !== "user") return;
+    setEditingMessageId(message.id);
+    setDraft(message.content);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  function regenerateMessage(messageId: string) {
+    if (isSubmitting) return;
+    const assistantIndex = messages.findIndex((message) => message.id === messageId);
+    const userMessage = messages
+      .slice(0, assistantIndex)
+      .reverse()
+      .find((message) => message.role === "user");
+    if (!userMessage) return;
+    setEditingMessageId(userMessage.id);
+    setDraft(userMessage.content);
+    window.setTimeout(() => formRef.current?.requestSubmit(), 0);
+  }
+
+  function shareConversation() {
+    const conversation = getConversation(conversationId);
+    if (!conversation) return;
+    const text = messages
+      .map((message) => `${message.role === "user" ? "You" : "AI-OS"}: ${message.content}`)
+      .join("\n\n");
+    void shareText(conversation.title, text);
+  }
+
   return (
     <section className="chat-workspace" aria-label="Conversation">
+      {webSearchApproval && (
+        <div
+          role="presentation"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10000,
+            background: "rgba(0, 0, 0, 0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="web-search-permission-title"
+            style={{
+              background: "var(--surface, #252525)",
+              color: "var(--text-primary, #ffffff)",
+              border: "1px solid rgba(150, 150, 150, 0.4)",
+              borderRadius: 14,
+              padding: 24,
+              width: "min(100%, 480px)",
+              boxShadow: "0 18px 60px rgba(0,0,0,0.4)",
+            }}
+          >
+            <h3 id="web-search-permission-title">
+              允许 AI-OS 搜索公开网页？
+            </h3>
+            <p>
+              AI-OS 将使用 browser.search 搜索公开网页。
+              你可以只允许这一次，或记住以后同类搜索的授权。
+            </p>
+            <details>
+              <summary>查看本次搜索参数</summary>
+              <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                {webSearchApproval.inputPreview}
+              </pre>
+            </details>
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                flexWrap: "wrap",
+                justifyContent: "flex-end",
+                marginTop: 24,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => webSearchApproval.resolve("cancel")}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => webSearchApproval.resolve("once")}
+              >
+                仅允许本次
+              </button>
+              <button
+                type="button"
+                onClick={() => webSearchApproval.resolve("always")}
+              >
+                始终允许公开网页搜索
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="chat-topbar">
         <button type="button" className="conversation-title">
           <span>{getConversation(conversationId)?.title ?? "New conversation"}</span>
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4" /></svg>
         </button>
-        <button type="button" className="quiet-icon-button" aria-label="Share conversation">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0-12 4 4m-4-4L8 7M5 13v6h14v-6" /></svg>
-        </button>
+        <div className="chat-topbar-actions">
+          <select
+            className="knowledge-project-select"
+            aria-label="Project knowledge workspace"
+            value={getConversation(conversationId)?.projectId ?? ""}
+            onChange={(event) => void selectKnowledgeProject(event.target.value)}
+          >
+            <option value="">No project</option>
+            {knowledgeProjects.map((project) => (
+              <option key={project.id} value={project.id}>{project.name}</option>
+            ))}
+          </select>
+          <button type="button" className="knowledge-button" onClick={() => setKnowledgePanelOpen((open) => !open)}>
+            Sources {knowledgeSources.length ? `(${knowledgeSources.length})` : ""}
+          </button>
+          <button type="button" className="quiet-icon-button" aria-label="Share conversation" onClick={shareConversation}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0-12 4 4m-4-4L8 7M5 13v6h14v-6" /></svg>
+          </button>
+        </div>
       </header>
+
+      {knowledgePanelOpen && (
+        <section className="knowledge-panel" aria-label="Project knowledge sources">
+          <div className="knowledge-panel-heading">
+            <div>
+              <strong>Project knowledge</strong>
+              <span>Only sources you add are searched, and only for this project.</span>
+            </div>
+            <div>
+              <button type="button" onClick={() => void addKnowledgeProject()}>New project</button>
+              <button type="button" onClick={() => void addKnowledgeSource()}>Add source</button>
+            </div>
+          </div>
+          {knowledgeSources.length > 0 ? (
+            <ul>
+              {knowledgeSources.map((source) => (
+                <li key={source.id}>
+                  <span><strong>{source.name}</strong><small>{source.kind.toUpperCase()} · {source.path}</small></span>
+                  <button type="button" onClick={() => void revokeKnowledgeSource(source.id)}>Remove</button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No sources are available to this conversation.</p>
+          )}
+          {knowledgeStatus && <p role="status">{knowledgeStatus}</p>}
+        </section>
+      )}
 
       <div className={messages.length ? "chat-thread" : "chat-empty"}>
         {messages.length ? messages.map((message) => (
           <article key={message.id} className={`chat-message chat-message-${message.role}`}>
-            <span className="message-author">{message.role === "user" ? "You" : "AI‑OS"}</span>
-            {formatMessageTime(message.createdAt) && (
-              <time className="message-author" dateTime={message.createdAt}>
-                {` · ${formatMessageTime(message.createdAt)}`}
-              </time>
-            )}
+            <div className="message-heading">
+              <span className="message-author">{message.role === "user" ? "You" : "AI‑OS"}</span>
+              {formatMessageTime(message.createdAt) && (
+                <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time>
+              )}
+            </div>
             {message.role === "assistant" ? (
               <>
                 <MarkdownRenderer
@@ -976,18 +1384,21 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                     )}
                   </div>
                 )}
-                {message.content && (
-                  <button
-                    type="button"
-                    className="message-copy-button"
-                    onClick={() => void navigator.clipboard.writeText(message.content)}
-                  >
-                    Copy
-                  </button>
-                )}
               </>
             ) : (
               <p>{message.content}</p>
+            )}
+            {message.content && (
+              <div className="message-actions" aria-label="Message actions">
+                <button type="button" onClick={() => void navigator.clipboard.writeText(message.content)}>Copy</button>
+                {message.role === "user" && (
+                  <button type="button" disabled={isSubmitting} onClick={() => editMessage(message)}>Edit</button>
+                )}
+                {message.role === "assistant" && (
+                  <button type="button" disabled={isSubmitting} onClick={() => regenerateMessage(message.id)}>Regenerate</button>
+                )}
+                <button type="button" onClick={() => void shareText("AI-OS message", message.content)}>Share</button>
+              </div>
             )}
           </article>
         )) : (
@@ -1015,8 +1426,9 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       </div>
 
       <div className="composer-dock">
-        <form className="chat-composer" onSubmit={submit}>
+        <form ref={formRef} className="chat-composer" onSubmit={submit}>
           <textarea
+            ref={composerRef}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {

@@ -20,7 +20,7 @@ grep -Fq '### Local Model Optimization — llmfit primary' HANDOFF.md \
 grep -Fq '`AlexsJones/llmfit` is the preferred v1.0 reusable foundation' HANDOFF.md \
   || fail "HANDOFF llmfit role missing"
 
-grep -Fq 'oMLX and Ollama remain the current v1.0 Local Model execution Providers.' HANDOFF.md \
+grep -Fq 'oMLX remains the current v1.0 Local Model execution Provider.' HANDOFF.md \
   || fail "HANDOFF execution-provider boundary missing"
 
 grep -Fq 'Magnitude is superseded as the planned v1.0 Local Model optimization' HANDOFF.md \
@@ -50,7 +50,7 @@ grep -Fq '#### Local Model Optimization — llmfit' AI_OS_MASTER_GUIDE.md \
 grep -Fq -- '- `AlexsJones/llmfit`' AI_OS_MASTER_GUIDE.md \
   || fail "MASTER GUIDE llmfit component reference missing"
 
-grep -Fq 'oMLX / Ollama / future replaceable Local Model Providers' AI_OS_MASTER_GUIDE.md \
+grep -Fq 'oMLX / future replaceable Local Model Providers' AI_OS_MASTER_GUIDE.md \
   || fail "MASTER GUIDE execution architecture missing"
 
 grep -Fq 'Magnitude is not a default planned v1.0 integration.' AI_OS_MASTER_GUIDE.md \
