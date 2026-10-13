@@ -4,7 +4,8 @@ set -u
 cd "$(dirname "$0")/.."
 
 APP='src-tauri/target/release/bundle/macos/AI OS.app'
-DMG='src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.2_aarch64.dmg'
+version=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version")
+DMG="src-tauri/target/release/bundle/dmg/AI OS_${version}_aarch64.dmg"
 failures=0
 
 verify_app() {

@@ -2,7 +2,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
-EXPECTED='1.0.1-beta.2'
+EXPECTED='1.0.1-beta.4.1'
 failures=0
 
 check_version() {

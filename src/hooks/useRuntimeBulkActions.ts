@@ -102,7 +102,7 @@ export default function useRuntimeBulkActions({
         notify("Start All could not be started.");
         return;
       }
-      notify("🚀 Start All command sent. Docker and Open WebUI may need up to 45 seconds.");
+      notify("🚀 Start All command sent. Services may need up to 45 seconds.");
       scheduleRefresh(5000, false);
       scheduleRefresh(20000, false);
       scheduleRefresh(45000, true);

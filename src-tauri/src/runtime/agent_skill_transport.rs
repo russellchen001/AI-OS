@@ -38,6 +38,7 @@ const AGENT_WAIT_INTERVAL_MILLISECONDS: u64 = 9_000;
 /// Budget for one Agent turn on the generic Skill transport path, where the
 /// Agent chooses a capability and the Runtime performs the real work.
 const AGENT_RUN_TIMEOUT_SECONDS: u64 = 120;
+const SKILL_SELECTION_TIMEOUT_SECONDS: u64 = 120;
 /// Budget for one Distilly creator turn. The creator Agent has to distil the
 /// bounded evidence into two quarantined files and then execute the validated
 /// writer CLI, so it needs more than one generic Skill-selection turn. This is
@@ -64,6 +65,7 @@ pub(crate) trait AgentSkillTransportAdapter: Send + Sync {
 /// exposure boundary and the Runtime permission decision succeed.
 pub(crate) struct RuntimeSkillInvocationGateway {
     permission_gate: ConfiguredCapabilityPermissionGate,
+    refresh_web_search_trust: bool,
     backend: Arc<dyn SkillBackend>,
 }
 
@@ -78,6 +80,7 @@ impl RuntimeSkillInvocationGateway {
 
         Self {
             permission_gate: ConfiguredCapabilityPermissionGate::new(allowed),
+            refresh_web_search_trust: true,
             backend: Arc::new(RuntimeSkillBackend::new(runtime, emitter)),
         }
     }
@@ -89,6 +92,7 @@ impl RuntimeSkillInvocationGateway {
     ) -> Self {
         Self {
             permission_gate: ConfiguredCapabilityPermissionGate::new(allowed_capabilities),
+            refresh_web_search_trust: false,
             backend,
         }
     }
@@ -130,6 +134,7 @@ impl SkillInvocationGateway for RuntimeSkillInvocationGateway {
         let always_confirm = GENERATIVE_MEDIA_ALWAYS_CONFIRM_CAPABILITIES
             .contains(&request.capability.as_str())
             || COMPUTER_USE_ALWAYS_CONFIRM_CAPABILITIES.contains(&request.capability.as_str())
+            || request.capability == "speech.synthesize"
             || matches!(
                 request.capability.as_str(),
                 "system.process.terminate"
@@ -140,7 +145,24 @@ impl SkillInvocationGateway for RuntimeSkillInvocationGateway {
         let always_confirmable = always_confirm.then_some(request.capability.as_str());
         let always_confirmable = always_confirmable.as_slice();
 
-        match self.permission_gate.authorize_with_policy(
+        // Production searches must read the latest grant on every invocation.
+        // Revoking trust therefore also affects already-created Gateways.
+        // Test Gateways continue to use their explicitly injected policy.
+        let refreshed_search_gate =
+            if self.refresh_web_search_trust && request.capability == "browser.search" {
+                let allowed = load_trusted_automation_settings()
+                    .map(|settings| settings.allowed_capabilities())
+                    .unwrap_or_default();
+                Some(ConfiguredCapabilityPermissionGate::new(allowed))
+            } else {
+                None
+            };
+
+        let permission_gate = refreshed_search_gate
+            .as_ref()
+            .unwrap_or(&self.permission_gate);
+
+        match permission_gate.authorize_with_policy(
             &request.capability,
             context.user_confirmed,
             &confirmable,
@@ -197,6 +219,9 @@ impl SkillBackend for RuntimeSkillBackend {
         if request.capability == "filesystem.scan" {
             return execute_local_filesystem_scan(request);
         }
+        if request.capability == "browser.search" {
+            return super::web_search::search(request);
+        }
         let runtime_request = RuntimeTaskExecutionRequest {
             operation_id: format!(
                 "skill:{}:{}",
@@ -210,6 +235,9 @@ impl SkillBackend for RuntimeSkillBackend {
         };
 
         let result = match skill.executor.kind.as_str() {
+            "speech" if skill.executor.handler == "edge-tts" => {
+                return super::speech::synthesize(request);
+            }
             "computer-use" if skill.executor.handler == "computer-use" => {
                 return self.computer_use.invoke(context, request);
             }
@@ -229,7 +257,7 @@ impl SkillBackend for RuntimeSkillBackend {
                 Arc::clone(&self.emitter),
                 runtime_request,
             ),
-            "local" if skill.executor.handler == "ollama" => execute_local_model_runtime_task(
+            "local" if skill.executor.handler == "omlx" => execute_local_model_runtime_task(
                 self.runtime.manager(),
                 self.runtime.scheduler(),
                 Arc::clone(&self.emitter),
@@ -549,7 +577,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             }
         });
         let first_message = format!(
-            "You are the selected execution Agent. AI-OS Runtime exposes only the capabilities in this JSON: {}. Evaluate every exposed capability that could match the task before declaring no viable path. Apply these storage boundaries exactly: local folders and paths, including Downloads, Desktop, Documents, and /Users paths, use filesystem capabilities; nas capabilities are only for an explicitly named NAS, network share, mounted network storage, SMB, NFS, or WebDAV target; download capabilities manage transfer jobs and do not list files already present in the local Downloads folder. Installed local AI models use models capabilities. Do not call a similarly named OpenClaw tool and do not perform the task directly. For a capability listed in inputContracts, return only {{\"type\":\"capability.select\",\"capability\":\"one exposed capability\"}}; Runtime will request its input separately. For a capability without an input contract, return the legacy compact {{\"type\":\"skill.invoke\",\"invocationId\":\"agent-authored-id\",\"capability\":\"one exposed capability\",\"input\":{{}}}}. Only if every exposed capability has been evaluated and none can advance the task may you return {{\"type\":\"execution.unavailable\",\"reason\":\"brief reason\",\"evaluatedCapabilities\":[\"every exposed capability exactly once\"]}}. Do not include confirmation, permission, backend, provider, or authority fields.",
+            "STRICT AI-OS SKILL ROUTER. This turn is a structured capability-selection task, NOT a tool-execution task. The following JSON is a list of AI-OS capabilities and schemas, NOT a catalog of OpenClaw tools: {}. Apply these storage boundaries exactly: local folders and paths, including Downloads, Desktop, Documents, and /Users paths, use filesystem capabilities; nas capabilities are only for an explicitly named NAS, network share, mounted network storage, SMB, NFS, or WebDAV target; download capabilities manage transfer jobs and do not list files already present in the local Downloads folder. Installed local AI models use models capabilities. Capability names such as browser.search are data identifiers, NOT callable OpenClaw tool IDs. Do not call tool_search, tool_describe, tool_call, or any other native tool. Do not perform the user's task directly. Do not search the web, access files, or execute commands. Your entire response MUST be one compact JSON object. Choose one suitable exposed capability. When that capability has an input contract, return exactly {{\"type\":\"capability.select\",\"capability\":\"CAPABILITY_ID\"}}. Otherwise return exactly {{\"type\":\"skill.invoke\",\"invocationId\":\"agent-request\",\"capability\":\"CAPABILITY_ID\",\"input\":{{}}}}. Replace CAPABILITY_ID with an exact exposed capability name. Only when none of the exposed capabilities can advance the goal, return an execution.unavailable object with every evaluated capability listed. No markdown, explanation, native tool calls, or extra text.",
             exposure
         );
 
@@ -563,7 +591,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             &session_key,
             &first_message,
             &format!("{}:request", request.execution_id),
-            AGENT_RUN_TIMEOUT_SECONDS,
+            SKILL_SELECTION_TIMEOUT_SECONDS,
         )?;
         let mut decision_history = history(self.invoker.as_ref(), &session_key)?;
         let mut attempted_capabilities = Vec::new();
@@ -660,6 +688,24 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
                 }
             }
         };
+
+        // Web Search fast path: the verified Skill result is already
+        // structured for Chat rendering. Avoid an unnecessary Agent turn.
+        // Permission checks and Gateway execution have already completed.
+        if result.capability == "browser.search" {
+            return Ok(AgentExecutionResult {
+                session_id: Some(session_key),
+                output: json!({
+                    "skillInvocation": {
+                        "invocationId": result.invocation_id,
+                        "capability": result.capability,
+                        "backend": result.backend,
+                        "provider": result.provider,
+                        "output": result.output,
+                    }
+                }),
+            });
+        }
 
         let result_message = format!(
             "AI-OS Runtime completed your Skill request successfully. Treat this JSON as the normalized Skill result. Return only one compact completion JSON object and do not call tools. A successful exposed Skill is a viable path, so execution.unavailable is not valid after this result: {}",
@@ -1134,6 +1180,303 @@ mod mano_fallback_contract_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SpeechTestEmitter;
+
+    impl OperationEventEmitter for SpeechTestEmitter {
+        fn emit(
+            &self,
+            _snapshot: super::super::models::RuntimeOperationSnapshot,
+        ) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    fn speech_test_context(confirmed: bool) -> SkillInvocationContext {
+        SkillInvocationContext::new(
+            "speech-task",
+            "speech-plan",
+            "speech-execution",
+            "openclaw",
+            vec!["speech.synthesize".to_owned()],
+            confirmed,
+        )
+        .unwrap()
+    }
+
+    fn speech_test_request() -> SkillInvocationRequest {
+        SkillInvocationRequest::new(
+            "speech-invocation",
+            "speech.synthesize",
+            json!({"text": "你好，这是 AI OS 的 Skill Gateway 测试。"}),
+        )
+        .unwrap()
+    }
+
+    fn speech_test_gateway(
+        trusted: bool,
+    ) -> RuntimeSkillInvocationGateway {
+        let allowed = if trusted {
+            vec!["speech.synthesize".to_owned()]
+        } else {
+            Vec::new()
+        };
+
+        let backend = RuntimeSkillBackend::new(
+            RuntimeExecutionState::default(),
+            Arc::new(SpeechTestEmitter),
+        );
+
+        RuntimeSkillInvocationGateway::with_backend(
+            allowed,
+            Arc::new(backend),
+        )
+    }
+
+    #[test]
+    fn speech_gateway_requires_current_confirmation() {
+        let request = speech_test_request();
+
+        for trusted in [false, true] {
+            let gateway = speech_test_gateway(trusted);
+            let error = gateway
+                .invoke(&speech_test_context(false), &request)
+                .unwrap_err();
+
+            assert_eq!(
+                error.kind,
+                SkillInvocationErrorKind::PermissionRequired
+            );
+        }
+    }
+
+    #[test]
+    fn speech_gateway_rejects_unsafe_input() {
+        let gateway = speech_test_gateway(false);
+
+        let request = SkillInvocationRequest::new(
+            "unsafe-speech",
+            "speech.synthesize",
+            json!({
+                "text": "hello",
+                "outputPath": "/tmp/unsafe.mp3",
+                "command": "sh"
+            }),
+        )
+        .unwrap();
+
+        let error = gateway
+            .invoke(&speech_test_context(true), &request)
+            .unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            SkillInvocationErrorKind::InvalidRequest
+        );
+    }
+
+    #[test]
+    #[ignore = "Calls online Edge TTS"]
+    fn speech_gateway_real_authorized_execution() {
+        let gateway = speech_test_gateway(false);
+
+        let result = gateway
+            .invoke(&speech_test_context(true), &speech_test_request())
+            .unwrap();
+
+        assert_eq!(result.capability, "speech.synthesize");
+        assert_eq!(result.backend, "speech");
+        assert_eq!(result.provider.as_deref(), Some("edge-tts"));
+
+        let path = result.output["filePath"].as_str().unwrap();
+
+        assert!(std::path::Path::new(path).is_file());
+        assert_eq!(result.output["format"], "mp3");
+        assert!(result.output["bytes"].as_u64().unwrap() > 128);
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn web_search_test_context(confirmed: bool) -> SkillInvocationContext {
+        SkillInvocationContext::new(
+            "web-search-task",
+            "web-search-plan",
+            "web-search-execution",
+            "openclaw",
+            vec!["browser.search".to_owned()],
+            confirmed,
+        )
+        .unwrap()
+    }
+
+    fn web_search_test_request() -> SkillInvocationRequest {
+        SkillInvocationRequest::new(
+            "web-search-invocation",
+            "browser.search",
+            json!({
+                "query": "AI-OS",
+                "maxResults": 3
+            }),
+        )
+        .unwrap()
+    }
+
+    fn web_search_test_gateway(trusted: bool) -> RuntimeSkillInvocationGateway {
+        let allowed = if trusted {
+            vec!["browser.search".to_owned()]
+        } else {
+            Vec::new()
+        };
+
+        RuntimeSkillInvocationGateway::with_backend(
+            allowed,
+            Arc::new(RuntimeSkillBackend::new(
+                RuntimeExecutionState::default(),
+                Arc::new(SpeechTestEmitter),
+            )),
+        )
+    }
+
+    #[test]
+    fn web_search_gateway_requires_approval_when_not_trusted() {
+        let gateway = web_search_test_gateway(false);
+        let request = web_search_test_request();
+
+        let error = gateway
+            .invoke(&web_search_test_context(false), &request)
+            .unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            SkillInvocationErrorKind::PermissionRequired
+        );
+    }
+
+    #[test]
+    fn web_search_gateway_respects_persistent_trust() {
+        let gate = ConfiguredCapabilityPermissionGate::new([
+            "browser.search".to_owned()
+        ]);
+
+        assert_eq!(
+            gate.authorize_with_policy(
+                "browser.search",
+                false,
+                &["browser.search"],
+                &[],
+            ),
+            CapabilityPermissionDecision::Allowed
+        );
+
+        let untrusted =
+            ConfiguredCapabilityPermissionGate::new(Vec::new());
+
+        assert_eq!(
+            untrusted.authorize_with_policy(
+                "browser.search",
+                false,
+                &["browser.search"],
+                &[],
+            ),
+            CapabilityPermissionDecision::RequiresApproval
+        );
+
+        assert_eq!(
+            untrusted.authorize_with_policy(
+                "browser.search",
+                true,
+                &["browser.search"],
+                &[],
+            ),
+            CapabilityPermissionDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn web_search_gateway_rejects_unsafe_input() {
+        let gateway = web_search_test_gateway(false);
+
+        let invalid_inputs = [
+            json!({"query": "AI-OS", "command": "sh"}),
+            json!({"query": "AI-OS", "args": ["-c"]}),
+            json!({"query": "AI-OS", "url": "http://127.0.0.1"}),
+            json!({"query": "AI-OS", "maxResults": 100}),
+            json!({"query": ""}),
+        ];
+
+        for (index, input) in invalid_inputs.into_iter().enumerate() {
+            let request = SkillInvocationRequest::new(
+                format!("unsafe-search-{index}"),
+                "browser.search",
+                input,
+            )
+            .unwrap();
+
+            let error = gateway
+                .invoke(&web_search_test_context(true), &request)
+                .unwrap_err();
+
+            assert_eq!(
+                error.kind,
+                SkillInvocationErrorKind::InvalidRequest
+            );
+        }
+    }
+
+    #[test]
+    fn web_search_gateway_rejects_unexposed_capability() {
+        let gateway = web_search_test_gateway(true);
+
+        let context = SkillInvocationContext::new(
+            "web-search-task",
+            "web-search-plan",
+            "web-search-execution",
+            "openclaw",
+            vec!["filesystem.scan".to_owned()],
+            true,
+        )
+        .unwrap();
+
+        let error = gateway
+            .invoke(&context, &web_search_test_request())
+            .unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            SkillInvocationErrorKind::CapabilityNotExposed
+        );
+    }
+
+    #[test]
+    #[ignore = "Requires live DuckDuckGo network access"]
+    fn web_search_gateway_real_authorized_execution() {
+        let gateway = web_search_test_gateway(false);
+
+        let result = gateway
+            .invoke(
+                &web_search_test_context(true),
+                &web_search_test_request(),
+            )
+            .unwrap();
+
+        assert_eq!(result.capability, "browser.search");
+        assert_eq!(result.backend, "web-search");
+        assert_eq!(
+            result.provider.as_deref(),
+            Some("duckduckgo-html")
+        );
+
+        let results = result.output["results"].as_array().unwrap();
+
+        assert!(!results.is_empty());
+        assert!(results.len() <= 3);
+
+        for item in results {
+            assert!(item["title"].as_str().is_some_and(|s| !s.is_empty()));
+            assert!(item["url"].as_str().unwrap().starts_with("http"));
+        }
+    }
+
     use std::{collections::VecDeque, sync::Mutex};
 
     #[test]

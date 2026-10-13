@@ -1,8 +1,5 @@
 export type RuntimeAdapterKind =
   | "openclaw"
-  | "ollama"
-  | "docker-desktop"
-  | "open-webui"
   | "cherry-studio";
 
 export type RuntimePlatform =
@@ -107,11 +104,6 @@ export type RuntimeStatus = {
   readiness: RuntimeReadiness;
   observedAt: string | null;
   error: NormalizedRuntimeError | null;
-};
-
-export type RuntimeStatusRequest = {
-  ollamaUrl?: string;
-  openWebUiUrl?: string;
 };
 
 export type RuntimeLifecycleAction =

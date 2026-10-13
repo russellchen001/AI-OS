@@ -706,7 +706,7 @@ pub(crate) fn execute_local_model_runtime_task(
 
     let admission = manager.admit_identified_operation(
         &request.operation_id,
-        "ollama",
+        "omlx",
         super::models::RuntimeOperationAction::Execute,
         false,
     )?;
@@ -1427,7 +1427,7 @@ mod tests {
 
     fn request_for(action: RuntimeOperationAction) -> ValidatedRuntimeLifecycleRequest {
         validate_runtime_lifecycle_request(RuntimeLifecycleRequest {
-            runtime_id: "ollama".to_string(),
+            runtime_id: "test-runtime-a".to_string(),
             action,
             endpoint_url: Some("http://localhost:11434".to_string()),
         })
@@ -1521,7 +1521,7 @@ mod tests {
     fn event_contract_is_version_one_full_snapshot_without_native_details() {
         let manager = RuntimeOperationManager::default();
         let operation = match manager
-            .admit_operation("ollama", RuntimeOperationAction::Open, false)
+            .admit_operation("test-runtime-a", RuntimeOperationAction::Open, false)
             .unwrap()
         {
             RuntimeOperationAdmission::Accepted { operation } => operation,
@@ -1564,7 +1564,7 @@ mod tests {
         );
         assert!(matches!(
             manager
-                .admit_operation("ollama", RuntimeOperationAction::Stop, false)
+                .admit_operation("test-runtime-a", RuntimeOperationAction::Stop, false)
                 .unwrap(),
             RuntimeOperationAdmission::Accepted { .. }
         ));
@@ -1574,7 +1574,7 @@ mod tests {
     fn conflict_and_capacity_rejections_emit_nothing() {
         let manager = Arc::new(RuntimeOperationManager::default());
         manager
-            .admit_operation("ollama", RuntimeOperationAction::Start, false)
+            .admit_operation("test-runtime-a", RuntimeOperationAction::Start, false)
             .unwrap();
         let emitter = Arc::new(RecordingEmitter::default());
         let conflict = start_with_dependencies(
@@ -1594,7 +1594,7 @@ mod tests {
         let capacity_manager = Arc::new(RuntimeOperationManager::default());
         for _ in 0..super::super::operations::MAX_ACTIVE_OPERATIONS {
             capacity_manager
-                .admit_operation("ollama", RuntimeOperationAction::Open, false)
+                .admit_operation("test-runtime-a", RuntimeOperationAction::Open, false)
                 .unwrap();
         }
         let capacity_emitter = Arc::new(RecordingEmitter::default());
@@ -1706,7 +1706,7 @@ mod tests {
         }
         assert!(executed.load(Ordering::SeqCst));
         assert!(manager
-            .admit_operation("open-webui", RuntimeOperationAction::Open, false)
+            .admit_operation("test-runtime-c", RuntimeOperationAction::Open, false)
             .is_ok());
         release_tx.send(()).unwrap();
     }
@@ -1754,7 +1754,7 @@ mod tests {
             RuntimeOperationState::Queued
         );
         assert!(manager
-            .admit_operation("open-webui", RuntimeOperationAction::Open, false)
+            .admit_operation("test-runtime-c", RuntimeOperationAction::Open, false)
             .is_ok());
         release_tx.send(()).unwrap();
     }
@@ -1834,7 +1834,7 @@ mod tests {
     fn rejected_running_transition_prevents_execution() {
         let manager = RuntimeOperationManager::default();
         let queued = match manager
-            .admit_operation("ollama", RuntimeOperationAction::Open, false)
+            .admit_operation("test-runtime-a", RuntimeOperationAction::Open, false)
             .unwrap()
         {
             RuntimeOperationAdmission::Accepted { operation } => operation,
@@ -1874,7 +1874,7 @@ mod tests {
     fn cancellation_applied_emits_once_and_unchanged_emits_nothing() {
         let manager = RuntimeOperationManager::default();
         let queued = match manager
-            .admit_operation("ollama", RuntimeOperationAction::Open, true)
+            .admit_operation("test-runtime-a", RuntimeOperationAction::Open, true)
             .unwrap()
         {
             RuntimeOperationAdmission::Accepted { operation } => operation,
@@ -1901,7 +1901,7 @@ mod tests {
     fn rejected_cancellation_paths_emit_nothing_and_preserve_state() {
         let manager = RuntimeOperationManager::default();
         let queued = match manager
-            .admit_operation("ollama", RuntimeOperationAction::Open, false)
+            .admit_operation("test-runtime-a", RuntimeOperationAction::Open, false)
             .unwrap()
         {
             RuntimeOperationAdmission::Accepted { operation } => operation,
@@ -1970,7 +1970,7 @@ mod tests {
         assert_eq!(operation.error.unwrap(), operation_task_failed());
         assert!(matches!(
             manager
-                .admit_operation("ollama", RuntimeOperationAction::Stop, false)
+                .admit_operation("test-runtime-a", RuntimeOperationAction::Stop, false)
                 .unwrap(),
             RuntimeOperationAdmission::Accepted { .. }
         ));
@@ -2088,7 +2088,7 @@ mod tests {
         let manager = RuntimeOperationManager::default();
         let emitter = RecordingEmitter::default();
         let queued = match manager
-            .admit_operation("ollama", RuntimeOperationAction::Open, false)
+            .admit_operation("test-runtime-a", RuntimeOperationAction::Open, false)
             .unwrap()
         {
             RuntimeOperationAdmission::Accepted { operation } => operation,

@@ -4,6 +4,8 @@ import type { AiCenterInvocationMetadata } from "./aiCenterObservability";
 export const CONVERSATIONS_CHANGED_EVENT = "ai-os:conversations-changed";
 const CONVERSATIONS_KEY = "ai-os.conversations.v1";
 const DEFAULT_CONTEXT_TOKENS = 32_000;
+const DEFAULT_OUTPUT_RESERVE_TOKENS = 4_000;
+const CONTEXT_SAFETY_MARGIN_TOKENS = 256;
 let conversationCache: Conversation[] | undefined;
 let initialization: Promise<Conversation[]> | undefined;
 
@@ -28,6 +30,7 @@ export type Conversation = {
   id: string;
   title: string;
   messages: ConversationMessage[];
+  projectId?: string;
   summary?: string;
   createdAt: string;
   updatedAt: string;
@@ -92,6 +95,16 @@ export function initializeConversations(): Promise<Conversation[]> {
     return listConversations();
   })();
   return initialization;
+}
+
+export async function reloadNativeConversations(): Promise<Conversation[]> {
+  const native = (await invoke<unknown[]>("list_native_conversations"))
+    .filter(isConversation);
+
+  conversationCache = native;
+  localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(native));
+  notifyChanged();
+  return listConversations();
 }
 
 function writeConversations(
@@ -179,24 +192,183 @@ export async function attachmentsFromFiles(
   return result;
 }
 
-function approximateTokens(value: string): number {
-  return Math.ceil(value.length / 4);
+export function estimateContextTokens(value: string): number {
+  let tokens = 0;
+  for (const character of value) {
+    if (/\s/u.test(character)) tokens += 0.25;
+    else if (character.codePointAt(0)! <= 0x7f) tokens += 0.25;
+    else tokens += 1;
+  }
+  return Math.max(1, Math.ceil(tokens));
 }
 
-function summarizeMessages(messages: ConversationMessage[]): string {
-  return messages
-    .map((message) => {
-      const clean = message.content.replace(/\s+/g, " ").trim();
-      return `${message.role === "user" ? "User" : "Assistant"}: ${clean.slice(0, 240)}`;
-    })
-    .join("\n")
-    .slice(0, 8_000);
+function truncateToTokenBudget(value: string, tokenBudget: number): string {
+  if (estimateContextTokens(value) <= tokenBudget) return value;
+  const suffix = "\n[Content truncated to fit the selected model context window.]";
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (estimateContextTokens(value.slice(0, middle) + suffix) <= tokenBudget) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return value.slice(0, low) + suffix;
 }
+
+function summarizeMessages(
+  messages: ConversationMessage[],
+  tokenBudget: number,
+): string {
+  if (messages.length === 0 || tokenBudget <= 0) return "";
+  const header = `[Earlier conversation compacted: ${messages.length} messages; ${messages[0].id}..${messages[messages.length - 1].id}]`;
+  const protectedLines: string[] = [];
+  const ordinaryLines: string[] = [];
+  const important = /\b(?:decid(?:e|ed|ing|ion)|must|should|deadline|budget|version|approved?|rejected?|require(?:d|ment)?|do not|never|always)\b|(?:决定|必须|应该|截止|预算|版本|批准|拒绝|要求|不要|永远|始终)|(?:\d[\d,.]*\s*(?:%|USD|AUD|CNY|RMB|元|美元|澳元|天|小时|分钟)?)/iu;
+  const lineFor = (message: ConversationMessage) => {
+    const clean = message.content.replace(/\s+/g, " ").trim();
+    return clean
+      ? `[${message.id}] ${message.role === "user" ? "User" : "Assistant"}: ${clean.slice(0, 360)}`
+      : "";
+  };
+  for (const message of messages) {
+    if (!important.test(message.content)) continue;
+    const line = lineFor(message);
+    if (!line) continue;
+    const candidate = [header, "Protected decisions, facts, and numbers:", ...protectedLines, line].join("\n");
+    if (estimateContextTokens(candidate) > tokenBudget) break;
+    protectedLines.push(line);
+  }
+  for (const message of [...messages].reverse()) {
+    if (important.test(message.content)) continue;
+    const line = lineFor(message);
+    if (!line) continue;
+    const candidate = [
+      header,
+      ...(protectedLines.length ? ["Protected decisions, facts, and numbers:", ...protectedLines] : []),
+      "Recent earlier context:",
+      line,
+      ...ordinaryLines,
+    ].join("\n");
+    if (estimateContextTokens(candidate) > tokenBudget) break;
+    ordinaryLines.unshift(line);
+  }
+  return truncateToTokenBudget(
+    [
+      header,
+      ...(protectedLines.length ? ["Protected decisions, facts, and numbers:", ...protectedLines] : []),
+      ...(ordinaryLines.length ? ["Recent earlier context:", ...ordinaryLines] : []),
+    ].join("\n"),
+    tokenBudget,
+  );
+}
+
+function searchTerms(query: string): string[] {
+  const normalized = query.toLocaleLowerCase();
+  const words = normalized.match(/[\p{L}\p{N}][\p{L}\p{N}._-]*/gu) ?? [];
+  const cjk = [...normalized].filter((character) => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character));
+  return [...new Set([...words.filter((word) => word.length > 1), ...cjk])].slice(0, 24);
+}
+
+export type ConversationSearchHit = {
+  conversationId: string;
+  projectId?: string;
+  conversationTitle: string;
+  messageId: string;
+  role: "user" | "assistant";
+  excerpt: string;
+  createdAt: string;
+  score: number;
+};
+
+export function searchConversationHistory(
+  query: string,
+  options: { projectId?: string | null; excludeConversationId?: string; limit?: number } = {},
+): ConversationSearchHit[] {
+  const terms = searchTerms(query);
+  if (terms.length === 0) return [];
+  const hits: ConversationSearchHit[] = [];
+  for (const conversation of listConversations()) {
+    if (
+      Object.prototype.hasOwnProperty.call(options, "projectId") &&
+      (conversation.projectId ?? null) !== (options.projectId ?? null)
+    ) continue;
+    if (conversation.id === options.excludeConversationId) continue;
+    for (const message of conversation.messages) {
+      const haystack = `${conversation.title}\n${message.content}`.toLocaleLowerCase();
+      const matched = terms.filter((term) => haystack.includes(term));
+      if (matched.length === 0) continue;
+      const firstMatch = Math.max(0, haystack.indexOf(matched[0]) - 100);
+      hits.push({
+        conversationId: conversation.id,
+        projectId: conversation.projectId,
+        conversationTitle: conversation.title,
+        messageId: message.id,
+        role: message.role,
+        excerpt: message.content.replace(/\s+/g, " ").slice(firstMatch, firstMatch + 420),
+        createdAt: message.createdAt,
+        score: matched.length * 10 + Math.min(5, matched.reduce((total, term) => total + haystack.split(term).length - 1, 0)),
+      });
+    }
+  }
+  return hits
+    .sort((left, right) => right.score - left.score || right.createdAt.localeCompare(left.createdAt))
+    .slice(0, Math.max(1, Math.min(options.limit ?? 8, 20)));
+}
+
+export function buildConversationRetrievalContext(
+  query: string,
+  options: { projectId?: string | null; excludeConversationId?: string; tokenBudget: number },
+): { role: "system"; content: string } | undefined {
+  const hits = searchConversationHistory(query, { ...options, limit: 12 });
+  if (hits.length === 0) return undefined;
+  const lines = [
+    "Relevant saved conversation evidence. Treat each bracketed message id as provenance and prefer the current request when it conflicts:",
+  ];
+  for (const hit of hits) {
+    const line = `- [conversation:${hit.conversationId}; message:${hit.messageId}] ${hit.conversationTitle}: ${hit.excerpt}`;
+    if (estimateContextTokens([...lines, line].join("\n")) > options.tokenBudget) break;
+    lines.push(line);
+  }
+  return lines.length > 1 ? { role: "system", content: lines.join("\n") } : undefined;
+}
+
+export type ConversationContextOptions = {
+  contextWindowTokens?: number;
+  outputReserveTokens?: number;
+  systemTokens?: number;
+};
+
+export type ConversationContextProjection = {
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  summary?: string;
+  inputBudgetTokens: number;
+  estimatedInputTokens: number;
+  retainedMessageIds: string[];
+  compactedMessageIds: string[];
+};
 
 export function buildConversationContext(
   conversation: Conversation,
-  tokenBudget = DEFAULT_CONTEXT_TOKENS,
-): { messages: Array<{ role: "user" | "assistant"; content: string }>; summary?: string } {
+  options: ConversationContextOptions = {},
+): ConversationContextProjection {
+  const contextWindowTokens = Math.max(
+    2_048,
+    Math.floor(options.contextWindowTokens ?? DEFAULT_CONTEXT_TOKENS),
+  );
+  const outputReserveTokens = Math.min(
+    Math.floor(contextWindowTokens / 2),
+    Math.max(1_024, Math.floor(options.outputReserveTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS)),
+  );
+  const inputBudgetTokens = Math.max(
+    512,
+    contextWindowTokens -
+      outputReserveTokens -
+      Math.max(0, Math.floor(options.systemTokens ?? 0)) -
+      CONTEXT_SAFETY_MARGIN_TOKENS,
+  );
   const expanded = conversation.messages.map((message) => {
     const attachmentText = (message.attachments ?? [])
       .map((attachment) =>
@@ -205,39 +377,54 @@ export function buildConversationContext(
           : `\n\n[Attached file: ${attachment.name}; binary content unavailable]`,
       )
       .join("");
-    return { role: message.role, content: message.content + attachmentText };
+    return { id: message.id, role: message.role, content: message.content + attachmentText };
   });
-  if (
-    expanded.reduce(
-      (total, message) => total + approximateTokens(message.content),
-      0,
-    ) <= tokenBudget
-  ) {
-    return { messages: expanded, summary: conversation.summary };
+  const fullHistoryTokens = expanded.reduce(
+    (total, message) => total + estimateContextTokens(message.content) + 4,
+    0,
+  );
+  if (fullHistoryTokens <= inputBudgetTokens) {
+    return {
+      messages: expanded.map(({ role, content }) => ({ role, content })),
+      summary: conversation.summary,
+      inputBudgetTokens,
+      estimatedInputTokens: fullHistoryTokens,
+      retainedMessageIds: expanded.map((message) => message.id),
+      compactedMessageIds: [],
+    };
   }
 
   const recent: typeof expanded = [];
   let used = 0;
+  const summaryBudget = Math.min(2_048, Math.max(256, Math.floor(inputBudgetTokens * 0.15)));
+  const recentBudget = Math.max(256, inputBudgetTokens - summaryBudget);
   for (const message of [...expanded].reverse()) {
-    const cost = approximateTokens(message.content);
-    if (recent.length && used + cost > tokenBudget * 0.7) break;
-    recent.unshift(message);
+    const cost = estimateContextTokens(message.content) + 4;
+    if (recent.length && used + cost > recentBudget) break;
+    recent.unshift(
+      recent.length === 0 && cost > recentBudget
+        ? { ...message, content: truncateToTokenBudget(message.content, recentBudget - 4) }
+        : message,
+    );
     used += cost;
   }
   const olderCount = expanded.length - recent.length;
   const summary = summarizeMessages(
     conversation.messages.slice(0, Math.max(0, olderCount)),
+    summaryBudget,
   );
+  const messages: ConversationContextProjection["messages"] = summary
+    ? [{ role: "system", content: summary }, ...recent.map(({ role, content }) => ({ role, content }))]
+    : recent.map(({ role, content }) => ({ role, content }));
   return {
-    messages: summary
-      ? [
-          {
-            role: "user",
-            content: `[Summary of earlier conversation]\n${summary}`,
-          },
-          ...recent,
-        ]
-      : recent,
+    messages,
     summary,
+    inputBudgetTokens,
+    estimatedInputTokens: messages.reduce(
+      (total, message) => total + estimateContextTokens(message.content) + 4,
+      0,
+    ),
+    retainedMessageIds: recent.map((message) => message.id),
+    compactedMessageIds: expanded.slice(0, olderCount).map((message) => message.id),
   };
 }

@@ -28,20 +28,54 @@ export type AiCenterModelChoice = {
   label: string;
 };
 
-let localOllamaModels: AiCenterModelChoice[] = [];
+export type AiCenterContextLimits = {
+  contextWindowTokens: number;
+  outputReserveTokens: number;
+  source: "model" | "safe-default";
+};
 
-export function setLocalOllamaModels(
-  models: Array<{ name: string; model: string }>,
-): void {
-  const next = models.map((model) => ({
-    providerId: "ollama",
-    providerInstanceId: "ollama-local",
-    modelId: model.model,
-    label: `Ollama · ${model.name}`,
-  }));
-  if (JSON.stringify(next) === JSON.stringify(localOllamaModels)) return;
-  localOllamaModels = next;
-  window.dispatchEvent(new Event("ai-os:providers-changed"));
+const SAFE_DEFAULT_CONTEXT_WINDOW = 32_000;
+
+export function deriveAiCenterContextLimits(
+  models: Array<{ contextWindow?: number }>,
+): AiCenterContextLimits {
+  const hasUnknownLimit = models.some(
+    (model) => !Number.isFinite(model.contextWindow) || (model.contextWindow ?? 0) <= 0,
+  );
+  const knownWindows = models
+    .map((model) => model.contextWindow)
+    .filter(
+      (value): value is number =>
+        typeof value === "number" && Number.isFinite(value) && value > 0,
+    );
+  const contextWindowTokens =
+    models.length > 0 && !hasUnknownLimit && knownWindows.length === models.length
+      ? Math.min(...knownWindows)
+      : SAFE_DEFAULT_CONTEXT_WINDOW;
+  return {
+    contextWindowTokens,
+    outputReserveTokens: Math.min(
+      8_192,
+      Math.max(1_024, Math.floor(contextWindowTokens / 8)),
+    ),
+    source: hasUnknownLimit || models.length === 0 ? "safe-default" : "model",
+  };
+}
+
+export function resolveAiCenterContextLimits(
+  selectedModel?: AiCenterModelChoice,
+): AiCenterContextLimits {
+  const connectedModels = listProviderInstances()
+    .filter((instance) => instance.connectionState === "connected")
+    .flatMap((instance) => instance.models.filter((model) => model.enabled));
+  const candidates = selectedModel
+    ? connectedModels.filter(
+        (model) =>
+          model.providerInstanceId === selectedModel.providerInstanceId &&
+          model.remoteModelId === selectedModel.modelId,
+      )
+    : connectedModels;
+  return deriveAiCenterContextLimits(candidates);
 }
 
 function choiceForModel(
@@ -58,13 +92,15 @@ function choiceForModel(
 
 export function listAiCenterModels(): AiCenterModelChoice[] {
   const connectedModels = listProviderInstances()
-    .filter((instance) => instance.connectionState === "connected")
+    .filter(
+      (instance) => instance.connectionState === "connected"
+    )
     .flatMap((instance) =>
       instance.models
         .filter((model) => model.enabled)
         .map((model) => choiceForModel(instance, model)),
     );
-  return [...connectedModels, ...localOllamaModels];
+  return connectedModels;
 }
 
 type AiCenterRouteSelection = Pick<
@@ -73,20 +109,6 @@ type AiCenterRouteSelection = Pick<
 >;
 
 function resolveChoice(choice: AiCenterRouteSelection) {
-  if (
-    choice.providerId === "ollama" &&
-    choice.providerInstanceId === "ollama-local"
-  ) {
-    return {
-      instance: {
-        id: "ollama-local",
-        providerId: "ollama",
-        credential: { kind: "local" as const },
-      },
-      model: { remoteModelId: choice.modelId },
-    };
-  }
-
   const instance = listProviderInstances().find(
     (candidate) =>
       candidate.id === choice.providerInstanceId &&
@@ -103,9 +125,15 @@ function resolveChoice(choice: AiCenterRouteSelection) {
   return { instance, model };
 }
 
+/**
+ * `routingPrompt` is the user's own words when `prompt` is an AI-OS-built
+ * instruction. Auto ranks model strength by it, as streaming chat does, so
+ * long grounding scaffolding cannot move a Local-First turn to the cloud.
+ */
 export async function answerThroughAiCenter(
   prompt: string,
   selectedModel?: AiCenterModelChoice,
+  routingPrompt?: string,
 ): Promise<AiCenterResponse> {
   const response = await invoke<
     AiCenterProviderResponse & { metadata: AiCenterCanonicalInvocationMetadata }
@@ -114,6 +142,7 @@ export async function answerThroughAiCenter(
       routeMode: selectedModel ? "manual" : "auto",
       manualCandidate: selectedModel,
       prompt,
+      routingPrompt,
     },
   });
   const metadata = enrichInvocationPricing(response.metadata);

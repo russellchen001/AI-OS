@@ -124,14 +124,13 @@ function orderedUserMemories(memories: MemoryEntry[]): MemoryEntry[] {
 
 function longTermPolicy(memories: MemoryEntry[]): MemoryPolicy {
   const ordered = orderedUserMemories(memories);
-  const languages = new Set(
-    ordered.map((entry) => matchingLanguage(entry.content)).filter(Boolean),
-  );
+  const latestLanguage = [...ordered]
+    .reverse()
+    .map((entry) => matchingLanguage(entry.content))
+    .find((language) => language !== undefined);
+
   const policy: MemoryPolicy = {
-    language:
-      languages.size === 1
-        ? (languages.values().next().value as ResponseLanguage)
-        : undefined,
+    language: latestLanguage,
   };
   for (const entry of ordered) {
     policy.responseDetail = memoryDetail(entry.content) ?? policy.responseDetail;

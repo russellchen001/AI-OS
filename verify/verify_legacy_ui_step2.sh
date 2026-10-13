@@ -32,9 +32,6 @@ for page in Chat "My AI" Models MCP Artifacts "AI Council" "AI Arena" Agents Set
 done
 echo "✅ 新 UI PageName 全部保留"
 
-grep -Fq '["Local models", "Ollama models on this Mac", "Models"]' \
-  src/pages/SettingsPage.tsx || fail "Local models 被提前删除"
-
 echo "✅ Models 暂时保留供 My AI 管理本地模型"
 
 npm run build

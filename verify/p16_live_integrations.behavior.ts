@@ -40,8 +40,8 @@ async function verifyDynamicAssembly(): Promise<void> {
     agencyAgents,
     listModels: () => [
       {
-        providerId: "ollama",
-        providerInstanceId: "ollama-local",
+        providerId: "omlx",
+        providerInstanceId: "omlx-local",
         modelId: "live-local-model",
         label: "Live validation model slot",
       },

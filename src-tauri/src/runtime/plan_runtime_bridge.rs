@@ -967,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn local_model_skill_no_longer_dispatches_directly_to_ollama() {
+    fn local_model_skill_dispatches_through_the_agent_transport() {
         let agent = Arc::new(RecordingAgent::compatible("openclaw"));
         let executor = RuntimeBackedPlanExecutor::with_agent_adapter(agent.clone());
 

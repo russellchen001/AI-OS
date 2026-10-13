@@ -2128,7 +2128,6 @@ a {
 .provider-mark-anthropic { background: #a44f35; }
 .provider-mark-google { background: #356eaa; }
 .provider-mark-grok { background: #111; }
-.provider-mark-ollama { background: #4f5652; }
 .provider-mark-omlx { background: #176b52; }
 
 .local-provider-card + .local-provider-card {
@@ -4318,24 +4317,58 @@ select:focus-visible {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.conversation-history-heading button {
+.conversation-history-new-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: #737c77;
-  font-size: 15px;
+  gap: 5px;
+  min-width: 88px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d6ded9;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #285c49;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
   line-height: 1;
+  text-transform: none;
+  white-space: nowrap;
   cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, color 140ms ease;
 }
-.conversation-history-heading button:hover {
-  background: #eef2f0;
-  color: #202523;
+.conversation-history-new-button:hover {
+  border-color: #b9cdc4;
+  background: #f3f8f5;
+  color: #174f3d;
+}
+.conversation-history-new-button:focus-visible {
+  outline: none;
+  border-color: #176b52;
+  box-shadow: 0 0 0 3px rgba(23, 107, 82, 0.18);
+}
+.conversation-history-new-icon {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
+}
+@media (max-width: 840px) {
+  .conversation-history-heading {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  .conversation-history-heading > span,
+  .conversation-history-new-label {
+    display: none;
+  }
+  .conversation-history-new-button {
+    min-width: 36px;
+    width: 36px;
+    min-height: 36px;
+    padding: 0;
+  }
 }
 .conversation-history-list {
   display: flex;
@@ -6032,6 +6065,69 @@ select:focus-visible {
   max-width: 100%;
 }
 
+/* Beta.3 chat readability and action layout */
+.chat-message-user {
+  background: #eaf3ef;
+  border-color: #d6e5de;
+}
+
+.chat-message-assistant {
+  padding: 18px 20px;
+  border: 1px solid #e7ebe8;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.chat-message-assistant .markdown-renderer {
+  line-height: 1.72;
+}
+
+.message-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #89928d;
+  font-size: 10px;
+}
+
+.message-heading .message-author {
+  display: inline;
+  margin: 0;
+}
+
+.message-invocation,
+.message-actions {
+  position: static;
+  clear: both;
+}
+
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.message-actions button {
+  padding: 4px 10px;
+  border: 1px solid #dde2df;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #4a534d;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.message-actions button:hover:not(:disabled) { background: #f3f7f5; }
+.message-actions button:disabled { cursor: default; opacity: .45; }
+
+@media (max-width: 760px) {
+  .chat-thread { width: calc(100% - 32px); }
+  .chat-message-user { max-width: 88%; }
+  .chat-message-assistant { padding: 16px; }
+}
+
 /* Person profiles — review surface for distilled person profiles.
    Reuses the tokens the agents/arena pages already establish. */
 .person-profiles-page {
@@ -6539,4 +6635,308 @@ select:focus-visible {
 @media (max-width: 760px) {
   .arena-outcome-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .arena-runtime-panel > header { align-items: flex-start; flex-direction: column; }
+}
+
+.conversation-history-search {
+  width: calc(100% - 24px);
+  margin: 0 12px 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border, #dde3df);
+  border-radius: 9px;
+  background: var(--surface, #fff);
+  color: var(--text-primary, #17201b);
+}
+
+.chat-topbar-actions,
+.knowledge-panel-heading,
+.knowledge-panel-heading > div,
+.knowledge-panel li,
+.knowledge-panel li > span {
+  display: flex;
+  align-items: center;
+}
+
+.chat-topbar-actions,
+.knowledge-panel-heading > div { gap: 8px; }
+
+.knowledge-project-select,
+.knowledge-button,
+.knowledge-panel button {
+  min-height: 34px;
+  border: 1px solid var(--border, #dce3df);
+  border-radius: 9px;
+  background: var(--surface, #fff);
+  color: inherit;
+}
+
+.knowledge-project-select { max-width: 190px; padding: 0 30px 0 10px; }
+.knowledge-button,
+.knowledge-panel button { padding: 0 11px; cursor: pointer; }
+
+.knowledge-panel {
+  margin: 0 20px 12px;
+  padding: 14px;
+  border: 1px solid var(--border, #dce3df);
+  border-radius: 14px;
+  background: var(--surface, #fff);
+  box-shadow: 0 10px 30px rgba(20, 34, 26, .08);
+}
+
+.knowledge-panel-heading { justify-content: space-between; gap: 16px; }
+.knowledge-panel-heading > div:first-child { align-items: flex-start; flex-direction: column; gap: 2px; }
+.knowledge-panel-heading span,
+.knowledge-panel small { color: var(--text-secondary, #66736c); font-size: 12px; }
+.knowledge-panel ul { margin: 12px 0 0; padding: 0; list-style: none; }
+.knowledge-panel li { justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--border, #e7ebe8); }
+.knowledge-panel li > span { min-width: 0; align-items: flex-start; flex-direction: column; }
+.knowledge-panel small { max-width: min(58vw, 720px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knowledge-panel > p { margin: 10px 0 0; color: var(--text-secondary, #66736c); font-size: 13px; }
+
+@media (max-width: 760px) {
+  .knowledge-project-select { max-width: 120px; }
+  .knowledge-panel-heading { align-items: flex-start; flex-direction: column; }
+  .knowledge-panel { margin-inline: 10px; }
+}
+
+
+/* Beta.4.1 — Project knowledge right-side drawer */
+
+.knowledge-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.knowledge-drawer {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 100%);
+  height: 100%;
+  background: var(--surface, #fff);
+  color: var(--text-primary, #17201b);
+  border-left: 1px solid var(--border, #dce3df);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.12);
+}
+
+.knowledge-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 22px 18px;
+  border-bottom: 1px solid var(--border, #dce3df);
+}
+
+.knowledge-drawer-header h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+}
+
+.knowledge-drawer-header p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary, #66736c);
+}
+
+.knowledge-drawer-close {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font-size: 26px;
+  cursor: pointer;
+}
+
+.knowledge-drawer-close:hover {
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.knowledge-drawer-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 22px;
+}
+
+.knowledge-drawer-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.knowledge-drawer-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border, #dce3df);
+}
+
+.knowledge-drawer-source {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.knowledge-drawer-source strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-drawer-source small {
+  font-size: 11px;
+  color: var(--text-secondary, #66736c);
+  overflow-wrap: anywhere;
+}
+
+.knowledge-drawer-list li > button {
+  flex-shrink: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border, #dce3df);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.knowledge-drawer-empty {
+  padding: 36px 12px;
+  text-align: center;
+}
+
+.knowledge-drawer-empty strong {
+  font-size: 14px;
+}
+
+.knowledge-drawer-empty p,
+.knowledge-drawer-status {
+  color: var(--text-secondary, #66736c);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.knowledge-drawer-status {
+  overflow-wrap: anywhere;
+}
+
+.knowledge-drawer-footer {
+  padding: 16px 22px;
+  border-top: 1px solid var(--border, #dce3df);
+}
+
+.knowledge-drawer-add {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--border, #dce3df);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.knowledge-drawer-add:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 760px) {
+  .knowledge-drawer {
+    width: min(380px, 100%);
+  }
+}
+
+
+/* Beta.4.1 — Custom project dropdown */
+
+.knowledge-project-menu {
+  position: relative;
+  z-index: 100;
+}
+
+.knowledge-project-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 150px;
+  max-width: 240px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border, #dce3df);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.knowledge-project-trigger span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-project-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 230px;
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface, #fff);
+  color: var(--text-primary, #17201b);
+  border: 1px solid var(--border, #dce3df);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.14);
+}
+
+.knowledge-project-dropdown-label {
+  padding: 9px 10px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary, #66736c);
+}
+
+.knowledge-project-option {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.knowledge-project-option:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.knowledge-project-divider {
+  height: 1px;
+  margin: 6px 3px;
+  background: var(--border, #dce3df);
+}
+
+.knowledge-project-action {
+  font-weight: 600;
 }

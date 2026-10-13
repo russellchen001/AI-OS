@@ -63,12 +63,6 @@ fn source_file_name(source: &str) -> Option<&'static str> {
 
         "OpenClaw" => Some("openclaw.log"),
 
-        "Ollama" => Some("ollama.log"),
-
-        "Docker" => Some("docker.log"),
-
-        "Open WebUI" => Some("open-webui.log"),
-
         "Cherry Studio" => Some("cherry-studio.log"),
 
         _ => None,
@@ -78,12 +72,6 @@ fn source_file_name(source: &str) -> Option<&'static str> {
 fn file_source_name(file_name: &str) -> &'static str {
     match file_name {
         "openclaw.log" => "OpenClaw",
-
-        "ollama.log" => "Ollama",
-
-        "docker.log" => "Docker",
-
-        "open-webui.log" => "Open WebUI",
 
         "cherry-studio.log" => "Cherry Studio",
 
@@ -170,9 +158,6 @@ fn read_known_files(selected_source: Option<&str>) -> Result<Vec<LogEntry>, Stri
     let files = [
         "ai-os.log",
         "openclaw.log",
-        "ollama.log",
-        "docker.log",
-        "open-webui.log",
         "cherry-studio.log",
     ];
 
@@ -237,22 +222,6 @@ fn live_service_logs(selected_source: Option<&str>) -> Vec<LogEntry> {
             .unwrap_or(true)
     };
 
-    if include("Ollama") {
-        result.extend(command_output(
-            "/bin/launchctl",
-            &["print", "gui/501/com.ollama.ollama"],
-            "Ollama",
-        ));
-    }
-
-    if include("Docker") {
-        result.extend(command_output(
-            "/usr/local/bin/docker",
-            &["ps", "--format", "{{.Names}}\t{{.Status}}\t{{.Image}}"],
-            "Docker",
-        ));
-    }
-
     if include("OpenClaw") {
         result.extend(
             command_output("/bin/launchctl", &["list"], "OpenClaw")
@@ -300,10 +269,7 @@ pub fn clear_logs(source: String) -> Result<String, String> {
         let files = [
             "ai-os.log",
             "openclaw.log",
-            "ollama.log",
-            "docker.log",
-            "open-webui.log",
-            "cherry-studio.log",
+                        "cherry-studio.log",
         ];
 
         for file_name in files {

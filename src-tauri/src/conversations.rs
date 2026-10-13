@@ -1,6 +1,9 @@
 use rusqlite::{params, Connection};
 use serde_json::Value;
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::Mutex};
+
+pub(crate) static PROJECT_CONVERSATION_GATE: Mutex<()> = Mutex::new(());
+
 
 const DATABASE_DIRECTORY: &str = "AI-OS";
 const DATABASE_FILE: &str = "conversations.sqlite3";
@@ -69,8 +72,26 @@ fn validate_conversation(conversation: &Value) -> Result<(), String> {
 }
 
 fn save_conversation(connection: &Connection, conversation: &Value) -> Result<(), String> {
-    validate_conversation(conversation)?;
-    let payload = serde_json::to_string(conversation)
+    let _guard = PROJECT_CONVERSATION_GATE
+        .lock()
+        .map_err(|_| "Conversation synchronization is unavailable".to_owned())?;
+
+    let mut conversation = conversation.clone();
+    validate_conversation(&conversation)?;
+
+    if let Some(project_id) = conversation
+        .get("projectId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    {
+        if !crate::knowledge::knowledge_project_exists(&project_id)? {
+            if let Some(object) = conversation.as_object_mut() {
+                object.remove("projectId");
+            }
+        }
+    }
+
+    let payload = serde_json::to_string(&conversation)
         .map_err(|_| "Conversation could not be serialized".to_owned())?;
     if payload.len() > 16 * 1024 * 1024 {
         return Err("Conversation is too large to save".to_owned());
@@ -86,14 +107,82 @@ fn save_conversation(connection: &Connection, conversation: &Value) -> Result<()
                 updated_at = excluded.updated_at
             ",
             params![
-                conversation_field(conversation, "id")?,
-                conversation_field(conversation, "title")?,
+                conversation_field(&conversation, "id")?,
+                conversation_field(&conversation, "title")?,
                 payload,
-                conversation_field(conversation, "createdAt")?,
-                conversation_field(conversation, "updatedAt")?,
+                conversation_field(&conversation, "createdAt")?,
+                conversation_field(&conversation, "updatedAt")?,
             ],
         )
         .map_err(|_| "AI-OS could not save the conversation".to_owned())?;
+    Ok(())
+}
+
+
+pub(crate) fn detach_project_conversations(
+    project_id: &str,
+) -> Result<(), String> {
+    let mut connection = open_database()?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| "Could not start conversation update".to_owned())?;
+
+    let affected: Vec<(String, String)> = {
+        let mut statement = transaction
+            .prepare("SELECT id, payload FROM conversations")
+            .map_err(|_| "Could not read project conversations".to_owned())?;
+
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            })
+            .map_err(|_| "Could not read project conversations".to_owned())?;
+
+        let mut affected = Vec::new();
+
+        for row in rows {
+            let (id, payload) = row
+                .map_err(|_| "Could not read a conversation".to_owned())?;
+
+            let mut value: Value = serde_json::from_str(&payload)
+                .map_err(|_| "A conversation is unreadable".to_owned())?;
+
+            if value.get("projectId").and_then(Value::as_str)
+                != Some(project_id)
+            {
+                continue;
+            }
+
+            let object = value.as_object_mut()
+                .ok_or_else(|| "A conversation is invalid".to_owned())?;
+
+            object.remove("projectId");
+
+            let updated = serde_json::to_string(&value)
+                .map_err(|_| "Could not serialize conversation".to_owned())?;
+
+            affected.push((id, updated));
+        }
+
+        affected
+    };
+
+    for (id, payload) in affected {
+        transaction
+            .execute(
+                "UPDATE conversations SET payload = ?1 WHERE id = ?2",
+                params![payload, id],
+            )
+            .map_err(|_| "Could not update project conversations".to_owned())?;
+    }
+
+    transaction
+        .commit()
+        .map_err(|_| "Could not save conversation changes".to_owned())?;
+
     Ok(())
 }
 

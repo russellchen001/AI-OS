@@ -1,10 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type {
-  OllamaModel,
-  OllamaPullProgress,
-} from "../types/index";
-
 export type OmlxAdminModel = {
   name: string;
   displayName: string;
@@ -15,7 +10,7 @@ export type OmlxAdminModel = {
 export type ModelFitLevel = "fit" | "marginal" | "not-fit" | "unknown";
 
 export type LocalModelReference = {
-  providerId: "ollama" | "omlx";
+  providerId: "omlx";
   modelId: string;
   parameterSize?: string;
   quantization?: string;
@@ -107,60 +102,46 @@ export async function pullOmlxModel(repoId: string): Promise<string> {
   return invoke<string>("pull_omlx_model", { repoId });
 }
 
-export async function listOllamaModels(): Promise<
-  OllamaModel[]
-> {
-  return invoke<OllamaModel[]>(
-    "list_ollama_models",
-  );
+export type LocalModel = {
+  name: string;
+  model: string;
+  size: number;
+  digest: string;
+  modifiedAt: string;
+  details?: {
+    family?: string;
+    parameterSize?: string;
+    quantizationLevel?: string;
+  };
+};
+
+export type LocalDownloadStatus = { status: string; total?: number; completed?: number };
+
+export async function listLocalModels(): Promise<LocalModel[]> {
+  const models = await listOmlxAdminModels();
+  return models.map((model) => ({
+    name: model.name,
+    model: model.name,
+    size: model.size,
+    digest: "",
+    modifiedAt: "",
+    details: { family: "oMLX" },
+  }));
 }
 
-export async function pullOllamaModel(
-  model: string,
-): Promise<OllamaPullProgress> {
-  return invoke<OllamaPullProgress>(
-    "pull_ollama_model",
-    {
-      model,
-    },
-  );
+export async function pullLocalModel(repoId: string): Promise<LocalDownloadStatus> {
+  const message = await pullOmlxModel(repoId);
+  return { status: message };
 }
 
-export async function deleteOllamaModel(
-  model: string,
-): Promise<string> {
-  return invoke<string>(
-    "delete_ollama_model",
-    {
-      model,
-    },
-  );
+export async function deleteLocalModel(model: string): Promise<string> {
+  return deleteOmlxModel(model);
 }
 
-export async function runOllamaModel(
-  model: string,
-  prompt: string,
-): Promise<string> {
-  return invoke<string>(
-    "run_ollama_model",
-    {
-      model,
-      prompt,
-    },
-  );
+export async function showLocalModel(model: string): Promise<string> {
+  return JSON.stringify(await showOmlxModel(model), null, 2);
 }
 
-export async function showOllamaModel(
-  model: string,
-): Promise<string> {
-  return invoke<string>(
-    "show_ollama_model",
-    {
-      model,
-    },
-  );
-}
-
-export async function showOllamaModelInFinder(model: string): Promise<void> {
-  return invoke<void>("show_ollama_model_in_finder", { model });
+export async function runLocalModel(model: string, prompt: string): Promise<string> {
+  return invoke<string>("test_omlx_model", { model, prompt });
 }

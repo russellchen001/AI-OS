@@ -1,5 +1,6 @@
 import {
   isValidElement,
+  memo,
   useState,
   type HTMLAttributes,
   type ReactNode,
@@ -303,7 +304,7 @@ function CodeBlock({
   );
 }
 
-export default function MarkdownRenderer({
+function MarkdownRenderer({
   content,
   fallback = "",
   artifactSource = "AI Center",
@@ -358,3 +359,5 @@ export default function MarkdownRenderer({
     </div>
   );
 }
+
+export default memo(MarkdownRenderer);

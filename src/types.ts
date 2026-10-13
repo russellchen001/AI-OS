@@ -35,9 +35,6 @@ export type Settings = {
   refreshInterval: number;
   theme: ThemeMode;
   openClawUrl: string;
-  openWebUiUrl: string;
-  ollamaUrl: string;
-  autoOpenWebUi: boolean;
 };
 
 export type SystemMetrics = {

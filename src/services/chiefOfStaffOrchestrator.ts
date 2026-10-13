@@ -73,7 +73,7 @@ export type ChiefOfStaffOrchestratorDependencies = {
 };
 
 function isLocalModel(model: AiCenterModelChoice): boolean {
-  return model.providerId === "ollama" || model.providerId === "omlx";
+  return model.providerId === "omlx";
 }
 
 function modelKey(model: AiCenterModelChoice): string {

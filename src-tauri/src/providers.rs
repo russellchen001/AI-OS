@@ -28,6 +28,7 @@ const PROVIDER_INSTANCES_FILE: &str = "provider-instances.json";
 #[derive(Default)]
 struct ProviderCredentialCache {
     secrets: Mutex<HashMap<String, Vec<u8>>>,
+    failures: Mutex<HashMap<String, String>>,
 }
 
 impl ProviderCredentialCache {
@@ -37,20 +38,67 @@ impl ProviderCredentialCache {
         caller: &str,
         load_from_keychain: impl FnOnce() -> Result<Option<Vec<u8>>, String>,
     ) -> Result<Option<Vec<u8>>, String> {
-        let mut secrets = self
+        if let Some(secret) = self
             .secrets
             .lock()
-            .map_err(|_| "Provider credential cache is unavailable".to_owned())?;
-        if let Some(secret) = secrets.get(account) {
+            .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+            .get(account)
+            .cloned()
+        {
             crate::keychain_trace::record("READ", caller, KEYCHAIN_SERVICE, account, "HIT");
-            return Ok(Some(secret.clone()));
+            return Ok(Some(secret));
         }
+
+        /*
+         * A denied / failed Keychain authorization must not reopen the
+         * password dialog for every model request in the same AI-OS process.
+         * A successful reconnect/store clears this failure.
+         */
+        if let Some(error) = self
+            .failures
+            .lock()
+            .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+            .get(account)
+            .cloned()
+        {
+            crate::keychain_trace::record(
+                "READ",
+                caller,
+                KEYCHAIN_SERVICE,
+                account,
+                "BLOCKED_REPEAT",
+            );
+            return Err(error);
+        }
+
         crate::keychain_trace::record("READ", caller, KEYCHAIN_SERVICE, account, "MISS");
-        let secret = load_from_keychain()?;
-        if let Some(secret) = secret.as_ref() {
-            secrets.insert(account.to_owned(), secret.clone());
+
+        match load_from_keychain() {
+            Ok(secret) => {
+                if let Some(secret_bytes) = secret.as_ref() {
+                    self.secrets
+                        .lock()
+                        .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+                        .insert(account.to_owned(), secret_bytes.clone());
+                }
+
+                self.failures
+                    .lock()
+                    .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+                    .remove(account);
+
+                Ok(secret)
+            }
+
+            Err(error) => {
+                self.failures
+                    .lock()
+                    .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+                    .insert(account.to_owned(), error.clone());
+
+                Err(error)
+            }
         }
-        Ok(secret)
     }
 
     fn store(&self, account: &str, secret: &[u8]) -> Result<(), String> {
@@ -58,6 +106,12 @@ impl ProviderCredentialCache {
             .lock()
             .map_err(|_| "Provider credential cache is unavailable".to_owned())?
             .insert(account.to_owned(), secret.to_vec());
+
+        self.failures
+            .lock()
+            .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+            .remove(account);
+
         Ok(())
     }
 
@@ -66,6 +120,12 @@ impl ProviderCredentialCache {
             .lock()
             .map_err(|_| "Provider credential cache is unavailable".to_owned())?
             .remove(account);
+
+        self.failures
+            .lock()
+            .map_err(|_| "Provider credential cache is unavailable".to_owned())?
+            .remove(account);
+
         Ok(())
     }
 }
@@ -162,6 +222,18 @@ fn omlx_download_result(tasks: &Value, task_id: &str) -> Option<Result<(), Strin
             .to_owned())),
         _ => None,
     }
+}
+
+#[tauri::command]
+pub(crate) async fn test_omlx_model(model: String, prompt: String) -> Result<String, String> {
+    let result = generate_provider_response(GenerateProviderResponseInput {
+        provider_id: "omlx".to_owned(),
+        provider_instance_id: "omlx-local".to_owned(),
+        model_id: model,
+        prompt,
+    })
+    .await?;
+    Ok(result.text)
 }
 
 #[tauri::command]
@@ -374,11 +446,8 @@ fn apply_omlx_openclaw_config(
             }]
         }),
     );
-    let allowed_models = object_path_mut(config, &["agents", "defaults", "models"])?;
-    allowed_models.retain(|provider_model, _| {
-        !provider_model.starts_with("ollama/") && !provider_model.starts_with("ollama-ai-os/")
-    });
-    allowed_models.insert(format!("omlx/{model_id}"), serde_json::json!({}));
+    object_path_mut(config, &["agents", "defaults", "models"])?
+        .insert(format!("omlx/{model_id}"), serde_json::json!({}));
     let agents = config
         .pointer_mut("/agents/list")
         .and_then(Value::as_array_mut)
@@ -908,8 +977,32 @@ impl std::fmt::Debug for OAuthSession {
     }
 }
 
+fn oauth_client_secret_cache() -> &'static Mutex<HashMap<String, Result<Option<String>, String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Result<Option<String>, String>>>> =
+        OnceLock::new();
+
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[cfg(target_os = "macos")]
 fn read_oauth_client_secret(provider_id: &str) -> Result<Option<String>, String> {
+    if let Some(cached) = oauth_client_secret_cache()
+        .lock()
+        .map_err(|_| "OAuth client credential cache is unavailable".to_owned())?
+        .get(provider_id)
+        .cloned()
+    {
+        crate::keychain_trace::record(
+            "READ",
+            "oauth_client_secret",
+            OAUTH_CLIENT_KEYCHAIN_SERVICE,
+            provider_id,
+            "HIT",
+        );
+
+        return cached;
+    }
+
     crate::keychain_trace::record(
         "READ",
         "oauth_client_secret",
@@ -917,16 +1010,26 @@ fn read_oauth_client_secret(provider_id: &str) -> Result<Option<String>, String>
         provider_id,
         "MISS",
     );
-    match security_framework::passwords::get_generic_password(
+
+    let result = match security_framework::passwords::get_generic_password(
         OAUTH_CLIENT_KEYCHAIN_SERVICE,
         provider_id,
     ) {
         Ok(secret) => String::from_utf8(secret)
             .map(Some)
             .map_err(|_| "OAuth client credential in Keychain is invalid".to_owned()),
+
         Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
+
         Err(_) => Err("AI-OS could not read the OAuth client credential".to_owned()),
-    }
+    };
+
+    oauth_client_secret_cache()
+        .lock()
+        .map_err(|_| "OAuth client credential cache is unavailable".to_owned())?
+        .insert(provider_id.to_owned(), result.clone());
+
+    result
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1158,6 +1261,12 @@ pub(crate) struct ExecuteAiCenterInput {
     route_mode: AiCenterRouteMode,
     manual_candidate: Option<AiCenterRouteCandidate>,
     prompt: String,
+    /// The user's own words when `prompt` is an AI-OS-built instruction
+    /// (search grounding, product answers). Auto complexity ranking uses it,
+    /// exactly as streaming chat ranks by the latest user message, so internal
+    /// scaffolding cannot push a Local-First turn to the cloud.
+    #[serde(default)]
+    routing_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1212,15 +1321,7 @@ pub(crate) fn execution_capability_requirement(
 }
 
 fn normalized_execution_model(model: &str) -> Option<(&str, &str)> {
-    let (provider_id, model_id) = model.trim().split_once('/')?;
-
-    let provider_id = if provider_id == "ollama" || provider_id == "ollama-ai-os" {
-        "ollama"
-    } else {
-        provider_id
-    };
-
-    Some((provider_id, model_id))
+    model.trim().split_once('/')
 }
 
 fn execution_agent_candidates_from_config(
@@ -1254,15 +1355,7 @@ fn execution_agent_candidates_from_config(
             let (provider_id, model_id) = normalized_execution_model(primary_model)?;
 
             let route_index = route_candidates.iter().position(|candidate| {
-                let candidate_provider = if candidate.provider_id == "ollama"
-                    || candidate.provider_instance_id == "ollama-local"
-                {
-                    "ollama"
-                } else {
-                    candidate.provider_id.as_str()
-                };
-
-                candidate_provider == provider_id && candidate.model_id == model_id
+                candidate.provider_id == provider_id && candidate.model_id == model_id
             })?;
 
             let route_candidate = &route_candidates[route_index];
@@ -1309,7 +1402,7 @@ pub(crate) fn execution_agent_candidates(capability: &str) -> Result<Vec<String>
     let config: serde_json::Value = serde_json::from_str(&contents)
         .map_err(|_| "OpenClaw execution-agent configuration is malformed".to_owned())?;
 
-    let (_, route_candidates) = route_candidates()?;
+    let (_, route_candidates) = route_candidates(false)?;
 
     let fit_evidence = crate::local_model_advisor::cached_route_evidence();
     execution_agent_candidates_from_config(capability, &config, &route_candidates, &fit_evidence)
@@ -1331,10 +1424,59 @@ fn connected_provider_model_ids(instances: &[ProviderInstance], provider_id: &st
         .collect()
 }
 
+fn auto_model_is_chat_candidate(model: &ProviderModelEntry) -> bool {
+    if !model.enabled {
+        return false;
+    }
+
+    let id = model.remote_model_id.to_ascii_lowercase();
+    let name = model.display_name.to_ascii_lowercase();
+
+    /*
+     * Auto Chat must not route into media-generation / embedding models.
+     * Provider catalogs are not always consistent about capabilities, so
+     * combine capability metadata with conservative model-name exclusions.
+     */
+    let excluded_markers = [
+        "embedding",
+        "embed-",
+        "text-embedding",
+        "imagen",
+        "image-generation",
+        "image-gen",
+        "nano-banana",
+        "veo-",
+        "video",
+        "tts",
+        "text-to-speech",
+        "speech",
+        "whisper",
+        "transcribe",
+        "audio-generation",
+    ];
+
+    if excluded_markers
+        .iter()
+        .any(|marker| id.contains(marker) || name.contains(marker))
+    {
+        return false;
+    }
+
+    if !model.capabilities.is_empty()
+        && !model
+            .capabilities
+            .iter()
+            .any(|capability| matches!(capability.as_str(), "chat" | "text" | "tool-use"))
+    {
+        return false;
+    }
+
+    true
+}
+
 fn auto_route_candidates(
     instances: &[ProviderInstance],
     omlx_model_ids: &[String],
-    ollama_model_ids: &[String],
 ) -> Vec<AiCenterRouteCandidate> {
     let mut candidates = omlx_model_ids
         .iter()
@@ -1345,44 +1487,315 @@ fn auto_route_candidates(
         })
         .collect::<Vec<_>>();
 
-    candidates.extend(
-        ollama_model_ids
-            .iter()
-            .map(|model_id| AiCenterRouteCandidate {
-                provider_id: "ollama".to_owned(),
-                provider_instance_id: "ollama-local".to_owned(),
-                model_id: model_id.clone(),
-            }),
-    );
+    /*
+     * Auto may use at most ONE cloud Provider per request.
+     *
+     * This prevents:
+     * - repeated Keychain prompts
+     * - provider roulette
+     * - long fallback chains
+     *
+     * Priority is deterministic.
+     */
+    let cloud_priority = [
+        "openai",
+        "anthropic",
+        "google",
+        "grok",
+        "deepseek",
+        "openrouter",
+        "kimi",
+        "meta",
+    ];
 
-    for instance in instances.iter().filter(|instance| {
-        instance.provider_id != "omlx"
-            && instance.connection_state == ProviderConnectionState::Connected
-    }) {
-        let mut enabled = instance
-            .models
+    let selected_cloud = cloud_priority.iter().find_map(|wanted_provider| {
+        instances
             .iter()
-            .filter(|model| model.enabled)
-            .collect::<Vec<_>>();
-        enabled.sort_by_key(|model| !model.is_default);
+            .filter(|instance| {
+                instance.provider_id == *wanted_provider
+                    && instance.connection_state == ProviderConnectionState::Connected
+            })
+            .find_map(|instance| {
+                let eligible = instance
+                    .models
+                    .iter()
+                    .filter(|model| auto_model_is_chat_candidate(model))
+                    .collect::<Vec<_>>();
 
-        candidates.extend(enabled.into_iter().map(|model| AiCenterRouteCandidate {
-            provider_id: instance.provider_id.clone(),
-            provider_instance_id: instance.id.clone(),
-            model_id: model.remote_model_id.clone(),
-        }));
+                let model = eligible
+                    .iter()
+                    .copied()
+                    .find(|model| model.is_default)
+                    .or_else(|| eligible.first().copied())?;
+
+                Some(AiCenterRouteCandidate {
+                    provider_id: instance.provider_id.clone(),
+                    provider_instance_id: instance.id.clone(),
+                    model_id: model.remote_model_id.clone(),
+                })
+            })
+    });
+
+    if let Some(candidate) = selected_cloud {
+        candidates.push(candidate);
     }
 
     candidates
 }
 
+fn rank_auto_route_candidates(
+    candidates: Vec<AiCenterRouteCandidate>,
+    fit_evidence: &HashMap<(String, String), crate::local_model_advisor::LocalModelRouteEvidence>,
+) -> Vec<AiCenterRouteCandidate> {
+    let mut ranked = candidates
+        .into_iter()
+        .enumerate()
+        .filter_map(|(original_index, candidate)| {
+            let is_local =
+                candidate.provider_id == "omlx" || candidate.provider_instance_id == "omlx-local";
+
+            if !is_local {
+                // Cloud remains fallback after eligible local candidates.
+                return Some((3_u8, 0.0_f64, original_index, candidate));
+            }
+
+            let evidence =
+                fit_evidence.get(&(candidate.provider_id.clone(), candidate.model_id.clone()));
+
+            match evidence.map(|value| value.fit) {
+                Some(crate::local_model_advisor::ModelFitLevel::NotFit) => None,
+
+                Some(crate::local_model_advisor::ModelFitLevel::Fit) => Some((
+                    0,
+                    evidence.and_then(|value| value.score).unwrap_or(0.0),
+                    original_index,
+                    candidate,
+                )),
+
+                Some(crate::local_model_advisor::ModelFitLevel::Marginal) => Some((
+                    1,
+                    evidence.and_then(|value| value.score).unwrap_or(0.0),
+                    original_index,
+                    candidate,
+                )),
+
+                Some(crate::local_model_advisor::ModelFitLevel::Unknown) | None => {
+                    Some((2, 0.0, original_index, candidate))
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.1.total_cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+
+    ranked
+        .into_iter()
+        .map(|(_, _, _, candidate)| candidate)
+        .collect()
+}
+
+fn auto_latest_user_is_standalone_greeting(prompt: &str) -> bool {
+    let normalized = prompt
+        .trim()
+        .trim_matches(|character: char| {
+            character.is_ascii_punctuation() || character.is_whitespace()
+        })
+        .to_ascii_lowercase();
+
+    matches!(
+        normalized.as_str(),
+        "hello"
+            | "hello again"
+            | "hi"
+            | "hi again"
+            | "hey"
+            | "hey again"
+            | "你好"
+            | "你好啊"
+            | "你好呀"
+            | "嗨"
+            | "在吗"
+    )
+}
+
+// A short conversational statement or recall question is not a
+// complex research task merely because it contains "研究".
+fn auto_prompt_is_simple_context(prompt: &str) -> bool {
+    let text = prompt
+        .trim()
+        .trim_end_matches(|c: char| matches!(c, '。' | '？' | '?' | '！' | '!' | '.'))
+        .trim();
+
+    if text.chars().count() > 80 {
+        return false;
+    }
+
+    // Explicit complexity requirements still take priority.
+    let complex_markers = [
+        "深入",
+        "详细",
+        "全面",
+        "系统性",
+        "专业分析",
+        "对比",
+        "比较",
+        "架构",
+        "性能",
+        "技术限制",
+        "调试",
+        "诊断",
+        "设计",
+        "实现",
+        "重构",
+        "代码",
+        "逐步",
+    ];
+
+    if complex_markers.iter().any(|marker| text.contains(marker)) {
+        return false;
+    }
+
+    let statements = ["我正在研究", "我在研究", "我们正在研究", "我们在研究"];
+
+    if statements.iter().any(|prefix| text.starts_with(prefix)) {
+        return true;
+    }
+
+    let recall_prefixes = [
+        "我刚才在研究",
+        "我之前在研究",
+        "我刚才研究",
+        "我之前研究",
+        "我们刚才在研究",
+        "我们之前在研究",
+    ];
+
+    recall_prefixes
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+        && text.ends_with("什么")
+}
+
+fn auto_prompt_needs_stronger_model(prompt: &str) -> bool {
+    if auto_prompt_is_simple_context(prompt) {
+        return false;
+    }
+
+    let normalized = prompt.to_ascii_lowercase();
+    let char_count = prompt.chars().count();
+
+    if char_count >= 500 {
+        return true;
+    }
+
+    let strong_markers = [
+        "compare ",
+        "tradeoff",
+        "trade-off",
+        "in detail",
+        "detailed",
+        "analyze",
+        "analysis",
+        "architecture",
+        "research",
+        "debug",
+        "diagnose",
+        "design ",
+        "implement",
+        "refactor",
+        "code ",
+        "step by step",
+        "why ",
+        "explain how",
+        "对比",
+        "比较",
+        "详细",
+        "分析",
+        "架构",
+        "研究",
+        "调试",
+        "诊断",
+        "设计",
+        "实现",
+        "重构",
+        "代码",
+        "逐步",
+        "为什么",
+    ];
+
+    strong_markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+fn auto_local_model_is_small(model_id: &str) -> bool {
+    let normalized = model_id.to_ascii_lowercase();
+
+    ["1b", "1.5b", "2b", "3b", "4b", "6b", "7b", "8b", "9b"]
+        .iter()
+        .any(|size| normalized.contains(size))
+}
+
+/// The text Auto judges complexity by: the user's own words when the caller
+/// supplied them, otherwise the prompt itself.
+fn auto_routing_text<'a>(routing_prompt: Option<&'a str>, prompt: &'a str) -> &'a str {
+    routing_prompt
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or(prompt)
+}
+
+fn rank_auto_route_candidates_for_prompt(
+    candidates: Vec<AiCenterRouteCandidate>,
+    prompt: &str,
+) -> Vec<AiCenterRouteCandidate> {
+    if !auto_prompt_needs_stronger_model(prompt) {
+        return candidates;
+    }
+
+    let mut ranked = candidates
+        .into_iter()
+        .enumerate()
+        .map(|(original_index, candidate)| {
+            let is_local =
+                candidate.provider_id == "omlx" || candidate.provider_instance_id == "omlx-local";
+
+            /*
+             * Complex request:
+             *
+             * 0 = capable/larger local model
+             * 1 = cloud Provider default chat model
+             * 2 = small local model as last fallback
+             */
+            let rank = if is_local {
+                if auto_local_model_is_small(&candidate.model_id) {
+                    2_u8
+                } else {
+                    0_u8
+                }
+            } else {
+                1_u8
+            };
+
+            (rank, original_index, candidate)
+        })
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    ranked
+        .into_iter()
+        .map(|(_, _, candidate)| candidate)
+        .collect()
+}
+
 fn execution_source(candidate: &AiCenterRouteCandidate) -> AiCenterExecutionSource {
-    if matches!(candidate.provider_id.as_str(), "omlx" | "ollama")
-        || matches!(
-            candidate.provider_instance_id.as_str(),
-            "omlx-local" | "ollama-local"
-        )
-    {
+    if candidate.provider_id == "omlx" || candidate.provider_instance_id == "omlx-local" {
         AiCenterExecutionSource::Local
     } else {
         AiCenterExecutionSource::Cloud
@@ -1470,15 +1883,147 @@ fn canonical_metadata(
     }
 }
 
-fn route_candidates() -> Result<(Vec<ProviderInstance>, Vec<AiCenterRouteCandidate>), String> {
-    let instances = read_provider_instances()?;
-    let omlx_model_ids = connected_provider_model_ids(&instances, "omlx");
-    let local_model_ids = crate::models::list_ollama_models()
-        .unwrap_or_default()
+static LOCAL_MODEL_ASSESSMENT_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+const LOCAL_MODEL_ASSESSMENT_WAIT: Duration = Duration::from_millis(2_500);
+
+fn schedule_local_model_assessment(models: Vec<crate::local_model_advisor::LocalModelReference>) {
+    use std::sync::atomic::Ordering;
+
+    if LOCAL_MODEL_ASSESSMENT_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let spawn_result = std::thread::Builder::new()
+        .name("ai-os-local-model-advisor".to_owned())
+        .spawn(move || {
+            // Release the single-flight guard even if assessment panics.
+            struct ResetGuard;
+
+            impl Drop for ResetGuard {
+                fn drop(&mut self) {
+                    LOCAL_MODEL_ASSESSMENT_RUNNING
+                        .store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+
+            let _reset = ResetGuard;
+            let _ = crate::local_model_advisor::assess_installed_local_models(models);
+        });
+
+    if spawn_result.is_err() {
+        LOCAL_MODEL_ASSESSMENT_RUNNING.store(false, Ordering::Release);
+    }
+}
+
+fn wait_for_local_model_assessment(timeout: Duration) -> bool {
+    use std::sync::atomic::Ordering;
+
+    let started = Instant::now();
+    while LOCAL_MODEL_ASSESSMENT_RUNNING.load(Ordering::Acquire) && started.elapsed() < timeout {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    !LOCAL_MODEL_ASSESSMENT_RUNNING.load(Ordering::Acquire)
+}
+
+fn rank_auto_route_candidates_after_assessment(
+    candidates: Vec<AiCenterRouteCandidate>,
+    fit_evidence: &HashMap<(String, String), crate::local_model_advisor::LocalModelRouteEvidence>,
+    assessment_complete: bool,
+) -> Result<Vec<AiCenterRouteCandidate>, String> {
+    if assessment_complete {
+        return Ok(rank_auto_route_candidates(candidates, fit_evidence));
+    }
+
+    let ready = candidates
         .into_iter()
-        .map(|model| model.model)
+        .filter(|candidate| {
+            if candidate.provider_id != "omlx" && candidate.provider_instance_id != "omlx-local" {
+                return true;
+            }
+
+            matches!(
+                fit_evidence
+                    .get(&(candidate.provider_id.clone(), candidate.model_id.clone()))
+                    .map(|evidence| evidence.fit),
+                Some(crate::local_model_advisor::ModelFitLevel::Fit)
+                    | Some(crate::local_model_advisor::ModelFitLevel::Marginal)
+            )
+        })
         .collect::<Vec<_>>();
-    let candidates = auto_route_candidates(&instances, &omlx_model_ids, &local_model_ids);
+
+    if ready.is_empty() {
+        return Err("LOCAL_MODEL_ASSESSMENT_PENDING".to_owned());
+    }
+
+    Ok(rank_auto_route_candidates(ready, fit_evidence))
+}
+
+fn route_candidates(
+    assess_in_background: bool,
+) -> Result<(Vec<ProviderInstance>, Vec<AiCenterRouteCandidate>), String> {
+    let instances = read_provider_instances()?;
+    let mut omlx_model_ids = connected_provider_model_ids(&instances, "omlx");
+
+    // Auto must not inherit the user's manually configured default-model
+    // priority. Until reliable fit evidence exists, use a neutral,
+    // deterministic candidate order rather than pretending to rank quality.
+    omlx_model_ids.sort_unstable();
+
+    let candidates = auto_route_candidates(&instances, &omlx_model_ids);
+
+    let cached = crate::local_model_advisor::cached_route_evidence();
+
+    let unassessed = omlx_model_ids
+        .iter()
+        .filter(|model_id| !cached.contains_key(&("omlx".to_owned(), (*model_id).clone())))
+        .map(|model_id| crate::local_model_advisor::LocalModelReference {
+            provider_id: "omlx".to_owned(),
+            model_id: model_id.clone(),
+            parameter_size: None,
+            quantization: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut assessment_complete = true;
+    let assessment_started = Instant::now();
+    if assess_in_background && !unassessed.is_empty() {
+        crate::logs::append_ai_os_diagnostic(&format!(
+            "[AUTO_ASSESSMENT] state=started models={}",
+            unassessed.len()
+        ));
+        schedule_local_model_assessment(unassessed);
+        assessment_complete = wait_for_local_model_assessment(LOCAL_MODEL_ASSESSMENT_WAIT);
+    }
+
+    let fit_evidence = crate::local_model_advisor::cached_route_evidence();
+    let candidates = rank_auto_route_candidates_after_assessment(
+        candidates,
+        &fit_evidence,
+        assessment_complete,
+    )?;
+    if assess_in_background {
+        crate::logs::append_ai_os_diagnostic(&format!(
+            "[AUTO_ROUTE] assessment={} wait_ms={} evidence={} selected_provider={} selected_model={}",
+            if assessment_complete { "complete" } else { "pending" },
+            assessment_started.elapsed().as_millis(),
+            fit_evidence.len(),
+            candidates
+                .first()
+                .map(|candidate| candidate.provider_id.as_str())
+                .unwrap_or("none"),
+            candidates
+                .first()
+                .map(|candidate| candidate.model_id.as_str())
+                .unwrap_or("none")
+        ));
+    }
+
     Ok((instances, candidates))
 }
 
@@ -1510,7 +2055,7 @@ fn select_route_candidate(
 pub(crate) fn resolve_ai_center_route(
     input: ResolveAiCenterRouteInput,
 ) -> Result<Option<AiCenterRouteCandidate>, String> {
-    let (_, candidates) = route_candidates()?;
+    let (_, candidates) = route_candidates(input.route_mode == AiCenterRouteMode::Auto)?;
     select_route_candidate(&input, &candidates)
 }
 
@@ -1834,20 +2379,6 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
                 id: "omlx",
                 models_url: "http://127.0.0.1:8000/v1/models",
                 auth: AuthStyle::Bearer,
-            }),
-        ),
-        provider_adapter(
-            "ollama",
-            "Ollama",
-            ProviderAdapterKind::Native,
-            &[ProviderCredentialKind::Local],
-            &["chat", "tool-use"],
-            true,
-            false,
-            Some(ProviderAdapterSpec {
-                id: "ollama",
-                models_url: "http://127.0.0.1:11434/api/tags",
-                auth: AuthStyle::None,
             }),
         ),
     ];
@@ -2497,6 +3028,31 @@ struct CurrentProviderCredential {
     account_id: Option<String>,
 }
 
+fn update_provider_oauth_runtime_state(
+    account: &str,
+    connection_state: ProviderConnectionState,
+    token: Option<&Value>,
+) {
+    let Ok(mut instances) = read_provider_instances() else {
+        return;
+    };
+
+    let Some(instance) = instances.iter_mut().find(|instance| instance.id == account) else {
+        return;
+    };
+
+    instance.connection_state = connection_state;
+    instance.updated_at = chrono::Utc::now().to_rfc3339();
+
+    if let Some(token) = token {
+        let (expires_at, refreshable) = oauth_credential_metadata(token);
+        instance.credential.expires_at = expires_at;
+        instance.credential.refreshable = refreshable;
+    }
+
+    let _ = write_provider_instances(&instances);
+}
+
 async fn read_current_credential(
     account: &str,
     caller: &str,
@@ -2523,7 +3079,25 @@ async fn read_current_credential(
         })
         .unwrap_or(false);
     if should_refresh {
-        token = refresh_oauth_token(account, &token).await?;
+        match refresh_oauth_token(account, &token).await {
+            Ok(refreshed) => {
+                token = refreshed;
+                update_provider_oauth_runtime_state(
+                    account,
+                    ProviderConnectionState::Connected,
+                    Some(&token),
+                );
+            }
+
+            Err(error) => {
+                update_provider_oauth_runtime_state(
+                    account,
+                    ProviderConnectionState::RefreshRequired,
+                    None,
+                );
+                return Err(error);
+            }
+        }
     }
     let value = token
         .get("access_token")
@@ -2692,7 +3266,7 @@ pub(crate) fn delete_provider_credential(
 
 fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProviderModel>, String> {
     let items = body
-        .get(if matches!(provider_id, "ollama" | "google") {
+        .get(if provider_id == "google" {
             "models"
         } else {
             "data"
@@ -2704,11 +3278,7 @@ fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProvider
     let mut models: Vec<DiscoveredProviderModel> = items
         .iter()
         .filter_map(|item| {
-            let id = if provider_id == "ollama" {
-                item.get("model")
-                    .or_else(|| item.get("name"))
-                    .and_then(Value::as_str)
-            } else if provider_id == "google" {
+            let id = if provider_id == "google" {
                 item.get("name")
                     .and_then(Value::as_str)
                     .map(|name| name.strip_prefix("models/").unwrap_or(name))
@@ -3521,6 +4091,8 @@ pub(crate) async fn generate_provider_response(
         .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
     let secret = if matches!(spec.auth, AuthStyle::None) {
         None
+    } else if provider_id == "omlx" {
+        Some(read_omlx_runtime_credential("ai_center_generate").await?)
     } else {
         Some(read_current_credential(instance_id, "ai_center_generate").await?)
     };
@@ -3540,11 +4112,20 @@ pub(crate) async fn generate_provider_response(
             } else {
                 "https://api.openai.com/v1/responses"
             }),
-            serde_json::json!({
-                "model": model_id,
-                "input": prompt,
-                "store": !uses_openai_codex
-            }),
+            if uses_openai_codex {
+                serde_json::json!({
+                    "model": model_id,
+                    "input": [{"role": "user", "content": prompt}],
+                    "store": false,
+                    "stream": true
+                })
+            } else {
+                serde_json::json!({
+                    "model": model_id,
+                    "input": prompt,
+                    "store": true
+                })
+            },
         ),
         "anthropic" => (
             client.post("https://api.anthropic.com/v1/messages"),
@@ -3611,14 +4192,6 @@ pub(crate) async fn generate_provider_response(
                 "messages": [{"role": "user", "content": prompt}]
             }),
         ),
-        "ollama" => (
-            client.post("http://127.0.0.1:11434/api/chat"),
-            serde_json::json!({
-                "model": model_id,
-                "stream": false,
-                "messages": [{"role": "user", "content": prompt}]
-            }),
-        ),
         _ => return Err("this Provider cannot answer through AI Center yet".to_owned()),
     };
 
@@ -3632,12 +4205,56 @@ pub(crate) async fn generate_provider_response(
         .map_err(|_| "AI Center could not reach the selected Provider".to_owned())?;
     let status = response.status();
     if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        eprintln!(
+            "[AI-OS][PROVIDER_HTTP_ERROR] provider={} model={} status={} body={}",
+            provider_id,
+            model_id,
+            status.as_u16(),
+            error_body
+        );
         return Err(match status.as_u16() {
             401 | 403 => "The selected Provider needs to be reconnected".to_owned(),
             429 => "The selected Provider is busy or rate limited".to_owned(),
             _ => format!("The selected Provider returned status {}", status.as_u16()),
         });
     }
+    if provider_id == "openai" && uses_openai_codex {
+        let stream_body = response.text().await.map_err(|_| {
+            "The selected Provider returned an unreadable streaming response".to_owned()
+        })?;
+
+        let mut streamed_text = String::new();
+
+        for line in stream_body.lines() {
+            let Some(data) = line.trim().strip_prefix("data:") else {
+                continue;
+            };
+
+            let data = data.trim();
+
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+
+            if let Ok(value) = serde_json::from_str::<Value>(data) {
+                if let Some(delta) = stream_text("openai", true, &value) {
+                    streamed_text.push_str(&delta);
+                }
+            }
+        }
+
+        if streamed_text.trim().is_empty() {
+            return Err("Codex streaming response contained no text".to_owned());
+        }
+
+        return Ok(GenerateProviderResponseResult {
+            provider_id: provider_id.to_owned(),
+            model_id: model_id.to_owned(),
+            text: streamed_text,
+        });
+    }
+
     let body: Value = response
         .json()
         .await
@@ -3651,10 +4268,6 @@ pub(crate) async fn generate_provider_response(
             .map(str::to_owned),
         "google" => body
             .pointer("/candidates/0/content/parts/0/text")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        "ollama" => body
-            .pointer("/message/content")
             .and_then(Value::as_str)
             .map(str::to_owned),
         _ => extract_chat_completion_text(&body),
@@ -3675,6 +4288,10 @@ async fn execute_candidate(
     instances: &[ProviderInstance],
     operation_id: Option<String>,
 ) -> Result<GenerateProviderResponseResult, String> {
+    if candidate.provider_id == "omlx" {
+        start_omlx_runtime().await?;
+    }
+
     let uses_claude_code = instances.iter().any(|instance| {
         instance.id == candidate.provider_instance_id
             && instance.provider_id == "anthropic"
@@ -3716,7 +4333,15 @@ pub(crate) async fn execute_ai_center(
     let invocation_id = format!("invoke-{}", uuid::Uuid::new_v4());
     let invocation_started_at = chrono::Utc::now().to_rfc3339();
     let invocation_started = Instant::now();
-    let (instances, candidates) = route_candidates()?;
+    let (instances, candidates) = route_candidates(input.route_mode == AiCenterRouteMode::Auto)?;
+    let candidates = if input.route_mode == AiCenterRouteMode::Auto {
+        rank_auto_route_candidates_for_prompt(
+            candidates,
+            auto_routing_text(input.routing_prompt.as_deref(), &prompt),
+        )
+    } else {
+        candidates
+    };
     let mut attempts = Vec::new();
     let mut last_error = None;
 
@@ -3790,10 +4415,6 @@ fn stream_text(provider_id: &str, uses_responses_api: bool, value: &Value) -> Op
             .pointer("/candidates/0/content/parts/0/text")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        "ollama" => value
-            .pointer("/message/content")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
         _ => value
             .pointer("/choices/0/delta/content")
             .and_then(Value::as_str)
@@ -3805,6 +4426,55 @@ struct OmlxStreamOutcome {
     output: String,
     cancelled: bool,
     interrupted: bool,
+    first_text_latency_ms: Option<u64>,
+}
+
+async fn read_omlx_runtime_credential(caller: &str) -> Result<CurrentProviderCredential, String> {
+    if let Some(home) = dirs::home_dir() {
+        let path = home.join(".openclaw/ai-os-secrets/omlx-api-key");
+
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            /*
+             * The bridge is created by AI-OS with mode 0600.
+             * Refuse to use a local credential file that became group/world
+             * accessible.
+             */
+            if metadata.permissions().mode() & 0o077 == 0 {
+                if let Ok(secret) = std::fs::read(&path) {
+                    if let Ok(value) = String::from_utf8(secret.clone()) {
+                        let value = value.trim().to_owned();
+
+                        if !value.is_empty() {
+                            let _ = provider_credential_cache().store("omlx-local", &secret);
+
+                            crate::keychain_trace::record(
+                                "READ",
+                                caller,
+                                KEYCHAIN_SERVICE,
+                                "omlx-local",
+                                "LOCAL_BRIDGE",
+                            );
+
+                            return Ok(CurrentProviderCredential {
+                                value,
+                                oauth: false,
+                                resource_project_id: None,
+                                route_kind: None,
+                                account_id: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /*
+     * Compatibility fallback for machines where the local bridge has not
+     * been created yet. The normal session cache still prevents repeated
+     * Keychain reads during the same application process.
+     */
+    read_current_credential("omlx-local", caller).await
 }
 
 async fn send_omlx_stream_request(
@@ -3816,13 +4486,30 @@ async fn send_omlx_stream_request(
         .timeout(Duration::from_secs(600))
         .build()
         .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
-    let credential =
-        read_current_credential(&candidate.provider_instance_id, "ai_center_omlx_stream").await?;
+    let credential = read_omlx_runtime_credential("ai_center_omlx_stream").await?;
     let request = authenticate_provider_request(
         client.post("http://127.0.0.1:8000/v1/chat/completions"),
         AuthStyle::Bearer,
         credential,
     );
+    #[cfg(debug_assertions)]
+    {
+        eprintln!(
+            "[AI-OS][OMLX_PAYLOAD] model={} count={}",
+            candidate.model_id,
+            messages.len()
+        );
+
+        for (index, message) in messages.iter().enumerate() {
+            let preview: String = message.content.chars().take(80).collect();
+
+            eprintln!(
+                "[AI-OS][OMLX_PAYLOAD] index={} role={} preview={:?}",
+                index, message.role, preview
+            );
+        }
+    }
+
     let body = serde_json::json!({
         "model": candidate.model_id,
         "stream": true,
@@ -3858,6 +4545,7 @@ async fn consume_omlx_stream(
     operation_id: &str,
     response: reqwest::Response,
     token: &CancellationToken,
+    request_started: Instant,
 ) -> OmlxStreamOutcome {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -3865,6 +4553,7 @@ async fn consume_omlx_stream(
         output: String::new(),
         cancelled: false,
         interrupted: false,
+        first_text_latency_ms: None,
     };
     loop {
         let next = tokio::select! {
@@ -3887,6 +4576,10 @@ async fn consume_omlx_stream(
             let line = buffer[..position].to_owned();
             buffer.drain(..=position);
             if let Some(text) = omlx_stream_line(&line) {
+                if !text.is_empty() && outcome.first_text_latency_ms.is_none() {
+                    outcome.first_text_latency_ms =
+                        Some(request_started.elapsed().as_millis() as u64);
+                }
                 outcome.output.push_str(&text);
                 let _ = app.emit(
                     "ai-center://chunk",
@@ -3918,7 +4611,20 @@ pub(crate) async fn execute_ai_center_stream(
         .join("\n\n");
     let invocation_started_at = chrono::Utc::now().to_rfc3339();
     let invocation_started = Instant::now();
-    let (instances, candidates) = route_candidates()?;
+    let latest_user_prompt = input
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.as_str())
+        .unwrap_or(prompt.as_str());
+
+    let (instances, candidates) = route_candidates(input.route_mode == AiCenterRouteMode::Auto)?;
+    let candidates = if input.route_mode == AiCenterRouteMode::Auto {
+        rank_auto_route_candidates_for_prompt(candidates, latest_user_prompt)
+    } else {
+        candidates
+    };
     let token = CancellationToken::new();
     ai_center_requests()
         .lock()
@@ -3987,11 +4693,66 @@ pub(crate) async fn execute_ai_center_stream(
         let attempt_started_at = chrono::Utc::now().to_rfc3339();
         let attempt_started = Instant::now();
         let attempt_operation_id = format!("{}-{}", operation_id, attempts.len());
+        crate::logs::append_ai_os_diagnostic(&format!(
+            "[AI_CENTER_ATTEMPT] mode={:?} attempt={} provider={} model={}",
+            input.route_mode,
+            attempts.len() + 1,
+            candidate.provider_id,
+            candidate.model_id
+        ));
         let response_streamed = candidate.provider_id == "omlx";
-        let result = if response_streamed {
-            match send_omlx_stream_request(&candidate, &input.messages, &token).await {
+        let runtime_error = if response_streamed {
+            start_omlx_runtime().await.err()
+        } else {
+            None
+        };
+
+        // Standalone greetings should not inherit earlier conversation
+        // turns, but must retain system instructions such as language policy.
+        let greeting_messages: Option<Vec<ProviderChatMessage>> = if input.route_mode
+            == AiCenterRouteMode::Auto
+            && auto_latest_user_is_standalone_greeting(latest_user_prompt)
+        {
+            let mut selected: Vec<ProviderChatMessage> = input
+                .messages
+                .iter()
+                .filter(|message| message.role == "system")
+                .cloned()
+                .collect();
+
+            if let Some(last_user) = input
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "user")
+            {
+                selected.push(last_user.clone());
+            }
+
+            Some(selected)
+        } else {
+            None
+        };
+
+        let omlx_messages: &[ProviderChatMessage] = greeting_messages
+            .as_deref()
+            .unwrap_or(input.messages.as_slice());
+
+        let result = if let Some(error) = runtime_error {
+            Err(error)
+        } else if response_streamed {
+            let request_started = Instant::now();
+            match send_omlx_stream_request(&candidate, omlx_messages, &token).await {
                 Ok(response) => {
-                    let outcome = consume_omlx_stream(&app, &operation_id, response, &token).await;
+                    let outcome =
+                        consume_omlx_stream(&app, &operation_id, response, &token, request_started)
+                            .await;
+                    if let Some(latency_ms) = outcome.first_text_latency_ms {
+                        eprintln!(
+                            "[AI-OS][OMLX_FIRST_TEXT] model={} latency_ms={}",
+                            candidate.model_id, latency_ms
+                        );
+                    }
                     emitted_output = !outcome.output.is_empty();
                     if outcome.cancelled {
                         Err("cancelled".to_owned())
@@ -4032,6 +4793,14 @@ pub(crate) async fn execute_ai_center_stream(
                     attempt_started,
                     AiCenterAttemptOutcome::Success,
                     None,
+                ));
+                crate::logs::append_ai_os_diagnostic(&format!(
+                    "[AI_CENTER_SUCCESS] mode={:?} provider={} model={} attempts={} fallback={}",
+                    input.route_mode,
+                    candidate.provider_id,
+                    candidate.model_id,
+                    attempts.len(),
+                    attempts.len() > 1
                 ));
                 let metadata = canonical_metadata(
                     operation_id.clone(),
@@ -4078,6 +4847,7 @@ pub(crate) async fn execute_ai_center_stream(
                 ));
             }
             Err(error) => {
+                let error_category = safe_attempt_error(&error);
                 attempts.push(complete_attempt(
                     &candidate,
                     attempt_started_at,
@@ -4085,6 +4855,47 @@ pub(crate) async fn execute_ai_center_stream(
                     AiCenterAttemptOutcome::Failed,
                     Some(&error),
                 ));
+                eprintln!(
+                    "[AI-OS][AI_CENTER] provider={} instance={} model={} error={}",
+                    candidate.provider_id,
+                    candidate.provider_instance_id,
+                    candidate.model_id,
+                    error
+                );
+                if input.route_mode == AiCenterRouteMode::Auto && !emitted_output {
+                    if let Some(next_candidate) = candidates.get(attempts.len()) {
+                        crate::logs::append_ai_os_diagnostic(&format!(
+                            "[AUTO_FALLBACK] failed_provider={} failed_model={} error_category={} next_provider={} next_model={}",
+                            candidate.provider_id,
+                            candidate.model_id,
+                            error_category,
+                            next_candidate.provider_id,
+                            next_candidate.model_id
+                        ));
+                        eprintln!(
+                            "[AI-OS][AUTO_FALLBACK] failed_provider={} failed_model={} continuing_to_provider={} continuing_to_model={}",
+                            candidate.provider_id,
+                            candidate.model_id,
+                            next_candidate.provider_id,
+                            next_candidate.model_id
+                        );
+                    } else {
+                        crate::logs::append_ai_os_diagnostic(&format!(
+                            "[AUTO_FALLBACK] failed_provider={} failed_model={} error_category={} exhausted=true attempts={}",
+                            candidate.provider_id,
+                            candidate.model_id,
+                            error_category,
+                            attempts.len()
+                        ));
+                        eprintln!(
+                            "[AI-OS][AUTO_FALLBACK] failed_provider={} failed_model={} exhausted_all_candidates total_attempts={}",
+                            candidate.provider_id,
+                            candidate.model_id,
+                            attempts.len()
+                        );
+                    }
+                }
+
                 last_error = Some(error);
             }
         }
@@ -4135,6 +4946,8 @@ pub(crate) async fn start_provider_response_stream(
         .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
     let secret = if matches!(spec.auth, AuthStyle::None) {
         None
+    } else if provider_id == "omlx" {
+        Some(read_omlx_runtime_credential("ai_center_provider_stream").await?)
     } else {
         Some(read_current_credential(instance_id, "ai_center_provider_stream").await?)
     };
@@ -4229,17 +5042,6 @@ pub(crate) async fn start_provider_response_stream(
                 "messages": messages
             }),
         ),
-        "ollama" => (
-            client.post("http://127.0.0.1:11434/api/chat"),
-            serde_json::json!({
-                "model": model_id,
-                "stream": true,
-                "messages": messages,
-                "options": {
-                    "num_predict": 8192
-                }
-            }),
-        ),
         _ => return Err("this Provider cannot stream through AI Center yet".to_owned()),
     };
     if let Some(credential) = secret {
@@ -4313,7 +5115,7 @@ pub(crate) async fn start_provider_response_stream(
         let bytes = match item {
             Ok(bytes) => bytes,
             Err(err) => {
-                eprintln!("OLLAMA STREAM ERROR: {:?}", err);
+                eprintln!("PROVIDER STREAM ERROR: {:?}", err);
                 let _ = app.emit(
                     "ai-center://error",
                     AiCenterErrorEvent {
@@ -4328,14 +5130,10 @@ pub(crate) async fn start_provider_response_stream(
         while let Some(position) = buffer.find('\n') {
             let line = buffer[..position].trim().to_owned();
             buffer.drain(..=position);
-            let data = if provider_id == "ollama" {
-                line.as_str()
-            } else {
-                let Some(data) = line.strip_prefix("data:") else {
-                    continue;
-                };
-                data.trim()
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
             };
+            let data = data.trim();
             if data.is_empty() || data == "[DONE]" {
                 continue;
             }
@@ -4588,7 +5386,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_openai_and_ollama_model_lists() {
+    fn parses_openai_model_lists() {
         let openai =
             parse_models("openai", serde_json::json!({"data": [{"id": "gpt-test"}]})).unwrap();
         assert_eq!(openai[0].id, "gpt-test");
@@ -4602,13 +5400,6 @@ mod tests {
         .unwrap();
         assert_eq!(codex[0].id, "gpt-codex");
         assert_eq!(codex[0].display_name, "GPT Codex");
-
-        let ollama = parse_models(
-            "ollama",
-            serde_json::json!({"models": [{"name": "qwen:test"}]}),
-        )
-        .unwrap();
-        assert_eq!(ollama[0].id, "qwen:test");
     }
 
     #[test]
@@ -4802,9 +5593,9 @@ mod tests {
         );
         assert_eq!(
             stream_text(
-                "ollama",
+                "omlx",
                 false,
-                &serde_json::json!({"message": {"content": "B"}})
+                &serde_json::json!({"choices": [{"delta": {"content": "B"}}]})
             )
             .as_deref(),
             Some("B")
@@ -4910,18 +5701,9 @@ mod tests {
             "agents": {
                 "list": [
                     {
-                        "id": "ai-os-files",
-                        "model": {
-                            "primary": "ollama-ai-os/qwen3:4b-instruct"
-                        },
-                        "params": {
-                            "num_ctx": 65536
-                        }
-                    },
-                    {
                         "id": "ai-os-exec-too-small",
                         "model": {
-                            "primary": "ollama/qwen2.5:7b"
+                            "primary": "omlx/model-a"
                         },
                         "params": {
                             "num_ctx": 32768
@@ -4937,9 +5719,9 @@ mod tests {
                         }
                     },
                     {
-                        "id": "ai-os-exec-standard",
+                        "id": "ai-os-exec-omlx",
                         "model": {
-                            "primary": "ollama/qwen3:8b"
+                            "primary": "omlx/model-a"
                         },
                         "params": {
                             "num_ctx": 65536
@@ -4949,11 +5731,8 @@ mod tests {
             }
         });
 
-        let route_candidates = auto_route_candidates(
-            &[provider_fixture()],
-            &[],
-            &["qwen3:8b".to_owned(), "qwen2.5:7b".to_owned()],
-        );
+        let route_candidates =
+            auto_route_candidates(&[provider_fixture()], &["model-a".to_owned()]);
 
         let candidates = execution_agent_candidates_from_config(
             "download.start",
@@ -4965,10 +5744,7 @@ mod tests {
 
         assert_eq!(
             candidates,
-            vec![
-                "ai-os-exec-standard".to_owned(),
-                "ai-os-exec-cloud".to_owned(),
-            ]
+            vec!["ai-os-exec-omlx".to_owned(), "ai-os-exec-cloud".to_owned(),]
         );
     }
 
@@ -4981,48 +5757,18 @@ mod tests {
                         "id": "ai-os-exec-omlx",
                         "model": { "primary": "omlx/model-a" },
                         "params": { "num_ctx": 65536 }
-                    },
-                    {
-                        "id": "ai-os-exec-ollama",
-                        "model": { "primary": "ollama/model-b" },
-                        "params": { "num_ctx": 65536 }
-                    },
-                    {
-                        "id": "ai-os-exec-rejected",
-                        "model": { "primary": "ollama/model-c" },
-                        "params": { "num_ctx": 65536 }
                     }
                 ]
             }
         });
-        let route_candidates = auto_route_candidates(
-            &[],
-            &["model-a".to_owned()],
-            &["model-b".to_owned(), "model-c".to_owned()],
-        );
-        let fit_evidence = HashMap::from([
-            (
-                ("omlx".to_owned(), "model-a".to_owned()),
-                crate::local_model_advisor::LocalModelRouteEvidence {
-                    fit: crate::local_model_advisor::ModelFitLevel::Marginal,
-                    score: Some(70.0),
-                },
-            ),
-            (
-                ("ollama".to_owned(), "model-b".to_owned()),
-                crate::local_model_advisor::LocalModelRouteEvidence {
-                    fit: crate::local_model_advisor::ModelFitLevel::Fit,
-                    score: Some(90.0),
-                },
-            ),
-            (
-                ("ollama".to_owned(), "model-c".to_owned()),
-                crate::local_model_advisor::LocalModelRouteEvidence {
-                    fit: crate::local_model_advisor::ModelFitLevel::NotFit,
-                    score: Some(99.0),
-                },
-            ),
-        ]);
+        let route_candidates = auto_route_candidates(&[], &["model-a".to_owned()]);
+        let fit_evidence = HashMap::from([(
+            ("omlx".to_owned(), "model-a".to_owned()),
+            crate::local_model_advisor::LocalModelRouteEvidence {
+                fit: crate::local_model_advisor::ModelFitLevel::Marginal,
+                score: Some(70.0),
+            },
+        )]);
 
         let candidates = execution_agent_candidates_from_config(
             "download.start",
@@ -5032,14 +5778,91 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            candidates,
-            vec!["ai-os-exec-ollama".to_owned(), "ai-os-exec-omlx".to_owned()]
-        );
+        assert_eq!(candidates, vec!["ai-os-exec-omlx".to_owned()]);
     }
 
     #[test]
-    fn auto_route_candidates_prefer_omlx_then_ollama_then_cloud() {
+    fn auto_prefers_the_only_hardware_fit_installed_model_without_a_name_rule() {
+        let candidates = auto_route_candidates(
+            &[],
+            &[
+                "DeepSeek-R1-Distill-Qwen-7B-4bit".to_owned(),
+                "Qwen2.5-7B-Instruct-4bit".to_owned(),
+                "Qwen3.5-9B-4bit".to_owned(),
+            ],
+        );
+        let fit_evidence = HashMap::from([(
+            ("omlx".to_owned(), "Qwen2.5-7B-Instruct-4bit".to_owned()),
+            crate::local_model_advisor::LocalModelRouteEvidence {
+                fit: crate::local_model_advisor::ModelFitLevel::Fit,
+                score: Some(65.2),
+            },
+        )]);
+
+        let ranked = rank_auto_route_candidates(candidates, &fit_evidence);
+
+        assert_eq!(ranked[0].model_id, "Qwen2.5-7B-Instruct-4bit");
+    }
+
+    #[test]
+    fn auto_does_not_use_alphabetical_local_order_while_assessment_is_pending() {
+        let candidates = auto_route_candidates(
+            &[],
+            &[
+                "DeepSeek-R1-Distill-Qwen-7B-4bit".to_owned(),
+                "Qwen2.5-7B-Instruct-4bit".to_owned(),
+            ],
+        );
+
+        let result =
+            rank_auto_route_candidates_after_assessment(candidates, &HashMap::new(), false);
+
+        assert_eq!(result.unwrap_err(), "LOCAL_MODEL_ASSESSMENT_PENDING");
+    }
+
+    #[test]
+    fn auto_uses_fit_evidence_that_arrives_during_the_bounded_wait() {
+        let candidates = auto_route_candidates(
+            &[],
+            &[
+                "DeepSeek-R1-Distill-Qwen-7B-4bit".to_owned(),
+                "Qwen2.5-7B-Instruct-4bit".to_owned(),
+            ],
+        );
+        let fit_evidence = HashMap::from([(
+            ("omlx".to_owned(), "Qwen2.5-7B-Instruct-4bit".to_owned()),
+            crate::local_model_advisor::LocalModelRouteEvidence {
+                fit: crate::local_model_advisor::ModelFitLevel::Fit,
+                score: Some(65.2),
+            },
+        )]);
+
+        let ranked =
+            rank_auto_route_candidates_after_assessment(candidates, &fit_evidence, false).unwrap();
+
+        assert_eq!(ranked[0].model_id, "Qwen2.5-7B-Instruct-4bit");
+    }
+
+    #[test]
+    fn auto_uses_cloud_instead_of_unknown_local_models_after_wait_timeout() {
+        let candidates = auto_route_candidates(
+            &[provider_fixture()],
+            &[
+                "DeepSeek-R1-Distill-Qwen-7B-4bit".to_owned(),
+                "Qwen2.5-7B-Instruct-4bit".to_owned(),
+            ],
+        );
+
+        let ranked =
+            rank_auto_route_candidates_after_assessment(candidates, &HashMap::new(), false)
+                .unwrap();
+
+        assert_eq!(ranked[0].provider_id, "openai");
+        assert_eq!(ranked[0].model_id, "gpt-test");
+    }
+
+    #[test]
+    fn auto_route_candidates_prefer_omlx_then_cloud() {
         let mut instance = provider_fixture();
         let mut secondary = instance.models[0].clone();
         secondary.id = "openai-default:gpt-secondary".to_owned();
@@ -5048,33 +5871,21 @@ mod tests {
         secondary.is_default = false;
         instance.models.insert(0, secondary);
 
-        let candidates = auto_route_candidates(
-            &[instance],
-            &["mlx-community/Qwen3-8B-4bit".to_owned()],
-            &["qwen3:8b".to_owned()],
-        );
+        let candidates =
+            auto_route_candidates(&[instance], &["mlx-community/Qwen3-8B-4bit".to_owned()]);
         let order = candidates
             .iter()
             .map(|candidate| candidate.model_id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            order,
-            vec![
-                "mlx-community/Qwen3-8B-4bit",
-                "qwen3:8b",
-                "gpt-test",
-                "gpt-secondary"
-            ]
-        );
+        assert_eq!(order, vec!["mlx-community/Qwen3-8B-4bit", "gpt-test"]);
         assert_eq!(candidates[0].provider_id, "omlx");
         assert_eq!(candidates[0].provider_instance_id, "omlx-local");
         assert_eq!(
             execution_source(&candidates[0]),
             AiCenterExecutionSource::Local
         );
-        assert_eq!(candidates[1].provider_id, "ollama");
-        assert_eq!(candidates[1].provider_instance_id, "ollama-local");
+        assert_eq!(candidates[1].provider_id, "openai");
     }
 
     #[test]
@@ -5091,14 +5902,13 @@ mod tests {
         let instances = vec![omlx, provider_fixture()];
 
         let omlx_model_ids = connected_provider_model_ids(&instances, "omlx");
-        let candidates =
-            auto_route_candidates(&instances, &omlx_model_ids, &["qwen3:8b".to_owned()]);
+        let candidates = auto_route_candidates(&instances, &omlx_model_ids);
         let order = candidates
             .iter()
             .map(|candidate| candidate.model_id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(order, vec!["omlx-default", "qwen3:8b", "gpt-test"]);
+        assert_eq!(order, vec!["omlx-default", "gpt-test"]);
         assert_eq!(candidates[0].provider_id, "omlx");
         assert_eq!(candidates[0].provider_instance_id, "omlx-local");
         assert_eq!(
@@ -5124,18 +5934,16 @@ mod tests {
     }
 
     #[test]
-    fn omlx_replaces_both_openclaw_execution_agent_models() {
+    fn omlx_configures_both_openclaw_execution_agent_models() {
         let mut config = serde_json::json!({
             "agents": {
               "defaults": {"models": {
-                "ollama/qwen3:8b": {},
-                "ollama-ai-os/qwen3:4b-instruct": {},
                 "openai/gpt-test": {}
               }},
               "list": [
                 {"id": "main"},
-                {"id": "ai-os-files", "model": {"primary": "ollama-ai-os/qwen3:4b-instruct"}, "params": {"num_ctx": 32768}},
-                {"id": "ai-os-exec-standard", "model": {"primary": "ollama/qwen3:8b"}, "params": {"num_ctx": 32768}}
+                {"id": "ai-os-files", "model": {"primary": "openai/gpt-test"}, "params": {"num_ctx": 32768}},
+                {"id": "ai-os-exec-standard", "model": {"primary": "openai/gpt-test"}, "params": {"num_ctx": 32768}}
               ]
             }
         });
@@ -5162,12 +5970,6 @@ mod tests {
             .pointer("/agents/defaults/models/omlx~1Qwen3.5-9B-4bit")
             .is_some());
         assert!(config
-            .pointer("/agents/defaults/models/ollama~1qwen3:8b")
-            .is_none());
-        assert!(config
-            .pointer("/agents/defaults/models/ollama-ai-os~1qwen3:4b-instruct")
-            .is_none());
-        assert!(config
             .pointer("/agents/defaults/models/openai~1gpt-test")
             .is_some());
         for index in [1, 2] {
@@ -5188,8 +5990,7 @@ mod tests {
 
     #[test]
     fn route_selection_allows_only_auto_pre_output_fallback() {
-        let candidates =
-            auto_route_candidates(&[provider_fixture()], &[], &["qwen3:8b".to_owned()]);
+        let candidates = auto_route_candidates(&[provider_fixture()], &["model-a".to_owned()]);
         let input =
             |route_mode, attempted_count, emitted_output, cancelled| ResolveAiCenterRouteInput {
                 route_mode,
@@ -5229,7 +6030,7 @@ mod tests {
 
     #[test]
     fn auto_route_falls_back_to_cloud_when_no_local_models_are_available() {
-        let candidates = auto_route_candidates(&[provider_fixture()], &[], &[]);
+        let candidates = auto_route_candidates(&[provider_fixture()], &[]);
         let input = ResolveAiCenterRouteInput {
             route_mode: AiCenterRouteMode::Auto,
             manual_candidate: None,
@@ -5247,9 +6048,8 @@ mod tests {
 
     #[test]
     fn manual_route_executes_only_the_requested_candidate() {
-        let candidates =
-            auto_route_candidates(&[provider_fixture()], &[], &["qwen2.5:7b".to_owned()]);
-        let requested = candidates[1].clone();
+        let candidates = auto_route_candidates(&[provider_fixture()], &[]);
+        let requested = candidates[0].clone();
         let input = |attempted_count| ResolveAiCenterRouteInput {
             route_mode: AiCenterRouteMode::Manual,
             manual_candidate: Some(requested.clone()),
@@ -5271,8 +6071,8 @@ mod tests {
     #[test]
     fn canonical_metadata_preserves_attempt_order_tokens_and_privacy() {
         let local = AiCenterRouteCandidate {
-            provider_id: "ollama".to_owned(),
-            provider_instance_id: "ollama-local".to_owned(),
+            provider_id: "omlx".to_owned(),
+            provider_instance_id: "omlx-local".to_owned(),
             model_id: "qwen-test".to_owned(),
         };
         let cloud = AiCenterRouteCandidate {
@@ -5430,7 +6230,6 @@ mod tests {
                 "meta",
                 "compatible",
                 "omlx",
-                "ollama",
             ]
         );
     }
@@ -5464,7 +6263,6 @@ mod tests {
             "kimi",
             "meta",
             "omlx",
-            "ollama",
         ] {
             let descriptor = get_provider_adapter(provider_id.to_owned()).unwrap();
             let native = adapter_spec(provider_id).unwrap();
@@ -5504,7 +6302,6 @@ mod tests {
         assert!(descriptor.supports_model_discovery);
         assert_eq!(spec.models_url, "http://127.0.0.1:8000/v1/models");
         assert!(matches!(spec.auth, AuthStyle::Bearer));
-        assert_ne!(descriptor.provider_id, "ollama");
     }
 
     #[test]
@@ -5612,13 +6409,6 @@ mod tests {
             ]
         );
         assert!(google.supports_token_refresh);
-
-        let ollama = get_provider_adapter("ollama".to_owned()).unwrap();
-
-        assert_eq!(
-            ollama.authentication_methods,
-            vec![ProviderAuthenticationMethod::Local]
-        );
     }
 
     #[test]
@@ -5847,5 +6637,107 @@ Host: 127.0.0.1\r\n\r\n";
     fn unknown_provider_adapter_is_rejected() {
         assert!(get_provider_adapter("unknown".to_owned()).is_err());
         assert!(get_provider_adapter("   ".to_owned()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod beta41_auto_complexity_regression {
+    use super::*;
+
+    #[test]
+    fn simple_context_stays_local_first() {
+        for prompt in [
+            "我正在研究群晖 NAS。",
+            "我刚才在研究什么？",
+            "我们之前在研究什么？",
+            "hello",
+        ] {
+            assert!(
+                !auto_prompt_needs_stronger_model(prompt),
+                "Simple context was incorrectly escalated: {prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn complex_requests_still_escalate() {
+        for prompt in [
+            "深入研究 NAS 文件系统的架构与性能",
+            "详细分析一份复杂技术报告",
+            "全面比较 NAS 的不同文件系统",
+        ] {
+            assert!(
+                auto_prompt_needs_stronger_model(prompt),
+                "Complex request was incorrectly downgraded: {prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn simple_context_prefers_local_candidate() {
+        let candidates = vec![
+            AiCenterRouteCandidate {
+                provider_id: "omlx".into(),
+                provider_instance_id: "omlx-local".into(),
+                model_id: "DeepSeek-R1-Distill-Qwen-7B-4bit".into(),
+            },
+            AiCenterRouteCandidate {
+                provider_id: "openai".into(),
+                provider_instance_id: "openai-test".into(),
+                model_id: "cloud-test".into(),
+            },
+        ];
+
+        let simple =
+            rank_auto_route_candidates_for_prompt(candidates.clone(), "我刚才在研究什么？");
+        assert_eq!(simple[0].provider_id, "omlx");
+
+        let complex =
+            rank_auto_route_candidates_for_prompt(candidates, "深入研究 NAS 文件系统的架构与性能");
+        assert_eq!(complex[0].provider_id, "openai");
+    }
+
+    #[test]
+    fn internal_scaffolding_does_not_move_a_local_first_turn_to_the_cloud() {
+        // Observed 2026-10-14: a search-grounding prompt over 500 characters
+        // ranked the cloud model first for "DS925+ 是哪个品牌的？".
+        let candidates = vec![
+            AiCenterRouteCandidate {
+                provider_id: "omlx".into(),
+                provider_instance_id: "omlx-local".into(),
+                model_id: "Qwen2.5-7B-Instruct-4bit".into(),
+            },
+            AiCenterRouteCandidate {
+                provider_id: "openai".into(),
+                provider_instance_id: "openai-test".into(),
+                model_id: "cloud-test".into(),
+            },
+        ];
+        let scaffolding = format!("请仅根据下面的网页搜索证据回答。{}", "证据".repeat(400));
+        let question = "DS925+ 是哪个品牌的？";
+
+        let unscoped = rank_auto_route_candidates_for_prompt(candidates.clone(), &scaffolding);
+        assert_eq!(unscoped[0].provider_id, "openai", "precondition: long prompts rank cloud first");
+
+        let scoped = rank_auto_route_candidates_for_prompt(
+            candidates,
+            auto_routing_text(Some(question), &scaffolding),
+        );
+        assert_eq!(scoped[0].provider_id, "omlx");
+
+        assert_eq!(auto_routing_text(None, "prompt"), "prompt");
+        assert_eq!(auto_routing_text(Some("   "), "prompt"), "prompt");
+    }
+
+    #[test]
+    fn execute_input_routing_prompt_is_optional() {
+        let without: ExecuteAiCenterInput =
+            serde_json::from_value(serde_json::json!({"routeMode": "auto", "prompt": "hi"})).unwrap();
+        assert!(without.routing_prompt.is_none());
+        let with: ExecuteAiCenterInput = serde_json::from_value(
+            serde_json::json!({"routeMode": "auto", "prompt": "long", "routingPrompt": "你好"}),
+        )
+        .unwrap();
+        assert_eq!(with.routing_prompt.as_deref(), Some("你好"));
     }
 }

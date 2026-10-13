@@ -17,10 +17,12 @@ pub(crate) mod recovery;
 mod registry;
 pub(crate) mod scheduler;
 pub(crate) mod skill_invocation;
+pub(crate) mod speech;
+pub(crate) mod web_search;
 pub(crate) mod skills;
 pub(crate) mod trusted_automation;
 
-use models::{RuntimeDefinition, RuntimeStatus, RuntimeStatusRequest};
+use models::{RuntimeDefinition, RuntimeStatus};
 
 #[tauri::command]
 pub fn list_runtimes() -> Vec<RuntimeDefinition> {
@@ -28,10 +30,8 @@ pub fn list_runtimes() -> Vec<RuntimeDefinition> {
 }
 
 #[tauri::command]
-pub async fn get_runtime_statuses(
-    request: Option<RuntimeStatusRequest>,
-) -> Result<Vec<RuntimeStatus>, String> {
-    tauri::async_runtime::spawn_blocking(move || adapters::statuses(request.unwrap_or_default()))
+pub async fn get_runtime_statuses() -> Result<Vec<RuntimeStatus>, String> {
+    tauri::async_runtime::spawn_blocking(adapters::statuses)
         .await
         .map_err(|_| "Runtime status collection could not be completed.".to_string())
 }
@@ -45,7 +45,7 @@ mod tests {
     };
 
     #[test]
-    fn registry_has_five_stable_ids() {
+    fn registry_has_two_stable_ids() {
         let ids = list_runtimes()
             .into_iter()
             .map(|runtime| runtime.id)
@@ -53,21 +53,16 @@ mod tests {
 
         assert_eq!(
             ids,
-            vec![
-                "openclaw",
-                "ollama",
-                "docker-desktop",
-                "open-webui",
-                "cherry-studio",
-            ]
+            vec!["openclaw", "cherry-studio"]
         );
     }
+
 
     #[test]
     fn serialization_uses_typescript_friendly_names() {
         assert_eq!(
-            serde_json::to_string(&RuntimeAdapterKind::DockerDesktop).unwrap(),
-            "\"docker-desktop\""
+            serde_json::to_string(&RuntimeAdapterKind::CherryStudio).unwrap(),
+            "\"cherry-studio\""
         );
         assert_eq!(
             serde_json::to_string(&RuntimeErrorCode::ConfigurationUnavailable).unwrap(),

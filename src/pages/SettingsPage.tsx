@@ -1,6 +1,6 @@
-import type {
-  CSSProperties,
-} from "react";
+import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   APP_INFO,
@@ -36,6 +36,76 @@ function SettingsPage({
   onReset,
   onOpenSection,
 }: SettingsPageProps) {
+  const [webSearchTrusted, setWebSearchTrusted] =
+    useState<boolean | null>(null);
+  const [webSearchSaving, setWebSearchSaving] = useState(false);
+  const [webSearchError, setWebSearchError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+
+    void invoke<boolean>("get_web_search_trust")
+      .then((enabled) => {
+        if (active) {
+          setWebSearchTrusted(enabled);
+          setWebSearchError("");
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setWebSearchTrusted(null);
+          setWebSearchError(
+            "Unable to load Web Search permission."
+          );
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function updateWebSearchTrust(enabled: boolean) {
+    if (webSearchSaving) return;
+
+    setWebSearchSaving(true);
+    setWebSearchError("");
+
+    try {
+      const saved = await invoke<boolean>(
+        "set_web_search_trust",
+        { enabled },
+      );
+
+      // Read back the persisted value from Runtime.
+      const verified = await invoke<boolean>(
+        "get_web_search_trust",
+      );
+
+      if (saved !== enabled || verified !== enabled) {
+        throw new Error("Permission verification failed");
+      }
+
+      setWebSearchTrusted(verified);
+    } catch {
+      setWebSearchError(
+        "Unable to save permission. Please try again."
+      );
+
+      // Do not assume a write failed without checking Runtime.
+      try {
+        const actual = await invoke<boolean>(
+          "get_web_search_trust",
+        );
+        setWebSearchTrusted(actual);
+      } catch {
+        setWebSearchTrusted(null);
+      }
+    } finally {
+      setWebSearchSaving(false);
+    }
+  }
+
   return (
     <section className="page-section">
       <div className="page-heading settings-page-heading">
@@ -64,7 +134,7 @@ function SettingsPage({
           ["My AI", "Providers, accounts and models", "My AI"],
           ["Agents", "OpenClaw, Hermes and custom agents", "Agents"],
           ["Skills", "MCP servers and tool connections", "MCP"],
-          ["Local models", "Ollama models on this Mac", "Models"],
+          ["Local models", "Local models powered by oMLX", "Models"],
         ].map(([title, description, page]) => (
           <button
             key={title}
@@ -242,48 +312,65 @@ function SettingsPage({
               }
             />
           </label>
-
-          <label className="setting-field">
-            <span>
-              Ollama URL
-            </span>
-
-            <input
-              type="url"
-              value={
-                settings.ollamaUrl
-              }
-              placeholder="http://localhost:11434"
-              onChange={(event) =>
-                onUpdateSetting(
-                  "ollamaUrl",
-                  event.target.value,
-                )
-              }
-            />
-          </label>
-
-          <label className="setting-field">
-            <span>
-              Open WebUI URL
-            </span>
-
-            <input
-              type="url"
-              value={
-                settings.openWebUiUrl
-              }
-              placeholder="http://localhost:3000"
-              onChange={(event) =>
-                onUpdateSetting(
-                  "openWebUiUrl",
-                  event.target.value,
-                )
-              }
-            />
-          </label>
         </div>
+        <div className="settings-card" style={cardStyle}>
+          <div className="settings-group-header">
+            <div>
+              <h3>Web Search Permissions</h3>
+              <p>
+                Control automatic access to public web search.
+              </p>
+            </div>
+            <span aria-hidden="true">🔎</span>
+          </div>
 
+          <label className="setting-field">
+            <span>Always allow public web search</span>
+            <small>
+              When enabled, AI-OS can run browser.search
+              without asking every time. This does not
+              authorize other browser actions, file changes,
+              messages, payments, or computer control.
+            </small>
+
+            <select
+              aria-label="Public web search permission"
+              value={
+                webSearchTrusted === null
+                  ? "unknown"
+                  : webSearchTrusted
+                    ? "allowed"
+                    : "ask"
+              }
+              disabled={
+                webSearchSaving || webSearchTrusted === null
+              }
+              onChange={(event) => {
+                void updateWebSearchTrust(
+                  event.target.value === "allowed",
+                );
+              }}
+            >
+              {webSearchTrusted === null && (
+                <option value="unknown">
+                  Permission status unavailable
+                </option>
+              )}
+              <option value="ask">Ask before searching</option>
+              <option value="allowed">
+                Always allow public web search
+              </option>
+            </select>
+          </label>
+
+          {webSearchSaving && (
+            <p role="status">Saving permission…</p>
+          )}
+
+          {webSearchError && (
+            <p role="alert">{webSearchError}</p>
+          )}
+        </div>
 
         <div
           className="settings-card settings-about-card"

@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_runtime_ids() {
         assert_eq!(
-            validate_request(&request(&["ollama", "ollama"]))
+            validate_request(&request(&["test-runtime-a", "test-runtime-a"]))
                 .unwrap_err()
                 .code,
             RuntimeErrorCode::InvalidConfiguration
@@ -242,6 +242,6 @@ mod tests {
 
     #[test]
     fn accepts_ordered_unique_runtime_ids() {
-        assert!(validate_request(&request(&["docker-desktop", "ollama"])).is_ok());
+        assert!(validate_request(&request(&["test-runtime-b", "test-runtime-a"])).is_ok());
     }
 }

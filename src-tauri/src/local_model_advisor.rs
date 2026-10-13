@@ -81,6 +81,7 @@ pub(crate) struct ModelFitAssessment {
     pub expected_tokens_per_second: Option<f64>,
     pub provider_compatible: Option<bool>,
     pub confidence: String,
+    pub score: Option<f64>,
     pub evidence: Vec<String>,
     pub source: String,
 }
@@ -416,12 +417,6 @@ fn provider_compatible(provider_id: &str, model: &Value) -> Option<bool> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     match provider.as_str() {
-        "ollama" => Some(
-            model
-                .get("ollama_name")
-                .is_some_and(|value| !value.is_null())
-                || runtime.contains("llama"),
-        ),
         "omlx" => Some(
             runtime.contains("mlx")
                 || string_field(model, &["best_quant"])
@@ -464,6 +459,7 @@ fn unknown_assessment(reference: &LocalModelReference, reason: String) -> ModelF
         expected_tokens_per_second: None,
         provider_compatible: None,
         confidence: "unsupported".to_owned(),
+        score: None,
         evidence: vec![reason],
         source: ADVISOR_SOURCE.to_owned(),
     }
@@ -471,25 +467,57 @@ fn unknown_assessment(reference: &LocalModelReference, reason: String) -> ModelF
 
 fn assessment_from_model(reference: &LocalModelReference, model: &Value) -> ModelFitAssessment {
     let upstream_fit = string_field(model, &["fit_level", "fit_label"]);
-    let fit = fit_level(upstream_fit.as_deref());
+    let suggested_quant = string_field(model, &["best_quant"]);
+    let id = reference.model_id.to_ascii_lowercase();
+
+    let installed_quant = reference.quantization.clone().or_else(|| {
+        if id.ends_with("-4bit") {
+            Some("4bit".to_owned())
+        } else if id.ends_with("-8bit") {
+            Some("8bit".to_owned())
+        } else {
+            None
+        }
+    });
+
+    let mismatch = installed_quant
+        .as_deref()
+        .zip(suggested_quant.as_deref())
+        .is_some_and(|(actual, suggested)| {
+            let actual = actual.to_ascii_lowercase();
+            let suggested = suggested.to_ascii_lowercase();
+            (actual.contains("4bit") || actual.starts_with("q4"))
+                && !(suggested.contains("4bit") || suggested.starts_with("q4"))
+                || (actual.contains("8bit") || actual.starts_with("q8"))
+                    && !(suggested.contains("8bit") || suggested.starts_with("q8"))
+        });
+
+    let mut evidence = model_evidence(model);
+    if mismatch {
+        evidence.push(format!(
+            "Installed quantization retained; llmfit recommends {} for future acquisition",
+            suggested_quant.as_deref().unwrap_or("another quantization")
+        ));
+    }
+
     ModelFitAssessment {
         provider_id: reference.provider_id.clone(),
         requested_model_id: reference.model_id.clone(),
         resolved_model_id: string_field(model, &["name"]),
         parameter_size: string_field(model, &["parameter_count"])
             .or_else(|| reference.parameter_size.clone()),
-        quantization: string_field(model, &["best_quant"])
-            .or_else(|| reference.quantization.clone()),
+        quantization: installed_quant.or(suggested_quant),
         estimated_memory_gb: f64_field(model, "memory_required_gb")
             .or_else(|| f64_field(model, "total_memory_gb")),
-        fit,
+        fit: fit_level(upstream_fit.as_deref()),
         fit_label: upstream_fit.unwrap_or_else(|| "Unknown".to_owned()),
         recommended_context: u64_field(model, &["usable_context", "effective_context_length"]),
         expected_tokens_per_second: f64_field(model, "estimated_tps"),
         provider_compatible: provider_compatible(&reference.provider_id, model),
         confidence: string_field(model, &["estimate_confidence"])
             .unwrap_or_else(|| "unknown".to_owned()),
-        evidence: model_evidence(model),
+        score: f64_field(model, "score").filter(|score| score.is_finite()),
+        evidence,
         source: ADVISOR_SOURCE.to_owned(),
     }
 }
@@ -500,17 +528,43 @@ fn assess_with(cli: &LlmfitCli, reference: &LocalModelReference) -> ModelFitAsse
         reference.model_id.clone(),
         "--json".to_owned(),
     ];
-    match cli.json(&arguments) {
-        Ok(value) => value
-            .get("models")
-            .and_then(Value::as_array)
-            .and_then(|models| models.first())
-            .map(|model| assessment_from_model(reference, model))
-            .unwrap_or_else(|| {
-                unknown_assessment(reference, "llmfit returned no matching model".to_owned())
-            }),
-        Err(reason) => unknown_assessment(reference, reason),
+
+    let value = match cli.json(&arguments) {
+        Ok(value) => value,
+        Err(reason) => return unknown_assessment(reference, reason),
+    };
+
+    let Some(models) = value.get("models").and_then(Value::as_array) else {
+        return unknown_assessment(reference, "llmfit returned no models".to_owned());
+    };
+
+    let requested = reference.model_id.trim().to_ascii_lowercase();
+
+    let matches = models
+        .iter()
+        .filter(|model| {
+            let Some(name) = model.get("name").and_then(Value::as_str) else {
+                return false;
+            };
+
+            let resolved = name.trim().to_ascii_lowercase();
+
+            if requested.contains('/') {
+                resolved == requested
+            } else {
+                resolved.rsplit('/').next() == Some(requested.as_str())
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if matches.len() != 1 {
+        return unknown_assessment(
+            reference,
+            format!("llmfit model identity mismatch: {} matches", matches.len()),
+        );
     }
+
+    assessment_from_model(reference, matches[0])
 }
 
 #[tauri::command]
@@ -524,7 +578,9 @@ pub(crate) fn assess_local_model(model: LocalModelReference) -> ModelFitAssessme
                 .unwrap_or_else(|| "llmfit is unavailable".to_owned()),
         ),
     };
-    remember_route_evidence(&assessment, None);
+
+    remember_route_evidence(&assessment, assessment.score);
+
     assessment
 }
 
@@ -563,7 +619,7 @@ pub(crate) fn assess_installed_local_models(
         })
         .collect::<Vec<_>>();
     for assessment in &assessments {
-        remember_route_evidence(assessment, None);
+        remember_route_evidence(assessment, assessment.score);
     }
     InstalledModelAssessmentReport {
         machine,
@@ -595,20 +651,11 @@ fn use_case(request: &LocalModelRecommendationRequest) -> Option<&'static str> {
 
 fn provider_compatibility(model: &Value) -> Vec<String> {
     let mut providers = Vec::new();
-    if model
-        .get("ollama_name")
-        .is_some_and(|value| !value.is_null())
-    {
-        providers.push("ollama".to_owned());
-    }
     let runtime = string_field(model, &["runtime"])
         .unwrap_or_default()
         .to_ascii_lowercase();
     if runtime.contains("mlx") {
         providers.push("omlx".to_owned());
-    }
-    if runtime.contains("llama") && !providers.iter().any(|value| value == "ollama") {
-        providers.push("ollama".to_owned());
     }
     providers
 }
@@ -630,7 +677,7 @@ fn recommendation_from_model(rank: usize, model: &Value) -> LocalModelRecommenda
         confidence: string_field(model, &["estimate_confidence"])
             .unwrap_or_else(|| "unknown".to_owned()),
         evidence: model_evidence(model),
-        acquisition_model_id: string_field(model, &["ollama_name"]).or(Some(model_id)),
+        acquisition_model_id: Some(model_id),
     }
 }
 
@@ -655,9 +702,6 @@ pub(crate) fn recommend_local_models(
         }
         match request.preferred_local_provider.as_deref() {
             Some("omlx") => arguments.extend(["--runtime".to_owned(), "mlx".to_owned()]),
-            Some("ollama") => {
-                arguments.extend(["--force-runtime".to_owned(), "llamacpp".to_owned()])
-            }
             _ => {}
         }
         if request
@@ -720,7 +764,6 @@ mod tests {
             "estimated_tps": 24.5,
             "estimate_confidence": "estimated",
             "runtime": runtime,
-            "ollama_name": "qwen-coder:7b",
             "score": 88.0,
             "notes": ["fixture evidence"]
         })
@@ -736,18 +779,81 @@ mod tests {
     }
 
     #[test]
-    fn installed_ollama_model_is_assessed_instead_of_assumed_suitable() {
-        let assessment = assessment_from_model(
-            &reference("ollama", "qwen-coder:7b"),
-            &model("Good", "llama.cpp", 5.4, 32768),
-        );
+    fn valid_model_score_is_preserved() {
+        let mut candidate = model("Good", "MLX", 5.4, 8192);
+        candidate["best_quant"] = serde_json::json!("mlx-4bit");
+        candidate["score"] = serde_json::json!(87.5);
+
+        let assessment =
+            assessment_from_model(&reference("omlx", "example/score-test-4bit"), &candidate);
 
         assert_eq!(assessment.fit, ModelFitLevel::Fit);
-        assert_eq!(assessment.quantization.as_deref(), Some("Q4_K_M"));
-        assert_eq!(assessment.recommended_context, Some(32768));
-        assert_eq!(assessment.estimated_memory_gb, Some(5.4));
+        assert_eq!(assessment.score, Some(87.5));
+    }
+
+    #[test]
+    fn installed_quantization_does_not_discard_llmfit_score() {
+        let mut candidate = model("Good", "MLX", 8.5, 8192);
+        candidate["best_quant"] = serde_json::json!("mlx-8bit");
+        candidate["score"] = serde_json::json!(99.0);
+
+        let assessment =
+            assessment_from_model(&reference("omlx", "example/score-test-4bit"), &candidate);
+
+        assert_eq!(assessment.fit, ModelFitLevel::Fit);
+        assert_eq!(assessment.score, Some(99.0));
+    }
+
+    #[test]
+    fn model_score_cache_preserves_valid_evidence() {
+        let mut candidate = model("Good", "MLX", 5.4, 8192);
+        candidate["best_quant"] = serde_json::json!("mlx-4bit");
+        candidate["score"] = serde_json::json!(82.0);
+
+        let assessment =
+            assessment_from_model(&reference("omlx", "example/cache-test-4bit"), &candidate);
+
+        remember_route_evidence(&assessment, assessment.score);
+
+        let cached = cached_route_evidence();
+        let key = ("omlx".to_owned(), "example/cache-test-4bit".to_owned());
+
+        let evidence = cached.get(&key).expect("route evidence must exist");
+
+        assert_eq!(evidence.fit, ModelFitLevel::Fit);
+        assert_eq!(evidence.score, Some(82.0));
+    }
+
+    #[test]
+    fn installed_quantization_keeps_hardware_fit_evidence() {
+        let mut model = model("Good", "MLX", 8.55, 8192);
+        model["best_quant"] = serde_json::json!("mlx-8bit");
+
+        let assessment =
+            assessment_from_model(&reference("omlx", "example/test-model-4bit"), &model);
+
+        assert_eq!(assessment.quantization.as_deref(), Some("4bit"));
+        assert_eq!(assessment.fit, ModelFitLevel::Fit);
+        assert_eq!(assessment.estimated_memory_gb, Some(8.55));
         assert_eq!(assessment.expected_tokens_per_second, Some(24.5));
-        assert_eq!(assessment.provider_compatible, Some(true));
+        assert_eq!(assessment.confidence, "estimated");
+        assert!(assessment
+            .evidence
+            .iter()
+            .any(|item| item.contains("llmfit recommends mlx-8bit")));
+    }
+
+    #[test]
+    fn matching_installed_quantization_preserves_fit() {
+        let mut model = model("Good", "MLX", 5.4, 8192);
+        model["best_quant"] = serde_json::json!("mlx-4bit");
+
+        let assessment =
+            assessment_from_model(&reference("omlx", "example/test-model-4bit"), &model);
+
+        assert_eq!(assessment.quantization.as_deref(), Some("4bit"));
+        assert_eq!(assessment.fit, ModelFitLevel::Fit);
+        assert_eq!(assessment.estimated_memory_gb, Some(5.4));
     }
 
     #[test]
@@ -759,14 +865,14 @@ mod tests {
 
         assert_eq!(assessment.fit, ModelFitLevel::Fit);
         assert_eq!(assessment.provider_compatible, Some(true));
-        assert_eq!(assessment.quantization.as_deref(), Some("Q4_K_M"));
+        assert_eq!(assessment.quantization.as_deref(), Some("4bit"));
     }
 
     #[test]
     fn oversized_and_marginal_models_remain_distinct() {
         let oversized = assessment_from_model(
-            &reference("ollama", "large"),
-            &model("TooTight", "llama.cpp", 80.0, 1024),
+            &reference("omlx", "large"),
+            &model("TooTight", "MLX", 80.0, 1024),
         );
         let marginal = assessment_from_model(
             &reference("omlx", "medium"),
@@ -866,10 +972,7 @@ mod tests {
         assert!(machine.total_memory_gb > 0.0);
         assert!(machine.cpu_cores > 0);
 
-        for (provider, runtime_flag, runtime) in [
-            ("omlx", "--runtime", "mlx"),
-            ("ollama", "--force-runtime", "llamacpp"),
-        ] {
+        for (provider, runtime_flag, runtime) in [("omlx", "--runtime", "mlx")] {
             let response = cli
                 .json(&[
                     "recommend".to_owned(),

@@ -9,9 +9,6 @@ export const DEFAULT_SETTINGS: Settings = {
   refreshInterval: 5,
   theme: "dark",
   openClawUrl: "http://localhost:18789",
-  openWebUiUrl: "http://localhost:3000",
-  ollamaUrl: "http://localhost:11434",
-  autoOpenWebUi: false,
 };
 
 export const INITIAL_SERVICES: Service[] = [
@@ -19,27 +16,6 @@ export const INITIAL_SERVICES: Service[] = [
     name: "OpenClaw",
     icon: "🤖",
     description: "Local AI gateway",
-    status: "Unknown",
-    canOpen: true,
-  },
-  {
-    name: "Ollama",
-    icon: "🦙",
-    description: "Local model runtime",
-    status: "Unknown",
-    canOpen: true,
-  },
-  {
-    name: "Docker",
-    icon: "🐳",
-    description: "Container runtime",
-    status: "Unknown",
-    canOpen: false,
-  },
-  {
-    name: "Open WebUI",
-    icon: "🌐",
-    description: "Browser AI workspace",
     status: "Unknown",
     canOpen: true,
   },

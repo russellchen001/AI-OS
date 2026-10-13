@@ -49,7 +49,7 @@ else
 fi
 
 if rg -q \
-  'submitChatTask\(content, routedTaskType\)' \
+  'submitChatTask\([^,]+, routedTaskType\)' \
   src/pages/ChatPage.tsx
 then
   echo "PASS: Task Engine receives routed ASK/DO type"

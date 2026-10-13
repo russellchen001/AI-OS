@@ -17,6 +17,7 @@ mod generative_media;
 mod google_workspace;
 mod health;
 mod keychain_trace;
+mod knowledge;
 mod local_model_advisor;
 mod logs;
 mod macos_permissions;
@@ -164,6 +165,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            runtime::trusted_automation::get_web_search_trust,
+            runtime::trusted_automation::set_web_search_trust,
             greet,
             commerce_provider::list_commerce_provider_capabilities,
             connections::list_connection_capabilities,
@@ -221,12 +224,6 @@ pub fn run() {
             email_calendar::prepare_native_mail_send_confirmation,
             email_calendar::send_native_mail_after_confirmation,
             email_calendar::create_mail_draft,
-            models::list_ollama_models,
-            models::pull_ollama_model,
-            models::delete_ollama_model,
-            models::run_ollama_model,
-            models::show_ollama_model,
-            models::show_ollama_model_in_finder,
             local_model_advisor::get_local_model_advisor_status,
             local_model_advisor::get_local_machine_profile,
             local_model_advisor::recommend_local_models,
@@ -310,6 +307,7 @@ pub fn run() {
             providers::start_omlx_runtime,
             providers::configure_omlx_openclaw_execution,
             providers::list_omlx_admin_models,
+            providers::test_omlx_model,
             providers::show_omlx_model,
             providers::show_omlx_model_in_finder,
             providers::delete_omlx_model,
@@ -341,6 +339,13 @@ pub fn run() {
             memory::save_memory,
             memory::list_memory,
             memory::delete_memory,
+            knowledge::list_knowledge_projects,
+            knowledge::save_knowledge_project,
+            knowledge::delete_knowledge_project,
+            knowledge::list_knowledge_sources,
+            knowledge::index_knowledge_source,
+            knowledge::remove_knowledge_source,
+            knowledge::search_knowledge,
             remote_linco::get_remote_linco_bridge_status,
             remote_linco::complete_remote_linco_request,
         ])

@@ -36,6 +36,49 @@ export function classifySemanticIntent(
     };
   }
 
+  const standaloneConversationPatterns: RegExp[] = [
+    /^(hi|hello|hey|hello again|hi again|hey again)[!.? ]*$/i,
+    /^(你好|你好啊|你好呀|嗨|在吗)[！!。.?？ ]*$/u,
+    /^(thanks|thank you|thx|谢谢|多谢)[！!。.?？ ]*$/iu,
+  ];
+
+  if (containsAny(text, standaloneConversationPatterns)) {
+    return {
+      taskType: "ASK",
+      reason:
+        "The request is a standalone conversational turn and does not require execution.",
+    };
+  }
+
+  // Conversation recall uses existing context, not external execution.
+  const conversationRecallPatterns: RegExp[] = [
+    /^(?:我|我们)?(?:刚才|之前|前面|上面)(?:在)?(?:说|聊|讨论|研究|提到)(?:了)?(?:什么|哪些|什么内容)[？?。.!！]*$/u,
+    /^(?:我|我们)(?:刚才|之前|前面)(?:在)?(?:研究|讨论|聊)(?:的)?(?:是)?什么[？?。.!！]*$/u,
+    /^你(?:还)?记得(?:我|我们)(?:刚才|之前|前面)(?:说|聊|提到)(?:了)?什么(?:吗)?[？?。.!！]*$/u,
+    /^(?:帮我|请|请你)?(?:总结|回顾|概括)(?:一下)?(?:我们|我)?(?:刚才|之前|前面)(?:的)?(?:对话|聊天|讨论|内容)[？?。.!！]*$/u,
+    /^(?:what (?:was i|were we) (?:just )?(?:discussing|researching|talking about)|what did (?:i|we) (?:just )?say)[?.! ]*$/i,
+  ];
+
+  if (containsAny(text, conversationRecallPatterns)) {
+    return {
+      taskType: "ASK",
+      reason: "The request asks about existing conversation context.",
+    };
+  }
+
+  // Chinese 把/将 constructions with concrete external actions.
+  // Pure questions about the conversation are deliberately excluded.
+  const objectActionPatterns: RegExp[] = [
+    /^(?:请|请你|帮我|麻烦你)?\s*(?:把|将).{1,100}(?:保存(?:为|到|进)|写入|导出(?:为|到)?|移动(?:到|至)|复制(?:到|至)|上传(?:到|至)|发送(?:给|到)|删除|重命名(?:为)?|同步(?:到|至)|添加(?:到|至)|导入(?:到|至)).{0,100}$/u,
+  ];
+
+  if (containsAny(text, objectActionPatterns)) {
+    return {
+      taskType: "DO",
+      reason: "The request explicitly asks to modify or deliver an artifact or external state.",
+    };
+  }
+
   const conceptualAskPatterns: RegExp[] = [
     /^(什么是|什么叫|何为|介绍一下|解释一下|解释|为什么|为何|怎么理解)/u,
     /(有什么区别|有何区别|区别是什么|优缺点|利弊|区别在哪)/u,
@@ -57,8 +100,8 @@ export function classifySemanticIntent(
   ];
 
   const systemObjectPatterns: RegExp[] = [
-    /(nas|硬盘|磁盘|存储|空间|容量|文件|文件夹|downloads|下载目录|邮件|邮箱|日历|浏览器|网页|模型|ollama|omlx|comfyui|应用|程序|电脑|mac|系统|服务器|账户|账号)/iu,
-    /\b(nas|disk|drive|storage|file|folder|downloads|email|mail|calendar|browser|webpage|model|ollama|omlx|comfyui|application|computer|server|account)\b/i,
+    /(nas|硬盘|磁盘|存储|空间|容量|文件|文件夹|downloads|下载目录|邮件|邮箱|日历|浏览器|网页|模型|omlx|comfyui|应用|程序|电脑|mac|系统|服务器|账户|账号)/iu,
+    /\b(nas|disk|drive|storage|file|folder|downloads|email|mail|calendar|browser|webpage|model|omlx|comfyui|application|computer|server|account)\b/i,
   ];
 
   const advisoryExecutionConflictPatterns: RegExp[] = [
@@ -107,4 +150,18 @@ export function classifySemanticIntent(
   }
 
   return undefined;
+}
+
+
+/**
+ * Detect questions about the CURRENT conversation.
+ * Reuses the established semantic recall rules.
+ */
+export function isConversationRecallQuestion(
+  request: string,
+): boolean {
+  const result = classifySemanticIntent(request);
+
+  return result?.taskType === "ASK" &&
+    result.reason === "The request asks about existing conversation context.";
 }

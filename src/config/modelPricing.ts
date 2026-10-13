@@ -41,16 +41,6 @@ export const MODEL_PRICING:
     source: "official",
     updatedAt: "2026-07-18",
   },
-  {
-    provider: "ollama",
-    model: "*",
-    inputPerMillion: 0,
-    outputPerMillion: 0,
-    currency: "USD",
-    source: "custom",
-    updatedAt: "2026-07-18",
-  },
-
   /*
    * Exact GPT-5.6 tiers are supported here, but the current
    * configured model "gpt-5.6" does not identify Sol/Terra/Luna.

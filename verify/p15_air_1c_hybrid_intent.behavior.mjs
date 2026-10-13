@@ -26,16 +26,26 @@ function expectUnresolved(input) {
 
 expectIntent("", "ASK");
 expectIntent("什么是 KNX？", "ASK");
-expectIntent("比较一下 Ollama 和 oMLX", "ASK");
+expectIntent("比较一下 oMLX 和 ComfyUI", "ASK");
 expectIntent("你建议我怎么整理我的 NAS 文件？", "ASK");
-expectIntent("What is Ollama?", "ASK");
+expectIntent("What is oMLX?", "ASK");
 
 expectIntent("帮我查看这台电脑的磁盘空间", "DO");
 expectIntent("请删除这个文件", "DO");
 expectIntent("检查我现在的 NAS 可用空间", "DO");
 expectIntent("Check my current disk space", "DO");
 
-expectUnresolved("你好");
+expectIntent("你好", "ASK");
+
+expectIntent("我刚才在研究什么？", "ASK");
+expectIntent("我们刚才聊了什么？", "ASK");
+expectIntent("你还记得我刚才说了什么吗？", "ASK");
+expectIntent("帮我总结刚才的对话", "ASK");
+
+expectIntent("打开刚才提到的文件", "DO");
+expectIntent("把刚才的内容保存为文档", "DO");
+expectIntent("把这个文件移动到下载目录", "DO");
+expectIntent("将报告导出为 PDF", "DO");
 expectUnresolved("帮我写一首诗");
 
 console.log("PASS: AIR-1C canonical semantic intent behavior");

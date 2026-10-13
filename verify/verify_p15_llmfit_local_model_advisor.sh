@@ -27,8 +27,6 @@ run_test() {
 echo "P15 llmfit Local Model Advisor"
 
 if (cd src-tauri && cargo test --lib local_model_advisor::tests) >"$LOG" 2>&1; then
-  grep -F "test local_model_advisor::tests::installed_ollama_model_is_assessed_instead_of_assumed_suitable ... ok" "$LOG" >/dev/null \
-    || fail "installed Ollama assessment did not execute"
   grep -F "test local_model_advisor::tests::installed_omlx_model_is_assessed_with_mlx_compatibility ... ok" "$LOG" >/dev/null \
     || fail "installed oMLX assessment did not execute"
   grep -F "test local_model_advisor::tests::oversized_and_marginal_models_remain_distinct ... ok" "$LOG" >/dev/null \
@@ -56,7 +54,7 @@ if ! command -v llmfit >/dev/null 2>&1; then
   fail "official llmfit CLI is unavailable for the real smoke"
 fi
 run_test \
-  "real machine, recommendation, Ollama, and oMLX fit smoke" \
+  "real machine, recommendation, and oMLX fit smoke" \
   "local_model_advisor::tests::real_llmfit_machine_recommendation_and_fit_smoke" \
   -- --ignored --exact
 

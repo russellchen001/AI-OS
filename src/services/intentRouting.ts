@@ -3,6 +3,9 @@ import {
   type AiCenterModelChoice,
 } from "./aiCenter";
 import { classifySemanticIntent } from "./intentSemantic";
+import {
+  publicProductRoutingIntent,
+} from "./publicFactGrounding";
 
 export { classifySemanticIntent } from "./intentSemantic";
 
@@ -123,6 +126,29 @@ export async function classifyAutomaticIntent(
 ): Promise<AutomaticIntentResult> {
   const content = userRequest.trim();
 
+  const productIntent = publicProductRoutingIntent(content);
+  if (productIntent) {
+    return {
+      taskType: productIntent.taskType,
+      source: "semantic-rule",
+      reason:
+        productIntent.taskType === "DO"
+          ? "A public product identifier requires bounded fact verification."
+          : "A product mention without a fact or search request remains conversation.",
+    };
+  }
+
+  const explicitPublicWebSearch =
+    /^(?:(?:请|请你|帮我|给我|麻烦你|现在|立即|直接)\s*)*(?:联网搜索|网上搜索|搜索(?:一下|下)?|查一下|查找|查查|检索|上网查|上网搜索|搜一下|搜搜|search(?: the web| online| for)?|look up|google|browse the web)(?=\s|[：:,，。！？?]|[\u4e00-\u9fff]|$)/iu.test(content);
+
+  if (explicitPublicWebSearch) {
+    return {
+      taskType: "DO",
+      source: "semantic-rule",
+      reason: "Explicit request to perform public web search.",
+    };
+  }
+
   const semantic = classifySemanticIntent(content);
   if (semantic) {
     return {
@@ -143,6 +169,9 @@ export async function classifyAutomaticIntent(
           "USER_REQUEST",
         ].join("\n"),
         selectedModel,
+        // The 1,300-character router instructions must not count as a
+        // "complex" request: Auto ranks by the user's own words (Local First).
+        content,
       ),
     );
 

@@ -655,13 +655,13 @@ mod tests {
         let manager = RuntimeOperationManager::default();
         assert!(matches!(
             manager
-                .admit_operation("ollama", RuntimeOperationAction::Open, false)
+                .admit_operation("test-runtime-a", RuntimeOperationAction::Open, false)
                 .unwrap(),
             RuntimeOperationAdmission::Accepted { .. }
         ));
 
         let error = RuntimeOperationManager::default()
-            .admit_operation("Ollama", RuntimeOperationAction::Open, false)
+            .admit_operation("Test-Runtime-A", RuntimeOperationAction::Open, false)
             .unwrap_err();
         assert_eq!(error.code, RuntimeErrorCode::RuntimeNotFound);
     }
@@ -670,7 +670,7 @@ mod tests {
     fn initial_snapshot_is_queued_at_revision_one() {
         let manager = RuntimeOperationManager::default();
         let snapshot = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
 
         assert_eq!(snapshot.state, RuntimeOperationState::Queued);
@@ -685,7 +685,7 @@ mod tests {
     fn queued_running_succeeded_preserves_invariants() {
         let manager = RuntimeOperationManager::default();
         let queued = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         let running = manager
             .transition_at(
@@ -722,7 +722,7 @@ mod tests {
         let manager = RuntimeOperationManager::default();
         let queued = manager
             .create_operation_at(
-                "docker-desktop",
+                "test-runtime-b",
                 RuntimeOperationAction::Stop,
                 false,
                 time(0),
@@ -756,7 +756,7 @@ mod tests {
     fn cancelling_path_is_legal_and_repeated_cancellation_is_idempotent() {
         let manager = RuntimeOperationManager::default();
         let queued = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, true, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, true, time(0))
             .unwrap();
         let cancelling = manager
             .request_cancellation_at(&queued.operation_id, time(1))
@@ -790,7 +790,7 @@ mod tests {
             )
             .is_err());
         manager
-            .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(5))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Stop, false, time(5))
             .unwrap();
     }
 
@@ -798,7 +798,7 @@ mod tests {
     fn direct_cancelling_transition_cannot_bypass_authorization() {
         let manager = RuntimeOperationManager::default();
         let queued = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         let queued_before = manager
             .get_operation_at(&queued.operation_id, time(0))
@@ -821,7 +821,7 @@ mod tests {
         );
         assert_eq!(
             manager
-                .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(1))
+                .create_operation_at("test-runtime-a", RuntimeOperationAction::Stop, false, time(1))
                 .unwrap_err()
                 .code,
             RuntimeErrorCode::OperationConflict
@@ -866,7 +866,7 @@ mod tests {
         );
         assert_eq!(
             manager
-                .create_operation_at("ollama", RuntimeOperationAction::Restart, false, time(4))
+                .create_operation_at("test-runtime-a", RuntimeOperationAction::Restart, false, time(4))
                 .unwrap_err()
                 .code,
             RuntimeErrorCode::OperationConflict
@@ -877,7 +877,7 @@ mod tests {
     fn request_cancellation_is_the_only_authorized_entry_to_cancelling() {
         let manager = RuntimeOperationManager::default();
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, true, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, true, time(0))
             .unwrap();
         assert!(manager
             .transition_at(
@@ -900,7 +900,7 @@ mod tests {
     fn cancelling_may_race_to_succeeded_and_releases_slot_once() {
         let manager = RuntimeOperationManager::default();
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, true, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, true, time(0))
             .unwrap();
         manager
             .transition_at(
@@ -943,7 +943,7 @@ mod tests {
             succeeded.revision
         );
         manager
-            .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(4))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Stop, false, time(4))
             .unwrap();
     }
 
@@ -952,7 +952,7 @@ mod tests {
         let manager = RuntimeOperationManager::default();
         let operation = manager
             .create_operation_at(
-                "docker-desktop",
+                "test-runtime-b",
                 RuntimeOperationAction::Stop,
                 true,
                 time(0),
@@ -985,7 +985,7 @@ mod tests {
         assert!(!failed.cancellable);
         manager
             .create_operation_at(
-                "docker-desktop",
+                "test-runtime-b",
                 RuntimeOperationAction::Start,
                 false,
                 time(4),
@@ -997,7 +997,7 @@ mod tests {
     fn terminal_state_rejects_later_transitions_without_revision_change() {
         let manager = RuntimeOperationManager::default();
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         manager
             .transition_at(
@@ -1042,7 +1042,7 @@ mod tests {
     fn exactly_one_competing_terminal_transition_succeeds() {
         let manager = Arc::new(RuntimeOperationManager::default());
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         manager
             .transition_at(
@@ -1097,7 +1097,7 @@ mod tests {
     fn progress_increments_revision_but_rejected_mutations_do_not() {
         let manager = RuntimeOperationManager::default();
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         let progress = manager
             .update_progress_at(
@@ -1134,14 +1134,14 @@ mod tests {
     fn conflicting_lifecycle_operations_are_excluded_per_runtime() {
         let manager = RuntimeOperationManager::default();
         let first = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         let conflict = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Stop, false, time(0))
             .unwrap_err();
         let independent = manager
             .create_operation_at(
-                "docker-desktop",
+                "test-runtime-b",
                 RuntimeOperationAction::Start,
                 false,
                 time(0),
@@ -1156,13 +1156,13 @@ mod tests {
     fn open_does_not_reserve_lifecycle_slot() {
         let manager = RuntimeOperationManager::default();
         manager
-            .create_operation_at("ollama", RuntimeOperationAction::Open, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Open, false, time(0))
             .unwrap();
         manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         manager
-            .create_operation_at("ollama", RuntimeOperationAction::Open, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Open, false, time(0))
             .unwrap();
     }
 
@@ -1170,7 +1170,7 @@ mod tests {
     fn terminal_transition_releases_lifecycle_slot() {
         let manager = RuntimeOperationManager::default();
         let first = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         manager
             .transition_at(
@@ -1182,7 +1182,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .create_operation_at("ollama", RuntimeOperationAction::Stop, false, time(1))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Stop, false, time(1))
             .unwrap();
     }
 
@@ -1190,7 +1190,7 @@ mod tests {
     fn cancellation_returns_typed_unsupported_too_late_and_not_found_errors() {
         let manager = RuntimeOperationManager::default();
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         assert_eq!(
             manager
@@ -1229,7 +1229,7 @@ mod tests {
     fn active_operations_are_never_evicted() {
         let manager = RuntimeOperationManager::default();
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         assert!(manager
             .get_operation_at(&operation.operation_id, time(10_000))
@@ -1240,7 +1240,7 @@ mod tests {
     fn expired_terminal_operations_are_removed_without_stale_slots() {
         let manager = RuntimeOperationManager::default();
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         manager
             .transition_at(
@@ -1259,7 +1259,7 @@ mod tests {
             RuntimeErrorCode::OperationNotFound
         );
         manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(32))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(32))
             .unwrap();
     }
 
@@ -1272,7 +1272,7 @@ mod tests {
         for index in 0..=MAX_TERMINAL_OPERATIONS {
             let operation = manager
                 .create_operation_at(
-                    "ollama",
+                    "test-runtime-a",
                     RuntimeOperationAction::Start,
                     false,
                     time_milliseconds(index as i64),
@@ -1313,10 +1313,10 @@ mod tests {
         let manager = RuntimeOperationManager::default();
         let first = accepted(
             manager
-                .admit_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+                .admit_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
                 .unwrap(),
         );
-        for runtime in ["openclaw", "docker-desktop", "open-webui", "cherry-studio"] {
+        for runtime in ["openclaw", "test-runtime-b", "test-runtime-c", "cherry-studio"] {
             for _ in 0..3 {
                 accepted(
                     manager
@@ -1328,13 +1328,13 @@ mod tests {
         for _ in 0..3 {
             accepted(
                 manager
-                    .admit_operation_at("ollama", RuntimeOperationAction::Open, false, time(0))
+                    .admit_operation_at("test-runtime-a", RuntimeOperationAction::Open, false, time(0))
                     .unwrap(),
             );
         }
 
         let conflict = manager
-            .admit_operation_at("ollama", RuntimeOperationAction::Stop, false, time(0))
+            .admit_operation_at("test-runtime-a", RuntimeOperationAction::Stop, false, time(0))
             .unwrap();
         assert_eq!(
             conflict,
@@ -1350,9 +1350,9 @@ mod tests {
         let manager = RuntimeOperationManager::default();
         for index in 0..MAX_ACTIVE_OPERATIONS {
             let runtime = if index % 2 == 0 {
-                "ollama"
+                "test-runtime-a"
             } else {
-                "open-webui"
+                "test-runtime-c"
             };
             assert!(matches!(
                 manager
@@ -1364,7 +1364,7 @@ mod tests {
         assert!(manager.store.lock().unwrap().lifecycle_slots.is_empty());
         let rejected = manager
             .admit_operation_at(
-                "docker-desktop",
+                "test-runtime-b",
                 RuntimeOperationAction::Open,
                 false,
                 time(0),
@@ -1386,7 +1386,7 @@ mod tests {
         for _ in 0..MAX_ACTIVE_OPERATIONS {
             operations.push(accepted(
                 manager
-                    .admit_operation_at("ollama", RuntimeOperationAction::Open, false, time(0))
+                    .admit_operation_at("test-runtime-a", RuntimeOperationAction::Open, false, time(0))
                     .unwrap(),
             ));
         }
@@ -1402,7 +1402,7 @@ mod tests {
         assert!(matches!(
             manager
                 .admit_operation_at(
-                    "docker-desktop",
+                    "test-runtime-b",
                     RuntimeOperationAction::Open,
                     false,
                     time(1),
@@ -1422,12 +1422,12 @@ mod tests {
                     "missing" => {
                         store
                             .lifecycle_slots
-                            .insert("ollama".to_string(), "missing".to_string());
+                            .insert("test-runtime-a".to_string(), "missing".to_string());
                     }
                     "terminal" => {
                         let operation = RuntimeOperationSnapshot {
                             operation_id: "terminal".to_string(),
-                            runtime_id: "ollama".to_string(),
+                            runtime_id: "test-runtime-a".to_string(),
                             action: RuntimeOperationAction::Start,
                             state: RuntimeOperationState::Failed,
                             revision: 2,
@@ -1443,7 +1443,7 @@ mod tests {
                         store.operations.insert("terminal".to_string(), operation);
                         store
                             .lifecycle_slots
-                            .insert("ollama".to_string(), "terminal".to_string());
+                            .insert("test-runtime-a".to_string(), "terminal".to_string());
                     }
                     "wrong-runtime" => {
                         let operation = RuntimeOperationSnapshot {
@@ -1464,18 +1464,18 @@ mod tests {
                         store.operations.insert("wrong".to_string(), operation);
                         store
                             .lifecycle_slots
-                            .insert("ollama".to_string(), "wrong".to_string());
+                            .insert("test-runtime-a".to_string(), "wrong".to_string());
                     }
                     _ => unreachable!(),
                 }
             }
             let operation = accepted(
                 manager
-                    .admit_operation_at("ollama", RuntimeOperationAction::Stop, false, time(1))
+                    .admit_operation_at("test-runtime-a", RuntimeOperationAction::Stop, false, time(1))
                     .unwrap(),
             );
             assert_eq!(
-                manager.store.lock().unwrap().lifecycle_slots.get("ollama"),
+                manager.store.lock().unwrap().lifecycle_slots.get("test-runtime-a"),
                 Some(&operation.operation_id)
             );
         }
@@ -1485,7 +1485,7 @@ mod tests {
     fn duplicate_progress_is_explicitly_unchanged() {
         let manager = RuntimeOperationManager::default();
         let operation = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         let value = RuntimeOperationProgress {
             phase: "validating".to_string(),
@@ -1547,7 +1547,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 barrier.wait();
                 manager
-                    .admit_operation("ollama", RuntimeOperationAction::Start, false)
+                    .admit_operation("test-runtime-a", RuntimeOperationAction::Start, false)
                     .unwrap()
             }));
         }
@@ -1578,7 +1578,7 @@ mod tests {
             RuntimeOperationAdmission::Rejected { .. } => false,
         }));
         assert_eq!(
-            manager.store.lock().unwrap().lifecycle_slots.get("ollama"),
+            manager.store.lock().unwrap().lifecycle_slots.get("test-runtime-a"),
             Some(&accepted.operation_id)
         );
     }
@@ -1594,9 +1594,9 @@ mod tests {
             handles.push(thread::spawn(move || {
                 barrier.wait();
                 let runtime = if index % 2 == 0 {
-                    "ollama"
+                    "test-runtime-a"
                 } else {
-                    "open-webui"
+                    "test-runtime-c"
                 };
                 manager
                     .admit_operation(runtime, RuntimeOperationAction::Open, false)
@@ -1620,10 +1620,10 @@ mod tests {
     fn admission_serialization_is_canonical_and_contains_no_execution_details() {
         let manager = RuntimeOperationManager::default();
         let accepted = manager
-            .admit_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .admit_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         let conflict = manager
-            .admit_operation_at("ollama", RuntimeOperationAction::Stop, false, time(0))
+            .admit_operation_at("test-runtime-a", RuntimeOperationAction::Stop, false, time(0))
             .unwrap();
         let accepted_json = serde_json::to_value(&accepted).unwrap();
         let conflict_json = serde_json::to_value(&conflict).unwrap();
@@ -1658,7 +1658,7 @@ mod tests {
     fn json_contract_uses_typescript_compatible_names_and_safe_errors() {
         let manager = RuntimeOperationManager::default();
         let snapshot = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Restart, false, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Restart, false, time(0))
             .unwrap();
         let event = super::super::models::RuntimeOperationEvent {
             version: 1,
@@ -1690,7 +1690,7 @@ mod tests {
     fn cancellation_outcome_distinguishes_applied_from_idempotent_unchanged() {
         let manager = RuntimeOperationManager::default();
         let queued = manager
-            .create_operation_at("ollama", RuntimeOperationAction::Open, true, time(0))
+            .create_operation_at("test-runtime-a", RuntimeOperationAction::Open, true, time(0))
             .unwrap();
 
         let applied = manager
@@ -1719,7 +1719,7 @@ mod tests {
     fn bulk_and_individual_lifecycle_admission_are_mutually_exclusive() {
         let manager = RuntimeOperationManager::default();
         let individual = manager
-            .admit_operation_at("ollama", RuntimeOperationAction::Start, false, time(0))
+            .admit_operation_at("test-runtime-a", RuntimeOperationAction::Start, false, time(0))
             .unwrap();
         let bulk = manager
             .admit_operation_at(
