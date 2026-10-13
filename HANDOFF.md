@@ -1,6 +1,6 @@
 <!-- BETA41_HANDOFF_START -->
 
-# AI-OS Beta 4.1 — ACTIVE HANDOFF / BLOCKED
+# AI-OS Beta 4.1 — FINAL HANDOFF / ARCHIVED
 
 **Last updated:** 2026-10-14
 
@@ -8,14 +8,78 @@
 
 **Status:** `COMPLETE — OWNER ACCEPTED ON 2026-10-14`
 
-Final DMG SHA-256 `c180139723bb4578b80df07cd5e90b65bcb3ba8d1dda66cc8c22b6523585b0d2` (§12). Ad-hoc signed only; not notarized, committed, pushed, tagged or published.
+Final archive DMG SHA-256 `22d12f21011f42cef37a9f5ae43d45daf8c89f960bcd5fc61d9148f3fb78d11d` (§12). It contains the owner-accepted implementation plus dependency-only security updates.
+The accepted implementation baseline was committed as `2adce26` and pushed to `origin/fix/beta1-clean-install-chat-menu` on 2026-10-14. Ad-hoc signed only; not notarized or published.
 
-**Priority:** Resolve the two remaining interaction/search bugs.
-Do not add new features or create Beta 4.2.
+## 0. Residual Risks (as of 2026-10-14)
+
+Beta 4.1 is functionally accepted. None of the items below blocks it, but
+none of them is resolved. Fix them in a later beta; do not reopen Beta 4.1's
+scope.
+
+### Product behaviour
+1. **Product questions are slow.** Qwen2.5-7B-Instruct-4bit replied
+   `NEED_SEARCH` even for DS925+, so brand and spec questions nearly always take
+   the search path: 50–70 s end to end (OpenClaw execution plus the grounding
+   pass). Ordinary chat takes 1–2 s.
+2. **Local summaries are thin.** When the local model restates search evidence,
+   its answer is short ("…最多支持 9 块硬盘，其余参数请看官网"). The cloud model was
+   more complete, but Local First takes precedence.
+3. **A confident wrong answer is not caught.** If the model answers instead of
+   replying `NEED_SEARCH`, its answer is shown unverified. Earlier the local
+   model named QNAP for DS925+, and invented "Surveillanceervlet" for a
+   background mention before the guard existed.
+4. **Source selection is heuristic.** Look-alike detection compares each host
+   with the other results' site names and approximates registrable domains
+   without a public-suffix list. A look-alike that is the only result for a
+   product, or a manufacturer whose site name differs from its brand, is not
+   caught.
+5. **Unexplained diagnostic.** `~/.ai-os/logs/ai-os.log` logs `trusted
+   automation disabled: configuration file malformed` on every launch (671
+   times so far), yet `~/Library/Application Support/AI OS/trusted-automation.json`
+   is valid JSON matching `TrustedAutomationSettings`, with no BOM. The cause is
+   not established; if the setting is really ignored, search approval may prompt
+   when "always allow" was chosen.
+
+### Release and repository
+6. **Signing.** The DMG is ad-hoc signed only: no Developer ID, notarization or
+   GitHub release. Gatekeeper will warn other users.
+7. **Branch naming.** Beta 4.1 lives on `fix/beta1-clean-install-chat-menu`, a
+   name left over from Beta 1. The final archive tag is
+   `ai-os-v1.0.1-beta.4.1`; publishing it is a separate release action.
+8. **Diverged Beta 4 branches.** `release/beta4-rc`, `release/beta4-rc2-security`
+   and `snapshot/beta4-20261011` carry `c7d543b` and `153a831` ("update
+   vulnerable dependencies for beta4 public beta"), which are not ancestors of
+   `2adce26`. Their lockfile differs from the committed one (65+/103−).
+9. **Dependency residuals.** The final archive lockfiles include all compatible
+   non-breaking fixes. `npm audit` reports 5 low-severity KaTeX/math-chain
+   findings; the only offered fix installs KaTeX 0.19 and is a breaking change,
+   so it is deferred. `cargo audit` reports zero known vulnerabilities and 11
+   allowed upstream warnings (unmaintained, unsound or yanked transitive crates).
+10. **The commit is broad.** `2adce26` committed the never-committed Beta 3/4/4.1
+    working tree in one go (157 files). Only the Beta 4.1 blocker changes in
+    §11–§12 were reviewed in this session.
+
+### Verification gaps
+11. Cases A (background statement), D (你好) and F (Manual) were last run on DMG
+    `227e88ed…`. Their code paths are unchanged since, but they were not re-run
+    on the final build.
+12. The repository-wide gate was last recorded as 162/182 core PASS, 19 failures
+    unrelated to Beta 4.1 (§ BETA.4.1 closeout). It was not re-run.
+13. Full `cargo fmt` is still blocked by pre-existing formatting differences
+    (`runtime/web_search.rs`, `knowledge.rs`); only changed regions were kept tidy.
+14. `verify/verify_p15_air_1c_hybrid_intent.sh` uses zsh `$pipestatus` and fails
+    spuriously under `bash`; run it directly (`./verify/…`).
+15. Installed-app UI automation is unreliable: background typing into the
+    WebView drops characters after `+` and loses IME text, so acceptance input was
+    entered by the owner.
+
+**Archive rule:** Beta 4.1 is closed and must not be reopened for the residual
+items above. Do not add new features or create Beta 4.2 in this closeout.
 
 **This section is the authoritative current Beta 4.1 handoff.**
-Earlier completion reports must not override the latest real-world
-failure evidence.
+The owner acceptance and final archive evidence in this section supersede the
+historical failure descriptions below.
 
 ---
 
@@ -28,11 +92,9 @@ Beta 4.1 originally contained two primary changes:
 
 Both primary changes have been implemented.
 
-During real-world acceptance, factual-answer and search-routing
-bugs were discovered. These now block the release candidate.
-
-The next developer must complete these fixes within Beta 4.1,
-without broadening the architecture.
+During real-world acceptance, factual-answer and search-routing bugs were
+discovered. They were fixed and accepted before the final archive; the
+historical failure record is retained below for provenance only.
 
 ---
 
@@ -334,7 +396,7 @@ Beta 4.1 must not be declared complete until all of these pass:
 [x] Frontend production build passes.
 [x] Git diff integrity check passes (changed files).
 [x] Updated DMG is built and installed.
-[x] Actual installed-app interaction passes. (Assistant run plus owner-driven input; owner sign-off still pending.)
+[x] Actual installed-app interaction passes. (Assistant run plus owner-driven input; owner accepted on 2026-10-14.)
 [x] Build/installed binary identity is verified.
 [x] Release notes and HANDOFF.md reflect real status.
 [x] Final DMG SHA-256 is recorded after successful acceptance: `c180139723bb4578b80df07cd5e90b65bcb3ba8d1dda66cc8c22b6523585b0d2`.
@@ -355,7 +417,9 @@ This is a historical build identifier, NOT an accepted final build.
 
 The user subsequently reproduced BUG-41-A and BUG-41-B.
 
-Do not tag, publish, or freeze this build as successful Beta 4.1.
+Do not tag, publish, or freeze **this historical `39c0068e…` build** as
+successful Beta 4.1. This prohibition does not apply to the later accepted
+`c1801397…` build or the final dependency-security archive build.
 
 Previous reporting indicated ad-hoc signing only:
 
@@ -497,6 +561,20 @@ No cloud invocation, ad, tracking URL or look-alike domain appeared. Cases A, D 
 ### Final accepted build (supersedes §11's candidate)
 - DMG SHA-256 `c180139723bb4578b80df07cd5e90b65bcb3ba8d1dda66cc8c22b6523585b0d2`
 - Built and installed executable SHA-256 both `d5c6a74bb1e7f05b0e2b43033fd175bd60ee048e063cd4838ef95cf0d11550fc`; strict deep signature PASS (ad-hoc).
+
+### Final dependency-security archive
+- No application source was changed. `package-lock.json` received npm's
+  compatible non-breaking fixes; `Cargo.lock` updated `h2` to 0.4.16,
+  `quinn-proto` to 0.11.18 and `rustls` to 0.23.45 (plus their lockfile
+  companions).
+- `npm audit` and `npm audit --omit=dev`: 5 low findings in the KaTeX/math
+  chain; the only offered fix is breaking and is deferred.
+- `cargo audit`: zero known vulnerabilities; 11 allowed upstream warnings.
+- `cargo test --lib`: 1013 passed, 0 failed, 70 ignored. Frontend/Tauri release
+  build, strict deep-signature verification and package-data hygiene all pass.
+- Archive DMG SHA-256 `22d12f21011f42cef37a9f5ae43d45daf8c89f960bcd5fc61d9148f3fb78d11d`.
+- Archive executable SHA-256 `7fc530c94587c2c55dc531f5de729e462909552e7e9dc3a1e5f0c5e6dd173e2b`.
+- Archive tag: `ai-os-v1.0.1-beta.4.1` (local until separately published).
 
 ### Known limits
 - Qwen2.5-7B declared itself unsure even for DS925+, so product questions usually take the search path: about 50–70 s.

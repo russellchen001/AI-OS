@@ -49,8 +49,12 @@ facts with existing OpenClaw search evidence.
   official Synology page as result 1. A separate greeting remained local and
   was answered by oMLX `Qwen2.5-7B-Instruct-4bit`.
 - DMG SHA-256:
-  `c180139723bb4578b80df07cd5e90b65bcb3ba8d1dda66cc8c22b6523585b0d2`
-  (final; owner accepted on 2026-10-14. It supersedes the earlier `39c0068e…`, which was never installed.)
+  `22d12f21011f42cef37a9f5ae43d45daf8c89f960bcd5fc61d9148f3fb78d11d`
+  (final dependency-security archive. It contains the owner-accepted implementation and supersedes the accepted `c1801397…` package without application-source changes.)
 - The app and DMG pass strict deep-signature and package-data hygiene checks.
+- Compatible lockfile updates remove all known Rust vulnerabilities and reduce
+  npm findings to five low-severity KaTeX/math-chain items. The remaining npm
+  fix is breaking and is deferred.
 - The build uses an ad-hoc signature. It is not Developer ID signed, notarized,
-  uploaded, tagged or published.
+  uploaded or published. The local archive tag is
+  `ai-os-v1.0.1-beta.4.1`.
