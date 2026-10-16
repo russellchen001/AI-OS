@@ -1,9 +1,17 @@
+use dashboard_lib::cloud_drive_baidu::BaiduResolvedShare;
 use dashboard_lib::cloud_drive_core::{
-    destination_path, download_file, select_share_files, DownloadDescriptor, ShareEntry, ShareLink,
-    ShareSelection,
+    destination_path, download_file, download_file_with_client, select_share_files,
+    DownloadDescriptor, ShareEntry, ShareLink, ShareSelection,
 };
 use serde_json::{json, Value};
-use std::io::{self, BufRead, Write};
+use std::{
+    collections::HashMap,
+    io::{self, BufRead, Write},
+    sync::{Mutex, OnceLock},
+};
+use uuid::Uuid;
+
+static BAIDU_SESSIONS: OnceLock<Mutex<HashMap<String, BaiduResolvedShare>>> = OnceLock::new();
 
 fn main() {
     let stdin = io::stdin();
@@ -88,6 +96,32 @@ fn tools() -> Value {
                 },
                 "required": ["entries", "selection"]
             }
+        },
+        {
+            "name": "resolve_baidu_share",
+            "description": "Open a Baidu share with its extraction code, recursively list the real share tree and retain authorization only in process memory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string" },
+                    "extractionCode": { "type": "string" }
+                },
+                "required": ["url", "extractionCode"]
+            }
+        },
+        {
+            "name": "download_baidu_share_file",
+            "description": "Resolve one listed Baidu share file to a private descriptor and download it through the AI-OS native HTTP engine.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "itemId": { "type": "string" },
+                    "destination": { "type": "string" },
+                    "retryLimit": { "type": "integer", "minimum": 1, "maximum": 5 }
+                },
+                "required": ["sessionId", "itemId", "destination"]
+            }
         }
     ])
 }
@@ -99,6 +133,8 @@ fn call_tool(id: Value, params: Value) -> Value {
         "inspect_share_link" => inspect_share_link(arguments),
         "download_resolved_file" => download(arguments),
         "select_share_files" => select_files(arguments),
+        "resolve_baidu_share" => resolve_baidu_share(arguments),
+        "download_baidu_share_file" => download_baidu_share_file(arguments),
         _ => Err("Requested Cloud Drive MCP tool is not allowed.".to_owned()),
     };
     match result {
@@ -171,6 +207,76 @@ fn download(arguments: Value) -> Result<Value, String> {
     .map_err(|error| format!("Unable to serialize download receipt: {error}"))
 }
 
+fn resolve_baidu_share(arguments: Value) -> Result<Value, String> {
+    let url = arguments
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Baidu share URL is required.".to_owned())?;
+    let code = arguments
+        .get("extractionCode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Baidu extraction code is required.".to_owned())?;
+    let resolved = BaiduResolvedShare::resolve(ShareLink::parse(url, Some(code))?)?;
+    let entries = serde_json::to_value(resolved.entries())
+        .map_err(|error| format!("Unable to serialize Baidu share tree: {error}"))?;
+    let session_id = Uuid::new_v4().to_string();
+    let sessions = BAIDU_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut sessions = sessions
+        .lock()
+        .map_err(|_| "Baidu session store is unavailable.".to_owned())?;
+    if sessions.len() >= 8 {
+        sessions.clear();
+    }
+    sessions.insert(session_id.clone(), resolved);
+    Ok(json!({
+        "provider": "baidu",
+        "sessionId": session_id,
+        "entries": entries,
+        "authorizationStorage": "process-memory-only"
+    }))
+}
+
+fn download_baidu_share_file(arguments: Value) -> Result<Value, String> {
+    let session_id = arguments
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Baidu session id is required.".to_owned())?;
+    let item_id = arguments
+        .get("itemId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Baidu item id is required.".to_owned())?;
+    let destination = arguments
+        .get("destination")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Download destination is required.".to_owned())?;
+    let retry_limit = arguments
+        .get("retryLimit")
+        .and_then(Value::as_u64)
+        .unwrap_or(3) as u8;
+    let sessions = BAIDU_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let sessions = sessions
+        .lock()
+        .map_err(|_| "Baidu session store is unavailable.".to_owned())?;
+    let resolved = sessions
+        .get(session_id)
+        .ok_or_else(|| "Baidu session expired; resolve the share again.".to_owned())?;
+    let descriptor = resolved.descriptor(item_id)?;
+    let descriptor_summary = json!({
+        "provider": descriptor.provider,
+        "fileName": descriptor.file_name.clone(),
+        "expectedSize": descriptor.expected_size,
+        "authorization": "process-memory-only"
+    });
+    let receipt = download_file_with_client(
+        resolved.client(),
+        &descriptor,
+        &destination_path(destination)?,
+        retry_limit,
+        |_| {},
+    )?;
+    Ok(json!({ "descriptor": descriptor_summary, "receipt": receipt }))
+}
+
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
@@ -193,7 +299,9 @@ mod tests {
             [
                 "inspect_share_link",
                 "download_resolved_file",
-                "select_share_files"
+                "select_share_files",
+                "resolve_baidu_share",
+                "download_baidu_share_file"
             ]
         );
     }

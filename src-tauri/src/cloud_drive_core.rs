@@ -332,17 +332,6 @@ pub fn download_file_with_progress<F>(
 where
     F: FnMut(DownloadProgress),
 {
-    descriptor.validate()?;
-    fs::create_dir_all(destination)
-        .map_err(|error| format!("Unable to create download destination: {error}"))?;
-    let destination = destination
-        .canonicalize()
-        .map_err(|error| format!("Unable to resolve download destination: {error}"))?;
-    let target = destination.join(&descriptor.file_name);
-    if target.exists() {
-        return Err("Download target already exists; overwrite was not authorized.".to_owned());
-    }
-    let partial = destination.join(format!(".{}.part", descriptor.file_name));
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60 * 30))
@@ -357,6 +346,30 @@ where
         }))
         .build()
         .map_err(|error| format!("Unable to create download client: {error}"))?;
+    download_file_with_client(&client, descriptor, destination, retry_limit, &mut progress)
+}
+
+pub fn download_file_with_client<F>(
+    client: &Client,
+    descriptor: &DownloadDescriptor,
+    destination: &Path,
+    retry_limit: u8,
+    mut progress: F,
+) -> Result<DownloadReceipt, String>
+where
+    F: FnMut(DownloadProgress),
+{
+    descriptor.validate()?;
+    fs::create_dir_all(destination)
+        .map_err(|error| format!("Unable to create download destination: {error}"))?;
+    let destination = destination
+        .canonicalize()
+        .map_err(|error| format!("Unable to resolve download destination: {error}"))?;
+    let target = destination.join(&descriptor.file_name);
+    if target.exists() {
+        return Err("Download target already exists; overwrite was not authorized.".to_owned());
+    }
+    let partial = destination.join(format!(".{}.part", descriptor.file_name));
     let headers = header_map(&descriptor.headers)?;
     let maximum_attempts = retry_limit.clamp(1, 5);
     let mut last_error = String::new();

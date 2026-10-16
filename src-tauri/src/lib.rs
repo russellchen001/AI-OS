@@ -2,6 +2,7 @@ mod backup;
 mod browser;
 mod claude_code;
 pub mod cloud_drive_core;
+pub mod cloud_drive_baidu;
 mod cognitive_distillation;
 mod commerce_provider;
 #[cfg(test)]
