@@ -24,6 +24,8 @@
 
 - Exact share-link recognition for all nine platforms, including extraction code from the URL or the user's Chinese request text.
 - Native MCP handshake, `tools/list`, `inspect_share_link`, `select_share_files` and `download_resolved_file`.
+- Baidu Provider accepts only a bounded allowlist of authorization cookies. The app opens the exact share in an incognito Tauri WebView restricted to HTTPS Baidu domains, reads the required cookies only in the Rust backend, and sends them over the local child-process pipe to a one-shot MCP call; frontend JavaScript, MCP output and logs never receive them.
+- `download_authorized_baidu_share_file` performs authorized share parsing, descriptor generation and native HTTP download in one MCP process so authorization cannot be lost between one-shot app invocations. The Tauri completion command closes the isolated WebView only after the MCP reports success.
 - Provider-neutral file/folder tree plus selection by all items, stable item IDs or name hint. Folder selection expands recursively; stale IDs, duplicate IDs, empty results and trees above 10,000 items fail closed.
 - Shared resolved-file downloader with retry limit 1–5, partial-file resume, progress callback, existing-target refusal, atomic `.part` commit, expected-size check and SHA-256 receipt/check.
 - Mac or mounted Synology NAS destinations through an absolute destination path; no provider-specific save path is embedded in Runtime.
@@ -39,13 +41,14 @@
 - Native MCP interaction with the same real URL/code: PASS for provider/share-id normalization and for selection of the 623-byte entry after external metadata normalization. This does not prove that the native MCP can open or list the share because the real listing came from `bdpan`, not from `cloud_drive_core.rs`.
 - Native Baidu Provider interaction on 2026-10-16: PASS. `resolve_baidu_share` used the real extraction code, held `BDCLND` only in process memory, recursively listed the real `Aimv001` directory and returned the same 623-byte and 213,835,539-byte files without `bdpan`, transfer-to-drive or personal-drive management.
 - Anonymous download-descriptor resolution: BLOCKED with provider errno 113 after the verified anonymous page omitted the signed download parameters. The MCP therefore stops at controlled account authorization; no file was downloaded and no SHA-256 success is claimed.
+- Controlled authorization implementation: COMPILE/REGRESSION PASS. The Rust library, native MCP binary, Tauri commands and frontend service bindings compile; production frontend build and both Cloud Drive verification scripts pass. Real authorization remains pending owner login, so this is not download E2E evidence.
 - Thunder capability audit on 2026-10-16: `/Applications/Thunder.app` is installed and registers GUI URL schemes (`thunder`, `ed2k`, `magnet`, `birdcmd`, `xunleiapp`, `thunderExtension`), but no CLI or supported local automation API was found. It remains ineligible as a non-interactive executor.
 - Full-tree `cargo fmt --check` is still unsuitable because of pre-existing formatting differences in untouched files. The two new Rust files were formatted directly. Existing compiler warnings remain pre-existing.
 
 ## Not complete / next acceptance gate
 
-- The native MCP now opens and recursively lists the real Baidu share. Controlled WebView authorization, signed descriptor generation and the 623-byte native download/independent SHA-256 check remain incomplete. Therefore Baidu and the other eight providers are not claimed complete.
-- Baidu controlled WebView authorization still needs implementation. Quark and the other seven provider-specific adapters remain unimplemented. The common contracts and native transfer engine are ready for those adapters.
+- The native MCP now opens and recursively lists the real Baidu share, and the controlled WebView-to-one-shot-MCP authorization path is implemented. Owner login, signed descriptor generation and the 623-byte native download/independent SHA-256 check remain incomplete. Therefore Baidu and the other eight providers are not claimed complete.
+- Quark and the other seven provider-specific adapters remain unimplemented. The common contracts and native transfer engine are ready for those adapters.
 - The supplied Baidu share is sufficient for continuing adapter development, but it contains one approximately 204 MB file and one 623-byte file. The next acceptance gate is a native Baidu adapter that returns the real tree and a provider-issued descriptor for the 623-byte file without first transferring it into personal drive. If Baidu requires login, the owner must complete controlled WebView authorization. Acceptance must then prove the completed temporary-directory file, byte count, SHA-256 and MCP receipt independently.
 - The managed installer still needs a reproducible native binary release asset before real install/update/rollback acceptance. Creating a public repository, push or release remains unauthorized and was not done.
 

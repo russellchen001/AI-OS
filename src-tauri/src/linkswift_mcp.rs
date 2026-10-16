@@ -1,4 +1,4 @@
-use crate::{managed_assets, mcp, mcp_runtime};
+use crate::{cloud_drive_baidu, cloud_drive_core::ShareLink, managed_assets, mcp, mcp_runtime};
 use chrono::Utc;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use url::Url;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -20,6 +22,7 @@ const SOURCE_URL: &str = "https://github.com/russellchen001/AI-OS";
 const MCP_SERVER_ID: &str = "managed-ai-os-cloud-drive-mcp";
 const EXECUTABLE_NAME: &str = "ai-os-cloud-drive-mcp";
 const STATE_FILE: &str = "state.json";
+const BAIDU_AUTH_WINDOW_LABEL: &str = "cloud-drive-baidu-authorization";
 
 const PERMISSIONS: [&str; 4] = [
     "Connect only to supported cloud-drive HTTPS hosts for links you submit",
@@ -500,6 +503,111 @@ pub fn call_linkswift_mcp(
         .executable_path
         .ok_or_else(|| "AI-OS Cloud Drive MCP executable is unavailable.".to_owned())?;
     mcp_runtime::call_mcp_tool(command, Vec::new(), tool_name, arguments)
+}
+
+#[tauri::command]
+pub fn begin_baidu_share_authorization(
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<(), String> {
+    let share = ShareLink::parse(&url, None)?;
+    if share.provider != crate::cloud_drive_core::CloudDriveProvider::Baidu {
+        return Err("Controlled authorization is only available for Baidu shares.".to_owned());
+    }
+    if let Some(existing) = app.get_webview_window(BAIDU_AUTH_WINDOW_LABEL) {
+        existing.close().map_err(|error| error.to_string())?;
+    }
+    let external = Url::parse(&share.canonical_url)
+        .map_err(|_| "Baidu share URL is invalid.".to_owned())?;
+    WebviewWindowBuilder::new(
+        &app,
+        BAIDU_AUTH_WINDOW_LABEL,
+        WebviewUrl::External(external),
+    )
+    .title("百度网盘受控授权")
+    .incognito(true)
+    .on_navigation(|target| {
+        target.scheme() == "https"
+            && target
+                .host_str()
+                .is_some_and(|host| host == "baidu.com" || host.ends_with(".baidu.com"))
+    })
+    .build()
+    .map_err(|error| format!("Unable to open Baidu authorization window: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn complete_baidu_share_download(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+    item_id: String,
+    destination: String,
+    retry_limit: Option<u8>,
+) -> Result<mcp_runtime::McpResponse, String> {
+    let window = app
+        .get_webview_window(BAIDU_AUTH_WINDOW_LABEL)
+        .ok_or_else(|| "Open the controlled Baidu authorization window first.".to_owned())?;
+    let share = ShareLink::parse(&url, Some(&extraction_code))?;
+    let cookie_url = Url::parse(&share.canonical_url)
+        .map_err(|_| "Baidu share URL is invalid.".to_owned())?;
+    let authorization_cookie = window
+        .cookies_for_url(cookie_url)
+        .map_err(|error| format!("Unable to read the isolated Baidu authorization: {error}"))?
+        .into_iter()
+        .filter(|cookie| cloud_drive_baidu::is_authorization_cookie_name(cookie.name()))
+        .map(|cookie| format!("{}={}", cookie.name(), cookie.value()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if authorization_cookie.is_empty() {
+        return Err("Baidu login is not complete in the controlled authorization window.".to_owned());
+    }
+    let command = cloud_drive_mcp_command()?;
+    let response = mcp_runtime::call_mcp_tool(
+        command,
+        Vec::new(),
+        "download_authorized_baidu_share_file".to_owned(),
+        serde_json::json!({
+            "url": share.canonical_url,
+            "extractionCode": extraction_code,
+            "authorizationCookie": authorization_cookie,
+            "itemId": item_id,
+            "destination": destination,
+            "retryLimit": retry_limit.unwrap_or(3).clamp(1, 5)
+        }),
+    )?;
+    let tool_failed = response
+        .result
+        .as_ref()
+        .and_then(|value| value.get("result"))
+        .and_then(|value| value.get("isError"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if response.success && !tool_failed {
+        let _ = window.close();
+    }
+    Ok(response)
+}
+
+fn cloud_drive_mcp_command() -> Result<String, String> {
+    let root = component_root()?;
+    let status = status_at(&root);
+    if status.installed && status.integrity_verified && status.registered {
+        return status
+            .executable_path
+            .ok_or_else(|| "AI-OS Cloud Drive MCP executable is unavailable.".to_owned());
+    }
+    #[cfg(debug_assertions)]
+    {
+        let candidate = std::env::current_exe()
+            .map_err(|error| format!("Unable to locate the development MCP: {error}"))?
+            .with_file_name(EXECUTABLE_NAME);
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+    }
+    Err("AI-OS Cloud Drive MCP is not installed, verified and registered.".to_owned())
 }
 
 #[cfg(test)]

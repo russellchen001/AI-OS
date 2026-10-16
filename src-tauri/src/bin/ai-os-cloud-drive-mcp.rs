@@ -122,6 +122,22 @@ fn tools() -> Value {
                 },
                 "required": ["sessionId", "itemId", "destination"]
             }
+        },
+        {
+            "name": "download_authorized_baidu_share_file",
+            "description": "Use a backend-supplied, memory-only Baidu authorization to resolve a share and download one real file through the native HTTP engine in a single MCP call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string" },
+                    "extractionCode": { "type": "string" },
+                    "authorizationCookie": { "type": "string" },
+                    "itemId": { "type": "string" },
+                    "destination": { "type": "string" },
+                    "retryLimit": { "type": "integer", "minimum": 1, "maximum": 5 }
+                },
+                "required": ["url", "extractionCode", "authorizationCookie", "itemId", "destination"]
+            }
         }
     ])
 }
@@ -135,6 +151,7 @@ fn call_tool(id: Value, params: Value) -> Value {
         "select_share_files" => select_files(arguments),
         "resolve_baidu_share" => resolve_baidu_share(arguments),
         "download_baidu_share_file" => download_baidu_share_file(arguments),
+        "download_authorized_baidu_share_file" => download_authorized_baidu_share_file(arguments),
         _ => Err("Requested Cloud Drive MCP tool is not allowed.".to_owned()),
     };
     match result {
@@ -277,6 +294,44 @@ fn download_baidu_share_file(arguments: Value) -> Result<Value, String> {
     Ok(json!({ "descriptor": descriptor_summary, "receipt": receipt }))
 }
 
+fn download_authorized_baidu_share_file(arguments: Value) -> Result<Value, String> {
+    let required = |name: &str| {
+        arguments
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Baidu {name} is required."))
+    };
+    let share = ShareLink::parse(required("url")?, Some(required("extractionCode")?))?;
+    let resolved = BaiduResolvedShare::resolve_with_authorization(
+        share,
+        Some(required("authorizationCookie")?),
+    )?;
+    let descriptor = resolved.descriptor(required("itemId")?)?;
+    let destination = destination_path(required("destination")?)?;
+    let retry_limit = arguments
+        .get("retryLimit")
+        .and_then(Value::as_u64)
+        .unwrap_or(3) as u8;
+    let descriptor_summary = json!({
+        "provider": descriptor.provider,
+        "fileName": descriptor.file_name.clone(),
+        "expectedSize": descriptor.expected_size,
+        "authorization": "process-memory-only"
+    });
+    let receipt = download_file_with_client(
+        resolved.client(),
+        &descriptor,
+        &destination,
+        retry_limit,
+        |_| {},
+    )?;
+    Ok(json!({
+        "entries": resolved.entries(),
+        "descriptor": descriptor_summary,
+        "receipt": receipt
+    }))
+}
+
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
@@ -301,7 +356,8 @@ mod tests {
                 "download_resolved_file",
                 "select_share_files",
                 "resolve_baidu_share",
-                "download_baidu_share_file"
+                "download_baidu_share_file",
+                "download_authorized_baidu_share_file"
             ]
         );
     }

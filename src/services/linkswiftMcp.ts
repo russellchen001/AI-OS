@@ -80,6 +80,20 @@ export async function resolveLinkSwiftShareLink(url: string, requestText: string
   });
 }
 
+export async function beginBaiduShareAuthorization(url: string): Promise<void> {
+  return invoke<void>("begin_baidu_share_authorization", { url });
+}
+
+export async function completeBaiduShareDownload(input: {
+  url: string;
+  extractionCode: string;
+  itemId: string;
+  destination: string;
+  retryLimit?: number;
+}): Promise<McpCallResult> {
+  return invoke<McpCallResult>("complete_baidu_share_download", input);
+}
+
 export function describeLinkSwiftResult(response: McpCallResult): string {
   if (!response.success) {
     return response.error || "AI-OS Cloud Drive MCP could not process this share link.";

@@ -261,6 +261,8 @@ pub fn run() {
             linkswift_mcp::update_linkswift_mcp,
             linkswift_mcp::uninstall_linkswift_mcp,
             linkswift_mcp::call_linkswift_mcp,
+            linkswift_mcp::begin_baidu_share_authorization,
+            linkswift_mcp::complete_baidu_share_download,
             openclaw::list_openclaw_servers,
             openclaw::save_openclaw_server,
             openclaw::update_openclaw_server,

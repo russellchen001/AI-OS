@@ -17,6 +17,18 @@ const BAIDU_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140 Safari/537.36";
 const BAIDU_APP_ID: &str = "250528";
 const MAX_SHARE_ITEMS: usize = 10_000;
+const BAIDU_AUTH_COOKIE_NAMES: &[&str] = &[
+    "BAIDUID",
+    "BAIDUID_BFESS",
+    "BDUSS",
+    "BDUSS_BFESS",
+    "PANWEB",
+    "STOKEN",
+];
+
+pub fn is_authorization_cookie_name(name: &str) -> bool {
+    BAIDU_AUTH_COOKIE_NAMES.contains(&name)
+}
 
 pub struct BaiduResolvedShare {
     client: Client,
@@ -80,9 +92,19 @@ struct BaiduDownloadItem {
 
 impl BaiduResolvedShare {
     pub fn resolve(share: ShareLink) -> Result<Self, String> {
+        Self::resolve_with_authorization(share, None)
+    }
+
+    pub fn resolve_with_authorization(
+        share: ShareLink,
+        authorization_cookie: Option<&str>,
+    ) -> Result<Self, String> {
         if share.provider != CloudDriveProvider::Baidu {
             return Err("Baidu resolver received a different provider.".to_owned());
         }
+        let authorization_cookie = authorization_cookie
+            .map(validate_authorization_cookie)
+            .transpose()?;
         let extraction_code = share
             .extraction_code
             .as_deref()
@@ -97,8 +119,11 @@ impl BaiduResolvedShare {
             "https://pan.baidu.com/share/init?surl={}",
             baidu_surl(&share)?
         );
-        let init_response = client
-            .get(&share.canonical_url)
+        let mut init_request = client.get(&share.canonical_url);
+        if let Some(cookie) = authorization_cookie.as_deref() {
+            init_request = init_request.header(COOKIE, cookie);
+        }
+        let init_response = init_request
             .send()
             .map_err(|error| format!("Unable to open Baidu share: {error}"))?;
         if !init_response.status().is_success() {
@@ -109,10 +134,14 @@ impl BaiduResolvedShare {
         }
 
         let verify_url = baidu_api_url("https://pan.baidu.com/share/verify", &share)?;
-        let verify_response = client
+        let mut verify_request = client
             .post(verify_url)
             .header(REFERER, &init_url)
-            .form(&[("pwd", extraction_code), ("vcode", ""), ("vcode_str", "")])
+            .form(&[("pwd", extraction_code), ("vcode", ""), ("vcode_str", "")]);
+        if let Some(cookie) = authorization_cookie.as_deref() {
+            verify_request = verify_request.header(COOKIE, cookie);
+        }
+        let verify_response = verify_request
             .send()
             .map_err(|error| format!("Unable to verify Baidu extraction code: {error}"))?;
         if !verify_response.status().is_success() {
@@ -135,7 +164,10 @@ impl BaiduResolvedShare {
             .ok_or_else(|| {
                 "Baidu extraction-code response omitted its session proof.".to_owned()
             })?;
-        let cookie_header = format!("BDCLND={randsk}");
+        let cookie_header = match authorization_cookie {
+            Some(cookie) => format!("{cookie}; BDCLND={randsk}"),
+            None => format!("BDCLND={randsk}"),
+        };
 
         let share_response = client
             .get(&share.canonical_url)
@@ -379,6 +411,26 @@ fn baidu_surl(share: &ShareLink) -> Result<&str, String> {
         .ok_or_else(|| "Baidu share id is invalid.".to_owned())
 }
 
+fn validate_authorization_cookie(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.len() > 16_384 || value.chars().any(char::is_control) {
+        return Err("Baidu authorization cookie is invalid.".to_owned());
+    }
+    let mut accepted = Vec::new();
+    for pair in value.split(';') {
+        let Some((name, cookie_value)) = pair.trim().split_once('=') else {
+            return Err("Baidu authorization cookie is invalid.".to_owned());
+        };
+        if !is_authorization_cookie_name(name) || cookie_value.is_empty() {
+            return Err("Baidu authorization cookie contains an unsupported field.".to_owned());
+        }
+        accepted.push(format!("{name}={cookie_value}"));
+    }
+    if accepted.is_empty() {
+        return Err("Baidu authorization cookie is empty.".to_owned());
+    }
+    Ok(accepted.join("; "))
+}
+
 fn baidu_api_url(endpoint: &str, share: &ShareLink) -> Result<Url, String> {
     let mut url = Url::parse(endpoint).map_err(|_| "Baidu endpoint is invalid.".to_owned())?;
     url.query_pairs_mut()
@@ -510,5 +562,13 @@ mod tests {
         let items = page_items(&page).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].size, 623);
+    }
+
+    #[test]
+    fn authorization_cookie_accepts_only_bounded_baidu_fields() {
+        let value = validate_authorization_cookie("BDUSS=secret; STOKEN=proof").unwrap();
+        assert_eq!(value, "BDUSS=secret; STOKEN=proof");
+        assert!(validate_authorization_cookie("OTHER=secret").is_err());
+        assert!(validate_authorization_cookie("BDUSS=secret\nInjected=yes").is_err());
     }
 }
