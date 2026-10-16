@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useMemo,
   useState,
   type CSSProperties,
@@ -12,6 +13,13 @@ import type {
   McpServerInput,
   McpTransport,
 } from "../types/index";
+import type { LinkSwiftMcpStatus } from "../types/index";
+import {
+  getLinkSwiftMcpStatus,
+  linkSwiftConsentMessage,
+  uninstallLinkSwiftMcp,
+  updateLinkSwiftMcp,
+} from "../services/linkswiftMcp";
 
 type McpPageProps = {
   servers: McpServer[];
@@ -193,6 +201,35 @@ function McpPage({
   ] = useState<string | null>(
     null,
   );
+
+  const [managedStatus, setManagedStatus] = useState<LinkSwiftMcpStatus>();
+  const [managedAction, setManagedAction] = useState<"update" | "uninstall" | null>(null);
+  const [managedBusy, setManagedBusy] = useState(false);
+  const [managedMessage, setManagedMessage] = useState("");
+
+  useEffect(() => {
+    void getLinkSwiftMcpStatus()
+      .then(setManagedStatus)
+      .catch((error) => setManagedMessage(`Unable to read LinkSwift MCP status: ${String(error)}`));
+  }, [servers]);
+
+  async function runManagedAction() {
+    if (!managedAction) return;
+    setManagedBusy(true);
+    try {
+      const result = managedAction === "update"
+        ? await updateLinkSwiftMcp(true)
+        : await uninstallLinkSwiftMcp(true);
+      setManagedStatus(result.status);
+      setManagedMessage(result.message);
+      if (result.success) onRefresh();
+    } catch (error) {
+      setManagedMessage(`LinkSwift MCP ${managedAction} failed: ${String(error)}`);
+    } finally {
+      setManagedBusy(false);
+      setManagedAction(null);
+    }
+  }
 
   const isLoading =
     status === "loading";
@@ -475,6 +512,40 @@ function McpPage({
           </small>
         </div>
       </div>
+
+      {managedStatus && (
+        <div className="mcp-grid">
+          <article className="mcp-card" style={cardStyle}>
+            <div className="mcp-card-header">
+              <div className="mcp-card-title">
+                <span className="mcp-card-icon">⇩</span>
+                <div>
+                  <h3>{managedStatus.name}</h3>
+                  <p>Managed independent component · {managedStatus.license}</p>
+                </div>
+              </div>
+            </div>
+            <p>{managedStatus.message}</p>
+            <div className="mcp-meta-grid">
+              <div><span>Pinned version</span><strong>{managedStatus.pinnedVersion}</strong></div>
+              <div><span>Integrity</span><strong>{managedStatus.integrityVerified ? "Verified" : "Not verified"}</strong></div>
+              <div><span>Registration</span><strong>{managedStatus.registered ? "Enabled" : "Not registered"}</strong></div>
+            </div>
+            <div className="mcp-card-actions">
+              {managedStatus.installed ? (
+                <>
+                  <button type="button" className="secondary-button" disabled={managedBusy} onClick={() => setManagedAction("update")}>Update / Repair</button>
+                  <button type="button" className="danger-button" disabled={managedBusy} onClick={() => setManagedAction("uninstall")}>Uninstall</button>
+                </>
+              ) : (
+                <span>Paste a supported cloud-drive share link in Chat to review permissions and install.</span>
+              )}
+            </div>
+          </article>
+        </div>
+      )}
+
+      <InlineAlert message={managedMessage} />
 
       <div className="mcp-toolbar">
         <input
@@ -1068,6 +1139,19 @@ function McpPage({
           onDelete(confirmDelete);
           setConfirmDelete(null);
         }}
+      />
+      <ConfirmDialog
+        open={managedAction !== null}
+        title={managedAction === "uninstall" ? "Uninstall LinkSwift MCP?" : "Update or repair LinkSwift MCP?"}
+        message={managedStatus
+          ? managedAction === "uninstall"
+            ? "AI-OS will remove the independent component directory and its managed MCP registration. Cloud-drive accounts and remote files are not changed."
+            : linkSwiftConsentMessage(managedStatus)
+          : ""}
+        confirmLabel={managedAction === "uninstall" ? "Uninstall" : "Update verified component"}
+        busy={managedBusy}
+        onCancel={() => setManagedAction(null)}
+        onConfirm={() => void runManagedAction()}
       />
     </section>
   );

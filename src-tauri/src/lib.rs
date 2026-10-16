@@ -18,6 +18,7 @@ mod google_workspace;
 mod health;
 mod keychain_trace;
 mod knowledge;
+mod linkswift_mcp;
 mod local_model_advisor;
 mod logs;
 mod macos_permissions;
@@ -253,6 +254,11 @@ pub fn run() {
             mcp::delete_mcp_server,
             mcp_runtime::list_mcp_tools,
             mcp_runtime::call_mcp_tool,
+            linkswift_mcp::get_linkswift_mcp_status,
+            linkswift_mcp::install_linkswift_mcp,
+            linkswift_mcp::update_linkswift_mcp,
+            linkswift_mcp::uninstall_linkswift_mcp,
+            linkswift_mcp::call_linkswift_mcp,
             openclaw::list_openclaw_servers,
             openclaw::save_openclaw_server,
             openclaw::update_openclaw_server,

@@ -31,6 +31,14 @@ import {
 } from "../services/aiCenter";
 import { classifyAutomaticIntent } from "../services/intentRouting";
 import { isConversationRecallQuestion } from "../services/intentSemantic";
+import {
+  describeLinkSwiftResult,
+  getLinkSwiftMcpStatus,
+  installLinkSwiftMcp,
+  linkSwiftConsentMessage,
+  resolveLinkSwiftShareLink,
+  supportedCloudDriveShareLink,
+} from "../services/linkswiftMcp";
 import { shouldRetrieveConversationHistory } from "../services/conversationRetrievalGate";
 import {
   buildPublicProductTaskPrompt,
@@ -848,6 +856,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     event.preventDefault();
     const content = draft.trim();
     if (!content || isSubmitting) return;
+    const linkSwiftShareLink = supportedCloudDriveShareLink(content);
 
     /*
      * Give immediate UI feedback before intent classification starts.
@@ -892,6 +901,50 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       }
     }
     const isWorkRequest = routedTaskType === "DO";
+
+    if (linkSwiftShareLink) {
+      const status = await getLinkSwiftMcpStatus().catch(() => undefined);
+      if (!status) {
+        await dialog.confirm({
+          title: "LinkSwift MCP status unavailable",
+          message: "AI-OS could not inspect the independent LinkSwift MCP component. Nothing was installed or executed.",
+          confirmLabel: "OK",
+          cancelLabel: "Close",
+          tone: "warning",
+        });
+        setIsSubmitting(false);
+        return;
+      }
+      if (!status.installed || !status.integrityVerified || !status.registered) {
+        const approved = await dialog.confirm({
+          title: `Install ${status.name}?`,
+          message: linkSwiftConsentMessage(status),
+          confirmLabel: "Install verified component",
+          cancelLabel: "Cancel",
+          tone: "warning",
+        });
+        if (!approved) {
+          setIsSubmitting(false);
+          return;
+        }
+        const installed = await installLinkSwiftMcp(true).catch((error) => ({
+          success: false,
+          message: String(error),
+          status,
+        }));
+        if (!installed.success) {
+          await dialog.confirm({
+            title: "LinkSwift MCP was not installed",
+            message: `${installed.message}\n\nAI-OS did not run the share link.`,
+            confirmLabel: "OK",
+            cancelLabel: "Close",
+            tone: "warning",
+          });
+          setIsSubmitting(false);
+          return;
+        }
+      }
+    }
 
     if (scanFolderPath) {
       const confirmed = await dialog.confirm({
@@ -1056,6 +1109,30 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
           : conversation.title,
       messages: nextMessages,
     };
+    if (linkSwiftShareLink) {
+      let content: string;
+      try {
+        const response = await resolveLinkSwiftShareLink(linkSwiftShareLink, draft.trim());
+        content = describeLinkSwiftResult(response);
+      } catch (error) {
+        content = `LinkSwift MCP could not process this share link: ${String(error)}\n\nThe provider may require sign-in, CAPTCHA or file access approval. AI-OS did not claim that the link can be downloaded anonymously.`;
+      }
+      const completedMessages: ChatMessage[] = [
+        ...nextMessages,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content,
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      setMessages(completedMessages);
+      setDraft("");
+      setAttachments([]);
+      saveConversation({ ...nextConversation, messages: completedMessages });
+      setIsSubmitting(false);
+      return;
+    }
     const userMemories = (await listMemory()).filter((entry) => {
       if (entry.type !== "user" || !entry.content.trim()) return false;
       const projectId =

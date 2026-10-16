@@ -1,5 +1,47 @@
 <!-- BETA41_HANDOFF_START -->
 
+# AI-OS Download Skill — LinkSwift MCP Managed Component
+
+**Last updated:** 2026-10-16
+**Branch:** `feat/linkswift-mcp-installer`
+**Baseline:** `106ffd7`; `ai-os-v1.0.1-beta.4.1` and the archived Beta 4.1 release remain unchanged
+**Status:** AI-OS integration implemented and locally verified; real installation is intentionally blocked until the independent AGPL repository and pinned release are authorized and published
+
+## Technical decisions
+
+- The abandoned native Baidu/Quark Provider and Thunder Executor PoC is not in this branch. It remains preserved on `poc/linkswift-native-quark` and `backup/pre-linkswift-native-quark-20261015`.
+- AI-OS does not bundle, import or translate LinkSwift code. It manages an independent `LinkSwift MCP` stdio process in `~/.ai-os/components/linkswift-mcp/<version>` and registers only its executable path in the existing MCP registry.
+- The component contract is pinned to version `0.1.0`, license `AGPL-3.0-or-later`, and corresponding-source location `https://github.com/russellchen001/linkswift-mcp`. Production release URL, exact size and SHA-256 are build-time pins. If any pin is absent, AI-OS refuses installation.
+- A supported HTTPS cloud-drive share link triggers component status inspection. Missing or unhealthy installations show component name, version, license, source, permissions and the login/CAPTCHA/access limitation before consent.
+- Installation downloads only from the pinned `https://github.com` release origin, verifies exact size and SHA-256 in a staging directory, sets an executable-only mode, atomically activates the version, then registers MCP. Registration or state-commit failure restores the previous executable and MCP record.
+- Update reuses the same verified transaction. Uninstall removes the managed registration first and restores it if managed-file removal fails. Symlink removal is refused.
+- Link resolution runs through the existing standard MCP `tools/call` path. AI-OS states that providers may require login, CAPTCHA or permission and does not promise anonymous access or universal link support.
+- Credentials, cookies and tokens are neither accepted by the installer API nor persisted in component state, logs or fixtures.
+
+## Implemented
+
+- `src-tauri/src/linkswift_mcp.rs`: status, consent gate, pinned release validation, verified install/update, rollback, uninstall and standard MCP invocation.
+- `src-tauri/src/mcp.rs`: narrow managed-server replace/restore transaction helpers.
+- `src/pages/ChatPage.tsx` and `src/services/linkswiftMcp.ts`: supported-link detection, first-use disclosure/consent and MCP result handling.
+- `src/pages/McpPage.tsx`: managed status, integrity/registration state, update/repair and uninstall controls.
+- `verify/verify_linkswift_mcp.sh`: behavior verification with PASS/FAIL and correct exit status.
+
+## Verified locally
+
+- `verify/verify_linkswift_mcp.sh`: PASS.
+- Behavior coverage: insecure/lookalike URL refusal; fixed metadata and limitation disclosure; declined install; verified activation and registration; SHA mismatch refusal; registration rollback; installed stdio process `tools/list` and `tools/call`; Rust compile; frontend production build; whitespace integrity.
+- Targeted Rust tests: 6 passed, 0 failed.
+- Full `cargo test --lib`: 1011 passed, 8 failed, 70 ignored. The eight failures are existing real-environment checks for Computer Control, external connector sandbox access, and ComfyUI HTTP/process/download behavior; no LinkSwift test failed.
+- Full `cargo fmt --check` remains blocked by pre-existing formatting differences beginning in `browser/account_verifier.rs` and other untouched files. The changed Rust files pass direct `rustfmt --check`.
+
+## Not yet verified / external release gate
+
+- No independent `russellchen001/linkswift-mcp` repository or v0.1.0 release was published because public repository creation/push was not authorized. The current build therefore reports `releaseConfigured: false` and refuses real installation without changing files or MCP configuration.
+- No real cloud-drive account, share link, login, CAPTCHA or completed file download was used. Fixture/process behavior is not represented as real provider E2E.
+- To open real-install acceptance, publish the independent AGPL source and reproducible v0.1.0 executable, then build AI-OS with `AI_OS_LINKSWIFT_MCP_RELEASE_URL`, `AI_OS_LINKSWIFT_MCP_RELEASE_SIZE` and `AI_OS_LINKSWIFT_MCP_RELEASE_SHA256` pinned to that release.
+
+---
+
 # AI-OS Beta 4.1 — FINAL HANDOFF / ARCHIVED
 
 **Last updated:** 2026-10-14

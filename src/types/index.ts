@@ -113,6 +113,29 @@ export type McpActionResult = {
   server?: McpServer;
 };
 
+export type LinkSwiftMcpStatus = {
+  componentId: string;
+  name: string;
+  pinnedVersion: string;
+  license: string;
+  sourceUrl: string;
+  permissions: string[];
+  installed: boolean;
+  installedVersion?: string;
+  integrityVerified: boolean;
+  registered: boolean;
+  updateAvailable: boolean;
+  releaseConfigured: boolean;
+  executablePath?: string;
+  message: string;
+};
+
+export type LinkSwiftMcpActionResult = {
+  success: boolean;
+  message: string;
+  status: LinkSwiftMcpStatus;
+};
+
 /* ===========================
    OpenClaw
 =========================== */
