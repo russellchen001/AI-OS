@@ -1,46 +1,45 @@
 <!-- BETA41_HANDOFF_START -->
 
-# AI-OS Download Skill — LinkSwift MCP Managed Component
+# AI-OS Cloud Drive MCP — Native Download Foundation
 
 **Last updated:** 2026-10-16
-**Branch:** `feat/linkswift-mcp-installer`
-**Baseline:** `106ffd7`; `ai-os-v1.0.1-beta.4.1` and the archived Beta 4.1 release remain unchanged
-**Status:** PRE-RELEASE AUDIT BLOCKED. The independent MCP source and v0.1.0 package do not exist locally; the current AI-OS build cannot install or perform real cloud-drive downloads.
+**Branch:** `feat/cloud-drive-mcp-native`
+**Baseline:** committed installer/audit branch `feat/linkswift-mcp-installer` at `8bb1464`; `ai-os-v1.0.1-beta.4.1` and its archived release remain unchanged
+**Status:** NATIVE FOUNDATION IMPLEMENTED; REAL SHARE-LINK E2E BLOCKED ON A USER-OWNED TEST SHARE AND ANY REQUIRED USER AUTHORIZATION.
 
 ## Technical decisions
 
-- The abandoned native Baidu/Quark Provider and Thunder Executor PoC is not in this branch. It remains preserved on `poc/linkswift-native-quark` and `backup/pre-linkswift-native-quark-20261015`.
-- AI-OS does not bundle, import or translate LinkSwift code. It manages an independent `LinkSwift MCP` stdio process in `~/.ai-os/components/linkswift-mcp/<version>` and registers only its executable path in the existing MCP registry.
-- The proposed component contract names version `0.1.0`, license `AGPL-3.0-or-later`, and a planned source location `https://github.com/russellchen001/linkswift-mcp`; this source location does not identify a published repository. Production release URL, exact size and SHA-256 are build-time pins. If any pin is absent, AI-OS refuses installation.
-- A supported HTTPS cloud-drive share link triggers component status inspection. Missing or unhealthy installations show component name, version, license, source, permissions and the login/CAPTCHA/access limitation before consent.
-- Installation accepts only the proposed repository's v0.1.0 GitHub release path, verifies exact size and SHA-256 in a staging directory, sets an executable-only mode, activates the version, then registers MCP. Registration or state-commit failure attempts to restore the previous executable and MCP record; real package rollback has not been tested.
-- Update reuses the same verified transaction. Uninstall removes the managed registration first and restores it if managed-file removal fails. Symlink removal is refused.
-- Link resolution currently calls the existing JSON-RPC `tools/call` helper directly. That helper lacks both the legacy MCP initialization handshake and the newer protocol metadata; compatibility with a real MCP server is unverified. Chat also bypasses the normal Runtime permission flow and does not implement destination-file download completion.
-- Credentials, cookies and tokens are neither accepted by the installer API nor persisted in component state, logs or fixtures.
+- Scope is nine providers and share-link download only: Baidu, Quark, Aliyun, UC, 123, China Mobile, China Telecom, Xunlei Cloud Drive and Guangya. Personal-drive browsing, upload, rename, move, synchronization and long-lived account binding are outside scope.
+- `src-tauri/src/cloud_drive_core.rs` and `src-tauri/src/bin/ai-os-cloud-drive-mcp.rs` are original Apache-2.0 AI-OS code. No LinkSwift AGPL source was copied, translated or linked. The old filename `linkswift_mcp.rs` remains only as the migration shell for installer/registration APIs; product-visible metadata now names AI-OS Cloud Drive MCP.
+- The component is an independent native stdio MCP. Provider adapters normalize share identity and authorization requirements; one provider-neutral engine owns HTTPS transfer, bounded retry, resume, progress callbacks, overwrite refusal, Mac/mounted-NAS destination handling, size verification and SHA-256 verification.
+- Authorization is anonymous-first. Where a provider requires login, CAPTCHA, membership or quota, the provider must return an authorization-required state for a controlled WebView; the MCP must not bypass the provider restriction or persist browser cookies in component state.
+- A resolved download descriptor may carry request headers in memory, but debug output redacts them. The engine rejects HTTP, credentials in URLs, custom ports, local/private network destinations, unsafe filenames and caller-controlled Host/Range/Content-Length headers.
+- Thunder is not the common executor and Aria2 is not restored. Xunlei Cloud Drive is only a provider identity until a real supported automation API is proven.
+- Production installation remains fail-closed: an AI-OS release asset, exact size and SHA-256 must be pinned through `AI_OS_CLOUD_DRIVE_MCP_RELEASE_*`. No release has been created or published.
 
 ## Implemented
 
-- `src-tauri/src/linkswift_mcp.rs`: status, consent gate, pinned release validation, verified install/update, rollback, uninstall and standard MCP invocation.
-- `src-tauri/src/mcp.rs`: narrow managed-server replace/restore transaction helpers.
-- `src/pages/ChatPage.tsx` and `src/services/linkswiftMcp.ts`: supported-link detection, first-use disclosure/consent and MCP result handling.
-- `src/pages/McpPage.tsx`: managed status, integrity/registration state, update/repair and uninstall controls.
-- `verify/verify_linkswift_mcp.sh`: behavior verification with PASS/FAIL and correct exit status.
+- Exact share-link recognition for all nine platforms, including extraction code from the URL or the user's Chinese request text.
+- Native MCP handshake, `tools/list`, `inspect_share_link`, `select_share_files` and `download_resolved_file`.
+- Provider-neutral file/folder tree plus selection by all items, stable item IDs or name hint. Folder selection expands recursively; stale IDs, duplicate IDs, empty results and trees above 10,000 items fail closed.
+- Shared resolved-file downloader with retry limit 1–5, partial-file resume, progress callback, existing-target refusal, atomic `.part` commit, expected-size check and SHA-256 receipt/check.
+- Mac or mounted Synology NAS destinations through an absolute destination path; no provider-specific save path is embedded in Runtime.
+- Managed-component metadata now identifies AI-OS Cloud Drive MCP, Apache-2.0 and the AI-OS source repository. Release validation is restricted to `cloud-drive-mcp-v0.1.0` assets in the AI-OS repository.
+- `verify/verify_cloud_drive_mcp.sh` verifies runtime behavior instead of source strings. The older `verify/verify_linkswift_mcp.sh` remains as the installer migration regression gate and now reports the new component name.
 
-## Verified locally
+## Verification evidence
 
-- `verify/verify_linkswift_mcp.sh`: PASS.
-- Behavior coverage: insecure/lookalike URL refusal; fixed metadata and limitation disclosure; declined install; fixture activation and registration; fixture SHA mismatch; fixture registration rollback; test-shell `tools/list` and `tools/call`; Rust compile; frontend production build; whitespace integrity. These are local simulations, not real component acceptance.
-- Targeted Rust tests: 6 passed, 0 failed.
-- In the restricted sandbox, `cargo test --lib` gave 1011 passed, 8 failed, 70 ignored: one macOS volume read, one broker permission denial, five local HTTP bind denials, and one ComfyUI runtime error expectation. With equal unrestricted permissions, Beta 4.1 baseline gave 1013 passed / 0 failed / 70 ignored; this branch gave 1019 passed / 0 failed / 70 ignored.
-- Full `cargo fmt --check` remains blocked by pre-existing formatting differences beginning in `browser/account_verifier.rs` and other untouched files. The changed Rust files pass direct `rustfmt --check`.
+- `verify/verify_cloud_drive_mcp.sh`: PASS. It ran four core behavior tests, two MCP protocol tests, built the native MCP binary and invoked the built process with a Baidu share plus extraction code.
+- `verify/verify_linkswift_mcp.sh`: PASS. Installer decline/integrity/rollback/MCP behavior, Rust compile, frontend production build and changed-file integrity passed.
+- Real network executor check: PASS against the official Guangya host. The MCP downloaded `https://www.guangyapan.com/robots.txt` in one attempt, wrote 837 bytes, returned SHA-256 `0082ec9b63a05e56aae296d44e299aac32740e63ad6709d8dd36877656427d01`, and an independent `wc`/`shasum` check matched. This proves real HTTPS transfer, disk commit and receipt verification; it is not a share-link E2E.
+- Full-tree `cargo fmt --check` is still unsuitable because of pre-existing formatting differences in untouched files. The two new Rust files were formatted directly. Existing compiler warnings remain pre-existing.
 
-## Not yet verified / external release gate
+## Not complete / next acceptance gate
 
-- No independent `russellchen001/linkswift-mcp` repository or v0.1.0 release was published because public repository creation/push was not authorized. The current build therefore reports `releaseConfigured: false` and refuses real installation without changing files or MCP configuration.
-- A local clone of the original `hmjz100/LinkSwift` userscript exists, but it is not an MCP server. Its script declares `AGPL-3.0-or-later` and attributes Hmjz100 and 油小猴. No independent-source copyright, dependency, Git-history, secret or package audit is possible until independent source exists.
-- 2026-10-16 audit hardened release URL scope, disabled first-use installation consent when no release is configured, and restricted the component command to `resolve_share_link`. Legal separation, source-offer obligations, true MCP lifecycle, Runtime authorization, real download completion, install/start/uninstall/rollback, and package size/hash remain release blockers.
-- No real cloud-drive account, share link, login, CAPTCHA or completed file download was used. Fixture/process behavior is not represented as real provider E2E.
-- To open real-install acceptance, publish the independent AGPL source and reproducible v0.1.0 executable, then build AI-OS with `AI_OS_LINKSWIFT_MCP_RELEASE_URL`, `AI_OS_LINKSWIFT_MCP_RELEASE_SIZE` and `AI_OS_LINKSWIFT_MCP_RELEASE_SHA256` pinned to that release.
+- No real provider share was opened, listed or selected. No provider login, CAPTCHA, member limit or quota flow was exercised. Therefore Baidu/Quark and the other seven providers are not claimed complete.
+- Provider-specific list/selection adapters and controlled WebView authorization still need implementation. The common contracts and transfer engine are ready for those adapters.
+- To run the first real share E2E without using third-party content, obtain one small user-owned Baidu or Quark share link (and extraction code if set). If the provider requires login, the owner must complete the controlled WebView authorization. Acceptance must prove the real file list, explicit selection, completed file, byte count/hash and local or mounted-NAS destination.
+- The managed installer still needs a reproducible native binary release asset before real install/update/rollback acceptance. Creating a public repository, push or release remains unauthorized and was not done.
 
 ---
 

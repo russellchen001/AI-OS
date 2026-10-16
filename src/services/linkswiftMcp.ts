@@ -4,15 +4,22 @@ import type { LinkSwiftMcpActionResult, LinkSwiftMcpStatus } from "../types/inde
 const SUPPORTED_SHARE_HOSTS = new Set([
   "123684.com",
   "123pan.com",
+  "123pan.cn",
   "alipan.com",
   "aliyundrive.com",
   "caiyun.139.com",
   "cloud.189.cn",
   "drive.uc.cn",
+  "guangyapan.com",
   "pan.baidu.com",
   "pan.quark.cn",
   "pan.xunlei.com",
   "yun.baidu.com",
+  "www.123pan.cn",
+  "www.123pan.com",
+  "www.alipan.com",
+  "www.aliyundrive.com",
+  "www.guangyapan.com",
 ]);
 
 export function supportedCloudDriveShareLink(value: string): string | undefined {
@@ -66,20 +73,21 @@ type McpCallResult = {
 };
 
 export async function resolveLinkSwiftShareLink(url: string, requestText: string): Promise<McpCallResult> {
+  const extractionCode = requestText.match(/(?:提取码|密码|访问码)\s*[:：]?\s*([A-Za-z0-9_-]{4,32})/u)?.[1];
   return invoke<McpCallResult>("call_linkswift_mcp", {
-    toolName: "resolve_share_link",
-    arguments: { url, requestText },
+    toolName: "inspect_share_link",
+    arguments: { url, extractionCode },
   });
 }
 
 export function describeLinkSwiftResult(response: McpCallResult): string {
   if (!response.success) {
-    return response.error || "LinkSwift MCP could not process this share link.";
+    return response.error || "AI-OS Cloud Drive MCP could not process this share link.";
   }
   const rpc = response.result as { result?: { content?: Array<{ text?: unknown }> } } | undefined;
   const text = rpc?.result?.content
     ?.map((item) => typeof item.text === "string" ? item.text : "")
     .filter(Boolean)
     .join("\n");
-  return text || "LinkSwift MCP completed without a readable result.";
+  return text || "AI-OS Cloud Drive MCP completed without a readable result.";
 }

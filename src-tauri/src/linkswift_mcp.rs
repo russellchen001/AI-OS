@@ -12,13 +12,13 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-const COMPONENT_ID: &str = "linkswift-mcp";
-const COMPONENT_NAME: &str = "LinkSwift MCP";
+const COMPONENT_ID: &str = "ai-os-cloud-drive-mcp";
+const COMPONENT_NAME: &str = "AI-OS Cloud Drive MCP";
 const PINNED_VERSION: &str = "0.1.0";
-const LICENSE: &str = "AGPL-3.0-or-later";
-const SOURCE_URL: &str = "https://github.com/russellchen001/linkswift-mcp";
-const MCP_SERVER_ID: &str = "managed-linkswift-mcp";
-const EXECUTABLE_NAME: &str = "linkswift-mcp";
+const LICENSE: &str = "Apache-2.0";
+const SOURCE_URL: &str = "https://github.com/russellchen001/AI-OS";
+const MCP_SERVER_ID: &str = "managed-ai-os-cloud-drive-mcp";
+const EXECUTABLE_NAME: &str = "ai-os-cloud-drive-mcp";
 const STATE_FILE: &str = "state.json";
 
 const PERMISSIONS: [&str; 4] = [
@@ -79,21 +79,21 @@ fn component_root() -> Result<PathBuf, String> {
 }
 
 fn release_spec() -> Result<ReleaseSpec, String> {
-    let source_url = option_env!("AI_OS_LINKSWIFT_MCP_RELEASE_URL")
+    let source_url = option_env!("AI_OS_CLOUD_DRIVE_MCP_RELEASE_URL")
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
-            "LinkSwift MCP v0.1.0 has not been published to the trusted release source. AI-OS did not install anything."
+            "AI-OS Cloud Drive MCP v0.1.0 has not been published to the trusted release source. AI-OS did not install anything."
                 .to_owned()
         })?;
-    let sha256 = option_env!("AI_OS_LINKSWIFT_MCP_RELEASE_SHA256")
+    let sha256 = option_env!("AI_OS_CLOUD_DRIVE_MCP_RELEASE_SHA256")
         .filter(|value| {
             value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
         })
-        .ok_or_else(|| "The pinned LinkSwift MCP SHA-256 is not configured.".to_owned())?;
-    let size_bytes = option_env!("AI_OS_LINKSWIFT_MCP_RELEASE_SIZE")
+        .ok_or_else(|| "The pinned AI-OS Cloud Drive MCP SHA-256 is not configured.".to_owned())?;
+    let size_bytes = option_env!("AI_OS_CLOUD_DRIVE_MCP_RELEASE_SIZE")
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .ok_or_else(|| "The pinned LinkSwift MCP release size is not configured.".to_owned())?;
+        .ok_or_else(|| "The pinned AI-OS Cloud Drive MCP release size is not configured.".to_owned())?;
 
     validate_release_url(source_url)?;
     Ok(ReleaseSpec {
@@ -106,9 +106,10 @@ fn release_spec() -> Result<ReleaseSpec, String> {
 
 fn validate_release_url(value: &str) -> Result<(), String> {
     let url = url::Url::parse(value)
-        .map_err(|_| "The LinkSwift MCP release URL is invalid.".to_owned())?;
-    let release_prefix =
-        format!("/russellchen001/linkswift-mcp/releases/download/v{PINNED_VERSION}/");
+        .map_err(|_| "The AI-OS Cloud Drive MCP release URL is invalid.".to_owned())?;
+    let release_prefix = format!(
+        "/russellchen001/AI-OS/releases/download/cloud-drive-mcp-v{PINNED_VERSION}/"
+    );
     if url.scheme() != "https"
         || url.host_str() != Some("github.com")
         || url.port().is_some()
@@ -121,7 +122,7 @@ fn validate_release_url(value: &str) -> Result<(), String> {
         || url.path()[release_prefix.len()..].contains('/')
     {
         return Err(
-            "LinkSwift MCP releases must use the pinned repository and version path on github.com."
+            "AI-OS Cloud Drive MCP releases must use the pinned repository and version path on github.com."
                 .to_owned(),
         );
     }
@@ -150,11 +151,11 @@ fn write_state(root: &Path, state: &InstalledState) -> Result<(), String> {
         .map_err(|error| format!("Unable to create the component directory: {error}"))?;
     let temporary = root.join(format!("{STATE_FILE}.new"));
     let contents = serde_json::to_vec_pretty(state)
-        .map_err(|error| format!("Unable to serialize LinkSwift MCP state: {error}"))?;
+        .map_err(|error| format!("Unable to serialize AI-OS Cloud Drive MCP state: {error}"))?;
     fs::write(&temporary, contents)
-        .map_err(|error| format!("Unable to stage LinkSwift MCP state: {error}"))?;
+        .map_err(|error| format!("Unable to stage AI-OS Cloud Drive MCP state: {error}"))?;
     fs::rename(&temporary, state_path(root))
-        .map_err(|error| format!("Unable to commit LinkSwift MCP state: {error}"))
+        .map_err(|error| format!("Unable to commit AI-OS Cloud Drive MCP state: {error}"))
 }
 
 fn path_is_regular_file(path: &Path) -> bool {
@@ -168,7 +169,7 @@ fn registered_server(path: &Path) -> mcp::McpServer {
         id: MCP_SERVER_ID.to_owned(),
         name: COMPONENT_NAME.to_owned(),
         description: format!(
-            "Isolated {LICENSE} cloud-drive link resolver. Login, CAPTCHA and provider permissions may still be required."
+            "Independent {LICENSE} cloud-drive share downloader. Login, CAPTCHA and provider permissions may still be required."
         ),
         enabled: true,
         transport: "stdio".to_owned(),
@@ -244,11 +245,11 @@ fn remove_path_if_present(path: &Path) -> Result<(), String> {
             Err("Refusing to remove a symlink from the managed component directory.".to_owned())
         }
         Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)
-            .map_err(|error| format!("Unable to remove LinkSwift MCP files: {error}")),
+            .map_err(|error| format!("Unable to remove AI-OS Cloud Drive MCP files: {error}")),
         Ok(_) => fs::remove_file(path)
-            .map_err(|error| format!("Unable to remove LinkSwift MCP file: {error}")),
+            .map_err(|error| format!("Unable to remove AI-OS Cloud Drive MCP file: {error}")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Unable to inspect LinkSwift MCP path: {error}")),
+        Err(error) => Err(format!("Unable to inspect AI-OS Cloud Drive MCP path: {error}")),
     }
 }
 
@@ -267,7 +268,7 @@ where
     let staging = root.join(format!(".installing-{}", spec.version));
     remove_path_if_present(&staging)?;
     fs::create_dir_all(&staging)
-        .map_err(|error| format!("Unable to create LinkSwift MCP staging directory: {error}"))?;
+        .map_err(|error| format!("Unable to create AI-OS Cloud Drive MCP staging directory: {error}"))?;
     let staged_executable = staging.join(EXECUTABLE_NAME);
     let asset = managed_assets::ManagedAssetSpec {
         source_url: spec.source_url.clone(),
@@ -278,31 +279,31 @@ where
     if let Err(error) = download(&staged_executable) {
         let _ = remove_path_if_present(&staging);
         return Err(format!(
-            "LinkSwift MCP download or SHA-256 verification failed: {error}"
+            "AI-OS Cloud Drive MCP download or SHA-256 verification failed: {error}"
         ));
     }
     if !managed_assets::file_matches_spec(&staged_executable, &asset)? {
         let _ = remove_path_if_present(&staging);
-        return Err("LinkSwift MCP download or SHA-256 verification failed: the package did not match the pinned release.".to_owned());
+        return Err("AI-OS Cloud Drive MCP download or SHA-256 verification failed: the package did not match the pinned release.".to_owned());
     }
 
     #[cfg(unix)]
     fs::set_permissions(&staged_executable, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("Unable to make LinkSwift MCP executable: {error}"))?;
+        .map_err(|error| format!("Unable to make AI-OS Cloud Drive MCP executable: {error}"))?;
 
     let target = version_directory(root, &spec.version);
     let backup = root.join(format!(".rollback-{}", spec.version));
     remove_path_if_present(&backup)?;
     if target.exists() {
         fs::rename(&target, &backup).map_err(|error| {
-            format!("Unable to preserve the previous LinkSwift MCP version: {error}")
+            format!("Unable to preserve the previous AI-OS Cloud Drive MCP version: {error}")
         })?;
     }
     if let Err(error) = fs::rename(&staging, &target) {
         if backup.exists() {
             let _ = fs::rename(&backup, &target);
         }
-        return Err(format!("Unable to activate LinkSwift MCP: {error}"));
+        return Err(format!("Unable to activate AI-OS Cloud Drive MCP: {error}"));
     }
 
     let executable = target.join(EXECUTABLE_NAME);
@@ -313,7 +314,7 @@ where
         }
         let _ = rollback_registration();
         return Err(format!(
-            "LinkSwift MCP registration failed and was rolled back: {error}"
+            "AI-OS Cloud Drive MCP registration failed and was rolled back: {error}"
         ));
     }
 
@@ -330,7 +331,7 @@ where
         }
         let _ = rollback_registration();
         return Err(format!(
-            "LinkSwift MCP state commit failed and was rolled back: {error}"
+            "AI-OS Cloud Drive MCP state commit failed and was rolled back: {error}"
         ));
     }
     remove_path_if_present(&backup)?;
@@ -340,7 +341,7 @@ where
 fn install_blocking(approved: bool) -> Result<LinkSwiftMcpStatus, String> {
     if !approved {
         return Err(
-            "LinkSwift MCP installation was declined. No files or configuration were changed."
+            "AI-OS Cloud Drive MCP installation was declined. No files or configuration were changed."
                 .to_owned(),
         );
     }
@@ -411,7 +412,7 @@ pub async fn install_linkswift_mcp(approved: bool) -> LinkSwiftMcpActionResult {
             }
         }
         Err(error) => {
-            let message = format!("LinkSwift MCP installer task failed: {error}");
+            let message = format!("AI-OS Cloud Drive MCP installer task failed: {error}");
             let status = component_root()
                 .map(|root| status_at(&root))
                 .unwrap_or_else(|_| status_at(Path::new("/invalid")));
@@ -445,7 +446,7 @@ pub fn uninstall_linkswift_mcp(approved: bool) -> LinkSwiftMcpActionResult {
         return LinkSwiftMcpActionResult {
             success: false,
             message:
-                "LinkSwift MCP uninstall was declined. No files or configuration were changed."
+                "AI-OS Cloud Drive MCP uninstall was declined. No files or configuration were changed."
                     .to_owned(),
             status: status_at(&root),
         };
@@ -467,14 +468,14 @@ pub fn uninstall_linkswift_mcp(approved: bool) -> LinkSwiftMcpActionResult {
         return LinkSwiftMcpActionResult {
             success: false,
             message: format!(
-                "LinkSwift MCP uninstall failed; MCP registration was restored: {error}"
+                "AI-OS Cloud Drive MCP uninstall failed; MCP registration was restored: {error}"
             ),
             status: status_at(&root),
         };
     }
     LinkSwiftMcpActionResult {
         success: true,
-        message: "LinkSwift MCP was unregistered and removed.".to_owned(),
+        message: "AI-OS Cloud Drive MCP was unregistered and removed.".to_owned(),
         status: status_at(&root),
     }
 }
@@ -484,17 +485,20 @@ pub fn call_linkswift_mcp(
     tool_name: String,
     arguments: Value,
 ) -> Result<mcp_runtime::McpResponse, String> {
-    if tool_name != "resolve_share_link" {
-        return Err("The requested LinkSwift MCP tool is not allowed.".to_owned());
+    if !matches!(
+        tool_name.as_str(),
+        "inspect_share_link" | "download_resolved_file" | "select_share_files"
+    ) {
+        return Err("The requested AI-OS Cloud Drive MCP tool is not allowed.".to_owned());
     }
     let root = component_root()?;
     let status = status_at(&root);
     if !status.installed || !status.integrity_verified || !status.registered {
-        return Err("LinkSwift MCP is not installed, verified and registered.".to_owned());
+        return Err("AI-OS Cloud Drive MCP is not installed, verified and registered.".to_owned());
     }
     let command = status
         .executable_path
-        .ok_or_else(|| "LinkSwift MCP executable is unavailable.".to_owned())?;
+        .ok_or_else(|| "AI-OS Cloud Drive MCP executable is unavailable.".to_owned())?;
     mcp_runtime::call_mcp_tool(command, Vec::new(), tool_name, arguments)
 }
 
@@ -589,11 +593,11 @@ mod tests {
         assert!(validate_release_url("http://github.com/example/release").is_err());
         assert!(validate_release_url("https://example.com/release").is_err());
         assert!(validate_release_url(
-            "https://github.com/other/repo/releases/download/v0.1.0/linkswift-mcp"
+            "https://github.com/other/repo/releases/download/cloud-drive-mcp-v0.1.0/ai-os-cloud-drive-mcp"
         )
         .is_err());
-        assert!(validate_release_url("https://github.com/russellchen001/linkswift-mcp/releases/download/v0.2.0/linkswift-mcp").is_err());
-        assert!(validate_release_url("https://github.com/russellchen001/linkswift-mcp/releases/download/v0.1.0/linkswift-mcp").is_ok());
+        assert!(validate_release_url("https://github.com/russellchen001/AI-OS/releases/download/cloud-drive-mcp-v0.2.0/ai-os-cloud-drive-mcp").is_err());
+        assert!(validate_release_url("https://github.com/russellchen001/AI-OS/releases/download/cloud-drive-mcp-v0.1.0/ai-os-cloud-drive-mcp").is_ok());
     }
 
     #[test]
@@ -608,7 +612,7 @@ mod tests {
         let payload = br#"#!/bin/sh
 read request
 case "$request" in
-  *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"resolve_share_link","description":"Resolve a supported share link","inputSchema":{"type":"object"}}]}}' ;;
+  *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"inspect_share_link","description":"Inspect a supported share link","inputSchema":{"type":"object"}}]}}' ;;
   *tools/call*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Login or provider verification may be required."}]}}' ;;
 esac
 "#;
@@ -625,11 +629,11 @@ esac
             .to_string_lossy()
             .into_owned();
         let tools = mcp_runtime::list_mcp_tools(command.clone(), Vec::new()).unwrap();
-        assert_eq!(tools[0].name, "resolve_share_link");
+        assert_eq!(tools[0].name, "inspect_share_link");
         let response = mcp_runtime::call_mcp_tool(
             command,
             Vec::new(),
-            "resolve_share_link".to_owned(),
+            "inspect_share_link".to_owned(),
             serde_json::json!({"url":"https://pan.quark.cn/s/example"}),
         )
         .unwrap();

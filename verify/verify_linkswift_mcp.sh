@@ -2,7 +2,7 @@
 
 set -u
 
-NAME="LinkSwift MCP managed component"
+NAME="AI-OS Cloud Drive MCP managed component"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_DIR="$(mktemp -d -t ai-os-linkswift-mcp.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -37,7 +37,7 @@ else
   fail "Rust compile"
 fi
 
-if npm run build >"$TMP_DIR/frontend-build.log" 2>&1; then
+if npm run build -- --configLoader runner >"$TMP_DIR/frontend-build.log" 2>&1; then
   echo "✅ Frontend production build"
 else
   grep -E "error|Error|FAILED" "$TMP_DIR/frontend-build.log" | head -20

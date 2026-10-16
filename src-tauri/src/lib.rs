@@ -1,6 +1,7 @@
 mod backup;
 mod browser;
 mod claude_code;
+pub mod cloud_drive_core;
 mod cognitive_distillation;
 mod commerce_provider;
 #[cfg(test)]

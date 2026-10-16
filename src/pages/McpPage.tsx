@@ -210,7 +210,7 @@ function McpPage({
   useEffect(() => {
     void getLinkSwiftMcpStatus()
       .then(setManagedStatus)
-      .catch((error) => setManagedMessage(`Unable to read LinkSwift MCP status: ${String(error)}`));
+      .catch((error) => setManagedMessage(`Unable to read AI-OS Cloud Drive MCP status: ${String(error)}`));
   }, [servers]);
 
   async function runManagedAction() {
@@ -224,7 +224,7 @@ function McpPage({
       setManagedMessage(result.message);
       if (result.success) onRefresh();
     } catch (error) {
-      setManagedMessage(`LinkSwift MCP ${managedAction} failed: ${String(error)}`);
+      setManagedMessage(`AI-OS Cloud Drive MCP ${managedAction} failed: ${String(error)}`);
     } finally {
       setManagedBusy(false);
       setManagedAction(null);
@@ -1142,7 +1142,7 @@ function McpPage({
       />
       <ConfirmDialog
         open={managedAction !== null}
-        title={managedAction === "uninstall" ? "Uninstall LinkSwift MCP?" : "Update or repair LinkSwift MCP?"}
+        title={managedAction === "uninstall" ? "Uninstall AI-OS Cloud Drive MCP?" : "Update or repair AI-OS Cloud Drive MCP?"}
         message={managedStatus
           ? managedAction === "uninstall"
             ? "AI-OS will remove the independent component directory and its managed MCP registration. Cloud-drive accounts and remote files are not changed."

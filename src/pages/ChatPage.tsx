@@ -906,8 +906,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       const status = await getLinkSwiftMcpStatus().catch(() => undefined);
       if (!status) {
         await dialog.confirm({
-          title: "LinkSwift MCP status unavailable",
-          message: "AI-OS could not inspect the independent LinkSwift MCP component. Nothing was installed or executed.",
+          title: "AI-OS Cloud Drive MCP status unavailable",
+          message: "AI-OS could not inspect the independent Cloud Drive MCP component. Nothing was installed or executed.",
           confirmLabel: "OK",
           cancelLabel: "Close",
           tone: "warning",
@@ -917,7 +917,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       }
       if (!status.releaseConfigured) {
         await dialog.confirm({
-          title: "LinkSwift MCP is not available yet",
+          title: "AI-OS Cloud Drive MCP is not available yet",
           message: "The independent component has no verified release configured in this AI-OS build. AI-OS did not install or run anything.",
           confirmLabel: "OK",
           cancelLabel: "Close",
@@ -945,7 +945,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         }));
         if (!installed.success) {
           await dialog.confirm({
-            title: "LinkSwift MCP was not installed",
+            title: "AI-OS Cloud Drive MCP was not installed",
             message: `${installed.message}\n\nAI-OS did not run the share link.`,
             confirmLabel: "OK",
             cancelLabel: "Close",
@@ -1126,7 +1126,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         const response = await resolveLinkSwiftShareLink(linkSwiftShareLink, draft.trim());
         content = describeLinkSwiftResult(response);
       } catch (error) {
-        content = `LinkSwift MCP could not process this share link: ${String(error)}\n\nThe provider may require sign-in, CAPTCHA or file access approval. AI-OS did not claim that the link can be downloaded anonymously.`;
+        content = `AI-OS Cloud Drive MCP could not process this share link: ${String(error)}\n\nThe provider may require sign-in, CAPTCHA or file access approval. AI-OS did not claim that the link can be downloaded anonymously.`;
       }
       const completedMessages: ChatMessage[] = [
         ...nextMessages,
