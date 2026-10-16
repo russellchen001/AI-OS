@@ -915,6 +915,17 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         setIsSubmitting(false);
         return;
       }
+      if (!status.releaseConfigured) {
+        await dialog.confirm({
+          title: "LinkSwift MCP is not available yet",
+          message: "The independent component has no verified release configured in this AI-OS build. AI-OS did not install or run anything.",
+          confirmLabel: "OK",
+          cancelLabel: "Close",
+          tone: "warning",
+        });
+        setIsSubmitting(false);
+        return;
+      }
       if (!status.installed || !status.integrityVerified || !status.registered) {
         const approved = await dialog.confirm({
           title: `Install ${status.name}?`,

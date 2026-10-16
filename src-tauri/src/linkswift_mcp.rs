@@ -107,9 +107,22 @@ fn release_spec() -> Result<ReleaseSpec, String> {
 fn validate_release_url(value: &str) -> Result<(), String> {
     let url = url::Url::parse(value)
         .map_err(|_| "The LinkSwift MCP release URL is invalid.".to_owned())?;
-    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+    let release_prefix =
+        format!("/russellchen001/linkswift-mcp/releases/download/v{PINNED_VERSION}/");
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.path().starts_with(&release_prefix)
+        || url.path()[release_prefix.len()..].is_empty()
+        || url.path()[release_prefix.len()..].contains('/')
+    {
         return Err(
-            "LinkSwift MCP releases must use the pinned github.com HTTPS origin.".to_owned(),
+            "LinkSwift MCP releases must use the pinned repository and version path on github.com."
+                .to_owned(),
         );
     }
     Ok(())
@@ -471,6 +484,9 @@ pub fn call_linkswift_mcp(
     tool_name: String,
     arguments: Value,
 ) -> Result<mcp_runtime::McpResponse, String> {
+    if tool_name != "resolve_share_link" {
+        return Err("The requested LinkSwift MCP tool is not allowed.".to_owned());
+    }
     let root = component_root()?;
     let status = status_at(&root);
     if !status.installed || !status.integrity_verified || !status.registered {
@@ -572,6 +588,11 @@ mod tests {
     fn production_release_requires_a_pinned_trusted_origin() {
         assert!(validate_release_url("http://github.com/example/release").is_err());
         assert!(validate_release_url("https://example.com/release").is_err());
+        assert!(validate_release_url(
+            "https://github.com/other/repo/releases/download/v0.1.0/linkswift-mcp"
+        )
+        .is_err());
+        assert!(validate_release_url("https://github.com/russellchen001/linkswift-mcp/releases/download/v0.2.0/linkswift-mcp").is_err());
         assert!(validate_release_url("https://github.com/russellchen001/linkswift-mcp/releases/download/v0.1.0/linkswift-mcp").is_ok());
     }
 
