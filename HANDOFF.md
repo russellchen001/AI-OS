@@ -5,7 +5,7 @@
 **Last updated:** 2026-10-16
 **Branch:** `feat/cloud-drive-mcp-native`
 **Baseline:** committed installer/audit branch `feat/linkswift-mcp-installer` at `8bb1464`; `ai-os-v1.0.1-beta.4.1` and its archived release remain unchanged
-**Status:** NATIVE FOUNDATION IMPLEMENTED; REAL SHARE-LINK E2E BLOCKED ON A USER-OWNED TEST SHARE AND ANY REQUIRED USER AUTHORIZATION.
+**Status:** NATIVE FOUNDATION IMPLEMENTED; USER-OWNED BAIDU SHARE CODE AND DIRECTORY LIST VERIFIED EXTERNALLY; NATIVE DESCRIPTOR/DOWNLOAD E2E STILL BLOCKED.
 
 ## Technical decisions
 
@@ -15,6 +15,7 @@
 - Authorization is anonymous-first. Where a provider requires login, CAPTCHA, membership or quota, the provider must return an authorization-required state for a controlled WebView; the MCP must not bypass the provider restriction or persist browser cookies in component state.
 - A resolved download descriptor may carry request headers in memory, but debug output redacts them. The engine rejects HTTP, credentials in URLs, custom ports, local/private network destinations, unsafe filenames and caller-controlled Host/Range/Content-Length headers.
 - Thunder is not the common executor and Aria2 is not restored. Xunlei Cloud Drive is only a provider identity until a real supported automation API is proven.
+- The installed `bdpan` CLI is not adopted as the native MCP backend. Its share download path documents a transfer into the user's personal drive before local download, which violates the share-download-only boundary and would mutate cloud state.
 - Production installation remains fail-closed: an AI-OS release asset, exact size and SHA-256 must be pinned through `AI_OS_CLOUD_DRIVE_MCP_RELEASE_*`. No release has been created or published.
 
 ## Implemented
@@ -32,13 +33,16 @@
 - `verify/verify_cloud_drive_mcp.sh`: PASS. It ran four core behavior tests, two MCP protocol tests, built the native MCP binary and invoked the built process with a Baidu share plus extraction code.
 - `verify/verify_linkswift_mcp.sh`: PASS. Installer decline/integrity/rollback/MCP behavior, Rust compile, frontend production build and changed-file integrity passed.
 - Real network executor check: PASS against the official Guangya host. The MCP downloaded `https://www.guangyapan.com/robots.txt` in one attempt, wrote 837 bytes, returned SHA-256 `0082ec9b63a05e56aae296d44e299aac32740e63ad6709d8dd36877656427d01`, and an independent `wc`/`shasum` check matched. This proves real HTTPS transfer, disk commit and receipt verification; it is not a share-link E2E.
+- User-owned Baidu share diagnostic on 2026-10-16: PASS for the supplied extraction code and real directory traversal through the already-installed `bdpan` 3.8.7 read-only list command. The root contained one folder; that folder contained two files of 213,835,539 and 623 bytes. No transfer, save-to-drive, download or cloud mutation was performed.
+- Native MCP interaction with the same real URL/code: PASS for provider/share-id normalization and for selection of the 623-byte entry after external metadata normalization. This does not prove that the native MCP can open or list the share because the real listing came from `bdpan`, not from `cloud_drive_core.rs`.
+- Thunder capability audit on 2026-10-16: `/Applications/Thunder.app` is installed and registers GUI URL schemes (`thunder`, `ed2k`, `magnet`, `birdcmd`, `xunleiapp`, `thunderExtension`), but no CLI or supported local automation API was found. It remains ineligible as a non-interactive executor.
 - Full-tree `cargo fmt --check` is still unsuitable because of pre-existing formatting differences in untouched files. The two new Rust files were formatted directly. Existing compiler warnings remain pre-existing.
 
 ## Not complete / next acceptance gate
 
-- No real provider share was opened, listed or selected. No provider login, CAPTCHA, member limit or quota flow was exercised. Therefore Baidu/Quark and the other seven providers are not claimed complete.
+- A real Baidu share was opened to its extraction-code page and listed read-only through the installed external CLI, but the native MCP did not open or list it. No native download descriptor was produced and no shared file was downloaded. Therefore Baidu and the other eight providers are not claimed complete.
 - Provider-specific list/selection adapters and controlled WebView authorization still need implementation. The common contracts and transfer engine are ready for those adapters.
-- To run the first real share E2E without using third-party content, obtain one small user-owned Baidu or Quark share link (and extraction code if set). If the provider requires login, the owner must complete the controlled WebView authorization. Acceptance must prove the real file list, explicit selection, completed file, byte count/hash and local or mounted-NAS destination.
+- The supplied Baidu share is sufficient for continuing adapter development, but it contains one approximately 204 MB file and one 623-byte file. The next acceptance gate is a native Baidu adapter that returns the real tree and a provider-issued descriptor for the 623-byte file without first transferring it into personal drive. If Baidu requires login, the owner must complete controlled WebView authorization. Acceptance must then prove the completed temporary-directory file, byte count, SHA-256 and MCP receipt independently.
 - The managed installer still needs a reproducible native binary release asset before real install/update/rollback acceptance. Creating a public repository, push or release remains unauthorized and was not done.
 
 ---
