@@ -13433,3 +13433,236 @@ The next action after this documentation commit is to inspect the resulting
 commit and choose a non-conflicting final release tag. Do not move existing
 phase-completion tags and do not push without explicit owner confirmation.
 - 2026-09-29 01:42  docs: close AI-OS v1 release acceptance
+
+<!-- BETA5_CLOUD_DRIVE_HANDOFF_START -->
+
+## Beta 5 — Cloud Drive Download Skill
+
+### Status
+
+- Target release: AI-OS v1.0.1-beta.5 (proposed; not released).
+- Development branch: `feat/cloud-drive-mcp-native`.
+- Last confirmed implementation commit before this handoff: `2f185b3`.
+- Beta 4.1 is the released baseline and must remain unchanged.
+- Development is incomplete. No successful Baidu share-download E2E has been verified.
+- Do not publish Beta 5 until real download acceptance and regression testing are complete.
+
+### Product decisions — settled
+
+Beta 5 introduces native cloud-drive share downloading to AI-OS.
+
+Supported target providers:
+
+1. Baidu Netdisk
+2. Quark
+3. Aliyun Drive
+4. UC Drive
+5. 123 Cloud Drive
+6. China Mobile Cloud Drive
+7. China Telecom Tianyi Cloud Drive
+8. Xunlei Cloud Drive
+9. Guangya Cloud Drive
+
+All nine providers are **share-link download only**.
+
+Scope:
+
+- Recognize supported share links.
+- Support extraction codes.
+- Resolve shared file and folder metadata.
+- Select one file, multiple files, or an entire shared folder.
+- Perform actual file downloads.
+- Report progress, retry and resume when supported.
+- Save to local Mac storage or an authorized mounted NAS destination.
+- Verify downloaded file size and integrity.
+- Prefer guest access; request user login only when required by the provider.
+
+Out of scope:
+
+- Personal cloud-drive browsing or file management.
+- Uploading, deleting, moving, or renaming cloud-drive files.
+- Cloud-drive synchronization.
+- Unnecessary long-term account binding.
+- WindFiles, HillDisk, 115 Netdisk, JDownloader and pyLoad integrations.
+- Reintroducing Aria2.
+
+The owner has a Baidu account, but does not have accounts for the other
+eight services. Do not require eight new accounts merely for development.
+Respect service authentication, CAPTCHA, membership and download limits.
+
+### Architecture — native Scheme B
+
+AI-OS Download Skill
+    -> AI-OS Cloud Drive MCP
+    -> Native provider adapters
+    -> Download descriptors
+    -> Native HTTP download engine
+    -> Local storage / mounted NAS
+    -> File-size and integrity verification
+
+- LinkSwift inspired the supported-provider scope, but its AGPL code
+  must not be copied, translated or embedded into the native implementation.
+- The native MCP uses its own provider implementations and common protocol.
+- Controlled WebView is an authentication aid, not the core parser.
+- The user should only need to install AI-OS; no Tampermonkey or
+  separate LinkSwift installation.
+- Xunlei/Thunder is optional: only a GUI URL scheme was identified,
+  not a supported noninteractive download-control API.
+- The native HTTP executor is the primary download execution path.
+- Do not claim a provider works until a real share file downloads.
+
+### Current implementation
+
+Relevant files:
+
+- `src-tauri/src/cloud_drive_core.rs`
+  - Provider identification.
+  - Shared file-tree selection.
+  - Download execution, retries/resume where supported, progress,
+    destination handling and integrity verification.
+- `src-tauri/src/cloud_drive_baidu.rs`
+  - Native Baidu share metadata and download-descriptor implementation.
+  - Authorization-sensitive operations.
+- `src-tauri/src/bin/ai-os-cloud-drive-mcp.rs`
+  - Native stdio MCP server and download tools.
+- `src-tauri/src/linkswift_mcp.rs`
+  - Existing MCP lifecycle/install shell and Baidu authorization commands.
+  - Legacy `linkswift` names remain in some interfaces and require
+    deliberate cleanup before public release.
+- `src/services/linkswiftMcp.ts`
+  - Frontend command wrappers.
+- `verify/verify_cloud_drive_mcp.sh`
+- `verify/verify_linkswift_mcp.sh`
+
+Known development commits:
+
+- `75775c1` — native cloud-drive MCP foundation.
+- `942c05a` — Baidu real-share E2E boundary documented.
+- `320db27` — native Baidu share resolver.
+- `2f185b3` — controlled Baidu authorization.
+
+### Test evidence and limitations
+
+Verified in earlier development:
+
+- Both cloud-drive-related verification scripts reported PASS.
+- Production frontend build previously passed.
+- A historical same-permission Rust regression run reported
+  1019 passed / 0 failed; rerun tests on the current branch.
+- Native HTTP engine downloaded an 837-byte file from the
+  Guangya official website and independently verified SHA-256.
+  This was NOT a cloud-drive share-download E2E.
+
+Baidu owner-provided test share:
+
+- URL: `https://pan.baidu.com/s/1ph613C8Y8rMQ82NzNRr1Tw`
+- Extraction code: `4312`
+- Previously verified: one directory with two files.
+- Reported file sizes: 213835539 bytes and 623 bytes.
+- Prefer the 623-byte test file for initial real E2E.
+- The 623-byte item's actual provider item ID must be resolved
+  from fresh metadata; never invent one.
+
+Real Baidu share-download E2E is **NOT VERIFIED**.
+
+Unverified:
+
+- Controlled WebView opens, supports the full legitimate login flow
+  and safely returns authorization to the backend.
+- Native MCP resolves this authenticated share successfully.
+- Actual share-file download to the selected destination.
+- Final file-size and SHA-256 verification for the downloaded item.
+- Other eight providers' complete real share-download workflows.
+- Production MCP packaging, auto-install, update and rollback.
+- Full Beta 5 UI and regression acceptance.
+
+### Important interrupted Work state
+
+An interrupted Work run temporarily inserted 37 lines of automated E2E
+logic into `src/App.tsx`.
+
+The hook retried download every two seconds and should NOT be restored.
+
+The modified file was backed up at:
+
+`~/AI-OS-backups/cloud-drive/App-e2e-20261017-115606.tsx`
+
+Then `src/App.tsx` was restored. The development worktree was clean
+at commit `2f185b3` immediately afterward.
+
+Future testing should use a manually triggered, development-only
+UI entry or an equivalent safe single-shot test harness, not an
+automatic polling hook in `App.tsx`.
+
+### Authorization and security review
+
+The current Baidu authorization design:
+
+1. Parses and validates a Baidu share URL.
+2. Opens an incognito Tauri WebView.
+3. Restricts navigation to HTTPS Baidu domains.
+4. Reads selected authorization cookies from the WebView.
+5. Sends short-lived authorization data to the MCP call.
+6. Closes the window on successful tool completion.
+
+Before real-user acceptance:
+
+- Verify the authorization window actually opens and login succeeds.
+- Check whether legitimate login redirects require additional
+  tightly scoped hosts; do not broadly disable navigation checks.
+- Ensure cookies and tokens are never written to logs, error
+  messages, persistent files or user-visible MCP responses.
+- Avoid printing secrets through test output.
+- Confirm credentials are not retained beyond their intended lifetime.
+- Avoid repeated download attempts before login completion.
+- Validate destination paths and file selection.
+- Never bypass provider access controls, quotas or membership rules.
+
+### Licensing and publication
+
+Original LinkSwift upstream: `hmjz100/LinkSwift`;
+license: AGPL-3.0-or-later.
+
+The current native code is intended to be independently implemented,
+not a direct LinkSwift port. Code provenance still requires review.
+
+The native component currently declares Apache-2.0 in code;
+confirm actual license provenance and distribution compatibility
+before publishing.
+
+No public `linkswift-mcp` repository or v0.1.0 release was authorized.
+Do not publish, push or create a public repository without explicit approval.
+
+The earlier external-installer design was not production-ready and
+must not be represented as a completed native Cloud Drive release.
+
+### Next developer: required execution sequence
+
+1. Inspect the current branch, Git status, HANDOFF and source.
+   Preserve unrelated work and the Beta 4.1 release/tag.
+2. Review and harden the Baidu authorization implementation.
+3. Add an explicit, single-shot development-only authorization/download
+   acceptance interface. Never restore the old endless polling hook.
+4. Use the provided Baidu share, extraction code and the real 623-byte
+   item's resolved ID to execute native MCP -> HTTP download.
+5. Verify actual downloaded bytes, expected size, SHA-256 and
+   destination. Record precise error stages if blocked.
+6. Confirm MCP response semantics, failure handling and secret hygiene.
+7. Extend the common Provider protocol to the remaining eight
+   share-only platforms; each requires its own real E2E evidence.
+8. Integrate the verified capabilities into the Beta 5 UI/installer.
+9. Complete regression, fresh-install, local/NAS, package and
+   security/license acceptance before any Beta 5 release.
+10. Update HANDOFF with actual evidence and commit meaningful work.
+
+### Restrictions
+
+- Do not modify or retag the released Beta 4.1.
+- Do not push, publish or create public repositories without approval.
+- Do not restore Aria2.
+- Do not reproduce LinkSwift AGPL implementation code.
+- Do not claim fixture/mocked downloads prove real provider E2E.
+- Do not require the user to send passwords, SMS codes or cookies in chat.
+- Keep the product suitable for nontechnical users with minimal setup.
+
+<!-- BETA5_CLOUD_DRIVE_HANDOFF_END -->
