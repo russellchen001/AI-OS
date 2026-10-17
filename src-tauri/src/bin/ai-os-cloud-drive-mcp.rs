@@ -1,7 +1,7 @@
-use dashboard_lib::cloud_drive_baidu::BaiduResolvedShare;
+use dashboard_lib::cloud_drive_baidu::{BaiduResolvedShare, BAIDU_DOWNLOAD_USER_AGENTS};
 use dashboard_lib::cloud_drive_core::{
     destination_path, download_file, download_file_with_client, select_share_files,
-    DownloadDescriptor, ShareEntry, ShareLink, ShareSelection,
+    DownloadDescriptor, ShareEntry, ShareEntryKind, ShareLink, ShareSelection,
 };
 use serde_json::{json, Value};
 use std::{
@@ -125,7 +125,7 @@ fn tools() -> Value {
         },
         {
             "name": "download_authorized_baidu_share_file",
-            "description": "Use a backend-supplied, memory-only Baidu authorization to resolve a share and download one real file through the native HTTP engine in a single MCP call.",
+            "description": "Use a backend-supplied, memory-only Baidu authorization to resolve a share and download one file (itemId) or, without itemId, every file in the share, through the native HTTP engine in a single MCP call.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -136,7 +136,7 @@ fn tools() -> Value {
                     "destination": { "type": "string" },
                     "retryLimit": { "type": "integer", "minimum": 1, "maximum": 5 }
                 },
-                "required": ["url", "extractionCode", "authorizationCookie", "itemId", "destination"]
+                "required": ["url", "extractionCode", "authorizationCookie", "destination"]
             }
         }
     ])
@@ -306,12 +306,32 @@ fn download_authorized_baidu_share_file(arguments: Value) -> Result<Value, Strin
         share,
         Some(required("authorizationCookie")?),
     )?;
-    let descriptor = resolved.descriptor(required("itemId")?)?;
     let destination = destination_path(required("destination")?)?;
     let retry_limit = arguments
         .get("retryLimit")
         .and_then(Value::as_u64)
         .unwrap_or(3) as u8;
+
+    // No itemId: the user sent a share link and wants what is in it. Every
+    // file is downloaded, keeping the share's folder layout under destination.
+    let Some(item_id) = arguments.get("itemId").and_then(Value::as_str) else {
+        let files = flatten_files(&resolved.entries());
+        if files.is_empty() {
+            return Err("The Baidu share contains no downloadable files.".to_owned());
+        }
+        let mut receipts = Vec::new();
+        for (relative_dir, entry) in files {
+            let receipt = download_baidu_file(
+                &resolved,
+                &entry.id,
+                &destination.join(&relative_dir),
+                retry_limit,
+            )?;
+            receipts.push(receipt);
+        }
+        return Ok(json!({ "entries": resolved.entries(), "receipts": receipts }));
+    };
+    let descriptor = resolved.descriptor(item_id)?;
     let descriptor_summary = json!({
         "provider": descriptor.provider,
         "fileName": descriptor.file_name.clone(),
@@ -332,6 +352,72 @@ fn download_authorized_baidu_share_file(arguments: Value) -> Result<Value, Strin
     }))
 }
 
+/// Files in a share tree with their folder path relative to the share root.
+/// Folder names that could escape the destination are refused.
+fn flatten_files(entries: &[ShareEntry]) -> Vec<(std::path::PathBuf, ShareEntry)> {
+    fn walk(
+        entries: &[ShareEntry],
+        dir: &std::path::Path,
+        out: &mut Vec<(std::path::PathBuf, ShareEntry)>,
+    ) {
+        for entry in entries {
+            match entry.kind {
+                ShareEntryKind::File => out.push((dir.to_path_buf(), entry.clone())),
+                ShareEntryKind::Folder => {
+                    let name = entry.name.trim();
+                    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+                        continue;
+                    }
+                    walk(&entry.children, &dir.join(name), out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(entries, std::path::Path::new(""), &mut out);
+    out
+}
+
+/// Baidu's file servers answer 403 to client identities they do not accept
+/// for a share download; each identity is tried with a freshly resolved URL.
+fn download_baidu_file(
+    resolved: &BaiduResolvedShare,
+    item_id: &str,
+    destination: &std::path::Path,
+    retry_limit: u8,
+) -> Result<dashboard_lib::cloud_drive_core::DownloadReceipt, String> {
+    let mut refused = Vec::new();
+    let mut cookie_names = String::new();
+    for user_agent in BAIDU_DOWNLOAD_USER_AGENTS {
+        let descriptor = resolved.descriptor_as(item_id, user_agent)?;
+        // Names only, never values: enough to tell whether the sign-in went out.
+        cookie_names = descriptor
+            .headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case("cookie"))
+            .map(|header| {
+                header
+                    .value
+                    .split(';')
+                    .filter_map(|pair| pair.split_once('=').map(|(name, _)| name.trim()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        match download_file_with_client(resolved.client(), &descriptor, destination, retry_limit, |_| {}) {
+            Ok(receipt) => return Ok(receipt),
+            Err(error) if error.contains("403") => refused.push(*user_agent),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(format!(
+        "Baidu refused the download (HTTP 403) for every client identity tried: {}. Cookies sent: {}. Sign-in trace: {}.",
+        refused.join(" | "),
+        if cookie_names.is_empty() { "none" } else { &cookie_names },
+        resolved.cookie_trace()
+    ))
+}
+
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
@@ -339,6 +425,54 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(id: &str, name: &str, kind: ShareEntryKind, children: Vec<ShareEntry>) -> ShareEntry {
+        ShareEntry { id: id.into(), name: name.into(), kind, size: Some(1), children }
+    }
+
+    #[test]
+    fn whole_share_download_keeps_folders_and_refuses_escaping_names() {
+        // Shape of the real owner share: one folder holding two files.
+        let tree = vec![
+            entry("f1", "Aimv001", ShareEntryKind::Folder, vec![
+                entry("a", "video.mp4", ShareEntryKind::File, vec![]),
+                entry("b", "readme.txt", ShareEntryKind::File, vec![]),
+            ]),
+            entry("c", "top.txt", ShareEntryKind::File, vec![]),
+            entry("x", "..", ShareEntryKind::Folder, vec![entry("evil", "e", ShareEntryKind::File, vec![])]),
+            entry("y", "a/b", ShareEntryKind::Folder, vec![entry("evil2", "e", ShareEntryKind::File, vec![])]),
+        ];
+        let files: Vec<(String, String)> = flatten_files(&tree)
+            .into_iter()
+            .map(|(dir, item)| (dir.to_string_lossy().into_owned(), item.id))
+            .collect();
+        assert_eq!(
+            files,
+            vec![
+                ("Aimv001".to_owned(), "a".to_owned()),
+                ("Aimv001".to_owned(), "b".to_owned()),
+                ("".to_owned(), "c".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn authorized_download_no_longer_requires_an_item_id() {
+        let tools = tools();
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "download_authorized_baidu_share_file")
+            .unwrap();
+        let required: Vec<&str> = tool["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert!(!required.contains(&"itemId"));
+    }
 
     #[test]
     fn lists_only_bounded_download_tools() {

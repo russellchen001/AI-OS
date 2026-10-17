@@ -32,13 +32,9 @@ import {
 import { classifyAutomaticIntent } from "../services/intentRouting";
 import { isConversationRecallQuestion } from "../services/intentSemantic";
 import {
-  describeLinkSwiftResult,
-  getLinkSwiftMcpStatus,
-  installLinkSwiftMcp,
-  linkSwiftConsentMessage,
-  resolveLinkSwiftShareLink,
+  downloadCloudDriveShare,
   supportedCloudDriveShareLink,
-} from "../services/linkswiftMcp";
+} from "../services/cloudDrive";
 import { shouldRetrieveConversationHistory } from "../services/conversationRetrievalGate";
 import {
   buildPublicProductTaskPrompt,
@@ -872,7 +868,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
      */
     let automaticIntent;
     try {
-      automaticIntent = await classifyAutomaticIntent(content, selectedModel);
+      // A cloud-drive share link is a download request; no model is asked.
+      automaticIntent = linkSwiftShareLink
+        ? { taskType: "DO" as const, source: "semantic-rule" as const }
+        : await classifyAutomaticIntent(content, selectedModel);
     } catch {
       setIsSubmitting(false);
       return;
@@ -901,61 +900,6 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
       }
     }
     const isWorkRequest = routedTaskType === "DO";
-
-    if (linkSwiftShareLink) {
-      const status = await getLinkSwiftMcpStatus().catch(() => undefined);
-      if (!status) {
-        await dialog.confirm({
-          title: "AI-OS Cloud Drive MCP status unavailable",
-          message: "AI-OS could not inspect the independent Cloud Drive MCP component. Nothing was installed or executed.",
-          confirmLabel: "OK",
-          cancelLabel: "Close",
-          tone: "warning",
-        });
-        setIsSubmitting(false);
-        return;
-      }
-      if (!status.releaseConfigured) {
-        await dialog.confirm({
-          title: "AI-OS Cloud Drive MCP is not available yet",
-          message: "The independent component has no verified release configured in this AI-OS build. AI-OS did not install or run anything.",
-          confirmLabel: "OK",
-          cancelLabel: "Close",
-          tone: "warning",
-        });
-        setIsSubmitting(false);
-        return;
-      }
-      if (!status.installed || !status.integrityVerified || !status.registered) {
-        const approved = await dialog.confirm({
-          title: `Install ${status.name}?`,
-          message: linkSwiftConsentMessage(status),
-          confirmLabel: "Install verified component",
-          cancelLabel: "Cancel",
-          tone: "warning",
-        });
-        if (!approved) {
-          setIsSubmitting(false);
-          return;
-        }
-        const installed = await installLinkSwiftMcp(true).catch((error) => ({
-          success: false,
-          message: String(error),
-          status,
-        }));
-        if (!installed.success) {
-          await dialog.confirm({
-            title: "AI-OS Cloud Drive MCP was not installed",
-            message: `${installed.message}\n\nAI-OS did not run the share link.`,
-            confirmLabel: "OK",
-            cancelLabel: "Close",
-            tone: "warning",
-          });
-          setIsSubmitting(false);
-          return;
-        }
-      }
-    }
 
     if (scanFolderPath) {
       const confirmed = await dialog.confirm({
@@ -1123,10 +1067,14 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     if (linkSwiftShareLink) {
       let content: string;
       try {
-        const response = await resolveLinkSwiftShareLink(linkSwiftShareLink, draft.trim());
-        content = describeLinkSwiftResult(response);
+        content = await downloadCloudDriveShare(
+          linkSwiftShareLink,
+          draft.trim(),
+          ({ title, message, confirmLabel }) =>
+            dialog.confirm({ title, message, confirmLabel, cancelLabel: "不用了", tone: "default" }),
+        );
       } catch (error) {
-        content = `AI-OS Cloud Drive MCP could not process this share link: ${String(error)}\n\nThe provider may require sign-in, CAPTCHA or file access approval. AI-OS did not claim that the link can be downloaded anonymously.`;
+        content = `网盘下载没有完成：${String(error)}`;
       }
       const completedMessages: ChatMessage[] = [
         ...nextMessages,

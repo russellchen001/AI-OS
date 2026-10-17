@@ -3,12 +3,14 @@ use crate::cloud_drive_core::{
 };
 use reqwest::{
     blocking::Client,
-    header::{COOKIE, REFERER},
+    cookie::{CookieStore, Jar},
+    header::{COOKIE, REFERER, USER_AGENT},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
+    sync::Arc,
     time::Duration,
 };
 use url::Url;
@@ -16,6 +18,13 @@ use url::Url;
 const BAIDU_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140 Safari/537.36";
 const BAIDU_APP_ID: &str = "250528";
+/// Client identities tried in order when Baidu's file servers refuse a
+/// download with 403: the desktop client, the web API identity, a browser.
+pub const BAIDU_DOWNLOAD_USER_AGENTS: &[&str] = &[
+    "netdisk;P2SP;3.0.0.8",
+    "pan.baidu.com",
+    BAIDU_USER_AGENT,
+];
 const MAX_SHARE_ITEMS: usize = 10_000;
 const BAIDU_AUTH_COOKIE_NAMES: &[&str] = &[
     "BAIDUID",
@@ -35,6 +44,9 @@ pub struct BaiduResolvedShare {
     share: ShareLink,
     randsk: String,
     cookie_header: String,
+    /// Cookie names (never values) seen at each step, for diagnosing a lost
+    /// sign-in.
+    cookie_trace: String,
     share_id: u64,
     share_uk: u64,
     sign: Option<String>,
@@ -109,21 +121,44 @@ impl BaiduResolvedShare {
             .extraction_code
             .as_deref()
             .ok_or_else(|| "Baidu share extraction code is required.".to_owned())?;
+        // A browser-grade cookie jar (RFC 6265 domain/path/secure rules).
+        // Signed-in share pages redirect through Baidu hosts that set cookies
+        // on the way; without a jar the redirects looped ("error following
+        // redirect"), and a hand-written jar made Baidu serve a page without
+        // its metadata (owner acceptance 2026-10-17).
+        let jar = Arc::new(Jar::default());
+        let pan = Url::parse("https://pan.baidu.com/").expect("static URL");
+        if let Some(cookie) = authorization_cookie.as_deref() {
+            for pair in cookie.split(';').map(str::trim).filter(|pair| !pair.is_empty()) {
+                jar.add_cookie_str(&format!("{pair}; Domain=.baidu.com; Path=/; Secure"), &pan);
+            }
+        }
         let client = Client::builder()
             .user_agent(BAIDU_USER_AGENT)
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(60))
+            .cookie_provider(jar.clone())
             .build()
             .map_err(|error| format!("Unable to create Baidu share client: {error}"))?;
         let init_url = format!(
             "https://pan.baidu.com/share/init?surl={}",
             baidu_surl(&share)?
         );
-        let mut init_request = client.get(&share.canonical_url);
-        if let Some(cookie) = authorization_cookie.as_deref() {
-            init_request = init_request.header(COOKIE, cookie);
-        }
-        let init_response = init_request
+        let names_at = |stage: &str| -> String {
+            let names = jar
+                .cookies(&pan)
+                .and_then(|value| value.to_str().ok().map(str::to_owned))
+                .unwrap_or_default()
+                .split(';')
+                .filter_map(|pair| pair.split_once('=').map(|(name, _)| name.trim().to_owned()))
+                .filter(|name| is_authorization_cookie_name(name))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{stage}[{names}]")
+        };
+        let mut cookie_trace = vec![names_at("received")];
+        let init_response = client
+            .get(&share.canonical_url)
             .send()
             .map_err(|error| format!("Unable to open Baidu share: {error}"))?;
         if !init_response.status().is_success() {
@@ -138,9 +173,7 @@ impl BaiduResolvedShare {
             .post(verify_url)
             .header(REFERER, &init_url)
             .form(&[("pwd", extraction_code), ("vcode", ""), ("vcode_str", "")]);
-        if let Some(cookie) = authorization_cookie.as_deref() {
-            verify_request = verify_request.header(COOKIE, cookie);
-        }
+        cookie_trace.push(names_at("opened"));
         let verify_response = verify_request
             .send()
             .map_err(|error| format!("Unable to verify Baidu extraction code: {error}"))?;
@@ -164,17 +197,24 @@ impl BaiduResolvedShare {
             .ok_or_else(|| {
                 "Baidu extraction-code response omitted its session proof.".to_owned()
             })?;
-        let cookie_header = match authorization_cookie {
-            Some(cookie) => format!("{cookie}; BDCLND={randsk}"),
-            None => format!("BDCLND={randsk}"),
-        };
-
+        // The verify response set BDCLND in the jar, as it would in a browser.
+        cookie_trace.push(names_at("verified"));
         let share_response = client
             .get(&share.canonical_url)
             .header(REFERER, &init_url)
-            .header(COOKIE, &cookie_header)
             .send()
             .map_err(|error| format!("Unable to open verified Baidu share: {error}"))?;
+        // Later API and file requests carry exactly what the jar holds for pan.
+        cookie_trace.push(names_at("page"));
+        // The user's sign-in cookies are always sent as read from the sign-in
+        // window, even if a response removed them from the jar: owner
+        // acceptance showed BDUSS missing from the download request.
+        let jar_header = jar
+            .cookies(&pan)
+            .and_then(|value| value.to_str().ok().map(str::to_owned))
+            .unwrap_or_else(|| format!("BDCLND={randsk}"));
+        let cookie_header = merge_cookie_headers(&jar_header, authorization_cookie.as_deref().unwrap_or(""));
+        let cookie_trace = cookie_trace.join(" → ");
         if !share_response.status().is_success() {
             return Err(format!(
                 "Verified Baidu share returned HTTP {}.",
@@ -206,6 +246,7 @@ impl BaiduResolvedShare {
             share,
             randsk,
             cookie_header,
+            cookie_trace,
             share_id,
             share_uk,
             sign,
@@ -226,20 +267,35 @@ impl BaiduResolvedShare {
     }
 
     pub fn descriptor(&self, item_id: &str) -> Result<DownloadDescriptor, String> {
+        self.descriptor_as(item_id, BAIDU_USER_AGENT)
+    }
+
+    /// Resolves the file as a given client identity. Baidu may bind the
+    /// download URL to the identity that requested it, so the same
+    /// User-Agent is used to request the URL and to download it.
+    pub fn descriptor_as(
+        &self,
+        item_id: &str,
+        user_agent: &str,
+    ) -> Result<DownloadDescriptor, String> {
         let file = self
             .files
             .get(item_id)
             .ok_or_else(|| "Selected Baidu file is stale or is a folder.".to_owned())?;
-        let sign = self.sign.as_deref().ok_or_else(|| {
-            "Baidu download resolution requires controlled account authorization; the anonymous share page omitted its download signature.".to_owned()
-        })?;
-        let timestamp = self.timestamp.ok_or_else(|| {
-            "Baidu download resolution requires controlled account authorization; the anonymous share page omitted its download timestamp.".to_owned()
-        })?;
+        // Current share pages no longer embed sign/timestamp; the web client
+        // asks tplconfig for them, so does AI-OS (verified 2026-10-17). A
+        // fresh pair is fetched per file because signatures expire.
+        let (sign, timestamp) = match self.fetch_download_signature() {
+            Ok(pair) => pair,
+            Err(error) => match (self.sign.clone(), self.timestamp) {
+                (Some(sign), Some(timestamp)) => (sign, timestamp),
+                _ => return Err(error),
+            },
+        };
         let mut url = Url::parse("https://pan.baidu.com/api/sharedownload")
             .map_err(|_| "Baidu download endpoint is invalid.".to_owned())?;
         url.query_pairs_mut()
-            .append_pair("sign", sign)
+            .append_pair("sign", &sign)
             .append_pair("timestamp", &timestamp.to_string())
             .append_pair("bdstoken", "")
             .append_pair("channel", "chunlei")
@@ -248,7 +304,8 @@ impl BaiduResolvedShare {
             .append_pair("clienttype", "0");
         let fid_list = serde_json::to_string(&vec![file.fs_id])
             .map_err(|_| "Unable to encode Baidu file selection.".to_owned())?;
-        let extra = serde_json::to_string(&json!({ "sekey": self.randsk }))
+        // randsk arrives percent-encoded; the web client decodes it for sekey.
+        let extra = serde_json::to_string(&json!({ "sekey": percent_decode(&self.randsk) }))
             .map_err(|_| "Unable to encode Baidu session proof.".to_owned())?;
         let form = vec![
             ("encrypt".to_owned(), "0".to_owned()),
@@ -261,6 +318,7 @@ impl BaiduResolvedShare {
         let response = self
             .client
             .post(url)
+            .header(USER_AGENT, user_agent)
             .header(REFERER, &self.share.canonical_url)
             .header(COOKIE, &self.cookie_header)
             .form(&form)
@@ -291,6 +349,10 @@ impl BaiduResolvedShare {
             file_name: file.name.clone(),
             headers: vec![
                 DownloadHeader {
+                    name: "User-Agent".to_owned(),
+                    value: user_agent.to_owned(),
+                },
+                DownloadHeader {
                     name: "Referer".to_owned(),
                     value: self.share.canonical_url.clone(),
                 },
@@ -306,6 +368,52 @@ impl BaiduResolvedShare {
 
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// Cookie names (no values) at each step of opening the share.
+    pub fn cookie_trace(&self) -> &str {
+        &self.cookie_trace
+    }
+
+    fn fetch_download_signature(&self) -> Result<(String, u64), String> {
+        let mut url = Url::parse("https://pan.baidu.com/share/tplconfig")
+            .map_err(|_| "Baidu signature endpoint is invalid.".to_owned())?;
+        url.query_pairs_mut()
+            .append_pair("shareid", &self.share_id.to_string())
+            .append_pair("uk", &self.share_uk.to_string())
+            .append_pair("fields", "sign,timestamp")
+            .append_pair("view_mode", "1")
+            .append_pair("channel", "chunlei")
+            .append_pair("web", "1")
+            .append_pair("app_id", BAIDU_APP_ID)
+            .append_pair("clienttype", "0");
+        let response = self
+            .client
+            .get(url)
+            .header(REFERER, &self.share.canonical_url)
+            .header(COOKIE, &self.cookie_header)
+            .send()
+            .map_err(|error| format!("Unable to request the Baidu download signature: {error}"))?;
+        let value: Value = response
+            .json()
+            .map_err(|_| "Baidu download signature response was invalid.".to_owned())?;
+        let errno = value.get("errno").and_then(Value::as_i64).unwrap_or(-1);
+        if errno != 0 {
+            return Err(baidu_error("download signature", errno));
+        }
+        let data = value
+            .get("data")
+            .ok_or_else(|| "Baidu download signature response omitted its data.".to_owned())?;
+        let sign = data
+            .get("sign")
+            .and_then(Value::as_str)
+            .filter(|sign| !sign.is_empty() && sign.len() <= 4096)
+            .ok_or_else(|| "Baidu download signature response omitted the signature.".to_owned())?;
+        let timestamp = data
+            .get("timestamp")
+            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+            .ok_or_else(|| "Baidu download signature response omitted the timestamp.".to_owned())?;
+        Ok((sign.to_owned(), timestamp))
     }
 
     fn build_entries(&mut self, items: Vec<BaiduRawItem>) -> Result<Vec<ShareEntry>, String> {
@@ -531,6 +639,50 @@ fn page_items(value: &Value) -> Result<Vec<BaiduRawItem>, String> {
     Err("Baidu share file list was invalid.".to_owned())
 }
 
+/// `base` with every cookie of `overrides` set, overriding same-named ones.
+fn merge_cookie_headers(base: &str, overrides: &str) -> String {
+    let parse = |header: &str| -> Vec<(String, String)> {
+        header
+            .split(';')
+            .filter_map(|pair| pair.trim().split_once('='))
+            .filter(|(name, _)| !name.trim().is_empty())
+            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+            .collect()
+    };
+    let overrides = parse(overrides);
+    let mut merged: Vec<(String, String)> = parse(base)
+        .into_iter()
+        .filter(|(name, _)| !overrides.iter().any(|(other, _)| other == name))
+        .collect();
+    merged.extend(overrides);
+    merged
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Decodes %XX escapes (no '+' handling: randsk is not form-encoded).
+/// Malformed escapes are kept as written.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
+            if let Some(byte) = hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| value.to_owned())
+}
+
 fn baidu_error(operation: &str, errno: i64) -> String {
     match errno {
         -9 | -10 | -20 | -30 | 113 | 9019 => format!(
@@ -545,6 +697,23 @@ fn baidu_error(operation: &str, errno: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sign_in_cookies_survive_a_jar_that_lost_them() {
+        assert_eq!(
+            merge_cookie_headers("csrfToken=c; BDCLND=r; STOKEN=old", "BDUSS=u; STOKEN=s"),
+            "csrfToken=c; BDCLND=r; BDUSS=u; STOKEN=s"
+        );
+        assert_eq!(merge_cookie_headers("BDCLND=r", ""), "BDCLND=r");
+    }
+
+    #[test]
+    fn randsk_is_percent_decoded_for_sekey() {
+        assert_eq!(percent_decode("ab%2Bcd%2F%3D"), "ab+cd/=");
+        assert_eq!(percent_decode("plain"), "plain");
+        assert_eq!(percent_decode("bad%zzend%2"), "bad%zzend%2");
+    }
+
 
     #[test]
     fn extracts_nested_locals_json_without_reading_following_scripts() {

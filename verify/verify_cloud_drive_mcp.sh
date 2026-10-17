@@ -76,6 +76,24 @@ else
 fi
 
 cd "$ROOT" || fail "cannot return to project root"
+if node_modules/.bin/esbuild verify/cloud_drive_download.behavior.ts \
+    --bundle --platform=node --format=esm \
+    --outfile="$LOG_DIR/cloud-drive-download.mjs" >"$LOG_DIR/flow-build.log" 2>&1 \
+  && node "$LOG_DIR/cloud-drive-download.mjs" >"$LOG_DIR/flow.log" 2>&1; then
+  print "✓ chat flow: link → automatic download of every file → report (no confirmation)"
+else
+  cat "$LOG_DIR/flow-build.log"
+  grep -E "FAIL|Error" "$LOG_DIR/flow.log" | head -20
+  fail "chat download flow behavior failed"
+fi
+
+if npm run build >"$LOG_DIR/frontend.log" 2>&1; then
+  print "✓ frontend production build"
+else
+  grep -E "error" "$LOG_DIR/frontend.log" | head -20
+  fail "frontend production build failed"
+fi
+
 if git diff --check >"$LOG_DIR/diff.log" 2>&1; then
   print "✓ changed files have no whitespace errors"
 else

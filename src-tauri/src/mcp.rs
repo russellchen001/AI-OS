@@ -135,7 +135,7 @@ fn default_servers() -> Vec<McpServer> {
     ]
 }
 
-pub(crate) fn read_servers() -> Result<Vec<McpServer>, String> {
+fn read_servers() -> Result<Vec<McpServer>, String> {
     let path = config_file()?;
 
     if !path.exists() {
@@ -162,7 +162,7 @@ pub(crate) fn read_servers() -> Result<Vec<McpServer>, String> {
         .map_err(|error| format!("Unable to parse MCP configuration: {}", error))
 }
 
-pub(crate) fn write_servers(servers: &[McpServer]) -> Result<(), String> {
+fn write_servers(servers: &[McpServer]) -> Result<(), String> {
     let directory = config_directory()?;
 
     fs::create_dir_all(&directory)
@@ -180,30 +180,6 @@ pub(crate) fn write_servers(servers: &[McpServer]) -> Result<(), String> {
             error
         )
     })
-}
-
-pub(crate) fn replace_managed_server(server: McpServer) -> Result<Option<McpServer>, String> {
-    let mut servers = read_servers()?;
-    let previous = servers
-        .iter()
-        .position(|candidate| candidate.id == server.id)
-        .map(|index| std::mem::replace(&mut servers[index], server.clone()));
-
-    if previous.is_none() {
-        servers.push(server);
-    }
-
-    write_servers(&servers)?;
-    Ok(previous)
-}
-
-pub(crate) fn restore_managed_server(id: &str, previous: Option<McpServer>) -> Result<(), String> {
-    let mut servers = read_servers()?;
-    servers.retain(|server| server.id != id);
-    if let Some(server) = previous {
-        servers.push(server);
-    }
-    write_servers(&servers)
 }
 
 fn normalize_transport(value: &str) -> Result<String, String> {

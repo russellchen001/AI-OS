@@ -1,56 +1,61 @@
 <!-- BETA41_HANDOFF_START -->
 
-# AI-OS Cloud Drive MCP — Native Download Foundation
+# AI-OS Beta 5 — Cloud-Drive Download (ACTIVE)
 
-**Last updated:** 2026-10-16
-**Branch:** `feat/cloud-drive-mcp-native`
-**Baseline:** committed installer/audit branch `feat/linkswift-mcp-installer` at `8bb1464`; `ai-os-v1.0.1-beta.4.1` and its archived release remain unchanged
-**Status:** NATIVE BAIDU EXTRACTION-CODE AND DIRECTORY RESOLUTION VERIFIED; DOWNLOAD DESCRIPTOR/DOWNLOAD E2E REQUIRES CONTROLLED ACCOUNT AUTHORIZATION.
+**Last updated:** 2026-10-18
+**Branch:** `beta5` (the only branch for this work; the LinkSwift/cloud-drive branches and GPT worktrees were deleted on 2026-10-18 at the owner's request)
+**Status:** Baidu share links download automatically end to end in the installed app, large files included. Other providers are recognised but not yet downloadable.
 
-## Technical decisions
+## Owner decisions (2026-10-17/18)
 
-- Scope is nine providers and share-link download only: Baidu, Quark, Aliyun, UC, 123, China Mobile, China Telecom, Xunlei Cloud Drive and Guangya. Personal-drive browsing, upload, rename, move, synchronization and long-lived account binding are outside scope.
-- `src-tauri/src/cloud_drive_core.rs` and `src-tauri/src/bin/ai-os-cloud-drive-mcp.rs` are original Apache-2.0 AI-OS code. No LinkSwift AGPL source was copied, translated or linked. The old filename `linkswift_mcp.rs` remains only as the migration shell for installer/registration APIs; product-visible metadata now names AI-OS Cloud Drive MCP.
-- The component is an independent native stdio MCP. Provider adapters normalize share identity and authorization requirements; one provider-neutral engine owns HTTPS transfer, bounded retry, resume, progress callbacks, overwrite refusal, Mac/mounted-NAS destination handling, size verification and SHA-256 verification.
-- Authorization is anonymous-first. Where a provider requires login, CAPTCHA, membership or quota, the provider must return an authorization-required state for a controlled WebView; the MCP must not bypass the provider restriction or persist browser cookies in component state.
-- A resolved download descriptor may carry request headers in memory, but debug output redacts them. The engine rejects HTTP, credentials in URLs, custom ports, local/private network destinations, unsafe filenames and caller-controlled Host/Range/Content-Length headers.
-- Thunder is not the common executor and Aria2 is not restored. Xunlei Cloud Drive is only a provider identity until a real supported automation API is proven.
-- The AI-OS native HTTPS engine is the primary and required executor for provider-resolved files. Thunder remains optional only if a supported non-interactive API is discovered; GUI URL schemes are never acceptance evidence.
-- The installed `bdpan` CLI is not adopted as the native MCP backend. Its share download path documents a transfer into the user's personal drive before local download, which violates the share-download-only boundary and would mutate cloud state.
-- Baidu authorization must use an isolated, non-persistent Tauri WebView. Only Baidu-domain cookies required for the active share may be copied directly from the WebView into the same-process provider request and native downloader; they must remain in memory, be redacted from MCP output/logs and be destroyed with the session. Passwords, refresh tokens and browser-profile databases must never be read or persisted.
-- Production installation remains fail-closed: an AI-OS release asset, exact size and SHA-256 must be pinned through `AI_OS_CLOUD_DRIVE_MCP_RELEASE_*`. No release has been created or published.
+- The goal is a capability, not a product: the user sends a share link (plus extraction code) in chat and AI-OS downloads the files. Nothing is installed by hand and nothing is published.
+- LinkSwift is **not** forked, bundled or republished. The earlier plan to publish an independent AGPL "LinkSwift MCP" (or an AI-OS "Cloud Drive MCP" release) and install it from GitHub was a misunderstanding and has been removed.
+- Fully automatic: no confirmation dialogs for an ordinary download.
+- Baidu requires large shared files to be saved into the user's own drive before download (LinkSwift reports the same rule). The owner chose: save into a temporary folder, download, verify, delete the folder.
+- AI-OS detects Baidu's official CLI `bdpan`. If it is missing, AI-OS asks to install it and installs it itself; if it is not signed in, AI-OS shows Baidu's safety notice and opens Baidu's authorization page, capturing the code automatically. One sign-in should last indefinitely.
+- All user-facing replies are in Simplified Chinese.
 
-## Implemented
+## Architecture
 
-- Exact share-link recognition for all nine platforms, including extraction code from the URL or the user's Chinese request text.
-- Native MCP handshake, `tools/list`, `inspect_share_link`, `select_share_files` and `download_resolved_file`.
-- Baidu Provider accepts only a bounded allowlist of authorization cookies. The app opens the exact share in an incognito Tauri WebView restricted to HTTPS Baidu domains, reads the required cookies only in the Rust backend, and sends them over the local child-process pipe to a one-shot MCP call; frontend JavaScript, MCP output and logs never receive them.
-- `download_authorized_baidu_share_file` performs authorized share parsing, descriptor generation and native HTTP download in one MCP process so authorization cannot be lost between one-shot app invocations. The Tauri completion command closes the isolated WebView only after the MCP reports success.
-- Provider-neutral file/folder tree plus selection by all items, stable item IDs or name hint. Folder selection expands recursively; stale IDs, duplicate IDs, empty results and trees above 10,000 items fail closed.
-- Shared resolved-file downloader with retry limit 1–5, partial-file resume, progress callback, existing-target refusal, atomic `.part` commit, expected-size check and SHA-256 receipt/check.
-- Mac or mounted Synology NAS destinations through an absolute destination path; no provider-specific save path is embedded in Runtime.
-- Managed-component metadata now identifies AI-OS Cloud Drive MCP, Apache-2.0 and the AI-OS source repository. Release validation is restricted to `cloud-drive-mcp-v0.1.0` assets in the AI-OS repository.
-- `verify/verify_cloud_drive_mcp.sh` verifies runtime behavior instead of source strings. The older `verify/verify_linkswift_mcp.sh` remains as the installer migration regression gate and now reports the new component name.
+- `src-tauri/src/cloud_drive.rs` (new; replaces `linkswift_mcp.rs`). `download_baidu_share_automatically` chooses the route:
+  1. **bdpan route (preferred).** Used when `~/.local/bin/bdpan` (or `/opt/homebrew/bin`, `/usr/local/bin`) exists and `bdpan whoami` reports a valid token. It lists the share anonymously with `cloud_drive_baidu` to learn the expected files and sizes, then runs `bdpan download <link> ~/Downloads/AI-OS/<shareId> -p <code> -t "AI-OS 临时下载/<shareId>-<ts>"`. Each file is checked for exact size and hashed with SHA-256, and only after everything is intact does `bdpan rm -f` remove the temporary folder (inside bdpan's scope, `我的应用数据/bdpan/`).
+  2. **Web fallback.** A WebView with its own persistent data store (`data_store_identifier = "AI-OS-baidu-auth"`) signs in once, then runs Baidu's web flow inside the page (`share/verify` → `share/list` → `share/tplconfig` → `api/sharedownload`) and returns the links via an intercepted navigation. Native code downloads them with the page's cookies. This route can only fetch files Baidu allows directly from a share (small files); its save-to-drive branch gets a link that Baidu refuses with 403 without an Open-Platform access token, so the bdpan route is required for large files.
+- `cloud_drive_bdpan_status` / `cloud_drive_install_bdpan` / `cloud_drive_bdpan_login` commands, plus `spawn_bdpan_keepalive()` in `lib.rs` setup.
+  - **Install.** The official installer comes from `https://issuecdn.baidupcs.com/issue/netdisk/ai-bdpan/installer/3.8.4/bdpan-installer-darwin-{arm64,amd64}`. Its SHA-256 values are copied from Baidu's Apache-2.0 repo `github.com/baidu-netdisk/bdpan-storage` (`skills/baidu-drive/scripts/install.sh`), and the installer runs with `--yes`. In a sandbox HOME it installed bdpan 3.8.8 into `~/.local/bin` and added that directory to `~/.zshrc` (official behaviour).
+  - **Login.** `bdpan login --get-auth-url --accept-disclaimer` is opened in the Baidu WebView store, so a signed-in user only clicks 授权. The 32-hex OAuth code is read from the URL or the out-of-band page and piped to `bdpan login --set-code-stdin`. `--accept-disclaimer` is passed only after the user agreed to Baidu's safety notice, which is shown in the dialog (text from Baidu's `login.sh`).
+  - **Keepalive.** bdpan stores `access_token` (30 days) and a long-lived `refresh_token` in `~/.config/bdpan/config.json` and renews when it talks to Baidu. AI-OS runs `bdpan ls /` about 60 s after launch and then daily, logging the expiry.
+- `src-tauri/src/bin/ai-os-cloud-drive-mcp.rs` ships **inside** AI OS.app (`scripts/build_beta_macos.sh` builds it and copies it next to the main binary before signing). The chat uses it for link recognition (`inspect_share_link`). `Cargo.toml` sets `default-run = "dashboard"`, because without it Tauri bundled the MCP as the app's main executable; the build script now fails if `CFBundleExecutable` is not `dashboard`.
+- `cloud_drive_baidu.rs` is the native anonymous share reader. It uses a real cookie jar (`reqwest` feature `cookies`) and fetches the download signature from `share/tplconfig`.
+- Frontend: `src/services/cloudDrive.ts` (replaces `linkswiftMcp.ts`) and `ChatPage.tsx`. A share link skips intent classification; bdpan install and sign-in are offered once when needed, and the reply lists saved paths, sizes, SHA-256, skipped files and the temporary-folder outcome. `McpPage.tsx`, `mcp.rs` and `types/index.ts` are back to their Beta 4.1 versions (the installer card and types were removed).
+
+## Pitfalls found in the installed app (each cost a test round)
+
+1. The persistent WebView cookie read used `cookies_for_url`, which matches the cookie domain to the host exactly. BDUSS (domain `.baidu.com`) was never seen, so sign-in was never detected. The fix reads the whole store and filters Baidu domains.
+2. Signed-in share pages redirect through Baidu hosts that set cookies. Without a jar reqwest looped ("error following redirect"), and a hand-written jar made Baidu serve a page without metadata. The fix is reqwest's RFC 6265 jar.
+3. Current share pages no longer embed `sign`/`timestamp`; they come from `share/tplconfig`. `randsk` is percent-encoded and must be decoded for `sekey`.
+4. Signed in, `api/sharedownload` returns `errno 0` with `list` as an opaque string for large files. That means "save to your drive first", not an error to decode.
+5. macOS suspends timers and pages in an ordered-out WebView, which stalled the in-page flow. The window is now kept "visible" off-screen, and the script polls with requests instead of `setTimeout`.
+6. Web-route drive dlinks are refused with 403 without an Open-Platform `access_token` (LinkSwift obtains one via OAuth). Resolved by using bdpan, which has its own official authorization.
 
 ## Verification evidence
 
-- `verify/verify_cloud_drive_mcp.sh`: PASS. It ran four core behavior tests, two MCP protocol tests, built the native MCP binary and invoked the built process with a Baidu share plus extraction code.
-- `verify/verify_linkswift_mcp.sh`: PASS. Installer decline/integrity/rollback/MCP behavior, Rust compile, frontend production build and changed-file integrity passed.
-- Real network executor check: PASS against the official Guangya host. The MCP downloaded `https://www.guangyapan.com/robots.txt` in one attempt, wrote 837 bytes, returned SHA-256 `0082ec9b63a05e56aae296d44e299aac32740e63ad6709d8dd36877656427d01`, and an independent `wc`/`shasum` check matched. This proves real HTTPS transfer, disk commit and receipt verification; it is not a share-link E2E.
-- User-owned Baidu share diagnostic on 2026-10-16: PASS for the supplied extraction code and real directory traversal through the already-installed `bdpan` 3.8.7 read-only list command. The root contained one folder; that folder contained two files of 213,835,539 and 623 bytes. No transfer, save-to-drive, download or cloud mutation was performed.
-- Native MCP interaction with the same real URL/code: PASS for provider/share-id normalization and for selection of the 623-byte entry after external metadata normalization. This does not prove that the native MCP can open or list the share because the real listing came from `bdpan`, not from `cloud_drive_core.rs`.
-- Native Baidu Provider interaction on 2026-10-16: PASS. `resolve_baidu_share` used the real extraction code, held `BDCLND` only in process memory, recursively listed the real `Aimv001` directory and returned the same 623-byte and 213,835,539-byte files without `bdpan`, transfer-to-drive or personal-drive management.
-- Anonymous download-descriptor resolution: BLOCKED with provider errno 113 after the verified anonymous page omitted the signed download parameters. The MCP therefore stops at controlled account authorization; no file was downloaded and no SHA-256 success is claimed.
-- Controlled authorization implementation: COMPILE/REGRESSION PASS. The Rust library, native MCP binary, Tauri commands and frontend service bindings compile; production frontend build and both Cloud Drive verification scripts pass. Real authorization remains pending owner login, so this is not download E2E evidence.
-- Thunder capability audit on 2026-10-16: `/Applications/Thunder.app` is installed and registers GUI URL schemes (`thunder`, `ed2k`, `magnet`, `birdcmd`, `xunleiapp`, `thunderExtension`), but no CLI or supported local automation API was found. It remains ineligible as a non-interactive executor.
-- Full-tree `cargo fmt --check` is still unsuitable because of pre-existing formatting differences in untouched files. The two new Rust files were formatted directly. Existing compiler warnings remain pre-existing.
+- Owner test in the installed app (2026-10-18, conversation `链接: https://pan.baidu.com/s/1ph613C8Y8rMQ82NzNRr1Tw 提取码: 4312`): the reply came in 34 s. Downloaded files:
+  - `Aimv001/云航应聘记.gm`: 213,835,539 bytes, SHA-256 `c770263171550ec309fe970c0edfea3ae490f1b3ffca8121e908185e7139a170`.
+  - `Aimv001/最新私影类播放软件.txt`: 623 bytes, SHA-256 `2d6ccdeeba1d1b9a30ba24583661b3cc65355f5520942028b67555e7eebcd977`.
 
-## Not complete / next acceptance gate
+  Both sizes matched the share listing, the log shows `[CLOUD_DRIVE] baidu via bdpan`, and the temporary folder was removed.
+- `cargo test --lib`: 1023 passed, 0 failed (the 6 removed tests were the deleted installer's). `cargo test --bin ai-os-cloud-drive-mcp`: 4 passed. `verify/verify_cloud_drive_mcp.sh`: PASS. It now includes `verify/cloud_drive_download.behavior.ts` (17 checks: automatic flow, skipped/oversized files, drive folder kept or removed, bdpan install and sign-in offered, declined, or not needed) and the frontend production build.
+- The official installer at the pinned URL matched SHA-256 `a0c395a8…`; the sandbox install was non-interactive.
 
-- The native MCP now opens and recursively lists the real Baidu share, and the controlled WebView-to-one-shot-MCP authorization path is implemented. Owner login, signed descriptor generation and the 623-byte native download/independent SHA-256 check remain incomplete. Therefore Baidu and the other eight providers are not claimed complete.
-- Quark and the other seven provider-specific adapters remain unimplemented. The common contracts and native transfer engine are ready for those adapters.
-- The supplied Baidu share is sufficient for continuing adapter development, but it contains one approximately 204 MB file and one 623-byte file. The next acceptance gate is a native Baidu adapter that returns the real tree and a provider-issued descriptor for the 623-byte file without first transferring it into personal drive. If Baidu requires login, the owner must complete controlled WebView authorization. Acceptance must then prove the completed temporary-directory file, byte count, SHA-256 and MCP receipt independently.
-- The managed installer still needs a reproducible native binary release asset before real install/update/rollback acceptance. Creating a public repository, push or release remains unauthorized and was not done.
+## Not done / open
+
+- **Untested in the real app:** the bdpan install dialog and the OAuth sign-in capture (the owner's Mac already had bdpan signed in; the owner declined to test). The OAuth code capture assumes Baidu's out-of-band page shows a 32-hex code; verify on first real use.
+- Token keepalive assumes bdpan refreshes on use (evidence: `config.json` rewritten with a new 30-day expiry). Not yet observed across an actual expiry.
+- Other providers (Quark, Aliyun, UC, 123, China Mobile, China Telecom, Xunlei, Guangya) are recognised and reported as "in development".
+- Leftover from a failed test: the owner's drive root holds `AI-OS 临时下载/60179807545-1792249071261` (outside bdpan's scope); the owner was asked to delete it manually.
+- The web fallback's save-to-drive branch can leave its folder at the drive root, because bdpan cannot delete outside its scope and the web cleanup only runs when every file arrived.
+- Several MCP tools in `ai-os-cloud-drive-mcp` (`download_authorized_baidu_share_file`, `resolve_baidu_share`, …) are no longer used by the app.
+- Version is still `1.0.1-beta.4.1` in the bundle metadata; ad-hoc signing only.
 
 ---
 

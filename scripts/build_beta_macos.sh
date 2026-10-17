@@ -33,6 +33,24 @@ if [ ! -d "$app" ]; then
   exit 1
 fi
 
+# The crate has two binaries; the bundle must launch the app, not the MCP.
+main_executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
+if [ "$main_executable" != "dashboard" ] || [ ! -x "$app/Contents/MacOS/dashboard" ]; then
+  echo "FAIL Beta macOS build: main executable is '$main_executable', expected dashboard"
+  exit 1
+fi
+
+# Cloud-drive download is a built-in capability: its stdio MCP executable
+# ships next to the main binary and is sealed with the app.
+echo "===== Bundle built-in Cloud Drive component ====="
+(cd src-tauri && cargo build --release --bin ai-os-cloud-drive-mcp)
+cloud_drive_mcp='src-tauri/target/release/ai-os-cloud-drive-mcp'
+if [ ! -x "$cloud_drive_mcp" ]; then
+  echo "FAIL Beta macOS build: Cloud Drive component was not produced"
+  exit 1
+fi
+ditto "$cloud_drive_mcp" "$app/Contents/MacOS/ai-os-cloud-drive-mcp"
+
 echo "===== Seal macOS app bundle ====="
 codesign \
   --force \

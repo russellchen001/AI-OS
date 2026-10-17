@@ -3,6 +3,9 @@ name = "dashboard"
 version = "1.0.1-beta.4.1"
 description = "AI OS Personal AI Workspace"
 authors = ["Russell Chen"]
+# Two binaries live in this crate (the app and the built-in Cloud Drive MCP).
+# Without this, Tauri bundled the MCP as the app's main executable.
+default-run = "dashboard"
 edition = "2021"
 
 [lib]
@@ -35,7 +38,7 @@ url = "2"
 scraper = "0.24"
 base64 = "0.22"
 sha2 = "0.10"
-reqwest = { version = "0.13", features = ["json", "stream", "form", "blocking"] }
+reqwest = { version = "0.13", features = ["json", "stream", "form", "blocking", "cookies"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt"] }
 uuid = { version = "1", features = ["v4", "serde"] }

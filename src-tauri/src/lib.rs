@@ -20,7 +20,7 @@ mod google_workspace;
 mod health;
 mod keychain_trace;
 mod knowledge;
-mod linkswift_mcp;
+mod cloud_drive;
 mod local_model_advisor;
 mod logs;
 mod macos_permissions;
@@ -156,6 +156,7 @@ pub fn run() {
                 emitter,
             ));
             tauri::async_runtime::spawn(providers::auto_start_connected_omlx());
+            cloud_drive::spawn_bdpan_keepalive();
             // Restore browser-backed connections against their persisted
             // profiles. Seeds state synchronously, verifies in the background.
             // User-added sites must be known before anything is restored.
@@ -256,13 +257,11 @@ pub fn run() {
             mcp::delete_mcp_server,
             mcp_runtime::list_mcp_tools,
             mcp_runtime::call_mcp_tool,
-            linkswift_mcp::get_linkswift_mcp_status,
-            linkswift_mcp::install_linkswift_mcp,
-            linkswift_mcp::update_linkswift_mcp,
-            linkswift_mcp::uninstall_linkswift_mcp,
-            linkswift_mcp::call_linkswift_mcp,
-            linkswift_mcp::begin_baidu_share_authorization,
-            linkswift_mcp::complete_baidu_share_download,
+            cloud_drive::call_cloud_drive_mcp,
+            cloud_drive::download_baidu_share_automatically,
+            cloud_drive::cloud_drive_bdpan_status,
+            cloud_drive::cloud_drive_install_bdpan,
+            cloud_drive::cloud_drive_bdpan_login,
             openclaw::list_openclaw_servers,
             openclaw::save_openclaw_server,
             openclaw::update_openclaw_server,
