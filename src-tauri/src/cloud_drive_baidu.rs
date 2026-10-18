@@ -640,7 +640,7 @@ fn page_items(value: &Value) -> Result<Vec<BaiduRawItem>, String> {
 }
 
 /// `base` with every cookie of `overrides` set, overriding same-named ones.
-fn merge_cookie_headers(base: &str, overrides: &str) -> String {
+pub(crate) fn merge_cookie_headers(base: &str, overrides: &str) -> String {
     let parse = |header: &str| -> Vec<(String, String)> {
         header
             .split(';')

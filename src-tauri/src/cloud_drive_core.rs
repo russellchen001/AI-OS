@@ -206,7 +206,7 @@ fn provider_for_host(host: &str) -> Option<CloudDriveProvider> {
         "drive.uc.cn" => Some(CloudDriveProvider::Uc),
         "www.123pan.com" | "123pan.com" | "www.123pan.cn" | "123pan.cn" | "www.123684.com"
         | "123684.com" => Some(CloudDriveProvider::Pan123),
-        "caiyun.139.com" => Some(CloudDriveProvider::ChinaMobile),
+        "caiyun.139.com" | "yun.139.com" => Some(CloudDriveProvider::ChinaMobile),
         "cloud.189.cn" => Some(CloudDriveProvider::ChinaTelecom),
         "pan.xunlei.com" => Some(CloudDriveProvider::Xunlei),
         "www.guangyapan.com" | "guangyapan.com" => Some(CloudDriveProvider::Guangya),
@@ -228,11 +228,20 @@ fn share_id(url: &Url, provider: CloudDriveProvider) -> Result<String, String> {
             .windows(2)
             .find(|pair| pair[0] == "s" || pair[0] == "drive")
             .map(|pair| pair[1].to_owned()),
+        // yun.139.com/shareweb/#/w/i/<id>: the id lives in the fragment.
+        CloudDriveProvider::ChinaMobile if url.fragment().is_some_and(|fragment| fragment.contains("/i/")) => url
+            .fragment()
+            .and_then(|fragment| fragment.split('/').filter(|part| !part.is_empty()).last())
+            .map(str::to_owned),
         CloudDriveProvider::ChinaMobile if parts.last() == Some(&"i") => url
             .query_pairs()
             .flat_map(|(key, value)| [key.into_owned(), value.into_owned()])
             .filter(|value| value.len() >= 4)
             .max_by_key(String::len),
+        // 123 links may end in ".html" (e.g. /s/Pf5Yjv-Bb9W3.html).
+        CloudDriveProvider::Pan123 => parts
+            .last()
+            .map(|value| value.strip_suffix(".html").unwrap_or(value).to_owned()),
         _ => parts.last().map(|value| (*value).to_owned()),
     }
     .filter(|value| (4..=256).contains(&value.len()))

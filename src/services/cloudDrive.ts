@@ -3,6 +3,7 @@
  * recognised here and downloaded by the backend (see src-tauri/src/cloud_drive.rs).
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const SUPPORTED_SHARE_HOSTS = new Set([
   "123684.com",
@@ -11,6 +12,7 @@ const SUPPORTED_SHARE_HOSTS = new Set([
   "alipan.com",
   "aliyundrive.com",
   "caiyun.139.com",
+  "yun.139.com",
   "cloud.189.cn",
   "drive.uc.cn",
   "guangyapan.com",
@@ -75,6 +77,8 @@ type BaiduDownloadResult = {
   viaDrive?: number;
   driveFolder?: string | null;
   driveFolderDeleted?: boolean;
+  /** 迅雷: files Xunlei keeps from guests were saved to the user's drive and handed to the Thunder app. */
+  handedToThunder?: boolean;
 };
 
 export function formatBytes(bytes: number): string {
@@ -130,6 +134,20 @@ export async function downloadCloudDriveShare(
       }),
     downloadBaidu: (shareUrl: string, code: string) =>
       invoke<BaiduDownloadResult>("download_baidu_share_automatically", { url: shareUrl, extractionCode: code }),
+    downloadQuark: (shareUrl: string, code: string) =>
+      invoke<BaiduDownloadResult>("download_quark_share_automatically", { url: shareUrl, extractionCode: code }),
+    downloadUc: (shareUrl: string, code: string) =>
+      invoke<BaiduDownloadResult>("download_uc_share_automatically", { url: shareUrl, extractionCode: code }),
+    download123: (shareUrl: string, code: string) =>
+      invoke<BaiduDownloadResult>("download_123_share_automatically", { url: shareUrl, extractionCode: code }),
+    download189: (shareUrl: string, code: string) =>
+      invoke<BaiduDownloadResult>("download_189_share_automatically", { url: shareUrl, extractionCode: code }),
+    download139: (shareUrl: string, code: string) =>
+      invoke<BaiduDownloadResult>("download_139_share_automatically", { url: shareUrl, extractionCode: code }),
+    downloadXunlei: (shareUrl: string, code: string) =>
+      invoke<BaiduDownloadResult>("download_xunlei_share_automatically", { url: shareUrl, extractionCode: code }),
+    downloadAliyun: (shareUrl: string, code: string) =>
+      invoke<BaiduDownloadResult>("download_aliyun_share_automatically", { url: shareUrl, extractionCode: code }),
     bdpanStatus: () => invoke<BdpanStatus>("cloud_drive_bdpan_status"),
     installBdpan: () => invoke<BdpanStatus>("cloud_drive_install_bdpan"),
     loginBdpan: () => invoke<BdpanStatus>("cloud_drive_bdpan_login"),
@@ -139,8 +157,30 @@ export async function downloadCloudDriveShare(
   if (!inspected.ok) return `无法识别这个分享链接：${inspected.error}`;
   const share = inspected.value as { provider: string; providerName: string; canonicalUrl: string; extractionCode?: string };
 
+  // Quark, UC, Aliyun, 123, 天翼, 移动 and 迅雷: the backend reads the share, then uses
+  // the user's own sign-in when needed (asked for once, kept in AI-OS). Quark
+  // and UC save through a temporary drive folder and remove it; the others
+  // download from the share (123 even as a guest).
+  const signedInDownloads: Record<string, { call: (shareUrl: string, code: string) => Promise<BaiduDownloadResult>; provider: string }> = {
+    quark: { call: calls.downloadQuark, provider: "夸克" },
+    uc: { call: calls.downloadUc, provider: "UC 网盘" },
+    aliyun: { call: calls.downloadAliyun, provider: "阿里云盘" },
+    pan123: { call: calls.download123, provider: "123 云盘" },
+    "china-telecom": { call: calls.download189, provider: "天翼云盘" },
+    "china-mobile": { call: calls.download139, provider: "移动云盘" },
+    xunlei: { call: calls.downloadXunlei, provider: "迅雷云盘" },
+  };
+  const signedInDownload = signedInDownloads[share.provider];
+  if (signedInDownload) {
+    const optionalCode = share.extractionCode ?? extractionCodeFrom(requestText) ?? "";
+    try {
+      return downloadReply(await signedInDownload.call(share.canonicalUrl, optionalCode), signedInDownload.provider, share.providerName, []);
+    } catch (error) {
+      return `下载没有完成：${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   if (share.provider !== "baidu") {
-    return `已识别为${share.providerName}分享链接。目前 AI-OS 已支持百度网盘分享下载，${share.providerName}还在开发中，暂时不能下载。`;
+    return `已识别为${share.providerName}分享链接。目前 AI-OS 已支持百度网盘、夸克网盘、UC 网盘、阿里云盘、123 云盘、天翼云盘、移动云盘和迅雷云盘分享下载，${share.providerName}还在开发中，暂时不能下载。`;
   }
   const code = share.extractionCode ?? extractionCodeFrom(requestText);
   if (!code) {
@@ -195,17 +235,18 @@ export async function downloadCloudDriveShare(
     }
   }
 
-  let receipts: ReceiptJson[];
-  let skipped: SkippedJson[];
-  let drive: BaiduDownloadResult;
   try {
-    drive = await calls.downloadBaidu(share.canonicalUrl, code);
-    receipts = drive.receipts ?? [];
-    skipped = drive.skipped ?? [];
+    return downloadReply(await calls.downloadBaidu(share.canonicalUrl, code), "百度", "百度网盘", notes);
   } catch (error) {
     return `下载没有完成：${error instanceof Error ? error.message : String(error)}`;
   }
-  if (receipts.length === 0 && skipped.length === 0) return "下载没有完成：百度没有返回任何文件。";
+}
+
+/** The chat reply for a finished download: files, skipped files, drive cleanup. */
+function downloadReply(drive: BaiduDownloadResult, provider: string, driveName: string, notes: string[]): string {
+  const receipts = drive.receipts ?? [];
+  const skipped = drive.skipped ?? [];
+  if (receipts.length === 0 && skipped.length === 0) return `下载没有完成：${provider}没有返回任何文件。`;
   const lines: string[] = [];
   if (receipts.length > 0) {
     const total = receipts.reduce((sum, receipt) => sum + receipt.bytes, 0);
@@ -230,10 +271,36 @@ export async function downloadCloudDriveShare(
     lines.push(
       "",
       drive.driveFolderDeleted
-        ? "这些文件按百度规则先转存到你的网盘再下载，临时文件夹已自动删除（可在百度网盘回收站找回）。"
-        : `文件按百度规则经你的网盘中转，临时文件夹仍保留在网盘：\`${drive.driveFolder}\`，可以手动删除。`,
+        ? `这些文件按${provider}规则先转存到你的网盘再下载，临时文件夹已自动删除（可在${driveName}回收站找回）。`
+        : `文件按${provider}规则经你的网盘中转，临时文件夹仍保留在网盘：\`${drive.driveFolder}\`，可以手动删除。`,
+    );
+  }
+  if (drive.handedToThunder) {
+    lines.push(
+      "",
+      "迅雷只允许游客直接下载部分类型的文件，其余文件已用你的迅雷账号转存到迅雷云盘的“我的云盘”，并交给迅雷客户端下载（迅雷会弹出“取回”提示，需要点一下）。转存的文件留在你的迅雷云盘里，不需要时可以删除。",
     );
   }
   if (notes.length > 0) lines.unshift(...notes, "");
   return lines.join("\n");
+}
+
+/** Live progress while a share downloads (backend event "cloud-drive-progress"). */
+export type CloudDriveProgress = { stage?: string; bytes?: number; totalBytes?: number; fileCount?: number };
+
+export function onCloudDriveProgress(callback: (progress: CloudDriveProgress) => void) {
+  return listen<CloudDriveProgress>("cloud-drive-progress", (event) => callback(event.payload));
+}
+
+/** The temporary chat reply shown while a share downloads. */
+export function cloudDriveProgressText(progress: CloudDriveProgress): string {
+  const lines = [progress.stage ? `${progress.stage}…` : "正在处理网盘链接…"];
+  if (progress.bytes && progress.bytes > 0) {
+    lines.push(
+      progress.totalBytes && progress.totalBytes > 0
+        ? `已下载 ${formatBytes(Math.min(progress.bytes, progress.totalBytes))} / ${formatBytes(progress.totalBytes)}`
+        : `已下载 ${formatBytes(progress.bytes)}`,
+    );
+  }
+  return lines.join("\n\n");
 }

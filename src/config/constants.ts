@@ -8,7 +8,7 @@ import type {
 
 export const APP_INFO: AppInfo = {
   name: "AI OS",
-  version: "1.0.1-beta.4.1",
+  version: "1.0.1-beta.5",
   description: "Personal AI Workspace",
   identifier: "com.russellchen.aios",
 };

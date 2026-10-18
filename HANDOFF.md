@@ -1,10 +1,10 @@
 <!-- BETA41_HANDOFF_START -->
 
-# AI-OS Beta 5 — Cloud-Drive Download (ACTIVE)
+# AI-OS Beta 5 (1.0.1-beta.5) — Cloud-Drive Download (ACTIVE)
 
 **Last updated:** 2026-10-18
 **Branch:** `beta5` (the only branch for this work; the LinkSwift/cloud-drive branches and GPT worktrees were deleted on 2026-10-18 at the owner's request)
-**Status:** Baidu share links download automatically end to end in the installed app, large files included. Other providers are recognised but not yet downloadable.
+**Status (2026-10-19):** 1.0.1-beta.5 built and installed. Verified end to end in the installed app: Baidu, 123, Xunlei (Thunder hand-off), Quark, plus live download progress. Aliyun, UC, 天翼, 移动 are implemented with anonymous reading verified, signed-in parts untested (no accounts). Guangya is not implemented. Commit on `beta5`; the owner pushes.
 
 ## Owner decisions (2026-10-17/18)
 
@@ -14,6 +14,7 @@
 - Baidu requires large shared files to be saved into the user's own drive before download (LinkSwift reports the same rule). The owner chose: save into a temporary folder, download, verify, delete the folder.
 - AI-OS detects Baidu's official CLI `bdpan`. If it is missing, AI-OS asks to install it and installs it itself; if it is not signed in, AI-OS shows Baidu's safety notice and opens Baidu's authorization page, capturing the code automatically. One sign-in should last indefinitely.
 - All user-facing replies are in Simplified Chinese.
+- AI-OS serves every user, so every recognised provider should work; the owner has no accounts for the other drives and will not register them. Implement with anonymous parts verified against public shares; mark signed-in parts untested.
 
 ## Architecture
 
@@ -27,6 +28,23 @@
 - `src-tauri/src/bin/ai-os-cloud-drive-mcp.rs` ships **inside** AI OS.app (`scripts/build_beta_macos.sh` builds it and copies it next to the main binary before signing). The chat uses it for link recognition (`inspect_share_link`). `Cargo.toml` sets `default-run = "dashboard"`, because without it Tauri bundled the MCP as the app's main executable; the build script now fails if `CFBundleExecutable` is not `dashboard`.
 - `cloud_drive_baidu.rs` is the native anonymous share reader. It uses a real cookie jar (`reqwest` feature `cookies`) and fetches the download signature from `share/tplconfig`.
 - Frontend: `src/services/cloudDrive.ts` (replaces `linkswiftMcp.ts`) and `ChatPage.tsx`. A share link skips intent classification; bdpan install and sign-in are offered once when needed, and the reply lists saved paths, sizes, SHA-256, skipped files and the temporary-folder outcome. `McpPage.tsx`, `mcp.rs` and `types/index.ts` are back to their Beta 4.1 versions (the installer card and types were removed).
+
+## Other providers (2026-10-18, uncommitted on `beta5`)
+
+Shared pieces in `cloud_drive.rs`: `WebSignIn` + `web_sign_in()` open the drive's own sign-in page in a per-drive persistent WebView store (hidden first; shown after 6 s if the saved session does not verify; 10-minute limit). The credential is either the drive's cookie header (most specific domain wins per name) or, with `credential_script`, a value the page reports from localStorage through an intercepted `/__aios_credential__?d=` navigation. Each provider checks the credential with a cheap signed-in call before closing the window. Every provider module returns the Baidu result shape (`receipts`, `skipped`, optional `viaDrive`/`driveFolder`/`driveFolderDeleted`), skips files already on disk with the right size, and verifies size + SHA-256 (plus the provider's MD5 where listed). Frontend routes by `share.provider` in `downloadCloudDriveShare`.
+
+| Provider | Module / command | Anonymous part (verified live) | Signed-in part | Status |
+|---|---|---|---|---|
+| Quark | `cloud_drive_quark.rs` (`QUARK` flavor) / `download_quark_share_automatically` | token + recursive detail on `pan.quark.cn/s/97e0db6659eb` | cookie (quark.cn) → mkdir `/AI-OS 临时下载/<id>-<ts>` → `share/sharepage/save` + task poll → `file/download` (Quark desktop UA, rotating Set-Cookie merged) → `file/delete` | **proven end to end in the app (2026-10-18):** share `228999e7c788` (ComfyUI TE 启动器, 2 files, 118,979,239 B) → sign-in once → temp folder → save → download → both sizes verified → temp folder deleted. Free accounts are throttled to ~75 KB/s (≈21 min for 113 MB); the chat shows no progress meanwhile (open item). |
+| UC | same module (`UC` flavor, `pc-api.uc.cn`, `pr=UCBrowser`) / `download_uc_share_automatically` | `drive.uc.cn/s/0be7077c38654` (not found under Quark's `pr=ucpro`) | as Quark, cookie on uc.cn; download UA is a guess | signed-in untested |
+| Aliyun | `cloud_drive_aliyun.rs` / `download_aliyun_share_automatically` | `get_share_token` + `list_by_share` (marker paging, 429 retry) on `alipan.com/s/SwCbQBN2nZQ` | localStorage `token.access_token` → `v2/file/get_share_link_download_url` (no save, no cleanup); guests get HTTP 410 | signed-in untested |
+| 123 | `cloud_drive_123.rs` / `download_123_share_automatically` | `www.123pan.cn/b/api` (`www.123pan.com/b/api` answers 404); guests get `DownloadURL` → base64 `params` → `redirect_url` | only when a guest download is refused: localStorage `authorToken` as Bearer | **guest download proven**: Mixly file 116,498 B, MD5 = Etag; `.html`-suffixed links parse |
+| 天翼 | `cloud_drive_189.rs` / `download_189_share_automatically` | `getShareInfoByCodeV2` → `checkAccessCode` → `listShareDir` on `cloud.189.cn/t/Ef2IjyuuemIn` (访问码 jj8t); ids kept as text (exceed JS safe integers) | cookie (189.cn) → `getFileDownloadUrl` (guests: `InvalidSessionKey`); MD5 checked | signed-in untested |
+| 移动 | `cloud_drive_139.rs` / `download_139_share_automatically` | `share-kd-njs.yun.139.com` AES-128-CBC JSON (fixed public key, random IV prefix) — `getOutLinkInfoV6` on `yun.139.com/shareweb/#/w/i/2u8omYzvLhqdo` (提取码 3dgn); `yun.139.com` links now recognised (id in the fragment) | `authorization` cookie (base64 `client:phone:token`) as `Basic …` + account → `dlFromOutLinkV3` (guests: 200000401) | signed-in untested |
+
+| 迅雷 | `download_xunlei_share_automatically` in `cloud_drive.rs` | Owner decision: same pattern as Baidu's web route. Xunlei's own share page (`pan.xunlei.com/s/<id>?pwd=`) runs off-screen in store `AI-OS-xunlei-aut`; `XUNLEI_CAPTURE_SCRIPT` (initialization script) only records the client headers the page itself sends to api-pan (captcha token, device id, client id/version, Authorization); `XUNLEI_SHARE_SCRIPT` lists `share` / `share/detail` and calls `share/file_info` per file with those headers and reports via `/__aios_result__`. A token that expires mid-way triggers a page reload and a second round for the files still missing a link (max 6 rounds). If no token appears within 45 s the window is centred so the user can complete Xunlei's own verification. Native download with the page's user agent. **Owner test 2026-10-18:** guests got links only for txt/md/jpeg (5 of 18 files); json/safetensors/bin came back with `phase=PHASE_TYPE_COMPLETE audit=STATUS_OK` but empty `web_content_link`/`links`, in every round — a type rule, not the token. **Thunder hand-off (owner choice 2026-10-18, option 2).** AI-OS cannot call Xunlei's drive APIs itself: every action needs an action-specific captcha token (reusing the share token gave "验证码无效" on the first signed-in call), and computing one is off-limits. Xunlei's web client also refuses drive downloads in a browser ("请使用迅雷客户端下载"). So: sign in once in the Xunlei window (localStorage `credentials_*`, store `AI-OS-xunlei-aut`) → reload → `XUNLEI_PAGE_SAVE_SCRIPT` presses the page's own `转存到云盘` button (all files checked, destination 我的云盘) → `XUNLEI_CAPTURE_SCRIPT` also reads the page's own `share/restore` / `tasks/<id>` answer, whose `params.trace_file_ids` maps share file id → new drive id → native hand-off exactly as the page's macOS "已安装，点此下载资源" (found in Xunlei's web bundle): clipboard = base64 JSON `[{id,name,size,space}]` of the top-level items holding missing files, then `open xunleiapp://mac.thunder/downloadCloudFilesFromClipboard?token=&encode=base64&userId=<credentials.sub>`; the user's clipboard text is restored after 20 s → Thunder shows "文件取回提示 … 取回" (one click) → AI-OS waits up to 2 h for each file in Thunder's `LastSavePath` (`defaults read com.xunlei.Thunder`, else ~/Downloads) with the share's exact size and no `.<name>.js` companion, then SHA-256. **Proven by hand in the browser pane:** fish-dataset.zip (share `VMkCJx-bOnpF431_9R0E8vAsA1`, pwd ugha) restored with `RESTORE_COMPLETE`, handed off, 取回 clicked, 227,480,946 B = share size. Restoring also subscribes the user to the share. The saved copy stays in the user's drive (no cleanup: deleting would need another captcha action). Limits: clipboard non-text content is not preserved; Thunder must be signed in to the same account; folder hand-off layout assumed to mirror the share. | **proven end to end in the app (2026-10-18):** fish-dataset share → saved sign-in → page 转存 → Thunder (one 取回 click) → `~/Downloads/fish-dataset(2).zip`, 227,480,946 B, SHA-256 `4a73d8d259f9…` (same as the manual run). Thunder renames to `name(N).ext` when its history knows the name; `thunder_finished_file` accepts that (exact size, written after hand-off, no `.js` companion). |
+
+Protocol facts were checked against live calls plus reference projects read only (OpenList AGPL, pansou MIT, quark-auto-save AGPL, gopeed extensions); no third-party code was copied. New crates: `md-5 0.11`, `aes 0.9`, `cbc 0.2` (all already in the lockfile tree).
 
 ## Pitfalls found in the installed app (each cost a test round)
 
@@ -44,6 +62,7 @@
   - `Aimv001/最新私影类播放软件.txt`: 623 bytes, SHA-256 `2d6ccdeeba1d1b9a30ba24583661b3cc65355f5520942028b67555e7eebcd977`.
 
   Both sizes matched the share listing, the log shows `[CLOUD_DRIVE] baidu via bdpan`, and the temporary folder was removed.
+- After the other providers: `cargo test --lib` 1036 passed, 0 failed; the live (`#[ignore]`) tests of Quark, UC, Aliyun, 123, 天翼 and 移动 passed with `--include-ignored`; `verify/verify_cloud_drive_mcp.sh` PASS (provider tests + chat-flow routes for every implemented provider).
 - `cargo test --lib`: 1023 passed, 0 failed (the 6 removed tests were the deleted installer's). `cargo test --bin ai-os-cloud-drive-mcp`: 4 passed. `verify/verify_cloud_drive_mcp.sh`: PASS. It now includes `verify/cloud_drive_download.behavior.ts` (17 checks: automatic flow, skipped/oversized files, drive folder kept or removed, bdpan install and sign-in offered, declined, or not needed) and the frontend production build.
 - The official installer at the pinned URL matched SHA-256 `a0c395a8…`; the sandbox install was non-interactive.
 
@@ -51,11 +70,16 @@
 
 - **Untested in the real app:** the bdpan install dialog and the OAuth sign-in capture (the owner's Mac already had bdpan signed in; the owner declined to test). The OAuth code capture assumes Baidu's out-of-band page shows a 32-hex code; verify on first real use.
 - Token keepalive assumes bdpan refreshes on use (evidence: `config.json` rewritten with a new 30-day expiry). Not yet observed across an actual expiry.
-- Other providers (Quark, Aliyun, UC, 123, China Mobile, China Telecom, Xunlei, Guangya) are recognised and reported as "in development".
+- **Download progress in chat (2026-10-18; stage + bytes proven in the app with the 123 share; file position/total added after):** modules log `plan <n> files <bytes> bytes` (files not already on disk) and `download <i>/<n> <size> bytes`; `plan_totals` turns the plan into `{fileCount,totalBytes}`. every `[CLOUD_DRIVE]` line goes through `drive_log`, which also emits a `cloud-drive-progress` event with a Chinese stage (`stage_text`); `ProgressWatch` emits bytes arrived under `~/Downloads/AI-OS/<share>` every 2 s. ChatPage shows a temporary reply (`cloudDriveProgressText`) until the result replaces it. Thunder downloads (outside that folder) show the stage only.
+- **Aliyun:** the owner could not register an account; signed-in part stays untested.
+- **Untested signed-in flows:** UC save-download-delete, Aliyun/天翼/移动 download URLs, 123 sign-in fallback, and every provider's sign-in window (cookie names, localStorage keys and sign-in pages are from protocol research, not observed sessions). The installed app has not been rebuilt with these providers yet.
+- **Xunlei:** AI-OS must never compute Xunlei's captcha signature itself (judged bot-detection bypass, stopped 2026-10-18); only the page's own token and the page's own buttons are used. Guest links are slow. The Thunder hand-off needs one 取回 click and Thunder signed in to the same account; the saved copy and the share subscription stay in the user's drive.
+- **Guangya not implemented.** No public share link was found to verify against; its API (`api.guangyapan.com`, `/nd.bizuserres.s/v1/get_share_summary`, `get_share_access_token`, `get_share_page_files_list`, `restore_share`, device-code OAuth at `account.guangyapan.com`) is known from reference projects only.
+- Guangya links are still recognised and answered as "in development".
 - Leftover from a failed test: the owner's drive root holds `AI-OS 临时下载/60179807545-1792249071261` (outside bdpan's scope); the owner was asked to delete it manually.
 - The web fallback's save-to-drive branch can leave its folder at the drive root, because bdpan cannot delete outside its scope and the web cleanup only runs when every file arrived.
 - Several MCP tools in `ai-os-cloud-drive-mcp` (`download_authorized_baidu_share_file`, `resolve_baidu_share`, …) are no longer used by the app.
-- Version is still `1.0.1-beta.4.1` in the bundle metadata; ad-hoc signing only.
+- Ad-hoc signing only.
 
 ---
 

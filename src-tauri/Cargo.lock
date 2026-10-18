@@ -1031,16 +1031,19 @@ dependencies = [
 
 [[package]]
 name = "dashboard"
-version = "1.0.1-beta.4.1"
+version = "1.0.1-beta.5"
 dependencies = [
+ "aes",
  "base64 0.22.1",
  "block2",
+ "cbc",
  "chrono",
  "dirs",
  "flate2",
  "futures-util",
  "jsonschema",
  "lopdf",
+ "md-5",
  "objc2",
  "objc2-app-kit",
  "objc2-application-services",

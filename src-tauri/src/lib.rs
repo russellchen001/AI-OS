@@ -3,6 +3,11 @@ mod browser;
 mod claude_code;
 pub mod cloud_drive_core;
 pub mod cloud_drive_baidu;
+pub mod cloud_drive_123;
+pub mod cloud_drive_139;
+pub mod cloud_drive_189;
+pub mod cloud_drive_aliyun;
+pub mod cloud_drive_quark;
 mod cognitive_distillation;
 mod commerce_provider;
 #[cfg(test)]
@@ -259,6 +264,13 @@ pub fn run() {
             mcp_runtime::call_mcp_tool,
             cloud_drive::call_cloud_drive_mcp,
             cloud_drive::download_baidu_share_automatically,
+            cloud_drive::download_quark_share_automatically,
+            cloud_drive::download_aliyun_share_automatically,
+            cloud_drive::download_uc_share_automatically,
+            cloud_drive::download_123_share_automatically,
+            cloud_drive::download_189_share_automatically,
+            cloud_drive::download_139_share_automatically,
+            cloud_drive::download_xunlei_share_automatically,
             cloud_drive::cloud_drive_bdpan_status,
             cloud_drive::cloud_drive_install_bdpan,
             cloud_drive::cloud_drive_bdpan_login,

@@ -1,6 +1,6 @@
 [package]
 name = "dashboard"
-version = "1.0.1-beta.4.1"
+version = "1.0.1-beta.5"
 description = "AI OS Personal AI Workspace"
 authors = ["Russell Chen"]
 # Two binaries live in this crate (the app and the built-in Cloud Drive MCP).
@@ -38,6 +38,9 @@ url = "2"
 scraper = "0.24"
 base64 = "0.22"
 sha2 = "0.10"
+md-5 = "0.11"
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
 reqwest = { version = "0.13", features = ["json", "stream", "form", "blocking", "cookies"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt"] }

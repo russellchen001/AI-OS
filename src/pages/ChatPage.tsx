@@ -32,7 +32,10 @@ import {
 import { classifyAutomaticIntent } from "../services/intentRouting";
 import { isConversationRecallQuestion } from "../services/intentSemantic";
 import {
+  cloudDriveProgressText,
+  type CloudDriveProgress,
   downloadCloudDriveShare,
+  onCloudDriveProgress,
   supportedCloudDriveShareLink,
 } from "../services/cloudDrive";
 import { shouldRetrieveConversationHistory } from "../services/conversationRetrievalGate";
@@ -1066,6 +1069,23 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     };
     if (linkSwiftShareLink) {
       let content: string;
+      // A temporary reply that follows the backend's progress, so a long or
+      // throttled download does not look frozen.
+      const progressId = crypto.randomUUID();
+      const progress: CloudDriveProgress = {};
+      const showProgress = () =>
+        setMessages([
+          ...nextMessages,
+          { id: progressId, role: "assistant", content: cloudDriveProgressText(progress), createdAt: new Date().toISOString() },
+        ]);
+      showProgress();
+      const stopProgress = await onCloudDriveProgress((update) => {
+        if (update.stage) progress.stage = update.stage;
+        if (typeof update.bytes === "number") progress.bytes = update.bytes;
+        if (typeof update.totalBytes === "number") progress.totalBytes = update.totalBytes;
+        if (typeof update.fileCount === "number") progress.fileCount = update.fileCount;
+        showProgress();
+      }).catch(() => undefined);
       try {
         content = await downloadCloudDriveShare(
           linkSwiftShareLink,
@@ -1075,6 +1095,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         );
       } catch (error) {
         content = `网盘下载没有完成：${String(error)}`;
+      } finally {
+        stopProgress?.();
       }
       const completedMessages: ChatMessage[] = [
         ...nextMessages,

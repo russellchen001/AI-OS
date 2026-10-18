@@ -20,7 +20,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
 const EXECUTABLE_NAME: &str = "ai-os-cloud-drive-mcp";
@@ -43,6 +43,132 @@ pub async fn call_cloud_drive_mcp(
     })
     .await
     .map_err(|error| format!("Cloud Drive MCP task failed: {error}"))?
+}
+
+/// True when `<destination>/<dir>/<name>` is already there with `size` bytes
+/// (that file is skipped, so it does not count toward progress).
+pub(crate) fn already_downloaded(destination: &Path, dir: &str, name: &str, size: u64) -> bool {
+    safe_relative_dir(dir).is_some_and(|relative| {
+        destination
+            .join(relative)
+            .join(name)
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == size)
+    })
+}
+
+/// The app the cloud-drive progress events go to (set by each download).
+static PROGRESS_APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// A cloud-drive diagnostic line; also shown in the chat as progress when it
+/// names a stage the user cares about.
+fn drive_log(line: &str) {
+    crate::logs::append_ai_os_diagnostic(line);
+    let Some(app) = PROGRESS_APP.get() else { return };
+    if let Some((files, bytes)) = plan_totals(line) {
+        let _ = app.emit("cloud-drive-progress", serde_json::json!({ "fileCount": files, "totalBytes": bytes }));
+    } else if let Some(text) = stage_text(line) {
+        let _ = app.emit("cloud-drive-progress", serde_json::json!({ "stage": text }));
+    }
+}
+
+/// "[CLOUD_DRIVE] <provider> plan <files> files <bytes> bytes" → totals.
+fn plan_totals(line: &str) -> Option<(u64, u64)> {
+    let rest = line.strip_prefix("[CLOUD_DRIVE] ")?.split_once(" plan ")?.1;
+    let mut words = rest.split_whitespace();
+    let files = words.next()?.parse().ok()?;
+    (words.next()? == "files").then_some(())?;
+    let bytes = words.next()?.parse().ok()?;
+    Some((files, bytes))
+}
+
+/// Chat wording for a "[CLOUD_DRIVE] <provider> <stage>" line.
+fn stage_text(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("[CLOUD_DRIVE] ")?;
+    let (_, stage) = rest.split_once(' ')?;
+    if let Some(tail) = stage.strip_prefix("download ").and_then(|tail| tail.strip_suffix(" bytes")) {
+        // "i/N size" or the older "size".
+        let (position, size) = tail.split_once(' ').unwrap_or(("", tail));
+        let size = size.parse::<u64>().ok()?;
+        return Some(match position.split_once('/') {
+            Some((index, count)) => format!("正在下载第 {index}/{count} 个文件（{}）", human_bytes(size)),
+            None => format!("正在下载一个 {} 的文件", human_bytes(size)),
+        });
+    }
+    let text = match stage {
+        "open share" => "正在读取分享内容",
+        "create temporary folder" => "正在你的网盘里新建临时文件夹",
+        "save to drive" => "正在转存到你的网盘",
+        "list saved files" => "正在读取转存的文件",
+        "get download links" => "正在获取下载地址",
+        "delete temporary folder" => "正在删除临时文件夹",
+        "guest refused; using sign-in" => "游客不能下载这个文件，需要用你的账号",
+        "via bdpan" => "正在用百度网盘官方工具转存并下载",
+        "waiting for sign-in" => "请在弹出的窗口里登录（只需要登录一次）",
+        "signed in" => "已登录",
+        "signed in; pressing the page's 转存到云盘" => "正在转存到你的迅雷云盘",
+        _ if stage.starts_with("round ") => "正在读取迅雷分享",
+        _ if stage.starts_with("saved; handing") => "已交给迅雷客户端，请在迅雷里点“取回”",
+        _ if stage.starts_with("waiting for Thunder") => "正在等迅雷客户端下载完成（请在迅雷里点“取回”）",
+        _ => return None,
+    };
+    Some(text.to_owned())
+}
+
+fn human_bytes(bytes: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < units.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", units[unit]) }
+}
+
+/// Reports, every 2 s while alive, how many bytes have arrived under the
+/// download folder since it started (partial files included).
+struct ProgressWatch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ProgressWatch {
+    fn start(app: &tauri::AppHandle, folder: PathBuf) -> Self {
+        let _ = PROGRESS_APP.set(app.clone());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let running = stop.clone();
+        let app = app.clone();
+        std::thread::spawn(move || {
+            fn total(path: &Path) -> u64 {
+                let Ok(entries) = fs::read_dir(path) else { return 0 };
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| match entry.file_type() {
+                        Ok(kind) if kind.is_dir() => total(&entry.path()),
+                        Ok(kind) if kind.is_file() => entry.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+                        _ => 0,
+                    })
+                    .sum()
+            }
+            let baseline = total(&folder);
+            let mut last = 0;
+            while !running.load(std::sync::atomic::Ordering::Relaxed) {
+                let bytes = total(&folder).saturating_sub(baseline);
+                if bytes != last {
+                    last = bytes;
+                    let _ = app.emit("cloud-drive-progress", serde_json::json!({ "bytes": bytes }));
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
+        Self { stop }
+    }
+}
+
+impl Drop for ProgressWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// AI-OS's own persistent store for Baidu sign-in, isolated from the app's
@@ -281,7 +407,7 @@ struct BaiduScriptResult {
 }
 
 /// A share folder path made safe to join under the destination.
-fn safe_relative_dir(dir: &str) -> Option<PathBuf> {
+pub(crate) fn safe_relative_dir(dir: &str) -> Option<PathBuf> {
     let mut path = PathBuf::new();
     for part in dir.split('/').map(str::trim).filter(|part| !part.is_empty()) {
         if part == "." || part == ".." || part.contains('\\') || part.chars().any(char::is_control) {
@@ -355,7 +481,7 @@ fn bdpan_signed_in(bin: &Path) -> bool {
         && info.get("has_valid_token").and_then(Value::as_bool).unwrap_or(false)
 }
 
-fn sha256_hex(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_hex(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
     let mut file = fs::File::open(path).map_err(|error| format!("无法校验下载的文件：{error}"))?;
@@ -398,6 +524,15 @@ fn download_baidu_share_with_bdpan(bin: &Path, share: &ShareLink, code: &str) ->
     }
     let destination = PathBuf::from(default_download_directory(&share.share_id)?);
     fs::create_dir_all(&destination).map_err(|error| format!("无法创建下载目录：{error}"))?;
+    let todo: Vec<u64> = expected
+        .iter()
+        .filter(|(relative, size)| {
+            let (dir, name) = relative.rsplit_once('/').unwrap_or(("", relative.as_str()));
+            !already_downloaded(&destination, dir, name, *size)
+        })
+        .map(|(_, size)| *size)
+        .collect();
+    drive_log(&format!("[CLOUD_DRIVE] baidu plan {} files {} bytes", todo.len(), todo.iter().sum::<u64>()));
     let transfer_dir = format!("AI-OS 临时下载/{}-{}", share.share_id, Utc::now().timestamp());
     let destination_text = destination.to_string_lossy().into_owned();
     let result = bdpan_json(
@@ -460,6 +595,7 @@ pub async fn download_baidu_share_automatically(
     extraction_code: String,
 ) -> Result<Value, String> {
     let share = ShareLink::parse(&url, Some(&extraction_code))?;
+    let _progress = ProgressWatch::start(&app, PathBuf::from(default_download_directory(&share.share_id)?));
     if share.provider != crate::cloud_drive_core::CloudDriveProvider::Baidu {
         return Err("Automatic sign-in is only available for Baidu shares.".to_owned());
     }
@@ -471,7 +607,7 @@ pub async fn download_baidu_share_automatically(
             if !bdpan_signed_in(&bin) {
                 return None;
             }
-            crate::logs::append_ai_os_diagnostic("[CLOUD_DRIVE] baidu via bdpan");
+            drive_log("[CLOUD_DRIVE] baidu via bdpan");
             Some(download_baidu_share_with_bdpan(&bin, &bdpan_share, &code))
         })
         .await
@@ -504,7 +640,7 @@ pub async fn download_baidu_share_automatically(
         .on_navigation(move |target| {
             if target.host_str() == Some("pan.baidu.com") && target.path() == BAIDU_PROGRESS_PATH {
                 if let Some((_, stage)) = target.query_pairs().find(|(key, _)| key == "s") {
-                    crate::logs::append_ai_os_diagnostic(&format!("[CLOUD_DRIVE] baidu {stage}"));
+                    drive_log(&format!("[CLOUD_DRIVE] baidu {stage}"));
                     if let Ok(mut last) = stage_writer.lock() {
                         *last = stage.into_owned();
                     }
@@ -557,7 +693,7 @@ pub async fn download_baidu_share_automatically(
     let _ = window.set_position(tauri::PhysicalPosition::new(-32000, -32000));
     let _ = window.set_skip_taskbar(true);
     let _ = window.show();
-    crate::logs::append_ai_os_diagnostic("[CLOUD_DRIVE] baidu signed in; resolving share off-screen");
+    drive_log("[CLOUD_DRIVE] baidu signed in; resolving share off-screen");
 
     // 2. Resolve the share inside the signed-in page.
     while load_rx.try_recv().is_ok() {}
@@ -734,6 +870,1136 @@ pub async fn download_baidu_share_automatically(
         "driveFolderDeleted": drive_folder_deleted,
     }))
 }
+
+/// A cloud drive whose web sign-in AI-OS keeps in its own persistent store.
+struct WebSignIn {
+    provider_name: &'static str,
+    window_label: &'static str,
+    data_store: [u8; 16],
+    login_url: &'static str,
+    /// Cookie domains (and their subdomains) that belong to this drive.
+    domains: &'static [&'static str],
+    /// For drives that keep the session in page storage instead of cookies:
+    /// a script that navigates to `https://<host>__aios_credential__?d=…`
+    /// with the credential (the navigation is intercepted, never loaded).
+    credential_script: Option<&'static str>,
+}
+
+const CREDENTIAL_PATH: &str = "/__aios_credential__";
+
+fn in_domains(domain: &str, domains: &[&str]) -> bool {
+    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
+    domains.iter().any(|root| domain == *root || domain.ends_with(&format!(".{root}")))
+}
+
+/// The drive's cookies in AI-OS's store, one per name (the most specific
+/// domain wins), as a request header.
+fn web_sign_in_cookie_header(window: &tauri::WebviewWindow, domains: &[&str]) -> Result<String, String> {
+    let mut chosen: Vec<(String, String, usize)> = Vec::new();
+    for cookie in window.cookies().map_err(|error| format!("无法读取登录状态：{error}"))? {
+        let Some(domain) = cookie.domain() else { continue };
+        if !in_domains(domain, domains) || cookie.value().is_empty() {
+            continue;
+        }
+        let specificity = domain.trim_start_matches('.').len();
+        match chosen.iter_mut().find(|(name, _, _)| name == cookie.name()) {
+            Some(existing) if specificity >= existing.2 => {
+                existing.1 = cookie.value().to_owned();
+                existing.2 = specificity;
+            }
+            Some(_) => {}
+            None => chosen.push((cookie.name().to_owned(), cookie.value().to_owned(), specificity)),
+        }
+    }
+    Ok(chosen.into_iter().map(|(name, value, _)| format!("{name}={value}")).collect::<Vec<_>>().join("; "))
+}
+
+/// Owner request 2026-10-18: sign in once, then keep working. Opens the
+/// drive's own sign-in page in AI-OS's persistent store; when the saved
+/// session already works the window never appears. Returns the session
+/// credential — the cookie header, or what `credential_script` reports —
+/// in memory only, never logged.
+async fn web_sign_in(
+    app: &tauri::AppHandle,
+    drive: &WebSignIn,
+    signed_in: impl Fn(String) -> bool + Send + Sync + Clone + 'static,
+) -> Result<String, String> {
+    if let Some(existing) = app.get_webview_window(drive.window_label) {
+        let _ = existing.close();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    let page = Url::parse(drive.login_url).map_err(|_| "登录地址无效".to_owned())?;
+    let reported = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let reporter = reported.clone();
+    let window = WebviewWindowBuilder::new(app, drive.window_label, WebviewUrl::External(page))
+        .title(format!("登录{} — 只需登录一次，AI-OS 会自动下载", drive.provider_name))
+        .inner_size(960.0, 720.0)
+        .visible(false)
+        .data_store_identifier(drive.data_store)
+        .on_navigation(move |target| {
+            if target.path() == CREDENTIAL_PATH {
+                if let Some((_, value)) = target.query_pairs().find(|(key, _)| key == "d") {
+                    if let Ok(mut slot) = reporter.lock() {
+                        *slot = value.into_owned();
+                    }
+                }
+                return false;
+            }
+            target.scheme() == "https"
+        })
+        .build()
+        .map_err(|error| format!("无法打开{}登录窗口：{error}", drive.provider_name))?;
+    let started = std::time::Instant::now();
+    let mut shown = false;
+    let mut last_checked = String::new();
+    loop {
+        if app.get_webview_window(drive.window_label).is_none() {
+            return Err(format!("{}登录窗口被关闭，下载已取消。", drive.provider_name));
+        }
+        let cookie = match drive.credential_script {
+            Some(script) => {
+                let _ = window.eval(script);
+                reported.lock().map(|value| value.clone()).unwrap_or_default()
+            }
+            None => web_sign_in_cookie_header(&window, drive.domains)?,
+        };
+        // Only ask the drive again when the cookies changed.
+        if !cookie.is_empty() && cookie != last_checked {
+            last_checked = cookie.clone();
+            let check = signed_in.clone();
+            let probe = cookie.clone();
+            if tauri::async_runtime::spawn_blocking(move || check(probe)).await.unwrap_or(false) {
+                let _ = window.close();
+                drive_log(&format!("[CLOUD_DRIVE] {} signed in", drive.window_label));
+                return Ok(cookie);
+            }
+        }
+        // Longer than Baidu's grace: the saved session is confirmed with
+        // the drive (and Aliyun's page may first renew its token).
+        if !shown && started.elapsed() >= std::time::Duration::from_secs(6) {
+            let _ = window.show();
+            let _ = window.set_focus();
+            shown = true;
+            drive_log(&format!("[CLOUD_DRIVE] {} waiting for sign-in", drive.window_label));
+        }
+        if started.elapsed() >= BAIDU_LOGIN_TIMEOUT {
+            let _ = window.close();
+            return Err(format!("等了 10 分钟仍未完成{}登录，下载已取消。", drive.provider_name));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+const QUARK_SIGN_IN: WebSignIn = WebSignIn {
+    provider_name: "夸克网盘",
+    window_label: "cloud-drive-quark-authorization",
+    data_store: *b"AI-OS-quark-auth",
+    login_url: "https://pan.quark.cn/",
+    domains: &["quark.cn"],
+    credential_script: None,
+};
+
+/// Aliyun's web client keeps its token in localStorage ("token"); the page
+/// renews it by itself, so AI-OS only reads a current one.
+const ALIYUN_SIGN_IN: WebSignIn = WebSignIn {
+    provider_name: "阿里云盘",
+    window_label: "cloud-drive-aliyun-authorization",
+    data_store: *b"AI-OS-alipanauth",
+    login_url: "https://www.alipan.com/drive",
+    domains: &["alipan.com", "aliyundrive.com"],
+    credential_script: Some(
+        r#"(() => { try {
+  const token = JSON.parse(localStorage.getItem("token") || "null");
+  if (token && token.access_token && !(token.expire_time && Date.parse(token.expire_time) < Date.now() + 60000)) {
+    location.href = location.origin + "/__aios_credential__?d=" + encodeURIComponent(token.access_token);
+  }
+} catch (error) {} })();"#,
+    ),
+};
+
+/// Aliyun share → files on disk: anonymous share reading, then the user's
+/// own sign-in (asked for once, kept in AI-OS) for the download URLs.
+#[tauri::command]
+pub async fn download_aliyun_share_automatically(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+) -> Result<Value, String> {
+    let share = ShareLink::parse(&url, Some(&extraction_code))?;
+    let _progress = ProgressWatch::start(&app, PathBuf::from(default_download_directory(&share.share_id)?));
+    if share.provider != crate::cloud_drive_core::CloudDriveProvider::Aliyun {
+        return Err("这不是阿里云盘的分享链接。".to_owned());
+    }
+    let share_id = share.share_id.clone();
+    let share_pwd = extraction_code.trim().to_owned();
+    {
+        let (share_id, share_pwd) = (share_id.clone(), share_pwd.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::cloud_drive_aliyun::AliyunSession::new("")?.share_token(&share_id, &share_pwd).map(|_| ())
+        })
+        .await
+        .map_err(|error| format!("Cloud Drive download task failed: {error}"))??;
+    }
+    let token = web_sign_in(&app, &ALIYUN_SIGN_IN, |token| {
+        crate::cloud_drive_aliyun::AliyunSession::new(&token).is_ok_and(|session| session.signed_in())
+    })
+    .await?;
+    let destination = PathBuf::from(default_download_directory(&share.share_id)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cloud_drive_aliyun::download_share(&token, &share_id, &share_pwd, &destination, |stage| {
+            drive_log(&format!("[CLOUD_DRIVE] aliyun {stage}"));
+        })
+    })
+    .await
+    .map_err(|error| format!("Cloud Drive download task failed: {error}"))?
+}
+
+const UC_SIGN_IN: WebSignIn = WebSignIn {
+    provider_name: "UC 网盘",
+    window_label: "cloud-drive-uc-authorization",
+    data_store: *b"AI-OS-ucpan-auth",
+    login_url: "https://drive.uc.cn/",
+    domains: &["uc.cn"],
+    credential_script: None,
+};
+
+/// Quark share → files on disk: anonymous share reading, the user's own
+/// session (signed in once in AI-OS) to save, download and clean up.
+#[tauri::command]
+pub async fn download_quark_share_automatically(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+) -> Result<Value, String> {
+    download_quark_service_share(app, url, extraction_code, &crate::cloud_drive_quark::QUARK, &QUARK_SIGN_IN).await
+}
+
+/// UC share → files on disk, exactly as Quark (same service).
+#[tauri::command]
+pub async fn download_uc_share_automatically(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+) -> Result<Value, String> {
+    download_quark_service_share(app, url, extraction_code, &crate::cloud_drive_quark::UC, &UC_SIGN_IN).await
+}
+
+async fn download_quark_service_share(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+    flavor: &'static crate::cloud_drive_quark::Flavor,
+    sign_in: &'static WebSignIn,
+) -> Result<Value, String> {
+    let share = ShareLink::parse(&url, Some(&extraction_code))?;
+    let _progress = ProgressWatch::start(&app, PathBuf::from(default_download_directory(&share.share_id)?));
+    if share.provider != flavor.provider {
+        return Err(format!("这不是{}的分享链接。", sign_in.provider_name));
+    }
+    // Check the share before asking anyone to sign in.
+    let pwd_id = share.share_id.clone();
+    let passcode = extraction_code.trim().to_owned();
+    {
+        let (pwd_id, passcode) = (pwd_id.clone(), passcode.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::cloud_drive_quark::QuarkSession::new(flavor, "")?.share_token(&pwd_id, &passcode).map(|_| ())
+        })
+        .await
+        .map_err(|error| format!("Cloud Drive download task failed: {error}"))??;
+    }
+    let cookie = web_sign_in(&app, sign_in, move |cookie| {
+        crate::cloud_drive_quark::QuarkSession::new(flavor, &cookie).is_ok_and(|session| session.signed_in())
+    })
+    .await?;
+    let destination = PathBuf::from(default_download_directory(&share.share_id)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cloud_drive_quark::download_share(flavor, &cookie, &pwd_id, &passcode, &destination, |stage| {
+            drive_log(&format!("[CLOUD_DRIVE] {} {stage}", flavor.key));
+        })
+    })
+    .await
+    .map_err(|error| format!("Cloud Drive download task failed: {error}"))?
+}
+
+/// 123's web client keeps its token in localStorage ("authorToken").
+const PAN123_SIGN_IN: WebSignIn = WebSignIn {
+    provider_name: "123 云盘",
+    window_label: "cloud-drive-123-authorization",
+    data_store: *b"AI-OS-123pan-aut",
+    login_url: "https://www.123pan.cn/",
+    domains: &["123pan.cn", "123pan.com"],
+    credential_script: Some(
+        r#"(() => { try {
+  const token = localStorage.getItem("authorToken");
+  if (token && token.replace(/"/g, "").length > 20) {
+    location.href = location.origin + "/__aios_credential__?d=" + encodeURIComponent(token.replace(/"/g, ""));
+  }
+} catch (error) {} })();"#,
+    ),
+};
+
+/// 123 share → files on disk. Guests may download 123 shares, so no sign-in
+/// is asked for unless 123 refuses a file to guests.
+#[tauri::command]
+pub async fn download_123_share_automatically(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+) -> Result<Value, String> {
+    let share = ShareLink::parse(&url, Some(&extraction_code))?;
+    let _progress = ProgressWatch::start(&app, PathBuf::from(default_download_directory(&share.share_id)?));
+    if share.provider != crate::cloud_drive_core::CloudDriveProvider::Pan123 {
+        return Err("这不是 123 云盘的分享链接。".to_owned());
+    }
+    let share_key = share.share_id.clone();
+    let share_pwd = extraction_code.trim().to_owned();
+    let destination = PathBuf::from(default_download_directory(&share_key)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cloud_drive_123::download_share(
+            &share_key,
+            &share_pwd,
+            &destination,
+            || {
+                tauri::async_runtime::block_on(web_sign_in(&app, &PAN123_SIGN_IN, |token| {
+                    crate::cloud_drive_123::Pan123Session::new(&token).is_ok_and(|session| session.signed_in())
+                }))
+            },
+            |stage| drive_log(&format!("[CLOUD_DRIVE] pan123 {stage}")),
+        )
+    })
+    .await
+    .map_err(|error| format!("Cloud Drive download task failed: {error}"))?
+}
+
+const CLOUD189_SIGN_IN: WebSignIn = WebSignIn {
+    provider_name: "天翼云盘",
+    window_label: "cloud-drive-189-authorization",
+    data_store: *b"AI-OS-cloud189-a",
+    login_url: "https://cloud.189.cn/web/main/",
+    domains: &["189.cn"],
+    credential_script: None,
+};
+
+/// 天翼云盘 share → files on disk: anonymous share reading (with the access
+/// code), then the user's own sign-in (asked for once) for download URLs.
+#[tauri::command]
+pub async fn download_189_share_automatically(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+) -> Result<Value, String> {
+    let share = ShareLink::parse(&url, Some(&extraction_code))?;
+    let _progress = ProgressWatch::start(&app, PathBuf::from(default_download_directory(&share.share_id)?));
+    if share.provider != crate::cloud_drive_core::CloudDriveProvider::ChinaTelecom {
+        return Err("这不是天翼云盘的分享链接。".to_owned());
+    }
+    let share_code = share.share_id.clone();
+    let access_code = extraction_code.trim().to_owned();
+    {
+        let (share_code, access_code) = (share_code.clone(), access_code.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::cloud_drive_189::Cloud189Session::new("")?.open_share(&share_code, &access_code).map(|_| ())
+        })
+        .await
+        .map_err(|error| format!("Cloud Drive download task failed: {error}"))??;
+    }
+    let cookie = web_sign_in(&app, &CLOUD189_SIGN_IN, |cookie| {
+        crate::cloud_drive_189::Cloud189Session::new(&cookie).is_ok_and(|session| session.signed_in())
+    })
+    .await?;
+    let destination = PathBuf::from(default_download_directory(&share.share_id)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cloud_drive_189::download_share(&cookie, &share_code, &access_code, &destination, |stage| {
+            drive_log(&format!("[CLOUD_DRIVE] 189 {stage}"));
+        })
+    })
+    .await
+    .map_err(|error| format!("Cloud Drive download task failed: {error}"))?
+}
+
+const CAIYUN_SIGN_IN: WebSignIn = WebSignIn {
+    provider_name: "移动云盘",
+    window_label: "cloud-drive-139-authorization",
+    data_store: *b"AI-OS-caiyun-aut",
+    login_url: "https://yun.139.com/",
+    domains: &["139.com", "10086.cn"],
+    credential_script: None,
+};
+
+/// 移动云盘 share → files on disk: anonymous (encrypted) share reading, then
+/// the user's own sign-in (asked for once) for download URLs.
+#[tauri::command]
+pub async fn download_139_share_automatically(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+) -> Result<Value, String> {
+    let share = ShareLink::parse(&url, Some(&extraction_code))?;
+    let _progress = ProgressWatch::start(&app, PathBuf::from(default_download_directory(&share.share_id)?));
+    if share.provider != crate::cloud_drive_core::CloudDriveProvider::ChinaMobile {
+        return Err("这不是移动云盘的分享链接。".to_owned());
+    }
+    let link_id = share.share_id.clone();
+    let passwd = extraction_code.trim().to_owned();
+    {
+        let (link_id, passwd) = (link_id.clone(), passwd.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::cloud_drive_139::CaiyunSession::new(None)?.list(&link_id, &passwd, "root").map(|_| ())
+        })
+        .await
+        .map_err(|error| format!("Cloud Drive download task failed: {error}"))??;
+    }
+    let cookie = web_sign_in(&app, &CAIYUN_SIGN_IN, |cookie| {
+        crate::cloud_drive_139::credential_from_cookies(&cookie).is_some()
+    })
+    .await?;
+    let credential = crate::cloud_drive_139::credential_from_cookies(&cookie)
+        .ok_or_else(|| "没有读到移动云盘的登录凭据。".to_owned())?;
+    let destination = PathBuf::from(default_download_directory(&share.share_id)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cloud_drive_139::download_share(credential, &link_id, &passwd, &destination, |stage| {
+            drive_log(&format!("[CLOUD_DRIVE] 139 {stage}"));
+        })
+    })
+    .await
+    .map_err(|error| format!("Cloud Drive download task failed: {error}"))?
+}
+
+/// Owner decision 2026-10-18: Xunlei works like Baidu's web route. Xunlei's
+/// share API wants a short-lived captcha token that Xunlei's own share page
+/// obtains; AI-OS never computes one. This script runs before the page's own
+/// scripts and only remembers the client headers the page itself sends to
+/// api-pan.xunlei.com, so AI-OS's in-page calls carry the page's own token.
+const XUNLEI_CAPTURE_SCRIPT: &str = r#"(() => {
+  const seen = (window.__aiosXunlei = window.__aiosXunlei || {});
+  const keep = (url, name, value) => {
+    if (!String(url || "").includes("api-pan.xunlei.com")) return;
+    const key = String(name).toLowerCase();
+    if (key === "x-captcha-token") seen.token = value;
+    if (key === "x-device-id") seen.device = value;
+    if (key === "x-client-id") seen.client = value;
+    if (key === "x-client-version") seen.version = value;
+    if (key === "authorization" && value) seen.authorization = value;
+  };
+  const open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) { this.__aiosUrl = url; return open.apply(this, arguments); };
+  const setHeader = XMLHttpRequest.prototype.setRequestHeader;
+  XMLHttpRequest.prototype.setRequestHeader = function (name, value) { keep(this.__aiosUrl, name, value); return setHeader.apply(this, arguments); };
+  // The page's own restore answer (share/restore, then tasks/<id> while it
+  // runs) carries params.trace_file_ids: share file id → new drive file id.
+  const answer = (url, text) => {
+    const address = String(url || "");
+    if (!address.includes("api-pan.xunlei.com") || !(/\/share\/restore(\?|$)/.test(address) || address.includes("/tasks/"))) return;
+    try {
+      const body = JSON.parse(text);
+      if (body.error) { seen.restoreError = body.error_description || body.error; return; }
+      const status = String(body.restore_status || body.phase || "").toUpperCase();
+      const trace = body.params && body.params.trace_file_ids;
+      if (/COMPLETE/.test(status) && trace) seen.traceIds = typeof trace === "string" ? JSON.parse(trace) : trace;
+      if (/ERROR|FAIL/.test(status)) seen.restoreError = status;
+    } catch (error) {}
+  };
+  const send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function () {
+    this.addEventListener("load", () => answer(this.__aiosUrl, this.responseText));
+    return send.apply(this, arguments);
+  };
+  const originalFetch = window.fetch;
+  window.fetch = function (input, init) {
+    const url = typeof input === "string" ? input : input && input.url;
+    try {
+      const headers = new Headers((init && init.headers) || (input && input.headers) || {});
+      headers.forEach((value, name) => keep(url, name, value));
+    } catch (error) {}
+    const pending = originalFetch.apply(this, arguments);
+    pending.then((response) => response.clone().text().then((text) => answer(url, text))).catch(() => {});
+    return pending;
+  };
+})();"#;
+
+/// Runs inside Xunlei's share page with the headers it captured: lists the
+/// share and asks for each file's download link, exactly the calls the page
+/// makes when a visitor opens folders and clicks download. Placeholders:
+/// __SHARE__, __PWD__, __TOKEN__ (pass-code token from an earlier round, or
+/// ""), __IDS__ (file ids still missing a link, or null for a full run),
+/// __RESULT__.
+const XUNLEI_SHARE_SCRIPT: &str = r#"(async () => {
+  const report = (payload) => {
+    location.href = "https://pan.xunlei.com__RESULT__?d=" + encodeURIComponent(JSON.stringify(payload));
+  };
+  const seen = window.__aiosXunlei || {};
+  if (!seen.token) return report({ needToken: true });
+  const shareId = __SHARE__, passCode = __PWD__, missing = __IDS__;
+  let passCodeToken = __TOKEN__;
+  const headers = { Accept: "application/json" };
+  if (seen.token) headers["X-Captcha-Token"] = seen.token;
+  if (seen.device) headers["X-Device-Id"] = seen.device;
+  if (seen.client) headers["X-Client-Id"] = seen.client;
+  if (seen.version) headers["X-Client-Version"] = seen.version;
+  if (seen.authorization) headers["Authorization"] = seen.authorization;
+  const expired = (body) => /captcha/i.test(String(body.error || "")) || body.error_code === 9;
+  const get = async (path, params) => {
+    const response = await fetch("https://api-pan.xunlei.com/drive/v1/" + path + "?" + new URLSearchParams(params), { headers });
+    const body = await response.json();
+    if (body.error) {
+      const error = new Error(body.error_description || body.error);
+      error.expired = expired(body);
+      throw error;
+    }
+    return body;
+  };
+  const sizeOf = (item) => Number(item.size || 0);
+  const linkOf = (info) => {
+    if (info.web_content_link) return info.web_content_link;
+    const links = info.links || {};
+    for (const key of Object.keys(links)) if (links[key] && links[key].url) return links[key].url;
+    return "";
+  };
+  const files = [];
+  let tops = [];
+  try {
+    if (!missing) {
+      const top = [];
+      let page = "";
+      do {
+        const body = await get("share", { share_id: shareId, pass_code: passCode, pass_code_token: passCodeToken, limit: "100", page_token: page, thumbnail_size: "SIZE_SMALL" });
+        if (body.share_status !== "OK") {
+          const need = body.share_status === "PASS_CODE_EMPTY" || body.share_status === "PASS_CODE_ERROR";
+          return report({ error: need ? "这个迅雷云盘分享需要提取码（或提取码不对），请把提取码一起发给我" : "迅雷云盘分享不可用（" + (body.share_status_text || body.share_status) + "）" });
+        }
+        if (body.pass_code_token) passCodeToken = body.pass_code_token;
+        top.push(...(body.files || []).map((item) => ({ dir: "", item })));
+        page = body.next_page_token || "";
+      } while (page);
+      tops = top.map((entry) => ({ id: entry.item.id, name: entry.item.name, size: String(entry.item.size || "0") }));
+      const pending = top;
+      while (pending.length) {
+        const { dir, item } = pending.pop();
+        if (item.kind === "drive#folder") {
+          const path = dir ? dir + "/" + item.name : item.name;
+          let folderPage = "";
+          do {
+            const body = await get("share/detail", { share_id: shareId, parent_id: item.id, pass_code_token: passCodeToken, limit: "100", page_token: folderPage, thumbnail_size: "SIZE_SMALL", space: "", scene: "NORMAL" });
+            pending.push(...(body.files || []).map((child) => ({ dir: path, item: child })));
+            folderPage = body.next_page_token || "";
+          } while (folderPage);
+        } else {
+          files.push({ id: item.id, dir, name: item.name, size: sizeOf(item), url: "" });
+        }
+        if (files.length > 10000) return report({ error: "分享超过 10000 个文件" });
+      }
+    } else {
+      files.push(...missing.map((file) => ({ ...file, url: "" })));
+    }
+    let diagnostic = "";
+    for (const file of files) {
+      const body = await get("share/file_info", { share_id: shareId, file_id: file.id, pass_code: passCode, pass_code_token: passCodeToken, folder_id: "", space: "", scene: "NORMAL" });
+      const info = body.file_info || body;
+      file.url = linkOf(info);
+      // Field names only (never values) for the log, to see why a link is missing.
+      if (!file.url && !diagnostic) {
+        diagnostic = "top=" + Object.keys(body).join(",") + " info=" + Object.keys(info || {}).join(",") +
+          " links=" + Object.keys((info && info.links) || {}).join(",") + " phase=" + String((info && info.phase) || "") +
+          " audit=" + String((info && info.audit && info.audit.status) || "");
+      }
+    }
+    report({ files, tops, passCodeToken, userAgent: navigator.userAgent, diagnostic });
+  } catch (error) {
+    if (error.expired && files.length) return report({ files, tops, passCodeToken, userAgent: navigator.userAgent, expired: true });
+    report({ error: "迅雷云盘：" + (error.message || String(error)) });
+  }
+})();"#;
+
+const XUNLEI_WINDOW_LABEL: &str = "cloud-drive-xunlei";
+const XUNLEI_RESULT_PATH: &str = "/__aios_result__";
+
+#[derive(Debug, Deserialize, serde::Serialize, Clone)]
+struct XunleiFile {
+    id: String,
+    dir: String,
+    name: String,
+    size: u64,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct XunleiScriptResult {
+    #[serde(default)]
+    need_token: bool,
+    #[serde(default)]
+    files: Vec<XunleiFile>,
+    #[serde(default)]
+    pass_code_token: String,
+    #[serde(default)]
+    user_agent: String,
+    #[serde(default)]
+    expired: bool,
+    #[serde(default)]
+    diagnostic: String,
+    #[serde(default)]
+    tops: Vec<Value>,
+    error: Option<String>,
+}
+
+/// Xunlei share → files on disk. Xunlei's own share page (off-screen, in
+/// AI-OS's persistent store) obtains its captcha token; AI-OS lists the share
+/// and gets each file's guest link inside that page, then downloads and
+/// verifies natively. If Xunlei asks the visitor to verify, the window is
+/// brought on screen for the user.
+#[tauri::command]
+pub async fn download_xunlei_share_automatically(
+    app: tauri::AppHandle,
+    url: String,
+    extraction_code: String,
+) -> Result<Value, String> {
+    let share = ShareLink::parse(&url, Some(&extraction_code))?;
+    let _progress = ProgressWatch::start(&app, PathBuf::from(default_download_directory(&share.share_id)?));
+    if share.provider != crate::cloud_drive_core::CloudDriveProvider::Xunlei {
+        return Err("这不是迅雷云盘的分享链接。".to_owned());
+    }
+    let pass_code = extraction_code.trim().to_owned();
+    if let Some(existing) = app.get_webview_window(XUNLEI_WINDOW_LABEL) {
+        let _ = existing.close();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    let mut page = Url::parse(&format!("https://pan.xunlei.com/s/{}", share.share_id))
+        .map_err(|_| "迅雷云盘分享地址无效。".to_owned())?;
+    if !pass_code.is_empty() {
+        page.query_pairs_mut().append_pair("pwd", &pass_code);
+    }
+    let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (load_tx, mut load_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let window = WebviewWindowBuilder::new(&app, XUNLEI_WINDOW_LABEL, WebviewUrl::External(page.clone()))
+        .title("迅雷云盘 — 如需验证请在此完成，AI-OS 会自动下载")
+        .inner_size(960.0, 720.0)
+        .visible(false)
+        .data_store_identifier(*b"AI-OS-xunlei-aut")
+        .initialization_script(XUNLEI_CAPTURE_SCRIPT)
+        .on_navigation(move |target| {
+            if target.host_str() == Some("pan.xunlei.com") && target.path() == XUNLEI_RESULT_PATH {
+                if let Some((_, payload)) = target.query_pairs().find(|(key, _)| key == "d") {
+                    let _ = result_tx.send(payload.into_owned());
+                }
+                return false;
+            }
+            target.scheme() == "https"
+        })
+        .on_page_load(move |_, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let _ = load_tx.send(());
+            }
+        })
+        .build()
+        .map_err(|error| format!("无法打开迅雷云盘页面：{error}"))?;
+    // Off-screen but "visible": macOS suspends pages of hidden windows.
+    let _ = window.set_position(tauri::PhysicalPosition::new(-32000, -32000));
+    let _ = window.set_skip_taskbar(true);
+    let _ = window.show();
+    let close = |window: &tauri::WebviewWindow| {
+        let _ = window.close();
+    };
+
+    let mut files: Vec<XunleiFile> = Vec::new();
+    let mut pass_code_token = String::new();
+    let mut user_agent = String::new();
+    let mut missing: Option<Vec<XunleiFile>> = None;
+    let mut top_items: Vec<Value> = Vec::new();
+    let started = std::time::Instant::now();
+    let mut shown = false;
+    'rounds: for round in 0..12 {
+        if round > 0 {
+            // A fresh page load gives a fresh token from Xunlei's own page.
+            while load_rx.try_recv().is_ok() {}
+            if window.navigate(page.clone()).is_err() {
+                break;
+            }
+        }
+        // Each round waits on its own: a reload is not a reason to show the window.
+        let round_started = std::time::Instant::now();
+        let loaded = tokio::time::timeout(std::time::Duration::from_secs(60), load_rx.recv()).await;
+        if !matches!(loaded, Ok(Some(()))) {
+            close(&window);
+            return Err("打开迅雷云盘分享页面超时。".to_owned());
+        }
+        loop {
+            if app.get_webview_window(XUNLEI_WINDOW_LABEL).is_none() {
+                return Err("迅雷云盘窗口被关闭，下载已取消。".to_owned());
+            }
+            while result_rx.try_recv().is_ok() {}
+            let ids = match &missing {
+                Some(list) => serde_json::to_string(list).expect("files"),
+                None => "null".to_owned(),
+            };
+            let script = XUNLEI_SHARE_SCRIPT
+                .replace("__SHARE__", &serde_json::to_string(&share.share_id).expect("string"))
+                .replace("__PWD__", &serde_json::to_string(&pass_code).expect("string"))
+                .replace("__TOKEN__", &serde_json::to_string(&pass_code_token).expect("string"))
+                .replace("__IDS__", &ids)
+                .replace("__RESULT__", XUNLEI_RESULT_PATH);
+            if window.eval(&script).is_err() {
+                close(&window);
+                return Err("无法在迅雷云盘页面里读取分享。".to_owned());
+            }
+            let Ok(Some(payload)) = tokio::time::timeout(std::time::Duration::from_secs(300), result_rx.recv()).await else {
+                close(&window);
+                return Err("迅雷云盘 5 分钟内没有返回分享内容。".to_owned());
+            };
+            let result: XunleiScriptResult =
+                serde_json::from_str(&payload).map_err(|_| "迅雷云盘返回的分享内容无法读取。".to_owned())?;
+            if let Some(error) = result.error {
+                close(&window);
+                return Err(error);
+            }
+            if result.need_token {
+                // Xunlei's page has not called its API yet; after a while it
+                // may be waiting for the visitor to verify — show it.
+                if !shown && round_started.elapsed() >= std::time::Duration::from_secs(45) {
+                    let _ = window.center();
+                    let _ = window.set_skip_taskbar(false);
+                    let _ = window.set_focus();
+                    shown = true;
+                }
+                if started.elapsed() >= BAIDU_LOGIN_TIMEOUT {
+                    close(&window);
+                    return Err("迅雷云盘页面 10 分钟内没有就绪，下载已取消。".to_owned());
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                continue;
+            }
+            if !result.pass_code_token.is_empty() {
+                pass_code_token = result.pass_code_token;
+            }
+            if !result.tops.is_empty() {
+                top_items = result.tops;
+            }
+            if !result.user_agent.is_empty() {
+                user_agent = result.user_agent;
+            }
+            for file in result.files {
+                match files.iter_mut().find(|known| known.id == file.id) {
+                    Some(known) if !file.url.is_empty() => known.url = file.url,
+                    Some(_) => {}
+                    None => files.push(file),
+                }
+            }
+            let still_missing: Vec<XunleiFile> = files.iter().filter(|file| file.url.is_empty()).cloned().collect();
+            crate::logs::append_ai_os_diagnostic(&format!(
+                "[CLOUD_DRIVE] xunlei round {round}: {} files, {} without link{}{}",
+                files.len(),
+                still_missing.len(),
+                if result.expired { " (token expired)" } else { "" },
+                if result.diagnostic.is_empty() { String::new() } else { format!("; {}", result.diagnostic) }
+            ));
+            // Owner test 2026-10-18: a missing link is Xunlei's file-type rule
+            // for guests (same files every round), so only an expired token
+            // is worth a fresh page load.
+            if still_missing.is_empty() || !result.expired {
+                break 'rounds;
+            }
+            missing = Some(still_missing);
+            continue 'rounds;
+        }
+    }
+    if files.is_empty() {
+        close(&window);
+        return Err("分享里没有可下载的文件".to_owned());
+    }
+
+    // Files Xunlei keeps from guests (by type): Xunlei's own page, signed in
+    // once in this window's store, saves the share to the user's drive with
+    // its own 转存 button; the files are then handed to the user's Thunder
+    // app exactly as the page's "已安装，点此下载资源" does on macOS (file list in
+    // the clipboard + xunleiapp://mac.thunder/downloadCloudFilesFromClipboard).
+    // Xunlei's web client refuses drive downloads in a browser ("请使用迅雷客户端下载",
+    // owner check 2026-10-18), so the app is the only route.
+    let missing_files: Vec<XunleiFile> = files.iter().filter(|file| file.url.is_empty()).cloned().collect();
+    let mut handoff_note: Option<String> = None;
+    let mut handed_off = false;
+    if !missing_files.is_empty() {
+        match xunlei_save_and_hand_off(&app, &window, &mut result_rx, &mut load_rx, &page, &top_items, &missing_files).await {
+            Ok(()) => handed_off = true,
+            Err(note) => handoff_note = Some(note),
+        }
+    }
+    close(&window);
+    let user_agent = if user_agent.is_empty() { "Mozilla/5.0".to_owned() } else { user_agent };
+
+    let destination = PathBuf::from(default_download_directory(&share.share_id)?);
+    let thunder_folder = thunder_save_folder();
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|error| format!("无法创建下载客户端：{error}"))?;
+        let mut receipts = Vec::new();
+        let mut skipped = Vec::new();
+        let mut pending_in_thunder: Vec<(String, PathBuf, u64)> = Vec::new();
+        let todo: Vec<u64> = files
+            .iter()
+            .filter(|file| !file.url.is_empty() && !already_downloaded(&destination, &file.dir, &file.name, file.size))
+            .map(|file| file.size)
+            .collect();
+        drive_log(&format!("[CLOUD_DRIVE] xunlei plan {} files {} bytes", todo.len(), todo.iter().sum::<u64>()));
+        let mut index = 0;
+        for file in files {
+            let shown_name = if file.dir.is_empty() { file.name.clone() } else { format!("{}/{}", file.dir, file.name) };
+            let skip = |reason: String| serde_json::json!({ "name": shown_name, "bytes": file.size, "reason": reason });
+            let Some(directory) = safe_relative_dir(&file.dir) else {
+                skipped.push(skip("文件夹名称不安全".to_owned()));
+                continue;
+            };
+            if file.url.is_empty() {
+                if handed_off {
+                    pending_in_thunder.push((shown_name.clone(), thunder_folder.join(&directory).join(&file.name), file.size));
+                } else {
+                    skipped.push(skip(format!(
+                        "迅雷只允许游客下载部分类型的文件，这个文件要用迅雷客户端下载{}",
+                        handoff_note.as_deref().map(|note| format!("（{note}）")).unwrap_or_default()
+                    )));
+                }
+                continue;
+            }
+            let directory = destination.join(directory);
+            let target = directory.join(&file.name);
+            if target.metadata().is_ok_and(|metadata| metadata.is_file() && metadata.len() == file.size) {
+                receipts.push(serde_json::json!({
+                    "provider": "xunlei", "path": target.to_string_lossy(), "bytes": file.size,
+                    "sha256": sha256_hex(&target)?, "attempts": 0, "integrityVerified": true,
+                }));
+                continue;
+            }
+            let url = if file.url.starts_with("http://") { file.url.replacen("http://", "https://", 1) } else { file.url.clone() };
+            index += 1;
+            drive_log(&format!("[CLOUD_DRIVE] xunlei download {index}/{} {} bytes", todo.len(), file.size));
+            let descriptor = crate::cloud_drive_core::DownloadDescriptor {
+                provider: crate::cloud_drive_core::CloudDriveProvider::Xunlei,
+                url,
+                file_name: file.name.clone(),
+                headers: vec![
+                    crate::cloud_drive_core::DownloadHeader { name: "User-Agent".to_owned(), value: user_agent.clone() },
+                    crate::cloud_drive_core::DownloadHeader { name: "Referer".to_owned(), value: "https://pan.xunlei.com/".to_owned() },
+                ],
+                expected_size: Some(file.size),
+                expected_sha256: None,
+            };
+            match crate::cloud_drive_core::download_file_with_client(&client, &descriptor, &directory, 3, |_| {}) {
+                Ok(receipt) => receipts.push(serde_json::to_value(receipt).map_err(|error| error.to_string())?),
+                Err(error) => skipped.push(skip(error)),
+            }
+        }
+
+        // Wait for Thunder: a file counts once it has the share's exact size
+        // and Thunder's in-progress companion (".<name>.js") is gone.
+        let deadline = std::time::Instant::now() + XUNLEI_THUNDER_WAIT;
+        let handed_at = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        let mut logged = false;
+        while !pending_in_thunder.is_empty() {
+            let mut still = Vec::new();
+            for (name, path, size) in pending_in_thunder {
+                if let Some(found) = thunder_finished_file(&path, size, handed_at) {
+                    let path = found;
+                    receipts.push(serde_json::json!({
+                        "provider": "xunlei", "path": path.to_string_lossy(), "bytes": size,
+                        "sha256": sha256_hex(&path)?, "attempts": 1, "integrityVerified": true,
+                    }));
+                } else {
+                    still.push((name, path, size));
+                }
+            }
+            pending_in_thunder = still;
+            if pending_in_thunder.is_empty() {
+                break;
+            }
+            if !logged {
+                drive_log(&format!("[CLOUD_DRIVE] xunlei waiting for Thunder: {} files", pending_in_thunder.len()));
+                logged = true;
+            }
+            if std::time::Instant::now() >= deadline {
+                for (name, path, size) in pending_in_thunder.drain(..) {
+                    skipped.push(serde_json::json!({
+                        "name": name, "bytes": size,
+                        "reason": format!("已交给迅雷客户端，但 {} 小时内还没下载完；完成后会在 {}", XUNLEI_THUNDER_WAIT.as_secs() / 3600, path.to_string_lossy()),
+                    }));
+                }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        Ok(serde_json::json!({
+            "receipts": receipts,
+            "skipped": skipped,
+            "handedToThunder": handed_off,
+        }))
+    })
+    .await
+    .map_err(|error| format!("Cloud Drive download task failed: {error}"))?
+}
+
+/// The file Thunder finished for `expected`: the name itself, or the name
+/// Thunder picks when it already knows one ("fish-dataset(1).zip", owner test
+/// 2026-10-18), with the exact size, written since the hand-off, and without
+/// Thunder's in-progress companion ".<name>.js".
+fn thunder_finished_file(expected: &Path, size: u64, since: std::time::SystemTime) -> Option<PathBuf> {
+    let directory = expected.parent()?;
+    let wanted = expected.file_name()?.to_string_lossy().into_owned();
+    let (stem, extension) = match wanted.rfind('.') {
+        Some(dot) if dot > 0 => (wanted[..dot].to_owned(), wanted[dot..].to_owned()),
+        _ => (wanted.clone(), String::new()),
+    };
+    let renamed = |name: &str| {
+        let Some(rest) = name.strip_prefix(&stem) else { return false };
+        let Some(middle) = rest.strip_suffix(&extension) else { return false };
+        let middle = middle.trim_start();
+        middle.len() > 2
+            && middle.starts_with('(')
+            && middle.ends_with(')')
+            && middle[1..middle.len() - 1].chars().all(|c| c.is_ascii_digit())
+    };
+    let finished = |path: &Path, require_new: bool| {
+        let Ok(metadata) = path.metadata() else { return false };
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        metadata.is_file()
+            && metadata.len() == size
+            && !path.with_file_name(format!(".{name}.js")).exists()
+            && (!require_new || metadata.modified().is_ok_and(|modified| modified >= since))
+    };
+    if finished(expected, false) {
+        return Some(expected.to_path_buf());
+    }
+    std::fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.file_name().is_some_and(|name| renamed(&name.to_string_lossy())) && finished(path, true))
+}
+
+/// How long the chat waits for Thunder to finish handed-off files.
+const XUNLEI_THUNDER_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 3600);
+
+/// Thunder's download folder (its own preference), else ~/Downloads.
+fn thunder_save_folder() -> PathBuf {
+    std::process::Command::new("defaults")
+        .args(["read", "com.xunlei.Thunder", "LastSavePath"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|path| path.starts_with('/'))
+        .map(PathBuf::from)
+        .or_else(|| dirs::download_dir())
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+/// Evaluates an in-page script and waits for its intercepted report.
+async fn run_xunlei_script(
+    window: &tauri::WebviewWindow,
+    result_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    script: &str,
+    seconds: u64,
+) -> Result<Value, String> {
+    while result_rx.try_recv().is_ok() {}
+    window.eval(script).map_err(|_| "无法在迅雷云盘页面里执行操作。".to_owned())?;
+    let payload = tokio::time::timeout(std::time::Duration::from_secs(seconds), result_rx.recv())
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| "迅雷云盘页面没有及时回应。".to_owned())?;
+    serde_json::from_str(&payload).map_err(|_| "迅雷云盘返回的内容无法读取。".to_owned())
+}
+
+/// Signs the user in once (Xunlei's own page, AI-OS's store), presses the
+/// page's own 转存到云盘, then hands the saved items to the Thunder app.
+/// Errors are short notes for the reply; guest downloads still go ahead.
+#[allow(clippy::too_many_arguments)]
+async fn xunlei_save_and_hand_off(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    result_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    load_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+    page: &Url,
+    top_items: &[Value],
+    missing: &[XunleiFile],
+) -> Result<(), String> {
+    if !std::path::Path::new("/Applications/Thunder.app").exists() {
+        return Err("这台电脑没有安装迅雷客户端".to_owned());
+    }
+    // Only top-level items that hold a missing file are handed off.
+    let wanted: Vec<&Value> = top_items
+        .iter()
+        .filter(|item| {
+            let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+            missing.iter().any(|file| {
+                (file.dir.is_empty() && file.name == name) || file.dir == name || file.dir.starts_with(&format!("{name}/"))
+            })
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Err("没有读到分享的顶层文件".to_owned());
+    }
+
+    // 1. Sign-in, kept in this window's persistent store.
+    let started = std::time::Instant::now();
+    let mut shown = false;
+    loop {
+        if app.get_webview_window(XUNLEI_WINDOW_LABEL).is_none() {
+            return Err("迅雷登录窗口被关闭".to_owned());
+        }
+        let answer = run_xunlei_script(window, result_rx, &XUNLEI_LOGIN_CHECK_SCRIPT.replace("__RESULT__", XUNLEI_RESULT_PATH), 20).await?;
+        if answer.get("loggedIn").and_then(Value::as_bool) == Some(true) {
+            break;
+        }
+        if !shown {
+            let _ = window.set_title("登录迅雷 — 只需登录一次，AI-OS 会自动转存并交给迅雷下载");
+            let _ = window.center();
+            let _ = window.set_skip_taskbar(false);
+            let _ = window.set_focus();
+            shown = true;
+            drive_log("[CLOUD_DRIVE] xunlei waiting for sign-in");
+        }
+        if started.elapsed() >= BAIDU_LOGIN_TIMEOUT {
+            return Err("10 分钟内没有完成迅雷登录".to_owned());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    // 2. Reload signed in, then press the page's own 转存到云盘 and read the
+    //    page's own restore answer (share id → new drive id).
+    let _ = window.set_position(tauri::PhysicalPosition::new(-32000, -32000));
+    let _ = window.set_skip_taskbar(true);
+    while load_rx.try_recv().is_ok() {}
+    window.navigate(page.clone()).map_err(|_| "无法重新打开迅雷分享页面".to_owned())?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), load_rx.recv()).await;
+    drive_log("[CLOUD_DRIVE] xunlei signed in; pressing the page's 转存到云盘");
+    let save = XUNLEI_PAGE_SAVE_SCRIPT.replace("__RESULT__", XUNLEI_RESULT_PATH);
+    let waited = std::time::Instant::now();
+    let mut shown = false;
+    let (drive_ids, user_id) = loop {
+        if app.get_webview_window(XUNLEI_WINDOW_LABEL).is_none() {
+            return Err("迅雷窗口被关闭".to_owned());
+        }
+        let answer = run_xunlei_script(window, result_rx, &save, 20).await?;
+        if let Some(error) = answer.get("error").and_then(Value::as_str) {
+            return Err(error.to_owned());
+        }
+        if let Some(map) = answer.get("traceIds").and_then(Value::as_object) {
+            let user_id = answer.get("userId").and_then(Value::as_str).unwrap_or("").to_owned();
+            let ids: std::collections::HashMap<String, String> = map
+                .iter()
+                .filter_map(|(share_id, drive_id)| Some((share_id.clone(), drive_id.as_str()?.to_owned())))
+                .collect();
+            break (ids, user_id);
+        }
+        // Xunlei may ask the user to verify before saving: show its page.
+        if !shown && waited.elapsed() >= std::time::Duration::from_secs(30) {
+            let _ = window.set_title("迅雷云盘 — 如需验证请在此完成，AI-OS 会自动继续");
+            let _ = window.center();
+            let _ = window.set_skip_taskbar(false);
+            let _ = window.set_focus();
+            shown = true;
+        }
+        if waited.elapsed() >= BAIDU_LOGIN_TIMEOUT {
+            return Err("迅雷 10 分钟内没有完成转存".to_owned());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    };
+    if user_id.is_empty() {
+        return Err("没有读到迅雷用户编号".to_owned());
+    }
+    let handoff: Vec<Value> = wanted
+        .iter()
+        .filter_map(|item| {
+            let share_file_id = item.get("id")?.as_str()?;
+            Some(serde_json::json!({
+                "id": drive_ids.get(share_file_id)?,
+                "name": item.get("name")?.as_str()?,
+                "size": item.get("size").and_then(Value::as_str).unwrap_or("0"),
+                "space": "",
+            }))
+        })
+        .collect();
+    if handoff.is_empty() {
+        return Err("迅雷转存后没有返回新文件".to_owned());
+    }
+    drive_log(&format!("[CLOUD_DRIVE] xunlei saved; handing {} items to Thunder", handoff.len()));
+
+    // 3. Hand off as the page does on macOS; the user's clipboard text is put
+    //    back once Thunder had time to read it.
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::STANDARD.encode(serde_json::to_string(&handoff).expect("json"));
+    let previous_clipboard = std::process::Command::new("pbpaste").output().ok().map(|output| output.stdout);
+    write_clipboard(payload.as_bytes())?;
+    let target = format!("xunleiapp://mac.thunder/downloadCloudFilesFromClipboard?token=&encode=base64&userId={user_id}");
+    let opened = std::process::Command::new("open")
+        .arg(&target)
+        .status()
+        .map_err(|error| format!("无法唤起迅雷客户端：{error}"))?;
+    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+    if let Some(previous) = previous_clipboard {
+        let _ = write_clipboard(&previous);
+    }
+    if !opened.success() {
+        return Err("无法唤起迅雷客户端".to_owned());
+    }
+    Ok(())
+}
+
+fn write_clipboard(bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("无法写入剪贴板：{error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法写入剪贴板".to_owned())?
+        .write_all(bytes)
+        .map_err(|error| format!("无法写入剪贴板：{error}"))?;
+    child.wait().map_err(|error| format!("无法写入剪贴板：{error}"))?;
+    Ok(())
+}
+
+/// Reports whether the user is signed in to Xunlei in this store (Xunlei's
+/// web client keeps its session in localStorage "credentials_<client id>").
+const XUNLEI_LOGIN_CHECK_SCRIPT: &str = r#"(() => {
+  let loggedIn = false;
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (!key.startsWith("credentials_")) continue;
+      const credentials = JSON.parse(localStorage.getItem(key) || "null");
+      if (credentials && credentials.access_token) loggedIn = true;
+    }
+  } catch (error) {}
+  location.href = "https://pan.xunlei.com__RESULT__?d=" + encodeURIComponent(JSON.stringify({ loggedIn }));
+})();"#;
+
+/// Presses the share page's own 转存到云盘 once (every file is checked by
+/// default; destination 我的云盘) and reports the page's own restore answer
+/// captured by XUNLEI_CAPTURE_SCRIPT: {traceIds: {share file id: drive id},
+/// userId}, {waiting} until then, or {error}. Placeholder: __RESULT__.
+const XUNLEI_PAGE_SAVE_SCRIPT: &str = r#"(() => {
+  const report = (payload) => {
+    location.href = "https://pan.xunlei.com__RESULT__?d=" + encodeURIComponent(JSON.stringify(payload));
+  };
+  const seen = (window.__aiosXunlei = window.__aiosXunlei || {});
+  let userId = "";
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (!key.startsWith("credentials_")) continue;
+      const credentials = JSON.parse(localStorage.getItem(key) || "null");
+      if (credentials) userId = String(credentials.sub || credentials.user_id || "");
+    }
+  } catch (error) {}
+  if (seen.restoreError) return report({ error: "迅雷转存失败：" + seen.restoreError });
+  if (seen.traceIds) return report({ traceIds: seen.traceIds, userId });
+  if (!seen.restorePressed) {
+    const button = [...document.querySelectorAll("button")].find((element) => element.textContent.replace(/\s/g, "") === "转存到云盘");
+    if (!button) return report({ waiting: true });
+    seen.restorePressed = true;
+    button.click();
+  }
+  report({ waiting: true });
+})();"#;
 
 /// Deletes only the temporary folder AI-OS created in the user's drive
 /// (Baidu moves it to the recycle bin). Placeholders: __FOLDER__, __RESULT__.
@@ -1029,7 +2295,7 @@ pub async fn cloud_drive_bdpan_login(app: tauri::AppHandle) -> Result<BdpanStatu
             let detail: String = String::from_utf8_lossy(&output.stderr).chars().take(200).collect();
             return Err(format!("bdpan 登录没有成功。{detail}"));
         }
-        crate::logs::append_ai_os_diagnostic("[CLOUD_DRIVE] bdpan signed in");
+        drive_log("[CLOUD_DRIVE] bdpan signed in");
         Ok(status)
     })
     .await
@@ -1060,6 +2326,36 @@ pub fn spawn_bdpan_keepalive() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_lines_read_as_chat_stages() {
+        assert_eq!(stage_text("[CLOUD_DRIVE] quark save to drive").as_deref(), Some("正在转存到你的网盘"));
+        assert_eq!(stage_text("[CLOUD_DRIVE] pan123 download 89925421 bytes").as_deref(), Some("正在下载一个 85.8 MB 的文件"));
+        assert_eq!(stage_text("[CLOUD_DRIVE] pan123 download 3/12 89925421 bytes").as_deref(), Some("正在下载第 3/12 个文件（85.8 MB）"));
+        assert_eq!(plan_totals("[CLOUD_DRIVE] quark plan 2 files 118979239 bytes"), Some((2, 118979239)));
+        assert_eq!(stage_text("[CLOUD_DRIVE] quark plan 2 files 118979239 bytes"), None);
+        assert_eq!(
+            stage_text("[CLOUD_DRIVE] cloud-drive-quark-authorization waiting for sign-in").as_deref(),
+            Some("请在弹出的窗口里登录（只需要登录一次）")
+        );
+        assert!(stage_text("[CLOUD_DRIVE] xunlei waiting for Thunder: 1 files").unwrap().contains("取回"));
+        assert_eq!(stage_text("[CLOUD_DRIVE] baidu 5s drive folder holds 1 of 1"), None);
+    }
+
+    #[test]
+    fn thunder_renamed_downloads_are_recognised() {
+        let directory = std::env::temp_dir().join(format!("ai-os-thunder-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let expected = directory.join("fish-dataset.zip");
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
+        std::fs::write(directory.join("fish-dataset(1).zip"), b"12345").unwrap();
+        std::fs::write(directory.join("fish-dataset-old.zip"), b"12345").unwrap();
+        assert_eq!(thunder_finished_file(&expected, 5, since), Some(directory.join("fish-dataset(1).zip")));
+        assert_eq!(thunder_finished_file(&expected, 6, since), None, "size must match");
+        std::fs::write(directory.join(".fish-dataset(1).zip.js"), b"x").unwrap();
+        assert_eq!(thunder_finished_file(&expected, 5, since), None, "still downloading");
+        let _ = std::fs::remove_dir_all(directory);
+    }
 
     #[test]
     fn baidu_sign_in_is_seen_on_parent_domain_cookies() {

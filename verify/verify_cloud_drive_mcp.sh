@@ -14,6 +14,13 @@ fail() {
 
 cd "$ROOT/src-tauri" || fail "cannot enter Rust workspace"
 
+if cargo test --lib -- cloud_drive_quark::tests cloud_drive_aliyun::tests cloud_drive_123::tests cloud_drive_189::tests cloud_drive_139::tests >"$LOG_DIR/quark.log" 2>&1; then
+  print "✓ Quark, UC, Aliyun, 123, 天翼 and 移动 protocol parsing and error reporting"
+else
+  grep -E "FAILED|error:" "$LOG_DIR/quark.log" | head -20
+  fail "provider protocol tests failed"
+fi
+
 if cargo test cloud_drive_core::tests --lib >"$LOG_DIR/core.log" 2>&1; then
   print "✓ nine-provider link, extraction-code, and descriptor behavior"
 else
