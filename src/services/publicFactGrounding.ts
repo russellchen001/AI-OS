@@ -2,7 +2,7 @@ const CREATIVE_REQUEST =
   /(?:写(?:一首|个|篇)|创作|改写|润色|翻译|角色扮演|脑暴|想象|虚构|诗|故事|文案|write (?:a|an)|create|rewrite|translate|roleplay|brainstorm|imagine|fiction|poem|story)/iu;
 
 const EXECUTION_REQUEST =
-  /(?:删除|安装|下载|运行|启动|停止|关闭|移除|切换|选择|部署|更新|升级|delete|install|download|run|start|stop|remove|switch|select|deploy|update|upgrade)/iu;
+  /(?:执行|输入|点击|按键|滚动|删除|安装|下载|运行|启动|停止|关闭|移除|切换|选择|部署|更新|升级|execute|type|click|press|scroll|delete|install|download|run|start|stop|remove|switch|select|deploy|update|upgrade)/iu;
 
 /*
  * Owner decision, 2026-10-14: only an explicit search/verification request goes

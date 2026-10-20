@@ -404,18 +404,20 @@ impl OpenClawAgentMethodInvoker for ProductionOpenClawAgentMethodInvoker {
 
 pub(crate) struct OpenClawAgentSkillTransport {
     invoker: Arc<dyn OpenClawAgentMethodInvoker>,
+    local_computer_use_router: bool,
 }
 
 impl OpenClawAgentSkillTransport {
     pub(crate) fn production() -> Self {
         Self {
             invoker: Arc::new(ProductionOpenClawAgentMethodInvoker),
+            local_computer_use_router: true,
         }
     }
 
     #[cfg(test)]
     fn with_invoker(invoker: Arc<dyn OpenClawAgentMethodInvoker>) -> Self {
-        Self { invoker }
+        Self { invoker, local_computer_use_router: false }
     }
 }
 
@@ -557,6 +559,67 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
                     }
                 }),
             });
+        }
+
+        if self.local_computer_use_router
+            && request.allowed_capabilities.iter().any(|capability| capability == "computer.use.execute")
+        {
+            report(AgentExecutionProgress {
+                phase: "skill-request".to_owned(),
+                message: "Selecting a bounded Computer Use Skill with a local model.".to_owned(),
+            });
+            let selected = tauri::async_runtime::block_on(
+                crate::providers::computer_use_local_route(&request.goal, &request.allowed_capabilities),
+            )
+            .map_err(|message| AgentExecutionError::new(
+                AgentExecutionErrorKind::ExecutionFailed,
+                message,
+                true,
+            ))?;
+            let capability = selected.get("capability").and_then(Value::as_str).unwrap_or_default();
+            if capability == "computer.use.execute" {
+                let input = skills::contracts::ground_capability_input(
+                    capability,
+                    &request.goal,
+                    json!({"allowedApplications": selected.get("allowedApplications").cloned().unwrap_or_default()}),
+                );
+                skills::contracts::validate_capability_input(capability, &input)
+                    .map_err(|_| invalid_skill_protocol())?;
+                let invocation = SkillInvocationRequest::new(
+                    format!("agent-{}-local", request.execution_id),
+                    capability,
+                    input,
+                )
+                .map_err(|_| invalid_skill_protocol())?;
+                report(AgentExecutionProgress {
+                    phase: "skill-invocation".to_owned(),
+                    message: "Runtime admitted the locally selected Computer Use Skill.".to_owned(),
+                });
+                let result = gateway.invoke(context, &invocation).map_err(|error| {
+                    if error.kind == SkillInvocationErrorKind::PermissionRequired {
+                        AgentExecutionError::new(
+                            AgentExecutionErrorKind::PermissionRequired,
+                            format!("[PermissionRequired] AI_OS_APPROVAL_REQUIRED_BEGIN{}AI_OS_APPROVAL_REQUIRED_END", json!({
+                                "capability": invocation.capability,
+                                "input": invocation.input,
+                            })),
+                            false,
+                        )
+                    } else {
+                        map_skill_error(error)
+                    }
+                })?;
+                return Ok(AgentExecutionResult {
+                    session_id: None,
+                    output: json!({"skillInvocation": {
+                        "invocationId": result.invocation_id,
+                        "capability": result.capability,
+                        "backend": result.backend,
+                        "provider": result.provider,
+                        "output": result.output,
+                    }}),
+                });
+            }
         }
 
         let session_key = format!(
@@ -759,19 +822,18 @@ fn run_agent(
     idempotency_key: &str,
     run_timeout_seconds: u64,
 ) -> Result<(), AgentExecutionError> {
+    let params = json!({
+        "message": message,
+        "agentId": agent_id,
+        "sessionKey": session_key,
+        "thinking": "off",
+        "modelRun": true,
+        "deliver": false,
+        "timeout": run_timeout_seconds,
+        "idempotencyKey": idempotency_key,
+    });
     let accepted = invoker
-        .invoke(
-            "agent",
-            Some(json!({
-                "message": message,
-                "agentId": agent_id,
-                "sessionKey": session_key,
-                "thinking": "off",
-                "deliver": false,
-                "timeout": run_timeout_seconds,
-                "idempotencyKey": idempotency_key,
-            })),
-        )
+        .invoke("agent", Some(params))
         .map_err(map_gateway_failure)?;
     let run_id = accepted
         .get("runId")
@@ -1967,11 +2029,15 @@ mod tests {
                 Ok(json!({"messages": [{
                     "role": "assistant",
                     "content": serde_json::to_string(&json!({
-                        "type": "skill.invoke",
-                        "invocationId": "computer-use-1",
-                        "capability": "computer.use.execute",
-                        "input": computer_use_input()
+                        "type": "capability.select",
+                        "capability": "computer.use.execute"
                     })).unwrap()
+                }]})),
+                Ok(json!({"runId": "input-run"})),
+                Ok(json!({"status": "ok"})),
+                Ok(json!({"messages": [{
+                    "role": "assistant",
+                    "content": serde_json::to_string(&computer_use_input()).unwrap()
                 }]})),
                 Ok(json!({"runId": "result-run"})),
                 Ok(json!({"status": "ok"})),
@@ -1997,7 +2063,7 @@ mod tests {
             "plan-1",
             "step-1",
             super::super::agent_execution::AgentId::new("openclaw").unwrap(),
-            "Complete one bounded GUI fixture",
+            "Complete one bounded GUI fixture in Fixture App",
             vec!["computer.use.execute".to_owned()],
             json!({}),
             context.clone(),
@@ -2019,6 +2085,7 @@ mod tests {
             "mock-computer-use"
         );
         assert_eq!(invoker.calls.lock().unwrap()[0].0, "agent");
+        assert_eq!(invoker.calls.lock().unwrap()[0].1.as_ref().unwrap()["modelRun"], true);
     }
 
     #[test]

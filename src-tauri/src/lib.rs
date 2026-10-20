@@ -314,6 +314,7 @@ pub fn run() {
             task_execution::complete_chat_task_execution,
             task_execution::fail_chat_task_execution,
             task_execution::execute_chat_work_task,
+            task_execution::cancel_computer_use_task,
             providers::list_provider_instances,
             providers::save_provider_instance,
             providers::remove_provider_instance,

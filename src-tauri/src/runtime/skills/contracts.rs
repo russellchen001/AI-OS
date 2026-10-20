@@ -114,11 +114,34 @@ fn filesystem_scan_schema() -> Value {
     })
 }
 
+fn computer_use_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "task": {"type": "string"},
+            "goal": {"type": "string"},
+            "allowedApplications": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "minItems": 1,
+                "maxItems": 16,
+                "uniqueItems": true
+            },
+            "maxSteps": {"type": "integer", "minimum": 1, "maximum": 100},
+            "maxDurationMs": {"type": "integer", "minimum": 1, "maximum": 900000},
+            "displayScope": {"type": "string", "minLength": 1}
+        },
+        "required": ["task", "goal", "allowedApplications", "maxSteps", "maxDurationMs"],
+        "additionalProperties": false
+    })
+}
+
 pub(crate) fn input_contract_for_capability(capability: &str) -> Option<CapabilityInputContract> {
     let schema = match capability {
         "speech.synthesize" => speech_synthesize_schema(),
         "browser.search" => web_search_schema(),
         "filesystem.scan" => filesystem_scan_schema(),
+        "computer.use.execute" => computer_use_schema(),
 
         "models.list" => empty_object_schema(),
 
@@ -145,6 +168,51 @@ pub(crate) fn validate_capability_input(capability: &str, input: &Value) -> Resu
 }
 
 pub(crate) fn ground_capability_input(capability: &str, goal: &str, mut input: Value) -> Value {
+    if capability == "computer.use.execute" {
+        let Some(object) = input.as_object_mut() else {
+            return input;
+        };
+        let bounded_goal: String = goal.trim().chars().take(2_048).collect();
+        let bounded_task: String = bounded_goal.chars().take(256).collect();
+        object.insert("task".to_owned(), Value::String(bounded_task));
+        object.insert("goal".to_owned(), Value::String(bounded_goal));
+        let applications = object
+            .get("allowedApplications")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|application| !application.is_empty() && goal.contains(application))
+                    .map(|application| Value::String(application.to_owned()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        object.insert("allowedApplications".to_owned(), Value::Array(applications));
+        let steps = object
+            .get("maxSteps")
+            .and_then(Value::as_u64)
+            .filter(|steps| *steps > 0)
+            .unwrap_or(3)
+            .min(3);
+        let duration = object
+            .get("maxDurationMs")
+            .and_then(Value::as_u64)
+            .filter(|duration| *duration > 0)
+            .unwrap_or(120_000)
+            .min(120_000);
+        object.insert("maxSteps".to_owned(), json!(steps));
+        object.insert("maxDurationMs".to_owned(), json!(duration));
+        if !object
+            .get("displayScope")
+            .and_then(Value::as_str)
+            .is_some_and(|scope| goal.contains(scope))
+        {
+            object.remove("displayScope");
+        }
+        return input;
+    }
     if capability == "filesystem.scan" {
         let Some(object) = input.as_object_mut() else {
             return input;
@@ -203,6 +271,30 @@ pub(crate) fn ground_capability_input(capability: &str, goal: &str, mut input: V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn computer_use_input_is_grounded_to_goal_and_bounded() {
+        let goal = "Only com.apple.TextEdit; enter a marker in 3 steps and 120 seconds.";
+        let input = ground_capability_input(
+            "computer.use.execute",
+            goal,
+            json!({
+                "task": "invented task",
+                "goal": "invented goal",
+                "allowedApplications": ["com.apple.TextEdit", "com.apple.Safari"],
+                "maxSteps": 100,
+                "maxDurationMs": 900000,
+                "displayScope": "other display"
+            }),
+        );
+        assert_eq!(input["task"], goal);
+        assert_eq!(input["goal"], goal);
+        assert_eq!(input["allowedApplications"], json!(["com.apple.TextEdit"]));
+        assert_eq!(input["maxSteps"], 3);
+        assert_eq!(input["maxDurationMs"], 120000);
+        assert!(input.get("displayScope").is_none());
+        assert!(validate_capability_input("computer.use.execute", &input).is_ok());
+    }
 
     #[test]
     fn nas_discover_and_list_accept_no_agent_authored_fields() {

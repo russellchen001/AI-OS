@@ -14,7 +14,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, error::Error, fmt, sync::Arc};
-use tauri::State;
+use tauri::{Manager, State};
 
 /// Process-local P11 composition. Task and Plan state is intentionally lost when
 /// the application exits; persistent repositories are deferred beyond P11.
@@ -267,11 +267,29 @@ pub(crate) fn fail_chat_task_execution(
 }
 
 #[tauri::command]
-pub(crate) fn execute_chat_work_task(
-    state: tauri::State<'_, TaskExecutionState>,
+pub(crate) async fn execute_chat_work_task(
+    app: tauri::AppHandle,
     input: ExecuteWorkTaskInput,
 ) -> Result<ExecuteWorkTaskResponse, String> {
-    execute_chat_work_task_inner(&state, input)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<TaskExecutionState>();
+        execute_chat_work_task_inner(&state, input)
+    })
+    .await
+    .map_err(|_| "Work task execution stopped unexpectedly".to_owned())?
+}
+
+#[tauri::command]
+pub(crate) fn cancel_computer_use_task(state: State<'_, TaskExecutionState>, task_id: String) -> bool {
+    let Ok(id) = resolve_chat_task_id(&state, task_id.trim()) else { return false };
+    let Ok(Some(task)) = state.tasks.get(&id) else { return false };
+    if task.task_type != TaskType::Do || !matches!(
+        task.status,
+        TaskStatus::Planning | TaskStatus::Ready | TaskStatus::Executing | TaskStatus::Verifying
+    ) {
+        return false;
+    }
+    crate::computer_use::cancel_active_task(id.as_str())
 }
 
 fn execute_chat_work_task_inner(

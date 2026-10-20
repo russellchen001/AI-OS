@@ -1,6 +1,65 @@
 <!-- BETA41_HANDOFF_START -->
 
-# AI-OS Beta 5 (1.0.1-beta.5) — Cloud-Drive Download (ACTIVE)
+# START HERE — state on 2026-10-21 (for the next owner of this work)
+
+**Repo:** `~/AI-OS/dashboard`, branch `beta5`. Pre-Computer-Use Beta 5 baseline `a516843` (release: v1.0.1 beta 5); use `git log -1` for the local Computer Use commit SHA. **Not pushed** — the owner pushes manually and asked to hold the push for now.
+**Working tree boundary:** Only Computer Use code, its verifier and this handoff belong in the local Computer Use commit; `docs/research/` and `verify/verify_nas_mount.sh` / `verify/verify_wdcloud_mount.sh` predate this implementation. The NAS/WDCloud scripts are **not ours** — never commit them with Computer Use. No push, tag, Release or change to `/Applications/AI OS.app` is authorized.
+**Owner rules that still apply:** reply to the owner in Simplified Chinese; the owner clicks paid Start/Stop and pushes; back up before risky edits, narrow edits, no `git add -A`, no `git reset --hard`; never print tokens/cookies; no third-party AGPL code in AI-OS; AI-OS must never compute a provider's captcha/anti-bot signature (Xunlei incident below); ask before downloading files or replacing the installed app.
+
+## 1. Beta 5 (cloud-drive share downloads) — done, awaiting push
+
+- Built and installed: `/Applications/AI OS.app` = `src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.5_aarch64.dmg` (same build as `a516843`).
+- Verified end to end in the installed app: 百度 (bdpan), 123 (guest), 迅雷 (page 转存 + Thunder hand-off, one 取回 click), 夸克 (save → download → temp folder removed), live chat progress (stage, file i/N, bytes of total).
+- Implemented, not tested signed-in (no accounts): 阿里, UC, 天翼, 移动. Not implemented: 光鸭.
+- Details, protocol facts and pitfalls: the "AI-OS Beta 5" section right below.
+
+## 2. ACTIVE — Computer Use provider: Peekaboo + capability-driven local model (target-Mac installed E2E passed; publication not authorized)
+
+**2026-10-21 implementation status:** `computer_use/peekaboo.rs` registers a fail-closed production provider. It verifies the signed CLI, Peekaboo.app bridge and permissions; ranks connected oMLX candidates using read-only loaded/available status, cached llmfit fit evidence and hardware memory, then requires an actual timely tool call. Qwen3.5 is a candidate, not a fixed default; the selected action model is reused across GUI steps, and ordinary chat Auto Router / Qwen2.5 behavior is unchanged. A short local oMLX tool-call chooses the Computer Use Skill and explicit application from the user's goal; the original Skill gateway still validates scope and demands one-time approval. OpenClaw's per-run model override was rejected by its gateway and is not used. The provider pins one running allowed app and one visible window; bounds steps/time, limits commands to see/click/type/press/scroll, refuses credential-related text and secure controls, waits for AX focus, verifies typing against a changed fresh AX value and refuses repeated verified typing. Bundle-ID suffix matching resolves a localized TextEdit display name only when the app match is unique. The work command runs off the UI thread; Stop Computer Use cancels only the matching task, including a click immediately after approval. Nothing was pushed.
+
+**Acceptance evidence:** `verify/verify_computer_use_peekaboo.sh` passed after the final changes: signed bridge/permissions/tool-call probe, real TextEdit single-step 3/3, two-step 3/3 with fresh AX readback, and production Skill routing. The historical intermittent readback failure was not logged precisely enough to prove its immediate cause; the prior code lacked focus identity and changed AX-value checks. The independently installed, ad-hoc-signed 21 MB app at `/private/tmp/aios-cu-beta5-build.puhHf9/installed-acceptance/AI OS Computer Use Acceptance Test.app` (binary SHA-256 `722784aa11fc68a55f8c5359bc23814ad23f4c657e7c7747cf92adc61b42404a`) completed a normal-chat-entry TextEdit task in one step; the marker appeared exactly once in the TextEdit primary AX value. A denied one-time approval wrote nothing. The final installed build accepted one click on Stop Computer Use, showed “Computer Use 已取消，未继续操作”, and wrote no cancellation marker; a subsequent normal task again completed in one step with exactly one marker. `/Applications/AI OS.app` stayed at SHA-256 `ec149390d3bd5789f2bfeae39f421e1c0510c4d571acb4716851ba44ee00676c`. The test app is not notarized and has not been published.
+
+**Regression and limits:** Final unrestricted Rust suite 1051 passed / 0 failed (81 ignored), plus 4 binary tests; frontend production build, AIR-1C hybrid-intent verifier, `git diff --check` pass. Clean Beta 5 HEAD `a516843` previously measured 1032/8 in the restricted sandbox and 1040/0 unrestricted; final code measured 1043/8 restricted and 1051/0 unrestricted, with the same eight names. Six are local socket bind `PermissionDenied` (external connector; two ComfyUI HTTP; two ComfyUI execution; ComfyUI setup), one ComfyUI lifecycle assertion is preempted by the same bind error, and the audio acceptance test sees `missing value`; do not change unrelated modules. Full-repo `cargo fmt --check` has 50 pre-existing baseline drift files; do not bulk-format. Installed UI directly tested approval, refusal, one-click early in-progress cancellation and successful TextEdit execution; the 120-second timeout and interruption during an active Peekaboo action are implemented but were not forced in the installed UI. Other applications, locked desktop, clean-machine Peekaboo installation/TCC onboarding, notarization and public distribution remain outside this acceptance. No public release is authorized.
+
+### Technical decisions
+- AI-OS owns the bounded planner loop; signed Peekaboo.app is only the macOS actuator. No `peekaboo agent`, shell tool, AppleScript or Mano Cloud is used for this provider.
+- Local model selection is capability-driven: connected oMLX candidates are filtered/ranked by live status, cached llmfit fit and memory budget, then must produce a timely valid tool call. A loaded capable model is preferred to avoid unnecessary model switches; the chosen model is reused for subsequent GUI steps. The authenticated oMLX request stays on loopback with proxy use disabled; no API key is written into repository files. Existing Auto Router and ordinary chat selection are untouched.
+- Computer Use Skill selection uses a bounded direct local oMLX tool call because the installed OpenClaw gateway disallows per-run model overrides and a long Qwen3.5 OpenClaw routing prompt timed out. The original Skill gateway, input grounding and one-time approval remain authoritative; no model can self-approve or choose a backend. The work task runs on a background thread so the UI remains responsive, and cancellation is scoped to the current task ID with an early-click pending state.
+- Production remains fail-closed when signing, bridge, permissions, model tool calling, app/window scope or fresh observation is unavailable. Multiple visible windows and display-scoped requests are refused rather than guessed.
+
+### Why
+AI-OS's Computer Use (`computer.use.execute`, MP-0, `src-tauri/src/computer_use/`) has a provider-neutral contract but `ComputerUseProviderRegistry::production()` is empty, so OpenClaw's GUI requests get "No Computer Use provider is registered". Mano-CUA is a separate whole-task fallback (`runtime/mano_fallback.rs`): Local is refused on this Mac (M4, 16 GB; Mano requires 32 GB) and Cloud is effectively off in the installed app — it is enabled only by env vars (`AI_OS_MANO_MODE=cloud`, `AI_OS_MANO_CLOUD_AUTHORIZED=true`) that a Finder-launched app never sees, and chat work tasks arrive with `userConfirmed=false` while Mano requires `true`.
+
+### Owner decisions (2026-10-19)
+- Build Computer Use on **Peekaboo + a local model** (free, on-device). Research and comparison: `docs/research/2026-10-19-computer-use-provider-options.md` (Peekaboo, Agent S3, UI-TARS, Mano-P, Mano Cloud, cloud models; MacAgentBench numbers; licences; 16 GB feasibility).
+- **Mano Cloud standing authorization is on hold.** The owner first asked for Mano Cloud without per-task confirmation, then chose Peekaboo + local. Mano Cloud facts for later: free today, no account/API key, screenshots and task text go to `mano.mininglamp.com` (Claude Sonnet 4.5 behind it), no published pricing or SLA.
+
+### What was set up on the owner's Mac (outside the repo)
+- Peekaboo CLI 4.9.5 via the official tap: `brew install openclaw/tap/peekaboo` (`/opt/homebrew/bin/peekaboo` → `/opt/homebrew/Cellar/peekaboo/4.9.5/bin/peekaboo`; signed, TeamID FWJYW4S8P8). Do not use Homebrew-core `peekaboo` (4.9.2, unsigned).
+- **Peekaboo.app 4.9.5** in `/Applications` (official release DMG, SHA-256 `f92f0047a1f0e60b7586dea1f83dcfd8e3f1bf42c34bb026f4fc1b0d9efedc77` matched `checksums.txt`, notarized, Developer ID "OpenClaw Foundation"). It is the **bridge host** (`~/Library/Application Support/Peekaboo/bridge.sock`); the CLI talks to it.
+- Permissions granted by the owner **to Peekaboo.app**: 录屏与系统录音, 设备控制和数据访问 (this macOS renamed 辅助功能), event synthesizing. `peekaboo permissions status` → all Granted. Pitfall: grants on the CLI binary did nothing — a CLI-spawned daemon inherits the launching app's TCC identity; only a real app host works. The owner also added the CLI binary to both lists (harmless, can be removed).
+- `~/.peekaboo/config.json`: custom provider `aios-omlx` (type openai, base `http://127.0.0.1:8000/v1`, `apiKey: "${AIOS_OMLX_KEY}"` — a reference, no secret on disk), models discovered; `Qwen3.5-9B-4bit` set `supportsTools: true` (verified). Run with `AIOS_OMLX_KEY` taken from Keychain service `com.ai-os.provider`, account `omlx-local`.
+- AI-OS local models on oMLX (`127.0.0.1:8000/v1`, key in Keychain as above): `Qwen3.5-9B-4bit`, `Qwen2.5-7B-Instruct-4bit`, `DeepSeek-R1-Distill-Qwen-7B-4bit`.
+- Leftover test fixture: `aios-peekaboo-test.txt` (in the session scratchpad) may still be open in 文本编辑 — close without saving.
+
+### Prototype findings (2026-10-19)
+- Qwen3.5-9B tool calling via oMLX works. Single tool-call step: ~8.3 s with thinking, **~4.2 s with `chat_template_kwargs: {"enable_thinking": false}`** (24 vs 110 output tokens), same correct call.
+- `peekaboo agent --model aios-omlx/Qwen3.5-9B-4bit` is **too slow for production**: ~100 s per step (long system prompt + 26 tool schemas + observation on a 16 GB M4). Best run: with `PEEKABOO_ALLOW_TOOLS="see,click,type,press,scroll,app,window,menu,set_value"` a one-line typing task finished in 3 min 25 s (2 tool calls) and the text was correct.
+- On this Chinese-language macOS, targeting `--app TextEdit` fails ("inconsistent response evidence: application selector"); **bundle id (`com.apple.TextEdit`) or the localized name (文本编辑) works**. Always pass bundle ids.
+- Peekaboo sometimes reports `Type FAILED` although the text was typed — verify outcomes by reading state (AX value / `see`), not by Peekaboo's own verdict.
+- The small model misjudges state (it assumed an untitled document existed while TextEdit showed its open panel). Keep tasks and observations concrete.
+- `peekaboo list` was removed in v4; use `peekaboo window list`, `peekaboo see --app <bundle id> --json` (returns `ui_map`, snapshot ids, element count).
+- Peekaboo exposes no shell tool (26 tools: see, click, type, press, scroll, drag, set_value, menu, window, app, dialog, dock, …); deny `agent,browser,permissions` anyway.
+
+### Accepted design and remaining acceptance
+Peekaboo as the **actuator**, AI-OS as the **planner loop** — implement a `ComputerUseProvider` (e.g. `computer_use/peekaboo.rs`) and register it in `ComputerUseProviderRegistry::production()` only when its probe is Ready:
+1. Probe: `peekaboo` present, bridge host answers, `permissions status` all required Granted, oMLX reachable with a tool-capable model → `Ready` + capabilities `LocalInference, BoundedSteps, Cancellation, ProgressEvents, ScreenCapture, InputControl, ShellDisabled, AppScope`.
+2. Loop per step (bounded by `max_steps` / `max_duration_ms`, cancellable): `peekaboo see --app <bundle id> --json` → compact element list (id, role, label, value) → short prompt to the local model with ~5 tools (`click`, `type`, `press`, `scroll`, `done`), thinking off → run the chosen `peekaboo` command → re-observe and verify.
+3. App scope: resolve `allowed_applications` to bundle ids; refuse actions outside them. Progress events per phase/step. Never forward credentials.
+4. First acceptance: type into a pre-opened 文本编辑 fixture; then a multi-step task (e.g. change one option in 系统设置). Expected ~5–10 s per step.
+5. Product question still open: real users must also install Peekaboo.app and grant permissions — decide whether AI-OS guides that (like bdpan) or hosts the Peekaboo bridge itself (OpenClaw.app embeds it; larger Swift work).
+
+# AI-OS Beta 5 (1.0.1-beta.5) — Cloud-Drive Download (done, committed `a516843`, not pushed)
 
 **Last updated:** 2026-10-18
 **Branch:** `beta5` (the only branch for this work; the LinkSwift/cloud-drive branches and GPT worktrees were deleted on 2026-10-18 at the owner's request)

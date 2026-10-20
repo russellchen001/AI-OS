@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listMemory, saveMemory, type MemoryEntry } from "../services/memory";
 import {
+  cancelComputerUseTask,
   completeChatTaskExecution,
   executeChatWorkTask,
   failChatTaskExecution,
@@ -446,6 +447,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string>();
   const [activeStream, setActiveStream] = useState<AiCenterStream>();
+  const [activeComputerUseTaskId, setActiveComputerUseTaskId] = useState<string>();
+  const [computerUseStopAccepted, setComputerUseStopAccepted] = useState(false);
   const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
   const [scanFolderPath, setScanFolderPath] = useState<string>();
   const [readFilePath, setReadFilePath] = useState<string>();
@@ -1497,16 +1500,25 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
            */
           const approvedTask = await submitChatTask(content, "DO");
           activeTaskId = approvedTask.taskId;
-
-          const execution = await executeChatWorkTask(
-            approvedTask.taskId,
-            "openclaw",
-            {
-              capability: approval.capability,
-              input: approval.input,
-              userConfirmed: true,
-            },
-          );
+          if (approval.capability === "computer.use.execute") {
+            setComputerUseStopAccepted(false);
+            setActiveComputerUseTaskId(approvedTask.taskId);
+          }
+          let execution: Awaited<ReturnType<typeof executeChatWorkTask>>;
+          try {
+            execution = await executeChatWorkTask(
+              approvedTask.taskId,
+              "openclaw",
+              {
+                capability: approval.capability,
+                input: approval.input,
+                userConfirmed: true,
+              },
+            );
+          } finally {
+            setActiveComputerUseTaskId(undefined);
+            setComputerUseStopAccepted(false);
+          }
 
           const approvedMessage: ChatMessage = {
             id: crypto.randomUUID(),
@@ -2236,7 +2248,19 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 )}
               </div>
             </div>
-            {activeStream ? (
+            {activeComputerUseTaskId ? (
+              <button
+                type="button"
+                className="send-button stop-button"
+                aria-label={computerUseStopAccepted ? "Stopping Computer Use" : "Stop Computer Use"}
+                disabled={computerUseStopAccepted}
+                onClick={() => void cancelComputerUseTask(activeComputerUseTaskId).then((accepted) => {
+                  if (accepted) setComputerUseStopAccepted(true);
+                }).catch(() => undefined)}
+              >
+                <span />
+              </button>
+            ) : activeStream ? (
               <button
                 type="button"
                 className="send-button stop-button"

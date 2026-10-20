@@ -74,6 +74,23 @@ export function formatWorkExecutionOutput(output: unknown): string {
 
   const skill = invocation as Record<string, unknown>;
 
+  if (skill.capability === "computer.use.execute") {
+    const raw = skill.output;
+    if (!raw || typeof raw !== "object") return fallback;
+    const result = raw as Record<string, unknown>;
+    const steps = typeof result.stepsUsed === "number" && Number.isInteger(result.stepsUsed)
+      ? result.stepsUsed
+      : undefined;
+    if (result.status === "completed" && result.stopReason === "completed") {
+      return `Computer Use 已完成${steps === undefined ? "" : `（${steps} 步）`}。`;
+    }
+    if (result.status === "stopped") {
+      const reason = cleanText(result.stopReason);
+      return `Computer Use 未完成${reason ? `（${reason}）` : ""}。请检查任务范围后重试。`;
+    }
+    return fallback;
+  }
+
   if (skill.capability !== "browser.search") {
     return fallback;
   }

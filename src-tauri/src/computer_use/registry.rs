@@ -26,7 +26,16 @@ pub(crate) struct ComputerUseProviderRegistry {
 
 impl ComputerUseProviderRegistry {
     pub(crate) fn production() -> Self {
-        Self::default()
+        let identity = "peekaboo-local".to_owned();
+        Self {
+            providers: [(
+                identity.clone(),
+                Arc::new(super::peekaboo::PeekabooProvider::new()) as Arc<dyn ComputerUseProvider>,
+            )]
+            .into_iter()
+            .collect(),
+            selected_provider: Some(identity),
+        }
     }
 
     #[cfg(test)]
@@ -47,6 +56,13 @@ impl ComputerUseProviderRegistry {
         cancellation: &ComputerUseCancellationToken,
         report: &mut dyn FnMut(ComputerUseProgress),
     ) -> Result<ComputerUseResult, ComputerUseError> {
+        if cancellation.is_cancelled() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorKind::Cancelled,
+                "Computer Use was cancelled before provider readiness checks.",
+                false,
+            ));
+        }
         let selected = self.selected_provider.as_deref().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorKind::ProviderUnavailable,

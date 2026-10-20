@@ -1,4 +1,5 @@
 pub(crate) mod models;
+pub(crate) mod peekaboo;
 pub(crate) mod provider;
 pub(crate) mod registry;
 
@@ -12,9 +13,74 @@ use models::{
     ComputerUseRequest, ComputerUseResult,
 };
 use registry::ComputerUseProviderRegistry;
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, OnceLock},
+};
 
 pub(crate) const EXECUTE_CAPABILITY: &str = "computer.use.execute";
+
+#[derive(Default)]
+struct ActiveTaskState {
+    active: HashMap<String, ComputerUseCancellationToken>,
+    pending_cancel: HashSet<String>,
+}
+
+static ACTIVE_TASKS: OnceLock<Mutex<ActiveTaskState>> = OnceLock::new();
+
+fn active_tasks() -> &'static Mutex<ActiveTaskState> {
+    ACTIVE_TASKS.get_or_init(|| Mutex::new(ActiveTaskState::default()))
+}
+
+struct ActiveTaskGuard(String);
+
+impl Drop for ActiveTaskGuard {
+    fn drop(&mut self) {
+        if let Ok(mut tasks) = active_tasks().lock() {
+            tasks.active.remove(&self.0);
+            tasks.pending_cancel.remove(&self.0);
+        }
+    }
+}
+
+fn register_active(
+    task_id: &str,
+    token: &ComputerUseCancellationToken,
+) -> Result<ActiveTaskGuard, SkillInvocationError> {
+    let mut tasks = active_tasks().lock().map_err(|_| {
+        SkillInvocationError::new(
+            SkillInvocationErrorKind::ExecutionFailed,
+            "Computer Use cancellation state is unavailable",
+            false,
+        )
+    })?;
+    if tasks.active.contains_key(task_id) {
+        return Err(SkillInvocationError::new(
+            SkillInvocationErrorKind::ExecutionFailed,
+            "Computer Use is already active for this task",
+            false,
+        ));
+    }
+    if tasks.pending_cancel.remove(task_id) {
+        token.cancel();
+    }
+    tasks.active.insert(task_id.to_owned(), token.clone());
+    Ok(ActiveTaskGuard(task_id.to_owned()))
+}
+
+pub(crate) fn cancel_active_task(task_id: &str) -> bool {
+    let Ok(mut tasks) = active_tasks().lock() else {
+        return false;
+    };
+    if let Some(token) = tasks.active.get(task_id) {
+        token.cancel();
+    } else if tasks.pending_cancel.len() < 128 {
+        tasks.pending_cancel.insert(task_id.to_owned());
+    } else {
+        return false;
+    }
+    true
+}
 
 pub(crate) struct ComputerUseSkillBackend {
     registry: Arc<ComputerUseProviderRegistry>,
@@ -73,6 +139,7 @@ impl SkillBackend for ComputerUseSkillBackend {
         request: &SkillInvocationRequest,
     ) -> Result<SkillInvocationResult, SkillInvocationError> {
         let cancellation = ComputerUseCancellationToken::default();
+        let _guard = register_active(&context.task_id, &cancellation)?;
         let result = self
             .execute(context, request, &cancellation, &mut |_| {})
             .map_err(map_skill_error)?;
@@ -294,6 +361,46 @@ mod tests {
     }
 
     #[test]
+    fn active_task_cancellation_is_scoped_and_cleans_up() {
+        let token = ComputerUseCancellationToken::default();
+        let guard = register_active("computer-use-cancel-test", &token).unwrap();
+        let other = ComputerUseCancellationToken::default();
+        let other_guard = register_active("another-task", &other).unwrap();
+        assert!(cancel_active_task("computer-use-cancel-test"));
+        assert!(token.is_cancelled());
+        assert!(!other.is_cancelled());
+        drop(guard);
+        drop(other_guard);
+        assert!(!active_tasks()
+            .lock()
+            .unwrap()
+            .active
+            .contains_key("computer-use-cancel-test"));
+    }
+
+    #[test]
+    fn cancellation_before_provider_registration_is_honored() {
+        assert!(cancel_active_task("computer-use-pending-cancel-test"));
+        let token = ComputerUseCancellationToken::default();
+        let guard = register_active("computer-use-pending-cancel-test", &token).unwrap();
+        assert!(token.is_cancelled());
+        drop(guard);
+    }
+
+    #[test]
+    fn mp0_cancellation_precedes_provider_readiness() {
+        let cancellation = ComputerUseCancellationToken::default();
+        cancellation.cancel();
+        let error = execute_registry(
+            &ComputerUseProviderRegistry::default(),
+            &cancellation,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ComputerUseErrorKind::Cancelled);
+    }
+
+    #[test]
     fn mp0_provider_error_is_normalized() {
         let mut provider = MockComputerUseProvider::ready("test");
         provider.outcome = MockComputerUseOutcome::Error(ComputerUseError::new(
@@ -321,7 +428,7 @@ mod tests {
     #[test]
     fn mp0_unregistered_provider_is_normalized_failure() {
         let error = execute_registry(
-            &ComputerUseProviderRegistry::production(),
+            &ComputerUseProviderRegistry::default(),
             &ComputerUseCancellationToken::default(),
             &mut |_| {},
         )
@@ -404,5 +511,22 @@ mod tests {
 
         assert_eq!(error.kind, ComputerUseErrorKind::ProviderUnavailable);
         assert_eq!(provider.request_count(), 0);
+    }
+
+    #[test]
+    #[ignore = "Requires an unlocked Mac, Peekaboo.app, oMLX, and the temporary TextEdit fixture"]
+    fn live_production_skill_invocation_reaches_peekaboo() {
+        let backend = ComputerUseSkillBackend::production();
+        let marker = format!("AIOS_RUNTIME_PASS_{}", std::process::id());
+        let invocation = request(json!({
+            "task": format!("Type {marker} into the open TextEdit document"),
+            "goal": format!("The document contains {marker}"),
+            "allowedApplications": ["com.apple.TextEdit"],
+            "maxSteps": 4,
+            "maxDurationMs": 120000
+        }));
+        let result = backend.invoke(&context(), &invocation).unwrap();
+        assert_eq!(result.provider.as_deref(), Some("peekaboo-local"));
+        assert_eq!(result.output["status"], "completed");
     }
 }

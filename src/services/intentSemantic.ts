@@ -89,8 +89,8 @@ export function classifySemanticIntent(
   ];
 
   const explicitExecutionPatterns: RegExp[] = [
-    /^(帮我|替我|给我|请|麻烦).*(查看|看看|检查|读取|扫描|搜索|查找|打开|运行|执行|启动|创建|生成|写入|保存|修改|编辑|移动|复制|重命名|删除|下载|上传|安装|卸载|发送|发邮件|添加|更新|整理|清理|连接|控制|关闭|开启|同步|导出|导入)/u,
-    /^(查看|看看|检查|读取|扫描|搜索|查找|打开|运行|执行|启动|创建|生成|写入|保存|修改|编辑|移动|复制|重命名|删除|下载|上传|安装|卸载|发送|添加|更新|整理|清理|连接|控制|关闭|开启|同步|导出|导入)/u,
+    /^(帮我|替我|给我|请|麻烦).*(查看|看看|检查|读取|扫描|搜索|查找|打开|运行|执行|启动|创建|生成|写入|输入|点击|按键|滚动|保存|修改|编辑|移动|复制|重命名|删除|下载|上传|安装|卸载|发送|发邮件|添加|更新|整理|清理|连接|控制|关闭|开启|同步|导出|导入)/u,
+    /^(查看|看看|检查|读取|扫描|搜索|查找|打开|运行|执行|启动|创建|生成|写入|输入|点击|按键|滚动|保存|修改|编辑|移动|复制|重命名|删除|下载|上传|安装|卸载|发送|添加|更新|整理|清理|连接|控制|关闭|开启|同步|导出|导入)/u,
     /\b(check|inspect|read|scan|search|find|open|run|execute|start|create|write|save|modify|edit|move|copy|rename|delete|download|upload|install|uninstall|send|add|update|organize|clean|connect|control|sync|export|import)\b/i,
   ];
 
@@ -100,8 +100,8 @@ export function classifySemanticIntent(
   ];
 
   const systemObjectPatterns: RegExp[] = [
-    /(nas|硬盘|磁盘|存储|空间|容量|文件|文件夹|downloads|下载目录|邮件|邮箱|日历|浏览器|网页|模型|omlx|comfyui|应用|程序|电脑|mac|系统|服务器|账户|账号)/iu,
-    /\b(nas|disk|drive|storage|file|folder|downloads|email|mail|calendar|browser|webpage|model|omlx|comfyui|application|computer|server|account)\b/i,
+    /(nas|硬盘|磁盘|存储|空间|容量|文件|文件夹|文档|downloads|下载目录|邮件|邮箱|日历|浏览器|网页|模型|omlx|comfyui|textedit|应用|程序|电脑|mac|系统|服务器|账户|账号)/iu,
+    /\b(nas|disk|drive|storage|file|folder|document|downloads|email|mail|calendar|browser|webpage|model|omlx|comfyui|textedit|application|computer|server|account)\b/i,
   ];
 
   const advisoryExecutionConflictPatterns: RegExp[] = [

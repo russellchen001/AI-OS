@@ -184,6 +184,10 @@ export function describeWorkTaskError(
         ? error.message
         : "";
 
+  if (operation === "task" && detail.toLowerCase().includes("computer use was cancelled")) {
+    return "Computer Use 已取消，未继续操作。";
+  }
+
   const detectedKind = extractErrorKind(detail);
   if (detectedKind) {
     const described = describeByKind(detectedKind, operation);
@@ -307,4 +311,8 @@ export async function executeChatWorkTask(
   return invoke<ExecuteWorkTaskResponse>("execute_chat_work_task", {
     input: { taskId, agentId, ...options },
   });
+}
+
+export async function cancelComputerUseTask(taskId: string): Promise<boolean> {
+  return invoke<boolean>("cancel_computer_use_task", { taskId });
 }
