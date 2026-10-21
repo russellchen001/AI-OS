@@ -1,6 +1,395 @@
 <!-- BETA41_HANDOFF_START -->
 
-# START HERE — state on 2026-10-21 (for the next owner of this work)
+# START HERE — state on 2026-10-22 (for the next owner of this work)
+
+<!-- COMPUTER_USE_LATEST_HANDOFF_START -->
+
+# COMPUTER USE — LATEST DEVELOPMENT HANDOFF
+
+**Status (2026-10-22):** COMPLETE. Provider timeout, cancellation
+during an executing action, repeatable Calculator and TextEdit GUI
+tests, full regression and isolated installed-app acceptance all
+PASS. Committed locally on `beta5` (not pushed). See section 0.
+
+## 0. FINAL RESULTS — 2026-10-22 (authoritative; supersedes sections 3–11)
+
+**Recovery.** No suspended (T-state) processes, fault-injection helpers
+or delayed resumes were left from the interrupted session. The
+uncommitted peekaboo.rs / providers.rs / HANDOFF work was backed up
+before any change and kept.
+
+**Provider timeout — PASS 3/3.** New live test
+`live_peekaboo_action_timeout_kills_stalled_child`: a stand-in CLI
+forwards observation commands to the real signed Peekaboo, and turns
+any GUI action (click/type/press/scroll) into a hung child that never
+touches the GUI. With `max_duration_ms = 45_000` the Provider returned
+`Timeout` at 45.007 s / 45.007 s / 45.027 s, the hung child was gone,
+and Calculator stayed "0". The whole app is never paused (the earlier
+injection had paused the app and only produced an OpenClaw failure).
+
+**Cancellation during an executing action — PASS 3/3.** New live test
+`live_peekaboo_cancellation_during_active_action`: cancellation is
+issued 1.5 s after the action child is confirmed running; the Provider
+returned `Cancelled` 1.4 ms / 23 ms / 23 ms later, the child was gone,
+no GUI change followed (Calculator "0" after a further 3 s).
+
+**Calculator defect found and fixed.** The earlier "Calculator PASS"
+was one lucky run. Reproduced in the installed test app (one 8 pressed
+but reported `infeasible`) and with the Provider: 0/5 correct (2×
+reported infeasible, 3× pressed twice → "88"). Root causes, proven by
+a diagnostic that printed the model's step-2 choice: (1) the local
+model often answered `{"action":"done"}` without `success`, which the
+Provider read as failure; (2) Calculator's display has no AX label, so
+the model saw `elem_6 | other |  | 8` and did not recognise its state.
+Fixes: `success` is now a required tool argument with explicit
+semantics (providers.rs); an unlabeled read-only value is shown as
+`displayed value`; the verified history is a numbered "already
+performed, do not redo" list with an explicit "choose done with success
+true when every requested action is in the list and the UI agrees";
+one bounded re-ask (no GUI action executed for the refused choice) when
+the model proposes an exact repeat of the last verified action or stops
+unsuccessfully right after one. After the fix: 5/5, then 3/3 in the
+verifier (one click, display "8", Completed, 1 step).
+
+**Observation retry.** `peekaboo see` occasionally refuses a fresh read
+("AX tree incomplete … retry once"). `observe` now retries once (read
+only, within the task deadline). Refusal errors now carry Peekaboo's
+error code (e.g. `INTERACTION_FAILED`), never its message text. A
+single "refused scoped click" during the TextEdit two-step focus click
+was seen once and not reproduced in 5 + 3 later runs; the error code
+will identify it if it recurs. Mutating actions are never retried.
+
+**Test isolation fix.** `computer_use::tests` shared task id
+`runtime-task`; the global active-task registry (one Computer Use per
+task, correct production behaviour) made parallel tests fail each
+other (`mp0_agent_cannot_choose_provider` failed once in the full
+suite). Each test now gets a unique task id.
+
+**Regression (final tree).** `cargo test --lib`: 1051 passed / 0
+failed (3 consecutive runs). Frontend production build: PASS.
+`verify/verify_computer_use_peekaboo.sh`: PASS — contract/guards,
+intent + routing, signed bridge/permissions/model probe, TextEdit
+single-step 3/3, two-step 3/3, production Skill routing, Calculator
+3/3, Provider timeout, active cancellation.
+
+**Isolated installed-app acceptance — PASS.** Fresh release build
+installed only as
+`/private/tmp/aios-cu-beta5-build.puhHf9/installed-acceptance/AI OS Computer Use Acceptance Test.app`
+(bundle id `com.russellchen.aios.computeruse.acceptance`, ad-hoc,
+binary SHA-256 `5bbbb0a1863e9b4ec12efdac0cd18dc51b03722d0784e42181bfa2027dba1087`;
+previous copies renamed `.pre-timeout-*` / `.pre-final-*`, nothing
+deleted). Normal chat entry "只操作当前打开的“计算器”应用。只按一次数字 8…":
+3/3 "Computer Use 已完成（1 步）" with Calculator read back as "8".
+Stop during execution: child timeline showed codesign → bridge →
+permissions → app list → window list → see, then no action child;
+reply "Computer Use 已取消，未继续操作。", Calculator stayed "0". A
+following normal task completed in 1 step (app usable). Note: the stop
+button appears only after the OpenClaw selection turn; a click before
+that hits the disabled send button. `/Applications/AI OS.app` stayed at
+SHA-256 `ec149390d3bd5789f2bfeae39f421e1c0510c4d571acb4716851ba44ee00676c`.
+
+**Privacy / permissions review.** App scope: only the requested
+bundle id/name may be resolved; exactly one visible actionable window.
+Credential-like tasks (password, token, API key, secret, cookie, 密码,
+验证码, 口令) are refused; secure fields never enter observations;
+editable values are not sent to the model. Only `peekaboo` and
+`codesign` are spawned; keys limited to return/tab/escape/delete and
+arrows. Task bounds: ≤3 steps, ≤120 s (Runtime-grounded).
+
+**Known limits.** (1) Peekaboo.app executes the GUI action; timeout or
+cancellation kills AI-OS's CLI child, so an action already delivered
+to the bridge host (one click/keystroke, well under a second) cannot be
+recalled — no further action is started. (2) The ad-hoc test app is a
+different code identity from `/Applications/AI OS.app`, so macOS asks
+for Keychain access ("allow once") on each local-model call unless
+"Always Allow" is chosen; the owner-signed installed app does not.
+(3) Local-model judgement remains the weakest link; keep repeatable
+live tests per app before claiming a new app.
+
+**Source:** Latest Work execution report supplied by the owner.
+**Important:** Work exhausted its quota mid-test.
+The final live process state and any uncommitted changes
+must be inspected before resuming.
+
+## 1. Current product decisions
+
+Computer Use architecture:
+
+- Peekaboo: macOS GUI observation and actions.
+- AI-OS: planning loop, authorization, execution and verification.
+- oMLX: local model inference.
+- Model selection: capability-driven, not hardcoded.
+
+Qwen3.5-9B-4bit is currently a working candidate.
+It must NOT be hardcoded as the universal default.
+
+Keep the existing Auto Router and llmfit behavior.
+Do not regress ordinary chat's Qwen2.5 selection.
+
+Model selection considers:
+
+- Tool-call capability
+- Local availability
+- Memory and hardware suitability
+- Actual execution performance
+
+Avoid unnecessary concurrent loading on the M4/16GB Mac.
+
+## 2. Implementation completed
+
+The latest Work session reported:
+
+- Peekaboo Computer Use Provider implemented.
+- Production Skill routing verified.
+- Local oMLX model capability selection implemented.
+- Application-specific authorization used in the installed test app.
+- GUI observe -> decide -> act -> verify loop implemented.
+- GUI actions checked against actual accessibility state.
+- Changes concentrated in the Computer Use implementation,
+  including peekaboo.rs and providers.rs.
+
+Do not redesign or rewrite these completed foundations.
+
+## 3. Real installed-app acceptance
+
+An isolated test application was used.
+
+The existing application at:
+
+`/Applications/AI OS.app`
+
+was NOT replaced.
+
+### Calculator — PASS
+
+Real Calculator acceptance completed:
+
+- Authorized only Calculator.
+- Requested a single digit 8.
+- Peekaboo pressed 8 exactly once.
+- Calculator accessibility readback showed 8.
+- AI-OS reported completion in 1 step.
+- No duplicate key press was observed.
+
+This demonstrates one genuine non-TextEdit GUI E2E,
+not universal Computer Use stability.
+
+### TextEdit — LATEST SPECIALIZED TEST PASS
+
+Latest complete verification reported:
+
+- Single-step TextEdit: 3/3 PASS.
+- Two-step TextEdit with final readback: 3/3 PASS.
+- Production Skill routing: PASS.
+
+Earlier full runs had intermittent failures.
+Those failures must remain documented.
+
+One successful 3/3 run is not proof of indefinite stability.
+
+## 4. Defects investigated and corrections
+
+### Calculator repeated keys
+
+Initial Calculator test failed:
+
+- AI-OS hit the step limit.
+- Calculator displayed 777 instead of the requested result.
+
+Root cause:
+
+- The observation summary omitted Calculator's display value.
+- Action history recorded clicks without their target keys.
+- The model could not tell that a key had already been pressed.
+
+Corrections:
+
+- Add relevant read-only numerical state to observations.
+- Preserve action target information in history.
+- Allow non-editable static numeric values such as Calculator's 8.
+- Continue excluding editable and sensitive input values.
+
+Real Calculator single-action acceptance then passed.
+
+### TextEdit invalid target
+
+One two-step test failed because the model produced a
+type action without a valid target element ID.
+
+The safety layer correctly refused to guess a target.
+
+Correction:
+
+- Tighten tool-call format.
+- Add a bounded, cancellable state retry.
+- Do not guess the focus target.
+
+### oMLX invalid JSON
+
+A separate failure occurred after an HTTP-success response
+contained unusable/non-JSON model output.
+
+Correction:
+
+- Improve error classification.
+- Retry this side-effect-free model-format failure
+  at most once.
+- Clarify in the model prompt that the Provider handles
+  focusing the input element.
+- Keep the original task deadline and safety limits.
+
+These changes were followed by a successful full specialized
+regression, but further observation is still needed.
+
+## 5. Latest regression evidence
+
+The latest Work report recorded:
+
+- Full Rust suite: 1051 passed / 0 failed.
+- Frontend production build: PASS.
+- Computer Use specialized verification: PASS.
+- Production Skill routing: PASS.
+- TextEdit real GUI 3/3 single-step and 3/3 two-step: PASS.
+- Calculator real installed-test-app single action: PASS.
+
+The next developer must verify these results against the
+actual current working tree before final acceptance.
+
+Do not assume these changes were committed.
+
+## 6. Timeout acceptance — NOT PASSED
+
+An attempted 120-second failure injection paused the
+entire isolated AI-OS test application.
+
+Observed after recovery:
+
+- AI-OS reported an OpenClaw Runtime failure.
+- Calculator remained at 0.
+
+This does NOT prove Peekaboo Provider's own timeout.
+
+The injection targeted the whole app, causing an upstream
+failure rather than isolating the GUI action subsystem.
+
+Required next test:
+
+- Keep the AI-OS test application running.
+- Block only its relevant Peekaboo child action process.
+- Verify the Provider's configured timeout independently.
+- Verify child cleanup, task termination and user feedback.
+- Verify Calculator remains unchanged.
+- Check that the app remains usable after recovery.
+
+Do not count upstream OpenClaw failure as timeout PASS.
+
+The previous Work session began this next action-specific
+timeout test but exhausted its quota before reporting
+the outcome.
+
+Result: UNVERIFIED.
+
+## 7. Cancellation acceptance — NOT FULLY PROVEN
+
+An earlier cancellation attempt reported:
+
+- AI-OS displayed a cancelled state.
+- Calculator did not subsequently change.
+
+However, the test did not prove that cancellation occurred
+while the Peekaboo child process was actually executing.
+
+Required next test:
+
+- Start a controlled action that remains in progress.
+- Confirm its child process is active.
+- Cancel during actual execution.
+- Verify child termination and no further GUI effects.
+- Verify the task reports cancelled rather than completed.
+- Verify the app remains usable afterward.
+
+Result: UNVERIFIED.
+
+## 8. FIRST ACTION — Recover interrupted test safely
+
+Before running any new tests:
+
+1. Read START HERE and current HANDOFF.
+2. Check current branch, HEAD, Git status and diff.
+3. Inspect uncommitted files, especially:
+   - src-tauri/src/computer_use/peekaboo.rs
+   - src-tauri/src/computer_use/providers.rs
+   - related tests and HANDOFF changes.
+4. Check for leftover suspended Peekaboo processes,
+   fault-injection helpers or delayed resume actions.
+5. Identify processes belonging specifically to the
+   isolated acceptance app before intervening.
+6. Do not kill or alter unrelated Peekaboo/AI-OS processes.
+7. Preserve uncommitted source code and all test evidence.
+8. Back up files before changing anything.
+
+Never use git reset --hard, broad git restore,
+git clean -fd or indiscriminate git add -A.
+
+## 9. Remaining work, in order
+
+1. Recover the interrupted action-timeout test state.
+2. Validate true Peekaboo child-process timeout.
+3. Validate cancellation during an active action.
+4. Verify timeout and cancellation leave the GUI safe.
+5. Rerun targeted tests after any changes.
+6. Repeat real Calculator and TextEdit acceptance as needed.
+7. Rerun Rust, frontend and production Skill regressions.
+8. Verify the final isolated installed test app.
+9. Check source diff and remove only task-owned temporary
+   artifacts after preserving necessary evidence.
+10. Review privacy and permissions: application scope,
+    no credential leaks, task limits and no shell escalation.
+11. Update this HANDOFF with actual final results.
+12. Commit only the Computer Use work and relevant docs locally.
+
+Completion requires verified action timeout and cancellation,
+not merely successful TextEdit/Calculator actions.
+
+## 10. Repository and release restrictions
+
+- Main repo: ~/AI-OS/dashboard
+- Development branch: beta5
+- Previously accepted Beta 5 commit: a516843.
+- Verify actual current HEAD and commits before proceeding.
+- Do not modify the archived Beta 4.1.
+- Do not overwrite /Applications/AI OS.app.
+- Use only an isolated acceptance build for installation tests.
+- Do not push or publish a release.
+- Do not download files or perform paid actions without
+  owner authorization.
+- Protect passwords, Keychain values and screenshots.
+- Do not stage unrelated docs/research changes.
+- Do not stage verify_nas_mount.sh or
+  verify_wdcloud_mount.sh.
+
+## 11. Final acceptance still pending
+
+Computer Use can be declared fully complete only after:
+
+- Correct capability-driven model selection.
+- Real GUI operation and state verification.
+- Repeatable TextEdit and non-TextEdit tests.
+- Verified app-scoped permissions.
+- Verified action timeout at the Provider level.
+- Verified cancellation during an executing action.
+- No unintended actions after timeout/cancellation.
+- Isolated installed-app acceptance.
+- Regression checks and local commit.
+- Accurate final HANDOFF report.
+
+CURRENT VERDICT (2026-10-22): COMPLETE — see section 0.
+Provider timeout, active cancellation, repeatable TextEdit and
+Calculator, regression, isolated installed-app acceptance and the
+local commit are confirmed.
+
+<!-- COMPUTER_USE_LATEST_HANDOFF_END -->
+
 
 **Repo:** `~/AI-OS/dashboard`, branch `beta5`. Pre-Computer-Use Beta 5 baseline `a516843` (release: v1.0.1 beta 5); use `git log -1` for the local Computer Use commit SHA. **Not pushed** — the owner pushes manually and asked to hold the push for now.
 **Working tree boundary:** Only Computer Use code, its verifier and this handoff belong in the local Computer Use commit; `docs/research/` and `verify/verify_nas_mount.sh` / `verify/verify_wdcloud_mount.sh` predate this implementation. The NAS/WDCloud scripts are **not ours** — never commit them with Computer Use. No push, tag, Release or change to `/Applications/AI OS.app` is authorized.

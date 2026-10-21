@@ -188,9 +188,17 @@ mod tests {
     };
     use serde_json::json;
 
+    /// Each test gets its own task id: the active-task registry is global and
+    /// rejects a second concurrent Computer Use for the same task, so a shared
+    /// id made parallel tests fail each other.
     fn context() -> SkillInvocationContext {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let task_id = format!(
+            "runtime-task-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         SkillInvocationContext::new(
-            "runtime-task",
+            &task_id,
             "runtime-plan",
             "runtime-agent-execution",
             "openclaw",
@@ -442,10 +450,11 @@ mod tests {
         let provider = Arc::new(MockComputerUseProvider::ready("test"));
         let backend = backend_with(provider.clone());
 
-        backend.invoke(&context(), &request(input())).unwrap();
+        let context = context();
+        backend.invoke(&context, &request(input())).unwrap();
 
         let requests = provider.requests();
-        assert_eq!(requests[0].execution.task_id, "runtime-task");
+        assert_eq!(requests[0].execution.task_id, context.task_id);
         assert_eq!(requests[0].execution.plan_id, "runtime-plan");
         assert_eq!(
             requests[0].execution.agent_execution_id,

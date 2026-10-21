@@ -70,5 +70,34 @@ else
   exit 1
 fi
 
+for run in 1 2 3; do
+  if cargo test --lib live_peekaboo_calculator_single_click_reports_completion -- --ignored > "$logs/calculator.log" 2>&1; then
+    print "✅ Calculator: one click on 8, display 8, reported completed ($run/3)"
+  else
+    print "❌ Calculator single click or completion report ($run/3)"
+    tail -12 "$logs/calculator.log"
+    print 'FAIL: Computer Use Peekaboo — Calculator'
+    exit 1
+  fi
+done
+
+if cargo test --lib live_peekaboo_action_timeout_kills_stalled_child -- --ignored > "$logs/timeout.log" 2>&1; then
+  print '✅ Provider timeout ends a hung GUI action child; Calculator unchanged'
+else
+  print '❌ Provider timeout did not end a hung GUI action child cleanly'
+  tail -12 "$logs/timeout.log"
+  print 'FAIL: Computer Use Peekaboo — action timeout'
+  exit 1
+fi
+
+if cargo test --lib live_peekaboo_cancellation_during_active_action -- --ignored > "$logs/cancel.log" 2>&1; then
+  print '✅ Cancellation during an executing GUI action ends it; Calculator unchanged'
+else
+  print '❌ Cancellation during an executing GUI action failed'
+  tail -12 "$logs/cancel.log"
+  print 'FAIL: Computer Use Peekaboo — active cancellation'
+  exit 1
+fi
+
 print 'PASS: Computer Use Peekaboo'
 exit 0
