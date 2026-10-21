@@ -395,7 +395,7 @@ local commit are confirmed.
 **Working tree boundary:** Only Computer Use code, its verifier and this handoff belong in the local Computer Use commit; `docs/research/` and `verify/verify_nas_mount.sh` / `verify/verify_wdcloud_mount.sh` predate this implementation. The NAS/WDCloud scripts are **not ours** — never commit them with Computer Use. No push, tag, Release or change to `/Applications/AI OS.app` is authorized.
 **Owner rules that still apply:** reply to the owner in Simplified Chinese; the owner clicks paid Start/Stop and pushes; back up before risky edits, narrow edits, no `git add -A`, no `git reset --hard`; never print tokens/cookies; no third-party AGPL code in AI-OS; AI-OS must never compute a provider's captcha/anti-bot signature (Xunlei incident below); ask before downloading files or replacing the installed app.
 
-## 1. Beta 5 (cloud-drive share downloads) — done, awaiting push
+## 1. Beta 5 = cloud-drive share downloads + local Computer Use — final build 2026-10-22 (see release notes)
 
 - Built and installed: `/Applications/AI OS.app` = `src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.5_aarch64.dmg` (same build as `a516843`).
 - Verified end to end in the installed app: 百度 (bdpan), 123 (guest), 迅雷 (page 转存 + Thunder hand-off, one 取回 click), 夸克 (save → download → temp folder removed), live chat progress (stage, file i/N, bytes of total).
