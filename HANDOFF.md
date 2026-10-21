@@ -397,6 +397,19 @@ local commit are confirmed.
 
 ## 1. Beta 5 = cloud-drive share downloads + local Computer Use — final build 2026-10-22 (see release notes)
 
+**Branch lineage and dependencies (2026-10-22).** beta5 continues Beta 4.1
+(`106ffd7`, branch `fix/beta1-clean-install-chat-menu`) and, since merge
+`9bd9bb1` (strategy `ours`, tree unchanged), also the Beta 4 public-beta
+branch `release/beta4-rc2-security`: its dependency fix `153a831` was
+already contained (every package it raised is at the same or a newer version
+in beta5) and its snapshot `c7d543b` was superseded by the Beta 4.1 line.
+`npm audit` after that: vite ≤6.4.3 (high, launch-editor advisories, dev
+server only) fixed in `2e173b4` (vite 6.4.5). Deferred: 5 low advisories in
+katex / mermaid / remark-math / rehype-katex that need breaking major
+upgrades — test math and diagram rendering before upgrading. The installed
+app was built before `2e173b4`; vite is build-time only, so it was not
+rebuilt.
+
 - Built and installed: `/Applications/AI OS.app` = `src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.5_aarch64.dmg` (same build as `a516843`).
 - Verified end to end in the installed app: 百度 (bdpan), 123 (guest), 迅雷 (page 转存 + Thunder hand-off, one 取回 click), 夸克 (save → download → temp folder removed), live chat progress (stage, file i/N, bytes of total).
 - Implemented, not tested signed-in (no accounts): 阿里, UC, 天翼, 移动. Not implemented: 光鸭.
