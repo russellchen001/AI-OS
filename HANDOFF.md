@@ -100,6 +100,11 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
   This is isolated behavior evidence, not a real Claude account-response pass.
 - `verify_p16_dynamic_council.sh` passes with runtime-captured proof that every
   dynamic seat and final synthesis receive the new quality and safety constraints.
+- Continuation candidate rebuilt from code commit `4d7af806b352e8056c11a9d54becf479065191da`.
+  Ad-hoc app/DMG signature and package-data hygiene pass offline. DMG SHA-256 is
+  `91bce062f88c35f3041bf90881efe9e2da1e0cfbe8f53713bb97ab7131cda7f8`;
+  dashboard SHA-256 is `68c57e289de3b41b144a9acfa841f9d767b93a302629a6542cbff1b679513e77`.
+  It was not installed or launched, so Council real-answer quality is still open.
 - Full cargo fmt --check still reports existing unrelated formatting drift;
   no broad formatting changes were made.
 - Claude real account response requires owner CLI login. Google OAuth consent and
