@@ -1,6 +1,6 @@
 [package]
 name = "dashboard"
-version = "1.0.1-beta.5"
+version = "1.0.1-beta.6"
 description = "AI OS Personal AI Workspace"
 authors = ["Russell Chen"]
 # Two binaries live in this crate (the app and the built-in Cloud Drive MCP).

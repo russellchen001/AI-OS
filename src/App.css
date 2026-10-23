@@ -6356,6 +6356,29 @@ select:focus-visible {
   box-shadow: 0 0 0 3px rgba(23, 107, 82, .08);
 }
 
+:root:not([data-theme="light"]) .arena-intent-card,
+:root:not([data-theme="light"]) .arena-plan-card {
+  background: #1c211e;
+  border-color: #343c37;
+}
+
+:root:not([data-theme="light"]) .arena-intent-card > textarea,
+:root:not([data-theme="light"]) .arena-model-preference select {
+  background: #101512;
+  border-color: #3b443f;
+  color: #edf1ef;
+  caret-color: #edf1ef;
+}
+
+:root:not([data-theme="light"]) .arena-intent-card > textarea::placeholder {
+  color: #8f9a94;
+}
+
+:root:not([data-theme="light"]) .arena-intent-card > textarea::selection {
+  background: #2f6f59;
+  color: #ffffff;
+}
+
 .arena-model-preference {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) auto;

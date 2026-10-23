@@ -90,6 +90,29 @@ function choiceForModel(
   };
 }
 
+export function isAiCenterChatModel(model: {
+  remoteModelId: string;
+  displayName: string;
+  capabilities: string[];
+  enabled: boolean;
+}): boolean {
+  if (!model.enabled) return false;
+
+  const searchable = `${model.remoteModelId} ${model.displayName}`.toLowerCase();
+  const excludedMarkers = [
+    "embedding", "embed-", "text-embedding", "imagen", "image-generation",
+    "image-gen", "nano-banana", "veo-", "video", "tts", "text-to-speech",
+    "speech", "whisper", "transcribe", "audio-generation", "lyria",
+    "deep-research", "robotics", "agent-preview", "antigravity-agent",
+    "attributed question answering", "aqa",
+  ];
+  if (excludedMarkers.some((marker) => searchable.includes(marker))) return false;
+
+  return model.capabilities.length === 0 || model.capabilities.some(
+    (capability) => capability === "chat" || capability === "text" || capability === "tool-use",
+  );
+}
+
 export function listAiCenterModels(): AiCenterModelChoice[] {
   const connectedModels = listProviderInstances()
     .filter(
@@ -97,7 +120,7 @@ export function listAiCenterModels(): AiCenterModelChoice[] {
     )
     .flatMap((instance) =>
       instance.models
-        .filter((model) => model.enabled)
+        .filter(isAiCenterChatModel)
         .map((model) => choiceForModel(instance, model)),
     );
   return connectedModels;

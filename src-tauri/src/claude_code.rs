@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -51,17 +53,41 @@ fn candidate_paths() -> Vec<PathBuf> {
         candidates.push(PathBuf::from(path));
     }
     if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".local/bin/claude"));
+        candidates.extend([
+            home.join(".local/bin/claude"),
+            home.join(".claude/local/claude"),
+            home.join(".volta/bin/claude"),
+            home.join(".bun/bin/claude"),
+            home.join(".npm-global/bin/claude"),
+            home.join("Library/pnpm/claude"),
+        ]);
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path).map(|entry| entry.join("claude")));
     }
     candidates.extend([
         PathBuf::from("/opt/homebrew/bin/claude"),
         PathBuf::from("/usr/local/bin/claude"),
     ]);
+    let mut seen = HashSet::new();
+    candidates.retain(|path| seen.insert(path.clone()));
     candidates
 }
 
 fn discover_binary() -> Option<PathBuf> {
-    candidate_paths().into_iter().find(|path| path.is_file())
+    candidate_paths().into_iter().find(|path| {
+        path.is_file()
+            && path.metadata().is_ok_and(|metadata| {
+                #[cfg(unix)]
+                {
+                    metadata.permissions().mode() & 0o111 != 0
+                }
+                #[cfg(not(unix))]
+                {
+                    true
+                }
+            })
+    })
 }
 
 fn sanitized_process_error(stderr: &[u8]) -> String {
@@ -236,19 +262,21 @@ pub(crate) async fn generate_claude_code_response(
         }
     }
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut arguments = vec![
+            "--print",
+            "--output-format",
+            "json",
+            "--permission-mode",
+            "dontAsk",
+            "--tools",
+            "",
+        ];
+        if model_id != "claude-code-default" {
+            arguments.extend(["--model", model_id.as_str()]);
+        }
         let output = run_bounded(
             &binary,
-            &[
-                "--print",
-                "--output-format",
-                "json",
-                "--permission-mode",
-                "dontAsk",
-                "--tools",
-                "",
-                "--model",
-                &model_id,
-            ],
+            &arguments,
             Some(&prompt),
             COMMAND_TIMEOUT,
             false,

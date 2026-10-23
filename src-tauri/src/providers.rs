@@ -3278,6 +3278,16 @@ fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProvider
     let mut models: Vec<DiscoveredProviderModel> = items
         .iter()
         .filter_map(|item| {
+            if provider_id == "google"
+                && !item
+                    .get("supportedGenerationMethods")
+                    .and_then(Value::as_array)
+                    .is_some_and(|methods| {
+                        methods.iter().any(|method| method.as_str() == Some("generateContent"))
+                    })
+            {
+                return None;
+            }
             let id = if provider_id == "google" {
                 item.get("name")
                     .and_then(Value::as_str)
@@ -3508,8 +3518,12 @@ fn parse_oauth_loopback_request(request: &str, expected_state: &str) -> Result<S
         return Err("OAuth callback state does not match".to_owned());
     }
 
-    if oauth_error.is_some() {
-        return Err("OAuth authorization was not completed".to_owned());
+    if let Some(error) = oauth_error {
+        return Err(if error == "access_denied" {
+            "OAuth authorization was denied by the Provider".to_owned()
+        } else {
+            "OAuth authorization was not completed".to_owned()
+        });
     }
 
     let code = code.ok_or_else(|| "OAuth callback did not contain a code".to_owned())?;
@@ -5641,6 +5655,31 @@ mod tests {
     }
 
     #[test]
+    fn google_model_discovery_keeps_only_generate_content_models() {
+        let models = parse_models(
+            "google",
+            serde_json::json!({
+                "models": [
+                    {
+                        "name": "models/gemini-chat",
+                        "displayName": "Gemini Chat",
+                        "supportedGenerationMethods": ["generateContent", "countTokens"]
+                    },
+                    {
+                        "name": "models/gemini-embedding",
+                        "displayName": "Gemini Embedding",
+                        "supportedGenerationMethods": ["embedContent"]
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gemini-chat");
+    }
+
+    #[test]
     fn parses_openrouter_display_names() {
         let models = parse_models(
             "openrouter",
@@ -6868,7 +6907,10 @@ Host: 127.0.0.1\r\n\r\n";
     fn oauth_loopback_parser_rejects_provider_error() {
         let request = "GET /oauth/callback?error=access_denied&state=expected HTTP/1.1\r\n\r\n";
 
-        assert!(parse_oauth_loopback_request(request, "expected").is_err());
+        assert_eq!(
+            parse_oauth_loopback_request(request, "expected"),
+            Err("OAuth authorization was denied by the Provider".to_owned())
+        );
     }
 
     #[test]

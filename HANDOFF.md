@@ -1,5 +1,74 @@
 <!-- BETA41_HANDOFF_START -->
 
+# START HERE — Beta 6 stability candidate (2026-10-24)
+
+**Current state.** Work is isolated at `/Users/russellchen/AI-OS/dashboard-beta6`
+on branch `beta6`, based on the confirmed Beta 5 tip `4e3ee61`. The original
+`beta5` worktree and all of its tracked/untracked changes were backed up and
+left untouched. Nothing in this section has been pushed, tagged, released,
+installed into `/Applications`, or sent to the external tester.
+
+**Beta 6 scope completed in source.** Council now refreshes the shared Provider
+catalog when Provider state changes, removing its cold-start cache race and the
+false `NO_CONNECTED_PROVIDER` state. Chat, Council, and Arena share one
+chat-capable-model filter. Google discovery keeps only models whose official
+catalog advertises `generateContent`; cached media, embedding, AQA, agent,
+robotics, and deep-research entries are excluded from chat selection. Disabled
+models remain unavailable and there is no silent fallback for a pinned model.
+
+Claude account connection is visible even when the CLI is absent. CLI lookup
+covers common Homebrew, Claude, Volta, Bun, npm-global, pnpm, and inherited PATH
+locations, checks executability, and reports install/login failures without
+credential content. Account execution uses a provider-default sentinel and
+does not hardcode current Claude model names. On this Mac Claude CLI 2.1.220 is
+installed but `auth status` is logged out, so real account generation remains
+an authorization-dependent test rather than a pass.
+
+Google OAuth callback denial is now reported as an explicit Provider denial.
+The UI explains that Google 403 `access_denied` can require an OAuth test-user,
+consent-screen publication, or verification change; AI-OS does not bypass
+Google security controls. A previously connected local Google catalog was
+available, but no fresh OAuth consent was performed in this work.
+
+Arena dark/light textarea contrast is fixed with explicit surface, text, caret,
+placeholder, and selection colors. Actual computed UI state was checked in
+both themes: the textarea existed, was unobscured, visible, interactive, and
+its DOM value changed after typing.
+
+**Technical decisions.** Provider capability metadata is authoritative when
+the upstream API supplies it; conservative category filtering protects older
+cached catalogs. Claude subscription CLI and API-key connections remain
+separate capabilities. Auto/Manual and pinned-model semantics remain unchanged.
+No provider credential is logged, persisted in tests, or copied into artifacts.
+
+**Verification completed.** `cargo test --lib`: 1052 passed / 0 failed / 84
+ignored. Frontend production build, `verify_beta6_provider_stability.sh`,
+`verify_beta_version.sh`, `verify_p16_council_runtime.sh`, and
+`verify_p17_arena_final.sh` pass. Targeted Claude bridge, OAuth parser, Google
+model-discovery, Council, and Arena suites pass. Light/dark Arena UI behavior
+passed. A real isolated Council run entered orchestration and two oMLX seats
+returned content, proving Provider execution rather than a mock; it was stopped
+before full synthesis after the owner asked that repeated macOS Keychain prompts
+cease. The pre-final Arena run reproduced the reported failure exactly: cached
+Agent Preview/AQA/Deep Research choices ended in `NO_CONNECTED_PROVIDER`; the
+new filtering fix passed automated behavior tests, but was not relaunched after
+the owner's request. Do not describe Council/Arena product acceptance as fully
+passed until the final same-identity package is tested without recurring prompts.
+
+**Package candidate.** The ad-hoc signed, non-notarized candidate is
+`src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.6_aarch64.dmg`.
+Bundle signature and package/data-hygiene checks pass. It has not been installed
+or published. Recompute SHA-256 after any rebuild.
+
+**Remaining external/real acceptance.** (1) Sign in to the official Claude CLI
+and verify one real account response; (2) complete Google OAuth only after the
+OAuth client/test-user or verification state is valid; (3) on an authorized
+same-identity Beta 6 install, complete one Council synthesis and one Arena run,
+then repeat no-Provider/partial-Provider and clean-user/no-CLI paths; (4) after
+owner approval only, publish the DMG and send it to the friend for external
+clean-machine testing. A differently identified ad-hoc copy causes macOS
+Keychain prompts and must not be used again for Provider acceptance.
+
 # START HERE — state on 2026-10-22 (for the next owner of this work)
 
 <!-- COMPUTER_USE_LATEST_HANDOFF_START -->

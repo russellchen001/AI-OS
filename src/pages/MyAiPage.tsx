@@ -633,19 +633,15 @@ function MyAiPage({
           const status = await invoke<ClaudeCodeStatus>("get_claude_code_status");
           setClaudeCodeStatus(status);
           if (!status.installed || !status.authenticated) throw new Error(status.message);
-          const models: ProviderModelEntry[] = [
-            ["sonnet", "Claude Sonnet"],
-            ["opus", "Claude Opus"],
-            ["haiku", "Claude Haiku"],
-          ].map(([id, displayName], index) => ({
-            id: `${instanceId}:${id}`,
+          const models: ProviderModelEntry[] = [{
+            id: `${instanceId}:claude-code-default`,
             providerInstanceId: instanceId,
-            remoteModelId: id,
-            displayName,
+            remoteModelId: "claude-code-default",
+            displayName: "Claude Code account default",
             capabilities: ["chat", "reasoning", "vision", "tool-use"],
             enabled: true,
-            isDefault: index === 0,
-          }));
+            isDefault: true,
+          }];
           setSetup({
             ...setup,
             phase: "models",
@@ -866,10 +862,13 @@ function MyAiPage({
           }).catch(() => false);
         }
         if (!cancelled) {
+          const message = error instanceof Error
+            ? error.message
+            : "AI‑OS could not complete account sign-in.";
           setSetupError(
-            error instanceof Error
-              ? error.message
-              : "AI‑OS could not complete account sign-in.",
+            setup.providerId === "google" && message.includes("denied")
+              ? "Google denied this sign-in. AI‑OS cannot bypass a 403 access_denied response. The OAuth app owner must add this account as a test user or complete Google verification, then retry."
+              : message,
           );
         }
       } finally {
@@ -1012,8 +1011,7 @@ function MyAiPage({
             descriptor?.authenticationMethods.includes("api-key") === true;
           const supportsAccountSignIn =
             provider.id === "anthropic"
-              ? claudeCodeStatus?.installed === true &&
-                descriptor?.authenticationMethods.includes("cli-account") === true
+              ? descriptor?.authenticationMethods.includes("cli-account") === true
               : descriptor?.authenticationMethods.some(
                   (method) =>
                     method === "device-code" ||
@@ -1274,8 +1272,7 @@ function MyAiPage({
         );
         const accountSignInAvailable =
           setup.providerId === "anthropic"
-            ? claudeCodeStatus?.installed === true &&
-              setupDescriptor?.authenticationMethods.includes("cli-account") === true
+            ? setupDescriptor?.authenticationMethods.includes("cli-account") === true
             : setupDescriptor?.authenticationMethods.includes("device-code") === true ||
               (isProviderOAuthConfigured(setup.providerId) &&
               setupDescriptor?.authenticationMethods.some(
@@ -1434,7 +1431,9 @@ function MyAiPage({
                 <>
                   <h3>{setup.providerId === "anthropic" ? "Use Claude Code on this Mac" : "Sign in in your browser"}</h3>
                   <p>{setup.providerId === "anthropic"
-                    ? "AI‑OS uses the official Claude Code CLI and never reads or stores its subscription credential."
+                    ? claudeCodeStatus?.installed
+                      ? "AI‑OS uses the official Claude Code CLI and never reads or stores its subscription credential."
+                      : "Install the official Claude Code CLI, sign in there, then return here and verify the connection."
                     : setup.providerId === "grok"
                       ? "AI‑OS will open the official xAI device authorization page for your SuperGrok or X Premium+ account."
                       : setup.providerId === "kimi"
@@ -1450,6 +1449,12 @@ function MyAiPage({
                           ? "AI‑OS uses Kimi Code's official device flow. Tokens stay in macOS Keychain and requests use the managed coding API."
                         : "AI‑OS uses PKCE and a one-time local callback. The authorization code and tokens stay in the native security layer."}</small></p>
                   </div>
+                  {setup.providerId === "google" && (
+                    <div className="provider-security-note">
+                      <span>!</span>
+                      <p><strong>Google approval may be required</strong><small>If Google shows 403 access_denied, AI‑OS cannot bypass it. The OAuth app owner must add this account as a test user or complete Google verification, then you can retry here.</small></p>
+                    </div>
+                  )}
                   {(setup.providerId === "grok" || setup.providerId === "kimi") && setup.verificationMessage && (
                     <div className="provider-security-note">
                       <span>→</span>

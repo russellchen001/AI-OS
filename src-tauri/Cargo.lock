@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "dashboard"
-version = "1.0.1-beta.5"
+version = "1.0.1-beta.6"
 dependencies = [
  "aes",
  "base64 0.22.1",

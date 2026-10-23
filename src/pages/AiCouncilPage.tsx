@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -17,6 +18,9 @@ import {
 import {
   listAiCenterModels,
 } from "../services/aiCenter";
+import {
+  PROVIDERS_CHANGED_EVENT,
+} from "../services/providers";
 import {
   deleteCouncilSession,
   loadCouncilMembers,
@@ -78,6 +82,19 @@ function AiCouncilPage({
   cardStyle,
   onMessage,
 }: AiCouncilPageProps) {
+  const [availableModels, setAvailableModels] = useState(listAiCenterModels);
+
+  useEffect(() => {
+    const refreshModels = () => setAvailableModels(listAiCenterModels());
+    window.addEventListener(PROVIDERS_CHANGED_EVENT, refreshModels);
+    window.addEventListener("storage", refreshModels);
+    refreshModels();
+    return () => {
+      window.removeEventListener(PROVIDERS_CHANGED_EVENT, refreshModels);
+      window.removeEventListener("storage", refreshModels);
+    };
+  }, []);
+
   const [
     members,
     setMembers,
@@ -735,7 +752,7 @@ function AiCouncilPage({
         {members.map(
           (member) => {
             const provider =
-              listAiCenterModels().find(
+              availableModels.find(
                 (item) =>
                   item.providerId ===
                   member.providerId,
@@ -807,12 +824,12 @@ function AiCouncilPage({
                     )
                   }
                 >
-                  {listAiCenterModels().length === 0 && (
+                  {availableModels.length === 0 && (
                     <option value={member.providerId}>
                       No AI Center model connected
                     </option>
                   )}
-                  {listAiCenterModels().map(
+                  {availableModels.map(
                     (item) => (
                       <option
                         key={
@@ -1035,7 +1052,7 @@ function AiCouncilPage({
                 disabled={
                   isRunning ||
                   !prompt.trim() ||
-                  listAiCenterModels().length === 0
+                  availableModels.length === 0
                 }
                 onClick={() => {
                   void runCouncil();
