@@ -1429,8 +1429,14 @@ fn auto_model_is_chat_candidate(model: &ProviderModelEntry) -> bool {
         return false;
     }
 
-    let id = model.remote_model_id.to_ascii_lowercase();
-    let name = model.display_name.to_ascii_lowercase();
+    let id = model
+        .remote_model_id
+        .to_ascii_lowercase()
+        .replace([' ', '_'], "-");
+    let name = model
+        .display_name
+        .to_ascii_lowercase()
+        .replace([' ', '_'], "-");
 
     /*
      * Auto Chat must not route into media-generation / embedding models.
@@ -1453,6 +1459,12 @@ fn auto_model_is_chat_candidate(model: &ProviderModelEntry) -> bool {
         "whisper",
         "transcribe",
         "audio-generation",
+        "lyria",
+        "deep-research",
+        "robotics",
+        "agent-preview",
+        "attributed-question-answering",
+        "aqa",
     ];
 
     if excluded_markers
@@ -2027,6 +2039,35 @@ fn route_candidates(
     Ok((instances, candidates))
 }
 
+fn manual_route_candidates(instances: &[ProviderInstance]) -> Vec<AiCenterRouteCandidate> {
+    instances
+        .iter()
+        .filter(|instance| instance.connection_state == ProviderConnectionState::Connected)
+        .flat_map(|instance| {
+            instance
+                .models
+                .iter()
+                .filter(|model| auto_model_is_chat_candidate(model))
+                .map(|model| AiCenterRouteCandidate {
+                    provider_id: instance.provider_id.clone(),
+                    provider_instance_id: instance.id.clone(),
+                    model_id: model.remote_model_id.clone(),
+                })
+        })
+        .collect()
+}
+
+fn route_candidates_for_mode(
+    mode: AiCenterRouteMode,
+) -> Result<(Vec<ProviderInstance>, Vec<AiCenterRouteCandidate>), String> {
+    if mode == AiCenterRouteMode::Auto {
+        return route_candidates(true);
+    }
+    let instances = read_provider_instances()?;
+    let candidates = manual_route_candidates(&instances);
+    Ok((instances, candidates))
+}
+
 fn select_route_candidate(
     input: &ResolveAiCenterRouteInput,
     candidates: &[AiCenterRouteCandidate],
@@ -2055,7 +2096,7 @@ fn select_route_candidate(
 pub(crate) fn resolve_ai_center_route(
     input: ResolveAiCenterRouteInput,
 ) -> Result<Option<AiCenterRouteCandidate>, String> {
-    let (_, candidates) = route_candidates(input.route_mode == AiCenterRouteMode::Auto)?;
+    let (_, candidates) = route_candidates_for_mode(input.route_mode)?;
     select_route_candidate(&input, &candidates)
 }
 
@@ -3283,7 +3324,9 @@ fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProvider
                     .get("supportedGenerationMethods")
                     .and_then(Value::as_array)
                     .is_some_and(|methods| {
-                        methods.iter().any(|method| method.as_str() == Some("generateContent"))
+                        methods
+                            .iter()
+                            .any(|method| method.as_str() == Some("generateContent"))
                     })
             {
                 return None;
@@ -4347,7 +4390,7 @@ pub(crate) async fn execute_ai_center(
     let invocation_id = format!("invoke-{}", uuid::Uuid::new_v4());
     let invocation_started_at = chrono::Utc::now().to_rfc3339();
     let invocation_started = Instant::now();
-    let (instances, candidates) = route_candidates(input.route_mode == AiCenterRouteMode::Auto)?;
+    let (instances, candidates) = route_candidates_for_mode(input.route_mode)?;
     let candidates = if input.route_mode == AiCenterRouteMode::Auto {
         rank_auto_route_candidates_for_prompt(
             candidates,
@@ -4846,7 +4889,7 @@ pub(crate) async fn execute_ai_center_stream(
         .map(|message| message.content.as_str())
         .unwrap_or(prompt.as_str());
 
-    let (instances, candidates) = route_candidates(input.route_mode == AiCenterRouteMode::Auto)?;
+    let (instances, candidates) = route_candidates_for_mode(input.route_mode)?;
     let candidates = if input.route_mode == AiCenterRouteMode::Auto {
         rank_auto_route_candidates_for_prompt(candidates, latest_user_prompt)
     } else {
@@ -6343,6 +6386,45 @@ mod tests {
             select_route_candidate(&input(1), &candidates).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn manual_route_accepts_non_default_and_secondary_connected_providers() {
+        let mut primary = provider_fixture();
+        let mut second_model = primary.models[0].clone();
+        second_model.remote_model_id = "non-default-chat".into();
+        second_model.is_default = false;
+        primary.models.push(second_model);
+        let mut disabled = primary.models[0].clone();
+        disabled.remote_model_id = "disabled-chat".into();
+        disabled.enabled = false;
+        primary.models.push(disabled);
+        let mut media = primary.models[0].clone();
+        media.remote_model_id = "image-generation".into();
+        primary.models.push(media);
+        let mut secondary = provider_fixture();
+        secondary.id = "google-secondary".into();
+        secondary.provider_id = "google".into();
+        let instances = vec![primary, secondary];
+        let manual = manual_route_candidates(&instances);
+        assert_eq!(manual.len(), 3);
+        assert_eq!(auto_route_candidates(&instances, &[]).len(), 1);
+        for requested in &manual {
+            let input = ResolveAiCenterRouteInput {
+                route_mode: AiCenterRouteMode::Manual,
+                manual_candidate: Some(requested.clone()),
+                attempted_count: 0,
+                emitted_output: false,
+                cancelled: false,
+            };
+            assert_eq!(
+                select_route_candidate(&input, &manual).unwrap().as_ref(),
+                Some(requested)
+            );
+        }
+        let mut disconnected = instances[0].clone();
+        disconnected.connection_state = ProviderConnectionState::NotConfigured;
+        assert!(manual_route_candidates(&[disconnected]).is_empty());
     }
 
     #[test]

@@ -127,6 +127,9 @@ function findPreferredModel(
   constraint: ArenaModelConstraint,
   used: Set<string>,
 ): AiCenterModelChoice | undefined {
+  if (constraint.mode === "pinned") {
+    return models.find((model) => matchesConstraint(model, constraint));
+  }
   const unused = models.filter((model) => !used.has(arenaModelKey(model)));
   const pool = unused.length ? unused : models;
 

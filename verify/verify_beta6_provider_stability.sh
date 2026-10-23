@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -u
+set -uo pipefail
 
 NAME="Beta 6 Provider stability"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,18 +23,28 @@ else
   fail "model catalog behavior failed"
 fi
 
-if cargo test --manifest-path src-tauri/Cargo.toml claude_code --lib 2>&1 \
-  | grep -q "test result: ok"; then
+if cargo test --manifest-path src-tauri/Cargo.toml claude_code --lib >"$TMP_DIR/claude.log" 2>&1; then
   echo "✅ Claude Code bridge tests"
 else
   fail "Claude Code bridge tests failed"
 fi
 
-if cargo test --manifest-path src-tauri/Cargo.toml oauth_loopback_parser --lib 2>&1 \
-  | grep -q "test result: ok"; then
+if cargo test --manifest-path src-tauri/Cargo.toml oauth_loopback_parser --lib >"$TMP_DIR/oauth.log" 2>&1; then
   echo "✅ OAuth callback error-path tests"
 else
   fail "OAuth callback tests failed"
+fi
+
+if cargo test --manifest-path src-tauri/Cargo.toml manual_route --lib >"$TMP_DIR/manual.log" 2>&1; then
+  echo "✅ Manual routing accepts connected non-default models without fallback"
+else
+  fail "manual routing regression failed"
+fi
+
+if cargo test --manifest-path src-tauri/Cargo.toml google_model_discovery --lib >"$TMP_DIR/google.log" 2>&1; then
+  echo "✅ Google catalog uses upstream generation capabilities"
+else
+  fail "Google model discovery regression failed"
 fi
 
 if npm run build >/dev/null 2>&1; then
@@ -50,3 +60,4 @@ else
 fi
 
 echo "PASS: $NAME"
+exit 0

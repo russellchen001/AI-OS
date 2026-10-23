@@ -98,13 +98,13 @@ export function isAiCenterChatModel(model: {
 }): boolean {
   if (!model.enabled) return false;
 
-  const searchable = `${model.remoteModelId} ${model.displayName}`.toLowerCase();
+  const searchable = `${model.remoteModelId} ${model.displayName}`.toLowerCase().replace(/[ _]/g, "-");
   const excludedMarkers = [
     "embedding", "embed-", "text-embedding", "imagen", "image-generation",
     "image-gen", "nano-banana", "veo-", "video", "tts", "text-to-speech",
     "speech", "whisper", "transcribe", "audio-generation", "lyria",
     "deep-research", "robotics", "agent-preview", "antigravity-agent",
-    "attributed question answering", "aqa",
+    "attributed-question-answering", "aqa",
   ];
   if (excludedMarkers.some((marker) => searchable.includes(marker))) return false;
 

@@ -1,6 +1,78 @@
 <!-- BETA41_HANDOFF_START -->
 
-# START HERE — Beta 6 stability candidate (2026-10-24)
+# START HERE — Beta 6 final installation acceptance (2026-10-24)
+
+Authoritative update: the owner authorized temporary replacement of the installed
+app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
+`/Users/russellchen/AI-OS/dashboard-beta6`. No push, tag or Release is authorized.
+
+## Technical decisions and final fixes
+
+- Manual AI Center execution validates against ALL connected, enabled chat models,
+  rather than Auto's deliberately reduced candidate list. This fixes rejection of
+  non-default models and second cloud Providers. Auto and Computer Use execution
+  candidate logic are preserved via a separate mode-specific wrapper.
+- Normalize spaces/underscores in cached model names before category filtering;
+  Agent Preview and Nano Banana had escaped the earlier hyphen-only check.
+- Explicit pinned Arena models may be reused across seats, with zero fallbacks;
+  the unused-model diversity preference applies only to non-pinned assignments.
+- Same Bundle ID is insufficient for stable Keychain trust under ad-hoc signing:
+  designated requirements of both Beta 5 and Beta 6 are cdhash-specific. Do not
+  promise zero upgrade prompts or change Keychain ACLs to hide this. Stable signing
+  remains a release requirement. No credentials, ACLs or security settings changed.
+
+## Real installed-app results
+
+- Beta 5 full backup: `/Users/russellchen/Documents/Codex/2026-10-24/referenced-chatgpt-conversation-this-is-an/work/beta5-install-backup/AI OS.app`.
+  Version `1.0.1-beta.5`, dashboard SHA-256
+  `91ff470bbb163233f891cf3bc16af86788b42f439aaf7b558a874353ab253ce5`;
+  complete file comparison and signature verification passed before replacement.
+- Installed formal identity `com.russellchen.aios`, version `1.0.1-beta.6`.
+  Actual Qwen2.5 local Chat returned `BETA6-LOCAL-OK`, 9200 ms, with model metadata.
+- Light and dark Arena text was readable after typing and losing selection/focus;
+  the initial Dark preference was restored. Claude sign-in was visible; Verify
+  Claude Code displayed the actionable official-CLI-login-required error.
+- Three real pinned local Arena models executed through the shared runtime and
+  produced a public transcript. Result was `Completed / degraded`, not a pass:
+  Qwen3.5 calls returned HTTP 507; the evaluator's structured result was invalid.
+- Gemini manual selection passed routing, then blocked in macOS Keychain read.
+  Read-only process sampling confirmed `SecItemCopyMatching` and
+  `SecKeychainItemCopyContent`; no Google HTTP response was obtained. This is NOT
+  evidence of Google 403. The blocked application process was closed.
+- The final low-memory, same-model Arena rerun and full Council synthesis were
+  prevented when Computer Use explicitly reported that the Mac was locked.
+  The owner was asked once to unlock; these E2E checks remain unpassed unless
+  a later explicit result below supersedes this statement.
+
+## Automated evidence and remaining work
+
+- Full Rust: 1053 library tests passed, 84 ignored; 4 binary tests passed; doc tests
+  passed. Cargo check and production frontend build passed. Beta 6 behavior,
+  P16 Council runtime and P17 Arena integration suites passed.
+- Fixtures separately verify empty/partial/failed Provider synchronization,
+  secondary/non-default manual choices, disabled/non-chat exclusion, pinned
+  cross-seat reuse and zero replacement, and Google generation capabilities.
+- Full cargo fmt --check still reports existing unrelated formatting drift;
+  no broad formatting changes were made.
+- Claude real account response requires owner CLI login. Google OAuth consent and
+  test-user/app-verification state need authorized real validation; no bypass.
+  Clean-user/no-CLI and friend-machine installation remain external acceptance.
+- Mandatory restoration COMPLETED: `/Applications/AI OS.app` is again the original
+  `1.0.1-beta.5`. Complete bundle comparison against the independent backup,
+  signature validation, and original executable SHA-256 all PASS. Beta 6 candidate
+  apps were moved into the task's `work/beta6-install-candidates` archive; no
+  temporary candidate is left in Applications. No user data was deleted/overwritten.
+- `verify/verify_beta6_install_restore.sh` PASS checks the actual installed version,
+  full restored bundle, original executable hash, signature and DMG integrity.
+- Final DMG SHA-256:
+  `f1f84c83326e33d7b49a3dfbe0f206d2a1f6f6dfcbc6e9dd294e9da46e2b0da7`.
+  File: `src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.6_aarch64.dmg`.
+  It is ad-hoc signed, not notarized or published. Final candidate executable
+  SHA-256: `192cc588085aeb7ef4478572a0c7b9fdcfd7d611d8aefc27087458ce997d057d`.
+
+## Earlier candidate record (historical; current facts are above)
+
+### Beta 6 stability candidate (2026-10-24)
 
 **Current state.** Work is isolated at `/Users/russellchen/AI-OS/dashboard-beta6`
 on branch `beta6`, based on the confirmed Beta 5 tip `4e3ee61`. The original
