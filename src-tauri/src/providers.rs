@@ -4784,6 +4784,7 @@ async fn send_omlx_stream_request(
         "model": candidate.model_id,
         "stream": true,
         "messages": messages,
+        "max_tokens": 2048,
     });
     let response = tokio::select! {
         _ = token.cancelled() => return Err("cancelled".to_owned()),

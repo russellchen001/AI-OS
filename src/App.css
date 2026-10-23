@@ -6522,6 +6522,15 @@ select:focus-visible {
   background: var(--surface-secondary, #fafbfa);
 }
 
+:root:not([data-theme="light"]) .arena-planned-seat-grid article {
+  background: #252b27;
+  border-color: #3b443f;
+}
+
+:root:not([data-theme="light"]) .arena-seat-topline {
+  color: #9ad1ba;
+}
+
 .arena-seat-topline {
   display: flex;
   justify-content: space-between;

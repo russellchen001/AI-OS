@@ -2,6 +2,10 @@ import {
   parseArenaEvaluation,
 } from "../src/services/arenaEvaluationParser";
 import {
+  ARENA_EVALUATION_CRITERIA,
+  buildArenaEvaluationInstruction,
+} from "../src/services/arenaEvaluationPolicy";
+import {
   buildArenaStrategyDriver,
 } from "../src/services/arenaStrategyDrivers";
 import type {
@@ -103,6 +107,15 @@ function assembly(
       attempts: 0,
     },
   };
+}
+
+for (const strategy of Object.keys(ARENA_EVALUATION_CRITERIA) as ArenaStrategy[]) {
+  const instruction = buildArenaEvaluationInstruction(strategy, assembly(strategy), "Evaluate");
+  const example = instruction.split("\n").find((line) => line.startsWith("{"));
+  const parsed = example ? parseArenaEvaluation(example) : undefined;
+  assert(parsed?.scores[0]?.subjectId === "p1" &&
+    ARENA_EVALUATION_CRITERIA[strategy].includes(parsed.scores[0].criterionId),
+    `${strategy}: generated evaluation example must parse with actual IDs and criteria`);
 }
 
 const valid = parseArenaEvaluation(

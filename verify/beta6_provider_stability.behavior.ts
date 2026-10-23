@@ -1,6 +1,8 @@
 import { isAiCenterChatModel, listAiCenterModels } from "../src/services/aiCenter";
 import { createProviderInstance, initializeProviderInstances, saveProviderInstance, PROVIDERS_CHANGED_EVENT } from "../src/services/providers";
 import { assignArenaModels } from "../src/services/arenaModelAssignment";
+import { extractUserModelConstraints } from "../src/services/arenaStrategyRouter";
+import { resolveUserConstraintsForSeats } from "../src/services/arenaConstraintBinding";
 
 function assertEqual(actual: unknown, expected: unknown): void {
   if (actual !== expected) {
@@ -57,6 +59,20 @@ await saveProviderInstance(instance);
 assertEqual(listAiCenterModels().length, 1);
 assertEqual(listAiCenterModels()[0].providerInstanceId, "beta6-fixture");
 const pinnedChoice = listAiCenterModels()[0];
+const roleConstraints = extractUserModelConstraints(
+  `Only use ${pinnedChoice.modelId} as participant. Use ${pinnedChoice.modelId} as synthesizer.`,
+  [pinnedChoice],
+);
+assertEqual(roleConstraints.length, 2);
+const resolved = resolveUserConstraintsForSeats(["participant", "participant", "synthesizer"], [
+  { mode: "pinned", ...pinnedChoice }, ...roleConstraints,
+]);
+assertEqual(resolved.every((constraint) => constraint.mode === "pinned"), true);
+const roleAssignments = assignArenaModels(resolved.map((modelConstraint, index) => ({
+  id: `role-${index}`, title: "seat", purpose: "test", requiredExpertise: [],
+  role: index === 2 ? "synthesizer" as const : "participant" as const, modelConstraint,
+})), [pinnedChoice]);
+assertEqual(roleAssignments.every((assignment) => assignment.choice.modelId === pinnedChoice.modelId && assignment.fallbackChoices.length === 0), true);
 const assignments = assignArenaModels(["participant", "synthesizer"].map((role, index) => ({
   id: `seat-${index}`, title: role, purpose: "test", requiredExpertise: [],
   role: role as "participant" | "synthesizer",

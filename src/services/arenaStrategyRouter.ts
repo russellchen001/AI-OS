@@ -351,7 +351,8 @@ function discoverCatalogModelMentions(
   const identities = new Set<string>();
 
   for (const candidate of candidates) {
-    if (identities.has(candidate.identity)) {
+    const roleIdentity = `${candidate.identity}:${candidate.targetRole ?? ""}`;
+    if (identities.has(roleIdentity)) {
       continue;
     }
 
@@ -369,7 +370,7 @@ function discoverCatalogModelMentions(
     }
 
     selected.push(candidate);
-    identities.add(candidate.identity);
+    identities.add(roleIdentity);
   }
 
   return selected.map(

@@ -16,6 +16,17 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
   Agent Preview and Nano Banana had escaped the earlier hyphen-only check.
 - Explicit pinned Arena models may be reused across seats, with zero fallbacks;
   the unused-model diversity preference applies only to non-pinned assignments.
+- Preserve separate mentions of the same model for different explicitly requested
+  roles; model-only deduplication had silently lost the synthesizer constraint.
+- Arena governance prompts now contain a concrete, parser-valid JSON example with
+  actual seat IDs and one legal scope, not the invalid literal
+  `participant|team|strategy`. Tests parse generated examples for all 7 strategies.
+- oMLX streaming now has an explicit 2048-token output budget, consistent with
+  other AI Center generation paths. A truncated accessibility preview alone does
+  NOT prove that the old server response was truncated; invalid scope is proven.
+- Dark Arena seat cards receive a dark surface and contrasting role labels;
+  undefined `--surface-secondary` had fallen back to white while dark-theme
+  foreground tokens remained pale. The final installed cards are visibly readable.
 - Same Bundle ID is insufficient for stable Keychain trust under ad-hoc signing:
   designated requirements of both Beta 5 and Beta 6 are cdhash-specific. Do not
   promise zero upgrade prompts or change Keychain ACLs to hide this. Stable signing
@@ -35,18 +46,43 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
 - Three real pinned local Arena models executed through the shared runtime and
   produced a public transcript. Result was `Completed / degraded`, not a pass:
   Qwen3.5 calls returned HTTP 507; the evaluator's structured result was invalid.
+- After the owner unlocked the Mac, Council completed 7 real oMLX calls (3 expert
+  first-round + 3 cross-review + synthesizer), all seats Done, a Final Answer and
+  a persisted history item (0 -> 1). Evidence executable SHA-256:
+  `192cc588085aeb7ef4478572a0c7b9fdcfd7d611d8aefc27087458ce997d057d`.
+  This is a workflow pass, NOT an answer-quality pass: the local model ignored
+  length/locality requests and suggested unsafe Disk Utility erasure. No approval,
+  erasure or other suggested action was executed. Quality remains a release concern.
+- Arena memory isolation used the existing official oMLX GUI: unload models from
+  RAM only, load Qwen2.5 only (4.19 GB); no model files or settings were deleted.
+  Five real generations then succeeded without 507. The first same-model rerun
+  still degraded on invalid governance; it was not counted as a success.
+- With the governance and role fixes, a 3-seat collaboration run (all Qwen2.5,
+  PINNED) completed 5 real generations and valid evaluation: `Outcome completed`,
+  `Completion winner`, `Rounds 3`, `Scores 4`, winner `specialist-b-2`.
+  Evidence executable SHA-256:
+  `6c246ec3244fb7b03dae5f91adbb01660fe27582779e728833c135121f51a2e5`.
+  This precedes the CSS-only seat-card contrast repack; see final evidence below.
+- FINAL CSS-repacked installed executable `c71610affb6d03233624252a3ef58dc8f8465972a5fdc00d5bcff5bda68de1b7`
+  repeated the full collaboration workflow: all 3 seats Qwen2.5 PINNED, 5 real
+  generations, `Outcome completed / Completion winner / Rounds 3 / Scores 4`,
+  winner `specialist-b-2`, no 507 or invalid-governance error. Dark seat cards,
+  model names and role labels are readable. Final Light AND Dark textarea tests
+  passed with typed Chinese/English text deselected and unfocused; Dark restored.
+  Council's 7-call evidence above is from its earlier formal-identity candidate;
+  the final CSS/native-output-budget repack did not repeat those 7 calls. Do not
+  represent it as a separate final-binary Council generation result.
+- A compare plan with a required synthesizer was explicitly rejected because its
+  topology uses a judge, rather than silently dropping/re-roleing the pinned model.
 - Gemini manual selection passed routing, then blocked in macOS Keychain read.
   Read-only process sampling confirmed `SecItemCopyMatching` and
   `SecKeychainItemCopyContent`; no Google HTTP response was obtained. This is NOT
   evidence of Google 403. The blocked application process was closed.
-- The final low-memory, same-model Arena rerun and full Council synthesis were
-  prevented when Computer Use explicitly reported that the Mac was locked.
-  The owner was asked once to unlock; these E2E checks remain unpassed unless
-  a later explicit result below supersedes this statement.
+- The earlier lock-screen blocker was superseded by the resumed real tests above.
 
 ## Automated evidence and remaining work
 
-- Full Rust: 1053 library tests passed, 84 ignored; 4 binary tests passed; doc tests
+- Final-fix Rust rerun: 1053 library tests passed, 84 ignored; 4 binary tests passed; doc tests
   passed. Cargo check and production frontend build passed. Beta 6 behavior,
   P16 Council runtime and P17 Arena integration suites passed.
 - Fixtures separately verify empty/partial/failed Provider synchronization,
@@ -56,19 +92,24 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
   no broad formatting changes were made.
 - Claude real account response requires owner CLI login. Google OAuth consent and
   test-user/app-verification state need authorized real validation; no bypass.
-  Clean-user/no-CLI and friend-machine installation remain external acceptance.
+  Clean-user/no-CLI/different launch PATH product acceptance is still unverified;
+  fixtures are not a clean macOS user. Friend-machine installation remains external.
 - Mandatory restoration COMPLETED: `/Applications/AI OS.app` is again the original
   `1.0.1-beta.5`. Complete bundle comparison against the independent backup,
   signature validation, and original executable SHA-256 all PASS. Beta 6 candidate
   apps were moved into the task's `work/beta6-install-candidates` archive; no
   temporary candidate is left in Applications. No user data was deleted/overwritten.
+- Final restoration was repeated after the last CSS-repacked acceptance and passed
+  the full restore script again. Original oMLX DeepSeek-only 4.19 GB loaded state
+  was restored using its GUI, and the test-opened manager window was closed without
+  stopping the server. No model files, credentials, ACLs or account settings changed.
 - `verify/verify_beta6_install_restore.sh` PASS checks the actual installed version,
   full restored bundle, original executable hash, signature and DMG integrity.
 - Final DMG SHA-256:
-  `f1f84c83326e33d7b49a3dfbe0f206d2a1f6f6dfcbc6e9dd294e9da46e2b0da7`.
+  `087ef3842569e5f36263224d85363cb75d4c597ba52d0d373f1aec782da37f68`.
   File: `src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.6_aarch64.dmg`.
   It is ad-hoc signed, not notarized or published. Final candidate executable
-  SHA-256: `192cc588085aeb7ef4478572a0c7b9fdcfd7d611d8aefc27087458ce997d057d`.
+  SHA-256: `c71610affb6d03233624252a3ef58dc8f8465972a5fdc00d5bcff5bda68de1b7`.
 
 ## Earlier candidate record (historical; current facts are above)
 
