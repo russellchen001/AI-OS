@@ -24,6 +24,10 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
 - oMLX streaming now has an explicit 2048-token output budget, consistent with
   other AI Center generation paths. A truncated accessibility preview alone does
   NOT prove that the old server response was truncated; invalid scope is proven.
+- Dynamic Council prompts now make user scope, locality, length, format and allowed
+  actions binding for every seat and the final synthesis. Unrequested cloud scope
+  and destructive or irreversible actions are rejected; real-model quality remains
+  unproven until the rebuilt candidate repeats the seven-call Council workflow.
 - Dark Arena seat cards receive a dark surface and contrasting role labels;
   undefined `--surface-secondary` had fallen back to white while dark-theme
   foreground tokens remained pale. The final installed cards are visibly readable.
@@ -94,6 +98,8 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
 - Continuation rerun on 2026-10-24: `verify_beta6_provider_stability.sh` passed after
   adding the Claude launch-environment cases above; the focused Claude suite is 6/6.
   This is isolated behavior evidence, not a real Claude account-response pass.
+- `verify_p16_dynamic_council.sh` passes with runtime-captured proof that every
+  dynamic seat and final synthesis receive the new quality and safety constraints.
 - Full cargo fmt --check still reports existing unrelated formatting drift;
   no broad formatting changes were made.
 - Claude real account response requires owner CLI login. Google OAuth consent and

@@ -118,11 +118,13 @@ const metadata = {
 } as AiCenterResponse["metadata"];
 
 const stageCalls: string[] = [];
+const runtimeMessages: string[][] = [];
 const dynamicRuntime = new CouncilRuntime({
   listModels: () => models,
   stream: (messages, choice, onChunk) => {
     const system = messages[0]?.content ?? "";
     const task = messages[1]?.content ?? "";
+    runtimeMessages.push([system, task]);
     const stage = task.includes("Return JSON only")
       ? "synthesis"
       : task.includes("Cross-review")
@@ -195,6 +197,14 @@ assert(result.recommendation?.disagreements.length === 1, "disagreement was not 
 assert(result.recommendation?.uncertainty.length === 1, "uncertainty was not preserved");
 assert(result.session.assemblyPlan?.id === "assembly-1", "assembly plan was not stored with the session");
 assert(result.session.recommendation?.risks.length === 1, "structured recommendation was not stored");
+assert(
+  runtimeMessages.every(([system]) => system.includes("explicit user constraints") && system.includes("destructive or irreversible")),
+  "Council seats did not receive binding user and safety constraints",
+);
+assert(
+  runtimeMessages.at(-1)?.[1].includes("unrequested cloud services") && runtimeMessages.at(-1)?.[1].includes("requested length"),
+  "final synthesis did not enforce scope and response-length constraints",
+);
 
 const storage = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
