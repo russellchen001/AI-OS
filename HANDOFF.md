@@ -31,6 +31,9 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
   designated requirements of both Beta 5 and Beta 6 are cdhash-specific. Do not
   promise zero upgrade prompts or change Keychain ACLs to hide this. Stable signing
   remains a release requirement. No credentials, ACLs or security settings changed.
+- Claude CLI discovery now has an injectable path-candidate boundary without changing
+  production lookup order. Tests cover custom Home, inherited launch PATH, duplicate
+  paths, no candidate and a present-but-non-executable CLI without touching account state.
 
 ## Real installed-app results
 
@@ -88,6 +91,9 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
 - Fixtures separately verify empty/partial/failed Provider synchronization,
   secondary/non-default manual choices, disabled/non-chat exclusion, pinned
   cross-seat reuse and zero replacement, and Google generation capabilities.
+- Continuation rerun on 2026-10-24: `verify_beta6_provider_stability.sh` passed after
+  adding the Claude launch-environment cases above; the focused Claude suite is 6/6.
+  This is isolated behavior evidence, not a real Claude account-response pass.
 - Full cargo fmt --check still reports existing unrelated formatting drift;
   no broad formatting changes were made.
 - Claude real account response requires owner CLI login. Google OAuth consent and

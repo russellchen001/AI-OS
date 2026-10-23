@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsString,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -47,12 +48,16 @@ pub(crate) struct ClaudeCodeResponse {
     pub(crate) text: String,
 }
 
-fn candidate_paths() -> Vec<PathBuf> {
+fn candidate_paths_for(
+    explicit: Option<OsString>,
+    home: Option<PathBuf>,
+    inherited_path: Option<OsString>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(path) = std::env::var_os("AI_OS_CLAUDE_CODE_BINARY") {
+    if let Some(path) = explicit {
         candidates.push(PathBuf::from(path));
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home {
         candidates.extend([
             home.join(".local/bin/claude"),
             home.join(".claude/local/claude"),
@@ -62,7 +67,7 @@ fn candidate_paths() -> Vec<PathBuf> {
             home.join("Library/pnpm/claude"),
         ]);
     }
-    if let Some(path) = std::env::var_os("PATH") {
+    if let Some(path) = inherited_path {
         candidates.extend(std::env::split_paths(&path).map(|entry| entry.join("claude")));
     }
     candidates.extend([
@@ -74,8 +79,16 @@ fn candidate_paths() -> Vec<PathBuf> {
     candidates
 }
 
-fn discover_binary() -> Option<PathBuf> {
-    candidate_paths().into_iter().find(|path| {
+fn candidate_paths() -> Vec<PathBuf> {
+    candidate_paths_for(
+        std::env::var_os("AI_OS_CLAUDE_CODE_BINARY"),
+        dirs::home_dir(),
+        std::env::var_os("PATH"),
+    )
+}
+
+fn discover_binary_from(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    candidates.into_iter().find(|path| {
         path.is_file()
             && path.metadata().is_ok_and(|metadata| {
                 #[cfg(unix)]
@@ -88,6 +101,10 @@ fn discover_binary() -> Option<PathBuf> {
                 }
             })
     })
+}
+
+fn discover_binary() -> Option<PathBuf> {
+    discover_binary_from(candidate_paths())
 }
 
 fn sanitized_process_error(stderr: &[u8]) -> String {
@@ -335,6 +352,27 @@ pub(crate) fn cancel_claude_code_request(operation_id: String) -> Result<bool, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_candidates_cover_custom_home_and_launch_path_without_duplicates() {
+        let home = PathBuf::from("/tmp/claude-home");
+        let path =
+            std::env::join_paths(["/tmp/claude-path", "/tmp/claude-home/.local/bin"]).unwrap();
+        let candidates = candidate_paths_for(None, Some(home.clone()), Some(path));
+        assert!(candidates.contains(&home.join(".claude/local/claude")));
+        assert!(candidates.contains(&PathBuf::from("/tmp/claude-path/claude")));
+        let unique: HashSet<_> = candidates.iter().collect();
+        assert_eq!(unique.len(), candidates.len());
+    }
+
+    #[test]
+    fn non_executable_cli_is_not_reported_as_installed() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("claude");
+        std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+        assert_eq!(discover_binary_from(Vec::new()), None);
+        assert_eq!(discover_binary_from(vec![binary]), None);
+    }
 
     #[test]
     fn credential_shaped_errors_are_redacted() {
