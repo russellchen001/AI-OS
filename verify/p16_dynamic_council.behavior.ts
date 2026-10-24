@@ -37,10 +37,12 @@ const models = [
 const qualityObjective = "不修改任何文件，最终不超过180个汉字，包含2条理由、1条可逆的本地备份建议。";
 const qualityReport = { summary: "建议保留本地，并防范单机丢失。", recommendedPlan: ["建议将笔记复制到已有外接盘并只读核对，保留原件；此处不执行。"], rationale: ["避免上传造成隐私暴露。", "单机故障仍可能导致丢失。"], disagreements: [], risks: [], assumptions: [], uncertainty: [] };
 validateCouncilAnswer(qualityObjective, qualityReport);
+validateCouncilAnswer(qualityObjective, { ...qualityReport, recommendedPlan: ["复制到已有外盘，不删除或移动原文件。"] });
 for (const bad of [
   { ...qualityReport, summary: "长".repeat(181) },
   { ...qualityReport, rationale: ["只有一条"] },
   { ...qualityReport, recommendedPlan: ["将原文件移动到外接盘"] },
+  { ...qualityReport, recommendedPlan: ["不删除，但将原文件移动到外接盘"] },
 ]) {
   let rejected = false;
   try { validateCouncilAnswer(qualityObjective, bad); } catch { rejected = true; }

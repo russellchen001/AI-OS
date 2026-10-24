@@ -24,7 +24,10 @@ export function validateCouncilAnswer(objective: string, report: {
   if (limits.reasons && report.rationale.length !== limits.reasons) throw new Error(`Council answer requires exactly ${limits.reasons} reasons.`);
   if (limits.plans && report.recommendedPlan.length !== limits.plans) throw new Error(`Council answer requires exactly ${limits.plans} backup suggestion(s).`);
   if (/不删除|不格式化|不修改任何文件|read.only/i.test(objective) &&
-      report.recommendedPlan.some((item) => /移动|删除|抹盘|格式化|\b(?:move|delete|erase|format)\b/i.test(item))) {
+      report.recommendedPlan.some((item) => [...item.matchAll(/移动|删除|抹盘|格式化|\b(?:move|delete|erase|format)\b/gi)].some((match) => {
+        const clause = item.slice(0, match.index).split(/[，。；,.;]|但|而|却|\bbut\b/i).pop() ?? "";
+        return !/不|勿|禁止|无需|避免|不要|不得|never|avoid|without|do not|don't/i.test(clause);
+      }))) {
     throw new Error("Council backup plan changes originals despite the read-only/non-destructive constraint.");
   }
 }
