@@ -4,7 +4,40 @@
 
 ## ACTIVE continuation after unexpected computer exit (2026-10-24)
 
-### RESUME FIRST — final candidate installed; Mac locked
+### CURRENT — owner unlocked; final real results; Claude owner login pending
+
+- This block supersedes older checkpoints below. Owner confirmed Mac unlocked
+  and personally handled the Keychain dialog. Code/artifact remains `2e3be28`;
+  source is unchanged since the successfully sealed final package.
+- Final Council completed all 7 local DeepSeek seat calls, history 4 -> 5.
+  Recommendation schema is valid (2 risks, 2 uncertainty items), but answer quality
+  remains FAIL: >180 characters, 3 plans/3 reasons rather than 1/2, recommends
+  moving original files as backup, and invents cache/system-state facts.
+  Earlier contributions also mentioned deletion/cloud storage. Nothing approved
+  or executed. Do not call Council fully accepted because its 7 calls completed.
+- Final Google refresh returned 46 models after personal Keychain authorization.
+  Manual Gemini 2.5 Flash returned HTTP 404 (NOT_FOUND). After live refresh,
+  manual Gemini Flash Latest returned HTTP 402 (RESOURCE_EXHAUSTED).
+  Transport/credential read/diagnostic display PASS; real generation BLOCKED on
+  provider resource/model availability. No billing, quota or Cloud settings changed.
+  Historical OAuth 403 is NOT proven by these different generation errors.
+- Explicit existing-account Refresh account access also succeeded: UI now shows
+  Until 2026/10/25 00:57:29 instead of Expired. Credential read/refresh is verified;
+  no new account, scopes, permission grants or Keychain ACL modifications were made.
+- Final Arena binding/calls/scoring PASS (5 real Qwen generations / 3 rounds /
+  4 valid scores), but full requested three-step answer content remains FAIL.
+- Claude was checked LAST: official CLI at `.local/bin/claude`, version 2.1.220,
+  loggedIn=false / authMethod=none. Installed Account sign-in is visible; Verify
+  shows official-CLI-login-required error. All 6 Claude code tests PASS. No-CLI
+  coverage is simulated, not a separate clean Mac installation.
+- Owner asked whether to personally sign in now; response pending. Do not initiate
+  account login or read/copy Claude subscription credentials without owner action.
+- Stable signing remains BLOCKED: 0 valid signing identities and final installed
+  app rejected by Gatekeeper. Deep/strict integrity and package hygiene still PASS.
+- Temporary final Beta 6 remains installed pending owner-login decision; original
+  Beta 5 and independent backup are intact. Final cleanup/restoration still pending.
+
+### Historical checkpoint — final candidate installed; Mac locked
 
 - Current code/artifact commit: `2e3be28333a00931636ee7cb0557d72babd29d8d`.
   Build and full Rust rerun both exited 0. Rust: 1055 passed, 0 failed,
@@ -165,6 +198,13 @@ app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
 `/Users/russellchen/AI-OS/dashboard-beta6`. No push, tag or Release is authorized.
 
 ## Technical decisions and final fixes
+
+- Council recommendation parsing fails closed on invalid JSON or missing/wrong
+  schema fields. Do not fabricate a report from malformed raw text. Schema validity
+  is deliberately separate from factual/safety/length acceptance; tests cannot
+  certify weak-model prose quality. No auto-approval or destructive execution added.
+- Cloud generation exposes only HTTP code and a whitelisted error-status enum;
+  upstream response bodies and credentials are neither displayed nor logged.
 
 - Manual AI Center execution validates against ALL connected, enabled chat models,
   rather than Auto's deliberately reduced candidate list. This fixes rejection of
