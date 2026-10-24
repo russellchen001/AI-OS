@@ -424,6 +424,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState<AiCenterModelChoice>();
   const [availableModels, setAvailableModels] = useState(() => listAiCenterModels());
+  const selectedModelUnavailable = selectedModel && !availableModels.some((model) =>
+    model.providerInstanceId === selectedModel.providerInstanceId && model.modelId === selectedModel.modelId);
   const [knowledgeProjects, setKnowledgeProjects] = useState<KnowledgeProject[]>([]);
   const [knowledgeSources, setKnowledgeSources] = useState<KnowledgeSource[]>([]);
   const [knowledgePanelOpen, setKnowledgePanelOpen] = useState(false);
@@ -835,16 +837,6 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     const refreshModels = () => {
       const models = listAiCenterModels();
       setAvailableModels(models);
-      setSelectedModel((current) =>
-        current &&
-        models.some(
-          (model) =>
-            model.providerInstanceId === current.providerInstanceId &&
-            model.modelId === current.modelId,
-        )
-          ? current
-          : undefined,
-      );
     };
     window.addEventListener(PROVIDERS_CHANGED_EVENT, refreshModels);
     window.addEventListener("storage", refreshModels);
@@ -857,7 +849,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     const content = draft.trim();
-    if (!content || isSubmitting) return;
+    if (!content || isSubmitting || selectedModelUnavailable) return;
     const linkSwiftShareLink = supportedCloudDriveShareLink(content);
 
     /*
@@ -2205,6 +2197,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 >
                   <span className="model-status" />
                   {selectedModel?.label ?? "Auto"}
+                  {selectedModelUnavailable && " · Unavailable — choose a model"}
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4" /></svg>
                 </button>
                 {modelMenuOpen && (
@@ -2270,7 +2263,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 <span />
               </button>
             ) : (
-              <button type="submit" className="send-button" disabled={!draft.trim() || isSubmitting} aria-label="Send">
+              <button type="submit" className="send-button" disabled={!draft.trim() || isSubmitting || selectedModelUnavailable} aria-label="Send">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7M12 5v14" /></svg>
               </button>
             )}
