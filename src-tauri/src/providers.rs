@@ -4262,19 +4262,13 @@ pub(crate) async fn generate_provider_response(
         .map_err(|_| "AI Center could not reach the selected Provider".to_owned())?;
     let status = response.status();
     if !status.is_success() {
-        let error_body = response.text().await.unwrap_or_default();
-        eprintln!(
-            "[AI-OS][PROVIDER_HTTP_ERROR] provider={} model={} status={} body={}",
-            provider_id,
-            model_id,
-            status.as_u16(),
-            error_body
-        );
-        return Err(match status.as_u16() {
-            401 | 403 => "The selected Provider needs to be reconnected".to_owned(),
-            429 => "The selected Provider is busy or rate limited".to_owned(),
-            _ => format!("The selected Provider returned status {}", status.as_u16()),
-        });
+        let payload = response.json::<Value>().await.ok();
+        let category = payload.as_ref().and_then(|value| value.pointer("/error/status"))
+            .and_then(Value::as_str).filter(|value| matches!(*value,
+                "UNAUTHENTICATED" | "PERMISSION_DENIED" | "RESOURCE_EXHAUSTED" |
+                "NOT_FOUND" | "INVALID_ARGUMENT" | "UNAVAILABLE" | "FAILED_PRECONDITION"));
+        return Err(format!("The selected Provider returned HTTP {}{}", status.as_u16(),
+            category.map(|value| format!(" ({value})")).unwrap_or_default()));
     }
     if provider_id == "openai" && uses_openai_codex {
         let stream_body = response.text().await.map_err(|_| {

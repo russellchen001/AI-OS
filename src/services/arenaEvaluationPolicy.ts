@@ -97,6 +97,8 @@ export function buildArenaEvaluationInstruction(
     "",
     "Rules:",
     '- Each scope must be exactly one of "participant", "team", or "strategy"; use only the listed IDs and criteria.',
+    `- EVERY score requires scope, subjectId, criterionId and numeric value. For strategy scores, subjectId MUST be "${strategy}"; never omit subjectId.`,
+    "- Keep scores compact: at most one score per participant and one strategy score. JSON field requirements take priority over prose length limits.",
     "- Keep the summary and each rationale to one short sentence; finish the complete JSON object.",
     "- Score values must be finite numbers between 0 and 100.",
     "- Vote weights must be finite positive numbers.",
