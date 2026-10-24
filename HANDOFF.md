@@ -2,7 +2,22 @@
 
 # START HERE — Beta 6 core stability repair (2026-10-25; REAL RETEST PENDING)
 
-## CURRENT — isolated stability candidate built; owner unlock needed for real retest
+## CURRENT — owner unlocked; real core retests and Council follow-up in progress
+
+- Follow-ups: `c2727a6` task-evidence profile gate; `c79bf20` rejected Council raw
+  output preservation; `34c48d6` concrete Arena deliverable drafts. Actual first Arena
+  had five normal-stop calls but nonspecific steps + a nonexistent scoring subject;
+  Outcome degraded / Scores 0 correctly withheld success. A Claude-pinned control
+  plan exposed missing connected-catalog handoff and display-name aliases, causing
+  one seat to remain Auto. Do NOT run that plan. Router now receives current models
+  and recognizes the displayed model name without Provider prefix; all-seat pinning
+  has a catalog-driven regression. Rebuild a frozen candidate after these fixes.
+- My AI real Qwen and Claude CLI generation verification PASS. Normal Chat picker
+  contains only these two verified entries; Manual Qwen survived My AI navigation.
+  Claude Chat returned exactly BETA6-STABILITY-CLAUDE-OK in 5,581ms with anthropic /
+  claude-code-default. Qwen generation works but exact-output instruction failed;
+  connection proof is not quality proof. Gemini credential refresh waits; owner
+  Keychain prompt question is pending. No credential extraction or formal App writes.
 
 - Owner unlocked the Mac; isolated `db7687f` App process path was confirmed (not
   `/Applications`). Qwen model-specific real generation verification PASS. The first
@@ -12,6 +27,12 @@
   absent evidence uses existing built-in seats. Regression includes those exact
   real catalog entries and passed full P16 dynamic/runtime/integration + frontend.
   Candidate rebuild/retest is required; previous zero-score-only fix was insufficient.
+- First full `db7687f` Council completed seven local stream calls with normal `stop`
+  finish reasons, but synthesis failed the 180-character bound. Mid-round claims
+  such as "local storage ensures safety" / "notes contain no sensitive information"
+  are unsupported; real quality remains FAIL, not transport truncation. `c79bf20`
+  also retains rejected raw synthesis output in the failed step beside its reason;
+  full P16 + frontend PASS. A clean frozen rebuild must follow these code commits.
 
 - Latest runtime code is `db7687ffcad36bb19d0b64a62fc70b361f02771f`, following
   `4e31e0f` implementation and `d9d6a32` negation-scope correction. Runtime code
@@ -25,9 +46,9 @@
   SHA-256 `01566b70fee0869497702ca4ead8df64f18161a6ce7ab5794e283da031bf4cae`.
   DMG checksum verification, deep/strict signature and package/data hygiene PASS;
   still ad-hoc/not notarized.
-- The Mac remained locked when the isolated App was opened after build. Owner
-  unlock question is pending. REAL Council/Arena/Chat acceptance has NOT run on this
-  candidate; do not label quality PASS or claim the whole task complete.
+- The earlier Mac lock was resolved by the owner. Real Qwen generation verification
+  passed; first Council quality failed as above. Arena and model-state retests are
+  in progress; do not label quality PASS or claim the whole task complete.
 - After unlock: open ONLY that isolated App path; verify Qwen via My AI model-specific
   real generation (unknown models intentionally absent from normal lists). Run the
   original <=180-character Council notes task; inspect full final accuracy/counts/

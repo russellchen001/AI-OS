@@ -190,6 +190,7 @@ function modelAliases(
   return [
     model.modelId,
     model.label,
+    model.label.split("·").slice(-1)[0]?.trim(),
     model.providerId,
   ]
     .map((value) => value?.trim())
@@ -590,6 +591,7 @@ export function extractUserModelConstraints(
 export function routeArenaStrategy(
   objective: string,
   userModelConstraints: ArenaModelConstraint[] = [],
+  availableModels: AiCenterModelChoice[] = [],
 ): ArenaStrategyPlan {
   const normalized = objective.trim();
   if (!normalized) {
@@ -626,7 +628,7 @@ export function routeArenaStrategy(
     maxParticipants = Math.max(maxParticipants, 12);
   }
 
-  const detectedConstraints = extractUserModelConstraints(normalized);
+  const detectedConstraints = extractUserModelConstraints(normalized, availableModels);
   const mergedConstraints = [
     ...userModelConstraints,
     ...detectedConstraints,

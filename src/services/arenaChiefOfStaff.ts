@@ -255,6 +255,7 @@ export class ArenaChiefOfStaff {
     const strategyPlan = routeArenaStrategy(
       objective,
       request.userModelConstraints ?? [],
+      availableModels,
     );
 
     const maxSeats = Math.min(

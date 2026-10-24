@@ -137,6 +137,7 @@ const assert = {
 
 import {
   extractUserModelConstraints,
+  routeArenaStrategy,
 } from "../src/services/arenaStrategyRouter";
 import {
   assignArenaModels,
@@ -218,6 +219,22 @@ function seat(
 }
 
 const tests: TestCase[] = [
+  {
+    name: "strategy routing uses connected catalog for all-seat model pinning",
+    run: () => {
+      const chosen = models[0];
+      const plan = routeArenaStrategy("三个席位都固定使用 Orion X1，合作制定三步检查清单。", [{
+        mode: "pinned", providerId: chosen.providerId,
+        providerInstanceId: chosen.providerInstanceId, modelId: chosen.modelId, label: chosen.label,
+      }], models);
+      const bound = resolveUserConstraintsForSeats(["participant", "participant", "synthesizer"], plan.userModelConstraints);
+      assert.equal(bound.length, 3);
+      for (const constraint of bound) {
+        assert.equal(constraint.mode, "pinned");
+        assert.equal(nonAuto(constraint).modelId, chosen.modelId);
+      }
+    },
+  },
   {
     name: "catalog-driven arbitrary model names: explicit two-model comparison",
     run: () => {
