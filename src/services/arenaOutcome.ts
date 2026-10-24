@@ -1,6 +1,7 @@
 import {
   createArenaOutcome,
 } from "./arenaGovernance";
+import { validateArenaAnswer } from "./answerRequirements";
 import {
   parseArenaEvaluation,
   type ParsedArenaEvaluation,
@@ -193,6 +194,16 @@ export function collectArenaOutcome(
       return;
     }
 
+    if (input.driver.strategy === "collaboration") {
+      try {
+        if (parsed.taskComplete !== true) throw new Error(parsed.incompleteReason || "Evaluator did not confirm task completion.");
+        validateArenaAnswer(input.assembly.objective, parsed.answer ?? "");
+      } catch (error) {
+        errors.push(`Arena task incomplete: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
+
     accepted.push(parsed);
 
     for (const score of parsed.scores) {
@@ -278,7 +289,7 @@ export function collectArenaOutcome(
       : undefined;
 
   return {
-    outcome: createArenaOutcome({
+    outcome: { ...createArenaOutcome({
       strategy: input.driver.strategy,
       seed: input.seed,
       runtimeStatus: input.runtimeStatus,
@@ -308,7 +319,7 @@ export function collectArenaOutcome(
       votes,
       provenance,
       rationale,
-    }),
+    }), finalAnswer: accepted.map((item) => item.answer).filter(Boolean).join("\n\n") || undefined },
     errors,
   };
 }

@@ -325,6 +325,7 @@ pub fn run() {
             providers::delete_provider_credential,
             providers::discover_provider_models,
             providers::test_provider_connection,
+            providers::verify_provider_model,
             providers::get_omlx_runtime_status,
             providers::start_omlx_runtime,
             providers::configure_omlx_openclaw_execution,

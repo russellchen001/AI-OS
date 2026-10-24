@@ -400,6 +400,19 @@ export function listProviderInstances(): ProviderInstance[] {
   return providerInstanceCache.map((instance) => withCurrentOAuthState(instance));
 }
 
+export async function reloadProviderInstances(): Promise<ProviderInstance[]> {
+  const native = await invoke<unknown[]>("list_provider_instances");
+  return replaceProviderCache(native.filter(isProviderInstance));
+}
+
+export async function verifyProviderModel(providerInstanceId: string, modelId: string): Promise<void> {
+  try {
+    await invoke("verify_provider_model", { providerInstanceId, modelId });
+  } finally {
+    await reloadProviderInstances();
+  }
+}
+
 export function initializeProviderInstances():
 Promise<ProviderInstance[]> {
   providerInitialization ??= (async () => {

@@ -16,10 +16,14 @@ const model = (overrides: Partial<Parameters<typeof isAiCenterChatModel>[0]> = {
   displayName: "Gemini Live Chat",
   capabilities: ["chat"],
   enabled: true,
+  availability: "verified" as const,
   ...overrides,
 });
 
 assertEqual(isAiCenterChatModel(model()), true);
+assertEqual(isAiCenterChatModel(model({ availability: "unavailable" })), false);
+assertEqual(isAiCenterChatModel(model({ availability: "verified" })), true);
+assertEqual(isAiCenterChatModel(model({ availability: undefined })), false);
 assertEqual(isAiCenterChatModel(model({ enabled: false })), false);
 assertEqual(isAiCenterChatModel(model({ remoteModelId: "gemini-embedding-001" })), false);
 assertEqual(isAiCenterChatModel(model({ remoteModelId: "imagen-4-generate" })), false);
@@ -99,3 +103,8 @@ await saveProviderInstance({ ...instance, connectionState: "error" });
 assertEqual(listAiCenterModels().length, 0);
 assertEqual(providerEvents, 3);
 console.log("empty, partially connected and failed Provider state synchronization passed");
+await saveProviderInstance({ ...instance, models: instance.models.map((model) => ({ ...model, availability: "unavailable" })) });
+assertEqual(listAiCenterModels().length, 0);
+await saveProviderInstance({ ...instance, models: instance.models.map((model) => ({ ...model, availability: "verified" })) });
+assertEqual(listAiCenterModels().length, 1);
+console.log("known unavailable models excluded consistently and successful revalidation restores eligibility");

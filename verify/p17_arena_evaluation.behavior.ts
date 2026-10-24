@@ -8,6 +8,7 @@ import {
 import {
   buildArenaStrategyDriver,
 } from "../src/services/arenaStrategyDrivers";
+import { collectArenaOutcome } from "../src/services/arenaOutcome";
 import type {
   ArenaAssemblyPlan,
   ArenaModelAssignment,
@@ -193,6 +194,23 @@ const strategies: ArenaStrategy[] = [
   "game",
   "simulation",
 ];
+
+const qualityPlan = { ...assembly("collaboration"), objective: "制定三步的本地笔记备份检查清单。" };
+const qualityOutcome = (answer?: string, taskComplete = true) => collectArenaOutcome({
+  assembly: qualityPlan, driver: buildArenaStrategyDriver("collaboration", qualityPlan),
+  runtimeStatus: "completed", roundsCompleted: 3, seed: 1, degraded: false,
+  contexts: [{ id: "quality-eval", round: 3, authorId: "judge", visibility: { kind: "public" },
+    content: JSON.stringify({ answer, taskComplete, incompleteReason: "Missing deliverable", summary: "Looks good", scores: [{ scope: "participant", subjectId: "p1", criterionId: "coverage", value: 99 }], ruleComplete: true }),
+    tags: ["collaboration-synthesis"], createdAt: 1 }],
+});
+for (const rejected of [qualityOutcome(), qualityOutcome("1. 检查\n2. 复制"), qualityOutcome("1. 检查\n2. 复制\n3. 核对", false)]) {
+  assert(rejected.outcome.status === "degraded" && rejected.outcome.scores.length === 0, "incomplete answer received normal scores");
+  assert(rejected.errors.some((error) => error.includes("incomplete")), "incomplete reason was lost");
+}
+const rawAnswer = "1. 核对两份笔记路径，不修改原件。\n2. 检查已有本地副本是否存在。\n3. 只读比较副本内容与日期。";
+const complete = qualityOutcome(rawAnswer);
+assert(complete.outcome.finalAnswer === rawAnswer && complete.outcome.scores.length === 1, "final answer was transformed or lost");
+console.log("PASS — incomplete task answers cannot receive normal scores; complete raw answer preserved exactly");
 
 for (const strategy of strategies) {
   const driver =

@@ -60,6 +60,7 @@ export type ArenaGovernanceInput = {
 };
 
 export type ArenaOutcome = {
+  finalAnswer?: string;
   strategy: ArenaStrategy;
   seed: number;
   status:

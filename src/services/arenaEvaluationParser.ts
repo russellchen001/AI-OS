@@ -18,6 +18,9 @@ export type ParsedArenaEvaluationVote = {
 };
 
 export type ParsedArenaEvaluation = {
+  answer?: string;
+  taskComplete?: boolean;
+  incompleteReason?: string;
   summary?: string;
   scores: ParsedArenaEvaluationScore[];
   votes: ParsedArenaEvaluationVote[];
@@ -151,6 +154,9 @@ export function parseArenaEvaluation(
   }
 
   return {
+    answer: typeof raw.answer === "string" ? raw.answer : undefined,
+    taskComplete: typeof raw.taskComplete === "boolean" ? raw.taskComplete : undefined,
+    incompleteReason: typeof raw.incompleteReason === "string" ? raw.incompleteReason : undefined,
     summary:
       typeof raw.summary === "string"
         ? raw.summary

@@ -411,6 +411,9 @@ async function shareText(title: string, text: string) {
   await navigator.clipboard.writeText(text);
 }
 
+// Navigation to My AI must not silently turn a manual selection back into Auto.
+let lastManualChatModel: AiCenterModelChoice | undefined;
+
 function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const dialog = useDialog();
   const [draft, setDraft] = useState("");
@@ -422,7 +425,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<AiCenterModelChoice>();
+  const [selectedModel, setSelectedModelState] = useState<AiCenterModelChoice | undefined>(lastManualChatModel);
+  function setSelectedModel(choice: AiCenterModelChoice | undefined) {
+    lastManualChatModel = choice;
+    setSelectedModelState(choice);
+  }
   const [availableModels, setAvailableModels] = useState(() => listAiCenterModels());
   const selectedModelUnavailable = selectedModel && !availableModels.some((model) =>
     model.providerInstanceId === selectedModel.providerInstanceId && model.modelId === selectedModel.modelId);

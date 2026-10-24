@@ -33,6 +33,12 @@ export function ArenaOutcomePanel({ result }: Props) {
           </p>
         )}
       </section>
+      {result.outcome.finalAnswer && (
+        <section className="arena-transcript">
+          <h3>Final task answer</h3>
+          <p style={{ whiteSpace: "pre-wrap" }}>{result.outcome.finalAnswer}</p>
+        </section>
+      )}
       {!!publicContext.length && (
         <section className="arena-transcript">
           <h3>Public Arena transcript</h3>

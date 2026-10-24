@@ -249,7 +249,7 @@ export class ArenaChiefOfStaff {
         : listAiCenterModels();
 
     if (!availableModels.length) {
-      throw new Error("No AI Center model is connected.");
+      throw new Error("No generation-verified model is available. Verify a model in My AI.");
     }
 
     const strategyPlan = routeArenaStrategy(

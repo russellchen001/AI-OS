@@ -263,6 +263,7 @@ export function describeChatTaskError(
 ): string {
   if (isWorkRequest) return describeWorkTaskError(error, workOperation);
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (detail.startsWith("NO_GENERATION_VERIFIED_MODEL")) return "Your AI connection has no generation-verified model yet. Open My AI and verify a model before continuing.";
   const providerFailure = detail.match(/^The selected Provider returned HTTP (\d{3})(?: \((UNAUTHENTICATED|PERMISSION_DENIED|RESOURCE_EXHAUSTED|NOT_FOUND|INVALID_ARGUMENT|UNAVAILABLE|FAILED_PRECONDITION)\))?$/);
   if (providerFailure) return `The selected AI returned HTTP ${providerFailure[1]}${providerFailure[2] ? ` (${providerFailure[2]})` : ""}. Check this model's access, quota and connection in My AI.`;
   if (detail === "The selected Provider needs to be reconnected") return "The selected AI needs to be reconnected in My AI.";

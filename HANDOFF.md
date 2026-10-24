@@ -1,10 +1,44 @@
 <!-- BETA41_HANDOFF_START -->
 
-# START HERE — Beta 6 local acceptance snapshot (2026-10-25; NOT RELEASE-READY)
+# START HERE — Beta 6 core stability repair (2026-10-25; REAL RETEST PENDING)
+
+## CURRENT — scoped stability implementation; isolated package build next
+
+- Owner narrowed this continuation to Council quality, Arena completeness and
+  accurate Chat/AI Center model availability. No formal App overwrite is authorized.
+  `/Applications` remains original Beta5 / exe SHA `91ff470bbb163233f891cf3bc16af86788b42f439aaf7b558a874353ab253ce5`.
+- Fixed proven implementation gaps: oMLX byte frames are decoded only when complete;
+  EOF tail is consumed; finish_reason length/missing/malformed streams fail closed.
+  Sanitized completion logs contain model, character count and finish reason only.
+- Council no longer loads zero-relevance Agency profiles. Final synthesis must pass
+  schema and explicit length/count/original-preservation checks before acceptance;
+  failed synthesis cannot mine an accidental JSON report from earlier contributions.
+- Collaboration Arena now requires a separate complete task answer and explicit
+  taskComplete flag, validates requested step count, and withholds normal scores on
+  incomplete deliverables. Final UI displays the exact answer, separate from evaluation.
+- Model catalog discovery is NOT generation verification. Chat/Council/Arena require
+  a real successful generation; unknown/404 models are excluded from normal selection.
+  My AI offers model-specific real verification; refresh does not clear negative
+  evidence. Manual choice survives My AI navigation and never silently becomes Auto.
+- Availability evidence uses a separate private sidecar, scoped to Provider instance,
+  Provider type, credential kind and model ID. Legacy provider file omits new fields
+  so Beta5 remains compatible. Computer Use candidate entry and llmfit ranking are
+  unchanged; only Chat routing applies the new verified-generation eligibility gate.
+- Regression PASS: Rust lib 1060 / 0 failed / 84 ignored; binary 4 / 0; cargo check;
+  frontend build; Beta6 Provider stability; P16 dynamic/runtime/integration; P17 final.
+  New regressions exercise every UTF-8 split, missing terminal/length rejection,
+  zero-relevance roles, explicit Council constraints, raw Arena answer equality and
+  refusal to score incomplete answers, 404 state isolation and legacy file compatibility.
+- Full cargo fmt --check reports pre-existing untouched Cloud Drive/browser/etc
+  formatting differences (baseline reproduced from HEAD). Target providers.rs and
+  git diff --check PASS. Do not bulk-format unrelated modules to hide this baseline.
+- REAL installed Council/Arena/model-verification retests and new DMG are pending.
+  Do not report the above behavior tests as real-answer quality PASS. Prior package
+  evidence below is historical. No push/tag/release or external delivery.
 
 ## ACTIVE continuation after unexpected computer exit (2026-10-24)
 
-### CURRENT — Claude real call PASS; temporary installation closed
+### Historical — Claude real call PASS; temporary installation closed
 
 - This snapshot supersedes ALL historical checkpoints below. Branch `beta6`;
   artifact/code commit `2e3be28333a00931636ee7cb0557d72babd29d8d`. Subsequent

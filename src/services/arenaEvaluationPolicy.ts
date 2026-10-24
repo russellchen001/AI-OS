@@ -80,6 +80,7 @@ export function buildArenaEvaluationInstruction(
     "",
     "Return ONLY compact JSON following this valid example; replace example scores and text with your evaluation:",
     JSON.stringify({
+      ...(strategy === "collaboration" ? { answer: "The complete requested deliverable", taskComplete: true, incompleteReason: "" } : {}),
       summary: "Brief evaluation",
       scores: [{
         scope: participants.length ? "participant" : "strategy",
@@ -96,6 +97,10 @@ export function buildArenaEvaluationInstruction(
     }),
     "",
     "Rules:",
+    ...(strategy === "collaboration" ? [
+      '- "answer" must contain the actual complete task deliverable, not role assignments or a short evaluation of the discussion. Preserve the user\'s format and requested step count.',
+      '- Set "taskComplete" true ONLY when the answer satisfies the original objective; otherwise false with a concrete "incompleteReason". Scores never substitute for an answer.',
+    ] : []),
     '- Each scope must be exactly one of "participant", "team", or "strategy"; use only the listed IDs and criteria.',
     `- EVERY score requires scope, subjectId, criterionId and numeric value. For strategy scores, subjectId MUST be "${strategy}"; never omit subjectId.`,
     "- Keep scores compact: at most one score per participant and one strategy score. JSON field requirements take priority over prose length limits.",

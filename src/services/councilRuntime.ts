@@ -6,6 +6,7 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { formatCouncilContext, resolveCouncilContext } from "./councilMemberContext";
+import { validateCouncilAnswer } from "./answerRequirements";
 import type { CouncilMember, CouncilRole, CouncilStepResult } from "../types/council";
 import type {
   CouncilContextSource,
@@ -237,6 +238,7 @@ export class CouncilRuntime {
     messages: AiCenterConversationMessage[],
     callbacks: CouncilRunRequest["callbacks"],
     assignedModel?: CouncilModelAssignment,
+    validate?: (output: string) => void,
   ): Promise<{
     output: string;
     providerId: ProviderId;
@@ -290,6 +292,7 @@ export class CouncilRuntime {
         const result = await stream.result;
         this.activeStream = undefined;
         if (result.cancelled || this.cancelled) throw new CouncilCancelledError();
+        validate?.(result.response.text);
         return {
           output: result.response.text,
           providerId,
@@ -393,6 +396,10 @@ export class CouncilRuntime {
         ],
         wrappedCallbacks,
         seat.assignedModel,
+        stage === "final-synthesis" ? (output) => {
+          const report = parseRecommendation(output, "validation", "validation", [], 0);
+          validateCouncilAnswer(prompt, report);
+        } : undefined,
       );
       const completed: CouncilStepResult = {
         ...runningStep,
@@ -425,7 +432,7 @@ export class CouncilRuntime {
     const prompt = request.prompt.trim();
     if (!prompt) throw new Error("Council objective is required.");
     if (!this.dependencies.listModels().length) {
-      throw new Error("No AI Center model is connected.");
+      throw new Error("No generation-verified model is available. Verify a model in My AI.");
     }
     if (!plan.seats.length) throw new Error("Council assembly contains no seats.");
     const synthesizer = plan.seats.find((seat) => seat.id === plan.synthesizerSeatId);
@@ -566,8 +573,11 @@ export class CouncilRuntime {
         ),
       ]),
     ];
+    if (synthesis.status !== "done") {
+      throw new Error(`Council final answer was not accepted: ${synthesis.error ?? "synthesis failed"}`);
+    }
     const recommendation = parseRecommendation(
-      synthesis.status === "done" ? synthesis.output : previousWork(completed),
+      synthesis.output,
       this.dependencies.uuid(),
       sessionId,
       provenance,
@@ -621,7 +631,7 @@ export class CouncilRuntime {
     const prompt = request.prompt.trim();
     if (!prompt) throw new Error("Council objective is required.");
     if (!this.dependencies.listModels().length) {
-      throw new Error("No AI Center model is connected.");
+      throw new Error("No generation-verified model is available. Verify a model in My AI.");
     }
 
     const members = resolveCouncilMembers(request.members);

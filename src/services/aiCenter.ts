@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { listProviderInstances } from "./providers";
+import { listProviderInstances, reloadProviderInstances } from "./providers";
 import {
   enrichInvocationPricing,
   recordInvocationSuccess,
@@ -67,7 +67,7 @@ export function resolveAiCenterContextLimits(
 ): AiCenterContextLimits {
   const connectedModels = listProviderInstances()
     .filter((instance) => instance.connectionState === "connected")
-    .flatMap((instance) => instance.models.filter((model) => model.enabled));
+    .flatMap((instance) => instance.models.filter(isAiCenterChatModel));
   const candidates = selectedModel
     ? connectedModels.filter(
         (model) =>
@@ -95,8 +95,9 @@ export function isAiCenterChatModel(model: {
   displayName: string;
   capabilities: string[];
   enabled: boolean;
+  availability?: "verified" | "unavailable";
 }): boolean {
-  if (!model.enabled) return false;
+  if (!model.enabled || model.availability !== "verified") return false;
 
   const searchable = `${model.remoteModelId} ${model.displayName}`.toLowerCase().replace(/[ _]/g, "-");
   const excludedMarkers = [
@@ -142,7 +143,7 @@ function resolveChoice(choice: AiCenterRouteSelection) {
 
   const model = instance.models.find(
     (candidate) =>
-      candidate.enabled && candidate.remoteModelId === choice.modelId,
+      candidate.enabled && candidate.availability === "verified" && candidate.remoteModelId === choice.modelId,
   );
   if (!model) throw new Error("NO_DEFAULT_MODEL");
   return { instance, model };
@@ -167,7 +168,7 @@ export async function answerThroughAiCenter(
       prompt,
       routingPrompt,
     },
-  });
+  }).finally(() => reloadProviderInstances().catch(() => undefined));
   const metadata = enrichInvocationPricing(response.metadata);
   recordInvocationSuccess(metadata);
   return { ...response, metadata };
@@ -405,6 +406,7 @@ export function streamThroughAiCenter(
         if (event.payload.operationId !== operationId || settled) return;
         settled = true;
         cleanup();
+        void reloadProviderInstances().catch(() => undefined);
         if (!event.payload.metadata) {
           reject(new Error("AI Center returned no invocation metadata."));
           return;
@@ -425,6 +427,7 @@ export function streamThroughAiCenter(
         if (event.payload.operationId !== operationId || settled) return;
         settled = true;
         cleanup();
+        void reloadProviderInstances().catch(() => undefined);
         reject(new Error(event.payload.message));
       });
       try {

@@ -33,6 +33,7 @@ import {
   deleteProviderCredential,
   listProviderInstances,
   initializeProviderInstances,
+  verifyProviderModel,
   removeProviderInstance,
   saveProviderApiKey,
   saveProviderInstance,
@@ -338,6 +339,7 @@ function MyAiPage({
       setOmlxLoading(false);
     }
   }
+  const [verificationModelId, setVerificationModelId] = useState("");
   const [setup, setSetup] = useState<{
     providerId: string;
     provider: string;
@@ -553,6 +555,7 @@ function MyAiPage({
     const instance = providerInstances.find((candidate) => candidate.id === instanceId);
 
     if (!instance) return;
+    setVerificationModelId("");
     setApiKey("");
     setSetupError("");
     setSetup({
@@ -570,7 +573,7 @@ function MyAiPage({
         "",
       verificationMessage:
         instance.connectionState === "connected"
-          ? "This Provider passed a live adapter test."
+          ? "Catalog connection verified. Individual model generation is tracked separately."
           : instance.connectionState === "refresh-required"
             ? "This account token has expired and can be refreshed securely."
             : instance.connectionState === "expired"
@@ -632,6 +635,7 @@ function MyAiPage({
       const currentDefault = instance.models.find((model) => model.isDefault)?.id;
       const models = verification.discoveredModels.map((model) => ({
         ...model,
+        availability: previous.get(model.id)?.availability,
         enabled: previous.get(model.id)?.enabled ?? model.enabled,
         isDefault: model.id === currentDefault,
       }));
@@ -656,6 +660,22 @@ function MyAiPage({
     } catch (error) {
       setSetupError(error instanceof Error ? error.message : "Model catalog refresh failed.");
     } finally {
+      setIsConnecting(false);
+    }
+  }
+
+  async function revalidateModel(model: ProviderModelEntry) {
+    if (!setup || isConnecting) return;
+    setIsConnecting(true); setSetupError("");
+    try {
+      await verifyProviderModel(model.providerInstanceId, model.remoteModelId);
+      setSetup((current) => current ? { ...current, verificationMessage: `${model.displayName}: real generation verified.` } : current);
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : String(error));
+    } finally {
+      const instances = listProviderInstances();
+      setProviderInstances(instances);
+      setSetup((current) => current ? { ...current, models: instances.find((instance) => instance.id === model.providerInstanceId)?.models ?? current.models } : current);
       setIsConnecting(false);
     }
   }
@@ -989,6 +1009,18 @@ function MyAiPage({
         credentialRefreshable: setup.credentialRefreshable,
       });
       await saveProviderInstance(instance);
+      const selected = instance.models.find((model) => model.id === setup.defaultModelId);
+      if (selected) {
+        try {
+          await verifyProviderModel(instance.id, selected.remoteModelId);
+        } catch (error) {
+          setProviderInstances(listProviderInstances());
+          setSetup({ ...setup, phase: "manage", models: listProviderInstances().find((item) => item.id === instance.id)?.models ?? instance.models,
+            verificationMessage: "Catalog saved. A model must pass real generation before it is offered for use." });
+          setSetupError(typeof error === "string" ? error : error instanceof Error ? error.message : "Model generation verification failed.");
+          return;
+        }
+      }
       setProviderInstances(listProviderInstances());
       onConnect(setup.provider, setup.method);
       setSetup(null);
@@ -1419,6 +1451,22 @@ function MyAiPage({
                       {isConnecting ? "Refreshing…" : "Refresh model catalog"}
                     </button>
                   )}
+                  {!!setup.models.length && <>
+                    <label>Model to verify
+                      <select aria-label="Model to verify" disabled={isConnecting}
+                        value={verificationModelId || setup.defaultModelId}
+                        onChange={(event) => setVerificationModelId(event.target.value)}>
+                        {setup.models.map((model) => <option key={model.id} value={model.id}>
+                          {model.displayName} — {model.availability ?? "not generation-verified"}
+                        </option>)}
+                      </select>
+                    </label>
+                    <button type="button" className="provider-refresh-button" disabled={isConnecting}
+                      onClick={() => { const model = setup.models.find((item) => item.id === (verificationModelId || setup.defaultModelId)); if (model) void revalidateModel(model); }}>
+                      Verify selected model (real request)
+                    </button>
+                    <p>Only generation-verified models appear in Chat, Council and Arena.</p>
+                  </>}
                   {setup.method === "account" && (
                     <button
                       type="button"

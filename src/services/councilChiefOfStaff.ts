@@ -143,10 +143,12 @@ function selectAgencyAgent(
   usedPaths: Set<string>,
 ): AgencyAgentDefinition | undefined {
   const wanted = tokens([
-    requirement.title,
     requirement.purpose,
     ...requirement.requiredExpertise,
   ]);
+  for (const generic of ["specialist", "expert", "reviewer", "synthesizer", "implementation", "analysis", "professional", "role"]) {
+    wanted.delete(generic);
+  }
   return catalog.agents
     .filter((agent) => !usedPaths.has(agent.path))
     .map((agent) => {
@@ -157,6 +159,7 @@ function selectAgencyAgent(
       );
       return { agent, score };
     })
+    .filter(({ score }) => score > 0)
     .sort(
       (left, right) =>
         right.score - left.score || left.agent.path.localeCompare(right.agent.path),
@@ -168,7 +171,7 @@ function assignModels(
   models: AiCenterModelChoice[],
   objective: string,
 ): CouncilModelAssignment[] {
-  if (!models.length) throw new Error("No AI Center model is connected.");
+  if (!models.length) throw new Error("No generation-verified model is available. Verify a model in My AI.");
   const localFirstObjective = /private|privacy|confidential|local|隐私|机密|本地/.test(
     objective.toLowerCase(),
   );
@@ -279,7 +282,7 @@ export class CouncilChiefOfStaff {
     const objective = request.objective.trim();
     if (!objective) throw new Error("Council objective is required.");
     const models = this.dependencies.listModels();
-    if (!models.length) throw new Error("No AI Center model is connected.");
+    if (!models.length) throw new Error("No generation-verified model is available. Verify a model in My AI.");
 
     let paperclipAvailable = false;
     let paperclipCommit: string | undefined = PAPERCLIP_SOURCE_COMMIT;

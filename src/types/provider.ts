@@ -51,6 +51,7 @@ export type ProviderModelEntry = {
   contextWindow?: number;
   enabled: boolean;
   isDefault: boolean;
+  availability?: "verified" | "unavailable";
 };
 
 export type ProviderCredentialRef = {

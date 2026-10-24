@@ -4,6 +4,7 @@ import {
   CouncilRuntime,
 } from "../src/services/councilRuntime";
 import { loadCouncilMembers } from "../src/services/council";
+import { validateCouncilAnswer } from "../src/services/answerRequirements";
 import type { CouncilMember } from "../src/types/council";
 import type { AgencyAgentsCatalog } from "../src/types/councilIntegrations";
 import type { AiCenterResponse } from "../src/services/aiCenter";
@@ -32,6 +33,19 @@ const models = [
     label: "Claude Review",
   },
 ];
+
+const qualityObjective = "不修改任何文件，最终不超过180个汉字，包含2条理由、1条可逆的本地备份建议。";
+const qualityReport = { summary: "建议保留本地，并防范单机丢失。", recommendedPlan: ["建议将笔记复制到已有外接盘并只读核对，保留原件；此处不执行。"], rationale: ["避免上传造成隐私暴露。", "单机故障仍可能导致丢失。"], disagreements: [], risks: [], assumptions: [], uncertainty: [] };
+validateCouncilAnswer(qualityObjective, qualityReport);
+for (const bad of [
+  { ...qualityReport, summary: "长".repeat(181) },
+  { ...qualityReport, rationale: ["只有一条"] },
+  { ...qualityReport, recommendedPlan: ["将原文件移动到外接盘"] },
+]) {
+  let rejected = false;
+  try { validateCouncilAnswer(qualityObjective, bad); } catch { rejected = true; }
+  assert(rejected, "Council accepted an explicit length/count/original-preservation violation");
+}
 
 const catalog: AgencyAgentsCatalog = {
   commit: "agency-commit",
@@ -90,11 +104,11 @@ assert(
   "Paperclip governance context did not affect the assembly rationale",
 );
 assert(
-  plan.seats.every((seat) => seat.memberContext.includes("Methodology: evidence first")),
-  "Agency Agent definitions did not populate every dynamic seat",
+  plan.seats.some((seat) => seat.memberContext.includes("Methodology: evidence first")),
+  "Relevant Agency Agent definitions were not consumed",
 );
 assert(
-  plan.seats.every(
+  plan.seats.filter((seat) => seat.kind === "agency-agent").every(
     (seat) =>
       seat.source.sourceCommit === "agency-commit" &&
       Boolean(seat.source.sourcePath) &&
@@ -102,6 +116,17 @@ assert(
   ),
   "Agency Agent provenance was not retained",
 );
+const irrelevantPlan = await new CouncilChiefOfStaff({
+  paperclip: { probe: async () => ({ id: "paperclip", name: "Paperclip", status: "unavailable", detail: "offline", checkedAt: "now" }), listCompanies: async () => [] },
+  agencyAgents: {
+    loadCatalog: async () => ({ ...catalog, agents: [{ division: "database", slug: "gaussdb-expert", path: "database/gaussdb.md" }] }),
+    loadAgent: async () => { throw new Error("Unrelated profile must not be loaded"); },
+  },
+  listModels: () => models,
+  invokeChiefOfStaff: async () => { throw new Error("fallback"); },
+  uuid: () => "irrelevant-profile",
+}).assemble({ objective: "Decide whether two personal notes should stay on this Mac." });
+assert(irrelevantPlan.seats.every((seat) => seat.kind === "builtin"), "zero-relevance profile polluted Council seats");
 assert(
   new Set(plan.seats.map((seat) => seat.assignedModel.providerId)).size === 2,
   "dynamic model assignment did not preserve provider diversity",

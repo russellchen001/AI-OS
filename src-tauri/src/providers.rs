@@ -617,6 +617,8 @@ pub(crate) struct ProviderModelEntry {
 
     pub enabled: bool,
     pub is_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -643,6 +645,74 @@ fn provider_config_directory() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "Unable to determine the AI-OS configuration directory".to_owned())?;
 
     Ok(base.join("AI OS"))
+}
+
+fn model_availability_result(
+    result: &Result<GenerateProviderResponseResult, String>,
+) -> Option<&'static str> {
+    match result {
+        Ok(_) => Some("verified"),
+        Err(error)
+            if error.starts_with("The selected Provider returned HTTP 404")
+                || error == "The selected Provider returned status 404" =>
+        {
+            Some("unavailable")
+        }
+        _ => None, // Quota, auth, cancellation, timeout and truncation are not proof a model is absent.
+    }
+}
+
+fn provider_state_lock() -> &'static Mutex<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    &LOCK
+}
+
+fn availability_key(instance: &ProviderInstance, model_id: &str) -> String {
+    format!(
+        "{}|{}|{:?}|{}",
+        instance.id, instance.provider_id, instance.credential.kind, model_id
+    )
+}
+
+fn read_model_availability() -> Result<HashMap<String, String>, String> {
+    let path = provider_config_directory()?.join("model-availability.json");
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|_| "Invalid model availability cache".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(_) => Err("Unable to read model availability cache".to_owned()),
+    }
+}
+
+fn record_model_availability(
+    candidate: &AiCenterRouteCandidate,
+    result: &Result<GenerateProviderResponseResult, String>,
+) -> Result<(), String> {
+    let Some(state) = model_availability_result(result) else {
+        return Ok(());
+    };
+    let _guard = provider_state_lock()
+        .lock()
+        .map_err(|_| "Provider state unavailable".to_owned())?;
+    let instances = read_provider_instances()?;
+    if let Some(instance) = instances.iter().find(|instance| {
+        instance.id == candidate.provider_instance_id
+            && instance.provider_id == candidate.provider_id
+    }) {
+        let key = availability_key(instance, &candidate.model_id);
+        let mut cache = read_model_availability()?;
+        if cache.get(&key).map(String::as_str) != Some(state) {
+            cache.insert(key, state.to_owned());
+            let path = provider_config_directory()?.join("model-availability.json");
+            let temporary = path.with_extension("json.tmp");
+            let bytes = serde_json::to_vec(&cache)
+                .map_err(|_| "Unable to serialize model availability".to_owned())?;
+            write_private_file(&temporary, &bytes)?;
+            std::fs::rename(temporary, path)
+                .map_err(|_| "Unable to save model availability".to_owned())?;
+        }
+    }
+    Ok(())
 }
 
 fn provider_instances_file() -> Result<std::path::PathBuf, String> {
@@ -756,7 +826,22 @@ fn write_provider_instances_at(
             .map_err(|_| "Unable to create Provider configuration directory".to_owned())?;
     }
 
-    let contents = serde_json::to_string_pretty(instances)
+    let mut value = serde_json::to_value(instances)
+        .map_err(|_| "Unable to serialize Provider configuration".to_owned())?;
+    // Keep the persisted catalog readable by the protected Beta 5 installation.
+    for instance in value.as_array_mut().into_iter().flatten() {
+        for model in instance
+            .get_mut("models")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(model) = model.as_object_mut() {
+                model.remove("availability");
+            }
+        }
+    }
+    let contents = serde_json::to_string_pretty(&value)
         .map_err(|_| "Unable to serialize Provider configuration".to_owned())?;
 
     let temporary_path = path.with_extension("json.tmp");
@@ -769,7 +854,23 @@ fn write_provider_instances_at(
 }
 
 fn read_provider_instances() -> Result<Vec<ProviderInstance>, String> {
-    read_provider_instances_at(&provider_instances_file()?)
+    let mut instances = read_provider_instances_at(&provider_instances_file()?)?;
+    let cache = read_model_availability()?;
+    for instance in &mut instances {
+        let states: Vec<_> = instance
+            .models
+            .iter()
+            .map(|model| {
+                cache
+                    .get(&availability_key(instance, &model.remote_model_id))
+                    .cloned()
+            })
+            .collect();
+        for (model, state) in instance.models.iter_mut().zip(states) {
+            model.availability = state;
+        }
+    }
+    Ok(instances)
 }
 
 fn write_provider_instances(instances: &[ProviderInstance]) -> Result<(), String> {
@@ -785,7 +886,14 @@ pub(crate) fn list_provider_instances() -> Result<Vec<ProviderInstance>, String>
 pub(crate) fn save_provider_instance(
     instance: ProviderInstance,
 ) -> Result<ProviderInstance, String> {
+    let _guard = provider_state_lock()
+        .lock()
+        .map_err(|_| "Provider state unavailable".to_owned())?;
     let mut instance = validate_provider_instance(instance)?;
+    // A caller/catalog refresh cannot manufacture successful generation evidence.
+    for model in &mut instance.models {
+        model.availability = None;
+    }
     let mut instances = read_provider_instances()?;
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -795,6 +903,15 @@ pub(crate) fn save_provider_instance(
         .find(|candidate| candidate.id == instance.id)
     {
         instance.created_at = existing.created_at.clone();
+        for model in &mut instance.models {
+            if model.availability.is_none() {
+                model.availability = existing
+                    .models
+                    .iter()
+                    .find(|old| old.remote_model_id == model.remote_model_id)
+                    .and_then(|old| old.availability.clone());
+            }
+        }
     }
 
     instance.updated_at = now;
@@ -810,6 +927,9 @@ pub(crate) fn save_provider_instance(
 
 #[tauri::command]
 pub(crate) fn remove_provider_instance(instance_id: String) -> Result<bool, String> {
+    let _guard = provider_state_lock()
+        .lock()
+        .map_err(|_| "Provider state unavailable".to_owned())?;
     let instance_id = validate_instance_id(instance_id.trim())?;
     let mut instances = read_provider_instances()?;
     let original_length = instances.len();
@@ -1402,7 +1522,7 @@ pub(crate) fn execution_agent_candidates(capability: &str) -> Result<Vec<String>
     let config: serde_json::Value = serde_json::from_str(&contents)
         .map_err(|_| "OpenClaw execution-agent configuration is malformed".to_owned())?;
 
-    let (_, route_candidates) = route_candidates(false)?;
+    let (_, route_candidates) = route_candidates(false, false)?;
 
     let fit_evidence = crate::local_model_advisor::cached_route_evidence();
     execution_agent_candidates_from_config(capability, &config, &route_candidates, &fit_evidence)
@@ -1415,7 +1535,11 @@ fn connected_provider_model_ids(instances: &[ProviderInstance], provider_id: &st
             instance.provider_id == provider_id
                 && instance.connection_state == ProviderConnectionState::Connected
         })
-        .flat_map(|instance| instance.models.iter().filter(|model| model.enabled))
+        .flat_map(|instance| {
+            instance.models.iter().filter(|model| {
+                model.enabled && model.availability.as_deref() != Some("unavailable")
+            })
+        })
         .collect::<Vec<_>>();
     models.sort_by_key(|model| !model.is_default);
     models
@@ -1425,7 +1549,7 @@ fn connected_provider_model_ids(instances: &[ProviderInstance], provider_id: &st
 }
 
 fn auto_model_is_chat_candidate(model: &ProviderModelEntry) -> bool {
-    if !model.enabled {
+    if !model.enabled || model.availability.as_deref() == Some("unavailable") {
         return false;
     }
 
@@ -1976,10 +2100,26 @@ fn rank_auto_route_candidates_after_assessment(
     Ok(rank_auto_route_candidates(ready, fit_evidence))
 }
 
+fn generation_verified_instances(mut instances: Vec<ProviderInstance>) -> Vec<ProviderInstance> {
+    for model in instances
+        .iter_mut()
+        .flat_map(|instance| &mut instance.models)
+    {
+        model.enabled &= model.availability.as_deref() == Some("verified");
+    }
+    instances
+}
+
 fn route_candidates(
     assess_in_background: bool,
+    verified_only: bool,
 ) -> Result<(Vec<ProviderInstance>, Vec<AiCenterRouteCandidate>), String> {
     let instances = read_provider_instances()?;
+    let instances = if verified_only {
+        generation_verified_instances(instances)
+    } else {
+        instances
+    };
     let mut omlx_model_ids = connected_provider_model_ids(&instances, "omlx");
 
     // Auto must not inherit the user's manually configured default-model
@@ -2060,11 +2200,20 @@ fn manual_route_candidates(instances: &[ProviderInstance]) -> Vec<AiCenterRouteC
 fn route_candidates_for_mode(
     mode: AiCenterRouteMode,
 ) -> Result<(Vec<ProviderInstance>, Vec<AiCenterRouteCandidate>), String> {
-    if mode == AiCenterRouteMode::Auto {
-        return route_candidates(true);
+    let (instances, candidates) = if mode == AiCenterRouteMode::Auto {
+        route_candidates(true, true)?
+    } else {
+        let instances = generation_verified_instances(read_provider_instances()?);
+        let candidates = manual_route_candidates(&instances);
+        (instances, candidates)
+    };
+    if candidates.is_empty()
+        && instances
+            .iter()
+            .any(|instance| instance.connection_state == ProviderConnectionState::Connected)
+    {
+        return Err("NO_GENERATION_VERIFIED_MODEL: Verify a model in My AI".to_owned());
     }
-    let instances = read_provider_instances()?;
-    let candidates = manual_route_candidates(&instances);
     Ok((instances, candidates))
 }
 
@@ -4263,12 +4412,29 @@ pub(crate) async fn generate_provider_response(
     let status = response.status();
     if !status.is_success() {
         let payload = response.json::<Value>().await.ok();
-        let category = payload.as_ref().and_then(|value| value.pointer("/error/status"))
-            .and_then(Value::as_str).filter(|value| matches!(*value,
-                "UNAUTHENTICATED" | "PERMISSION_DENIED" | "RESOURCE_EXHAUSTED" |
-                "NOT_FOUND" | "INVALID_ARGUMENT" | "UNAVAILABLE" | "FAILED_PRECONDITION"));
-        return Err(format!("The selected Provider returned HTTP {}{}", status.as_u16(),
-            category.map(|value| format!(" ({value})")).unwrap_or_default()));
+        let category = payload
+            .as_ref()
+            .and_then(|value| value.pointer("/error/status"))
+            .and_then(Value::as_str)
+            .filter(|value| {
+                matches!(
+                    *value,
+                    "UNAUTHENTICATED"
+                        | "PERMISSION_DENIED"
+                        | "RESOURCE_EXHAUSTED"
+                        | "NOT_FOUND"
+                        | "INVALID_ARGUMENT"
+                        | "UNAVAILABLE"
+                        | "FAILED_PRECONDITION"
+                )
+            });
+        return Err(format!(
+            "The selected Provider returned HTTP {}{}",
+            status.as_u16(),
+            category
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default()
+        ));
     }
     if provider_id == "openai" && uses_openai_codex {
         let stream_body = response.text().await.map_err(|_| {
@@ -4310,6 +4476,18 @@ pub(crate) async fn generate_provider_response(
         .json()
         .await
         .map_err(|_| "The selected Provider returned an unreadable response".to_owned())?;
+    if provider_id == "omlx" {
+        let decoder = OmlxStreamDecoder {
+            finish_reason: body
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            ..Default::default()
+        };
+        if let Some(error) = decoder.completion_error() {
+            return Err(error.to_owned());
+        }
+    }
     let text = match provider_id {
         "openai" => extract_openai_response_text(&body),
         "grok" if uses_grok_oauth => extract_openai_response_text(&body),
@@ -4374,6 +4552,39 @@ async fn execute_candidate(
 }
 
 #[tauri::command]
+pub(crate) async fn verify_provider_model(
+    provider_instance_id: String,
+    model_id: String,
+) -> Result<(), String> {
+    let instances = read_provider_instances()?;
+    let instance = instances
+        .iter()
+        .find(|instance| instance.id == provider_instance_id)
+        .ok_or_else(|| "Provider instance is unavailable".to_owned())?;
+    if !instance
+        .models
+        .iter()
+        .any(|model| model.remote_model_id == model_id)
+    {
+        return Err("Model is not in this connection's catalog".to_owned());
+    }
+    let candidate = AiCenterRouteCandidate {
+        provider_id: instance.provider_id.clone(),
+        provider_instance_id,
+        model_id,
+    };
+    let result = execute_candidate(
+        &candidate,
+        "Reply with exactly OK. Do not use tools or files.",
+        &instances,
+        None,
+    )
+    .await;
+    record_model_availability(&candidate, &result)?;
+    result.map(|_| ())
+}
+
+#[tauri::command]
 pub(crate) async fn execute_ai_center(
     input: ExecuteAiCenterInput,
 ) -> Result<ExecuteAiCenterResult, String> {
@@ -4409,7 +4620,9 @@ pub(crate) async fn execute_ai_center(
         };
         let attempt_started_at = chrono::Utc::now().to_rfc3339();
         let attempt_started = Instant::now();
-        match execute_candidate(&candidate, &prompt, &instances, None).await {
+        let result = execute_candidate(&candidate, &prompt, &instances, None).await;
+        record_model_availability(&candidate, &result)?;
+        match result {
             Ok(response) => {
                 attempts.push(complete_attempt(
                     &candidate,
@@ -4478,6 +4691,72 @@ struct OmlxStreamOutcome {
     cancelled: bool,
     interrupted: bool,
     first_text_latency_ms: Option<u64>,
+    decoder: OmlxStreamDecoder,
+}
+
+#[derive(Default)]
+struct OmlxStreamDecoder {
+    pending: Vec<u8>,
+    finish_reason: Option<String>,
+    malformed: bool,
+}
+
+impl OmlxStreamDecoder {
+    fn feed(&mut self, bytes: &[u8], eof: bool) -> Vec<String> {
+        self.pending.extend_from_slice(bytes);
+        let mut output = Vec::new();
+        while let Some(end) = self
+            .pending
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .or_else(|| (eof && !self.pending.is_empty()).then_some(self.pending.len()))
+        {
+            let line: Vec<u8> = self.pending.drain(..end).collect();
+            if self.pending.first() == Some(&b'\n') {
+                self.pending.remove(0);
+            }
+            let Ok(line) = std::str::from_utf8(&line) else {
+                self.malformed = true;
+                continue;
+            };
+            let Some(data) = line.trim().strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(data) else {
+                self.malformed = true;
+                continue;
+            };
+            if let Some(reason) = value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+            {
+                self.finish_reason = Some(reason.to_owned());
+            }
+            if let Some(text) = stream_text("omlx", false, &value) {
+                output.push(text);
+            }
+        }
+        output
+    }
+
+    fn completion_error(&self) -> Option<&'static str> {
+        if self.malformed {
+            return Some("The Provider stream contained invalid UTF-8 or JSON");
+        }
+        match self.finish_reason.as_deref() {
+            Some("stop") => None,
+            Some("length") => {
+                Some("The Provider output reached its token limit; answer is incomplete")
+            }
+            Some(_) => Some("The Provider did not finish a complete text answer"),
+            None => {
+                Some("The Provider stream ended without a completion reason; answer is incomplete")
+            }
+        }
+    }
 }
 
 async fn read_omlx_runtime_credential(caller: &str) -> Result<CurrentProviderCredential, String> {
@@ -4595,16 +4874,28 @@ pub(crate) async fn computer_use_local_route(
         .await
         .map_err(|_| "The local Skill router did not answer in time".to_owned())?;
     if !response.status().is_success() {
-        return Err(format!("The local Skill router returned HTTP {}", response.status().as_u16()));
+        return Err(format!(
+            "The local Skill router returned HTTP {}",
+            response.status().as_u16()
+        ));
     }
-    let body: Value = response.json().await.map_err(|_| "The local Skill router returned invalid JSON".to_owned())?;
-    if body.pointer("/choices/0/message/tool_calls/0/function/name").and_then(Value::as_str) != Some("choose_skill") {
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|_| "The local Skill router returned invalid JSON".to_owned())?;
+    if body
+        .pointer("/choices/0/message/tool_calls/0/function/name")
+        .and_then(Value::as_str)
+        != Some("choose_skill")
+    {
         return Err("The local Skill router did not select a capability".to_owned());
     }
-    let arguments = body.pointer("/choices/0/message/tool_calls/0/function/arguments")
+    let arguments = body
+        .pointer("/choices/0/message/tool_calls/0/function/arguments")
         .and_then(Value::as_str)
         .ok_or_else(|| "The local Skill router returned no arguments".to_owned())?;
-    serde_json::from_str(arguments).map_err(|_| "The local Skill router returned invalid arguments".to_owned())
+    serde_json::from_str(arguments)
+        .map_err(|_| "The local Skill router returned invalid arguments".to_owned())
 }
 
 fn rank_computer_use_models(
@@ -4813,12 +5104,12 @@ async fn consume_omlx_stream(
     request_started: Instant,
 ) -> OmlxStreamOutcome {
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
     let mut outcome = OmlxStreamOutcome {
         output: String::new(),
         cancelled: false,
         interrupted: false,
         first_text_latency_ms: None,
+        decoder: OmlxStreamDecoder::default(),
     };
     loop {
         let next = tokio::select! {
@@ -4828,32 +5119,29 @@ async fn consume_omlx_stream(
             }
             item = stream.next() => item,
         };
-        let Some(item) = next else { break };
-        let bytes = match item {
-            Ok(bytes) => bytes,
-            Err(_) => {
+        let (bytes, eof) = match next {
+            Some(Ok(bytes)) => (bytes.to_vec(), false),
+            Some(Err(_)) => {
                 outcome.interrupted = true;
                 break;
             }
+            None => (Vec::new(), true),
         };
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(position) = buffer.find('\n') {
-            let line = buffer[..position].to_owned();
-            buffer.drain(..=position);
-            if let Some(text) = omlx_stream_line(&line) {
-                if !text.is_empty() && outcome.first_text_latency_ms.is_none() {
-                    outcome.first_text_latency_ms =
-                        Some(request_started.elapsed().as_millis() as u64);
-                }
-                outcome.output.push_str(&text);
-                let _ = app.emit(
-                    "ai-center://chunk",
-                    AiCenterChunkEvent {
-                        operation_id: operation_id.to_owned(),
-                        text,
-                    },
-                );
+        for text in outcome.decoder.feed(&bytes, eof) {
+            if !text.is_empty() && outcome.first_text_latency_ms.is_none() {
+                outcome.first_text_latency_ms = Some(request_started.elapsed().as_millis() as u64);
             }
+            outcome.output.push_str(&text);
+            let _ = app.emit(
+                "ai-center://chunk",
+                AiCenterChunkEvent {
+                    operation_id: operation_id.to_owned(),
+                    text,
+                },
+            );
+        }
+        if eof {
+            break;
         }
     }
     outcome
@@ -5012,6 +5300,11 @@ pub(crate) async fn execute_ai_center_stream(
                     let outcome =
                         consume_omlx_stream(&app, &operation_id, response, &token, request_started)
                             .await;
+                    crate::logs::append_ai_os_diagnostic(&format!(
+                        "[AI_CENTER_COMPLETION] provider=omlx model={} chars={} finish={:?} malformed={}",
+                        candidate.model_id, outcome.output.chars().count(),
+                        outcome.decoder.finish_reason, outcome.decoder.malformed
+                    ));
                     if let Some(latency_ms) = outcome.first_text_latency_ms {
                         eprintln!(
                             "[AI-OS][OMLX_FIRST_TEXT] model={} latency_ms={}",
@@ -5023,6 +5316,8 @@ pub(crate) async fn execute_ai_center_stream(
                         Err("cancelled".to_owned())
                     } else if outcome.interrupted {
                         Err("The Provider stream was interrupted".to_owned())
+                    } else if let Some(error) = outcome.decoder.completion_error() {
+                        Err(error.to_owned())
                     } else if outcome.output.trim().is_empty() {
                         Err("The selected Provider returned no text".to_owned())
                     } else {
@@ -5050,6 +5345,7 @@ pub(crate) async fn execute_ai_center_stream(
                 result = execution => result
             }
         };
+        record_model_availability(&candidate, &result)?;
         match result {
             Ok(response) => {
                 attempts.push(complete_attempt(
@@ -5347,12 +5643,28 @@ pub(crate) async fn start_provider_response_stream(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let payload = response.json::<Value>().await.ok();
-        let category = payload.as_ref().and_then(|value| value.pointer("/error/status"))
-            .and_then(Value::as_str).filter(|value| matches!(*value,
-                "UNAUTHENTICATED" | "PERMISSION_DENIED" | "RESOURCE_EXHAUSTED" |
-                "NOT_FOUND" | "INVALID_ARGUMENT" | "UNAVAILABLE" | "FAILED_PRECONDITION"));
-        let message = format!("The selected Provider returned HTTP {status}{}",
-            category.map(|value| format!(" ({value})")).unwrap_or_default());
+        let category = payload
+            .as_ref()
+            .and_then(|value| value.pointer("/error/status"))
+            .and_then(Value::as_str)
+            .filter(|value| {
+                matches!(
+                    *value,
+                    "UNAUTHENTICATED"
+                        | "PERMISSION_DENIED"
+                        | "RESOURCE_EXHAUSTED"
+                        | "NOT_FOUND"
+                        | "INVALID_ARGUMENT"
+                        | "UNAVAILABLE"
+                        | "FAILED_PRECONDITION"
+                )
+            });
+        let message = format!(
+            "The selected Provider returned HTTP {status}{}",
+            category
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default()
+        );
         let _ = app.emit(
             "ai-center://error",
             AiCenterErrorEvent {
@@ -5452,6 +5764,91 @@ pub(crate) fn cancel_provider_response_stream(operation_id: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn omlx_decoder_preserves_every_utf8_packet_boundary_and_final_line() {
+        let wire = "data: {\"choices\":[{\"delta\":{\"content\":\"中文备份✅\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}";
+        for split in 0..=wire.len() {
+            let mut decoder = OmlxStreamDecoder::default();
+            let mut text = decoder.feed(&wire.as_bytes()[..split], false).concat();
+            text.push_str(&decoder.feed(&wire.as_bytes()[split..], true).concat());
+            assert_eq!(text, "中文备份✅", "split={split}");
+            assert_eq!(decoder.completion_error(), None);
+        }
+    }
+
+    #[test]
+    fn omlx_decoder_rejects_token_limit_even_with_text_and_done() {
+        let mut decoder = OmlxStreamDecoder::default();
+        decoder.feed(b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n", true);
+        assert!(decoder.completion_error().unwrap().contains("token limit"));
+    }
+
+    #[test]
+    fn omlx_decoder_rejects_missing_terminal_or_malformed_frames() {
+        for wire in [
+            "data: [DONE]\n",
+            "data: {\"choices\":[",
+            "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\ndata: {bad}\n",
+        ] {
+            let mut decoder = OmlxStreamDecoder::default();
+            decoder.feed(wire.as_bytes(), true);
+            assert!(decoder.completion_error().is_some());
+        }
+    }
+
+    #[test]
+    fn model_availability_uses_real_results_not_transient_failures() {
+        let success = Ok(GenerateProviderResponseResult {
+            provider_id: "test".to_owned(),
+            model_id: "test".to_owned(),
+            text: "OK".to_owned(),
+        });
+        assert_eq!(model_availability_result(&success), Some("verified"));
+        assert_eq!(
+            model_availability_result(&Err(
+                "The selected Provider returned HTTP 404 (NOT_FOUND)".to_owned()
+            )),
+            Some("unavailable")
+        );
+        for error in [
+            "HTTP 429",
+            "The selected Provider returned HTTP 402 (RESOURCE_EXHAUSTED)",
+            "cancelled",
+            "token limit",
+            "authentication",
+            "network timeout",
+        ] {
+            assert_eq!(model_availability_result(&Err(error.to_owned())), None);
+        }
+    }
+
+    #[test]
+    fn model_availability_does_not_break_legacy_catalog_format_or_cross_connections() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(PROVIDER_INSTANCES_FILE);
+        let mut instance = provider_fixture();
+        instance.models[0].availability = Some("unavailable".to_owned());
+        write_provider_instances_at(&path, &[instance.clone()]).unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(value[0]["models"][0].get("availability").is_none());
+        assert!(read_provider_instances_at(&path).unwrap()[0].models[0]
+            .availability
+            .is_none());
+        assert!(manual_route_candidates(&[instance.clone()]).is_empty());
+        instance.models[0].availability = None;
+        assert!(
+            manual_route_candidates(&generation_verified_instances(vec![instance.clone()]))
+                .is_empty()
+        );
+        instance.models[0].availability = Some("verified".to_owned());
+        assert_eq!(
+            manual_route_candidates(&generation_verified_instances(vec![instance.clone()])).len(),
+            1
+        );
+        let original_key = availability_key(&instance, "same-model");
+        instance.id = "second-account".to_owned();
+        assert_ne!(original_key, availability_key(&instance, "same-model"));
+    }
     use super::*;
 
     #[test]
@@ -6005,6 +6402,7 @@ mod tests {
                 context_window: Some(128_000),
                 enabled: true,
                 is_default: true,
+                availability: None,
             }],
             created_at: "2026-08-01T00:00:00Z".to_owned(),
             updated_at: "2026-08-01T00:00:00Z".to_owned(),
@@ -7076,7 +7474,10 @@ mod beta41_auto_complexity_regression {
         let question = "DS925+ 是哪个品牌的？";
 
         let unscoped = rank_auto_route_candidates_for_prompt(candidates.clone(), &scaffolding);
-        assert_eq!(unscoped[0].provider_id, "openai", "precondition: long prompts rank cloud first");
+        assert_eq!(
+            unscoped[0].provider_id, "openai",
+            "precondition: long prompts rank cloud first"
+        );
 
         let scoped = rank_auto_route_candidates_for_prompt(
             candidates,
@@ -7091,7 +7492,8 @@ mod beta41_auto_complexity_regression {
     #[test]
     fn execute_input_routing_prompt_is_optional() {
         let without: ExecuteAiCenterInput =
-            serde_json::from_value(serde_json::json!({"routeMode": "auto", "prompt": "hi"})).unwrap();
+            serde_json::from_value(serde_json::json!({"routeMode": "auto", "prompt": "hi"}))
+                .unwrap();
         assert!(without.routing_prompt.is_none());
         let with: ExecuteAiCenterInput = serde_json::from_value(
             serde_json::json!({"routeMode": "auto", "prompt": "long", "routingPrompt": "你好"}),
