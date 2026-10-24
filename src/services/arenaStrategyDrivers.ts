@@ -162,14 +162,14 @@ function collaborationDriver(
         1,
         "collaboration",
         collaborators,
-        "Contribute your distinct expertise independently. Focus on complementary value rather than duplicating other roles.",
+        "Produce a concrete draft of the deliverable requested in the original objective, from your expert perspective. Do not describe or recruit expert roles, design an unrelated product, or merely say what another specialist should do. Respect the user's scope and length constraints.",
       ),
       action(
         "collaboration-review",
         2,
         "collaboration",
         collaborators,
-        "Review the shared work. Correct weaknesses, integrate compatible ideas and explicitly flag unresolved conflicts.",
+        "Review the shared drafts against the original objective. Supply concrete corrections or missing deliverable items, not role assignments. Reject unsupported safety guarantees and unrequested scope. Respect the user's length constraints and flag unresolved conflicts.",
       ),
       action(
         "collaboration-synthesis",
@@ -179,7 +179,7 @@ function collaborationDriver(
         buildArenaEvaluationInstruction(
           "collaboration",
           assembly,
-          "Evaluate and summarize the integrated shared result while preserving material disagreement, assumptions and uncertainty.",
+          "First produce the actual complete deliverable requested by the user, correcting weak drafts rather than copying them. Then evaluate that deliverable and the listed participants only. Preserve material disagreement, assumptions and uncertainty.",
         ),
         "public",
         false,
