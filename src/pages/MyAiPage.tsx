@@ -620,6 +620,46 @@ function MyAiPage({
     }
   }
 
+  async function refreshProviderModels() {
+    if (!setup || setup.phase !== "manage" || isConnecting) return;
+    const instanceId = providerInstanceId(setup.providerId);
+    const instance = providerInstances.find((candidate) => candidate.id === instanceId);
+    if (!instance) return;
+    setIsConnecting(true); setSetupError("");
+    try {
+      const verification = await (await getProviderAdapter(setup.providerId)).testConnection(instanceId);
+      const previous = new Map(instance.models.map((model) => [model.id, model]));
+      const currentDefault = instance.models.find((model) => model.isDefault)?.id;
+      const models = verification.discoveredModels.map((model) => ({
+        ...model,
+        enabled: previous.get(model.id)?.enabled ?? model.enabled,
+        isDefault: model.id === currentDefault,
+      }));
+      const defaultModelId = models.some((model) => model.isDefault)
+        ? currentDefault ?? ""
+        : models.find((model) => model.enabled)?.id ?? models[0]?.id ?? "";
+      const refreshed = await saveProviderInstance({
+        ...instance,
+        models: models.map((model) => ({ ...model, isDefault: model.id === defaultModelId })),
+        connectionState: verification.ok ? "connected" : instance.connectionState,
+        lastTestedAt: verification.checkedAt,
+        updatedAt: new Date().toISOString(),
+      });
+      setProviderInstances(listProviderInstances());
+      setSetup({
+        ...setup,
+        models: refreshed.models,
+        defaultModelId,
+        verificationMessage: `${verification.message} Model catalog refreshed.`,
+        liveTested: verification.level === "live" && verification.ok,
+      });
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : "Model catalog refresh failed.");
+    } finally {
+      setIsConnecting(false);
+    }
+  }
+
   async function continueSetup() {
     if (!setup || isConnecting) return;
 
@@ -1369,6 +1409,14 @@ function MyAiPage({
                       onClick={() => void refreshAccountCredential()}
                     >
                       {isConnecting ? "Refreshing…" : "Refresh account access"}
+                    </button>
+                  )}
+                  {setupDescriptor?.supportsModelDiscovery && (
+                    <button
+                      type="button" className="provider-refresh-button" disabled={isConnecting}
+                      onClick={() => void refreshProviderModels()}
+                    >
+                      {isConnecting ? "Refreshing…" : "Refresh model catalog"}
                     </button>
                   )}
                   {setup.method === "account" && (
