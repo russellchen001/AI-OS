@@ -262,6 +262,11 @@ export function describeChatTaskError(
   workOperation?: string,
 ): string {
   if (isWorkRequest) return describeWorkTaskError(error, workOperation);
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const providerFailure = detail.match(/^The selected Provider returned HTTP (\d{3})(?: \((UNAUTHENTICATED|PERMISSION_DENIED|RESOURCE_EXHAUSTED|NOT_FOUND|INVALID_ARGUMENT|UNAVAILABLE|FAILED_PRECONDITION)\))?$/);
+  if (providerFailure) return `The selected AI returned HTTP ${providerFailure[1]}${providerFailure[2] ? ` (${providerFailure[2]})` : ""}. Check this model's access, quota and connection in My AI.`;
+  if (detail === "The selected Provider needs to be reconnected") return "The selected AI needs to be reconnected in My AI.";
+  if (detail === "The selected Provider is busy or rate limited") return "The selected AI is busy or rate limited. Check its quota or try again later.";
   return error instanceof Error && error.message === "NO_CONNECTED_PROVIDER"
     ? "Connect and test an AI in My AI before starting a conversation."
     : "AI‑OS could not complete this request. Check the selected AI connection and try again.";

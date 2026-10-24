@@ -5351,12 +5351,14 @@ pub(crate) async fn start_provider_response_stream(
         }
     };
     if !response.status().is_success() {
-        let message = match response.status().as_u16() {
-            401 | 403 => "The selected Provider needs to be reconnected",
-            429 => "The selected Provider is busy or rate limited",
-            _ => "The selected Provider rejected the streaming request",
-        }
-        .to_owned();
+        let status = response.status().as_u16();
+        let payload = response.json::<Value>().await.ok();
+        let category = payload.as_ref().and_then(|value| value.pointer("/error/status"))
+            .and_then(Value::as_str).filter(|value| matches!(*value,
+                "UNAUTHENTICATED" | "PERMISSION_DENIED" | "RESOURCE_EXHAUSTED" |
+                "NOT_FOUND" | "INVALID_ARGUMENT" | "UNAVAILABLE" | "FAILED_PRECONDITION"));
+        let message = format!("The selected Provider returned HTTP {status}{}",
+            category.map(|value| format!(" ({value})")).unwrap_or_default());
         let _ = app.emit(
             "ai-center://error",
             AiCenterErrorEvent {
