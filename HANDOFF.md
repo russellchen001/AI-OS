@@ -1,10 +1,46 @@
 <!-- BETA41_HANDOFF_START -->
 
-# START HERE — Beta 6 final installation acceptance (2026-10-24)
+# START HERE — Beta 6 local acceptance snapshot (2026-10-25; NOT RELEASE-READY)
 
 ## ACTIVE continuation after unexpected computer exit (2026-10-24)
 
-### CURRENT — owner unlocked; final real results; Claude owner login pending
+### CURRENT — Claude real call PASS; temporary installation closed
+
+- This snapshot supersedes ALL historical checkpoints below. Branch `beta6`;
+  artifact/code commit `2e3be28333a00931636ee7cb0557d72babd29d8d`. Subsequent
+  commits are acceptance documentation only. No push, tag, release or friend delivery.
+- Owner personally completed official Claude login. Redacted CLI status confirmed
+  loggedIn=true / authMethod=claude.ai. Final installed Verify Claude Code succeeded
+  and connection was saved with account-default model, not a copied subscription key.
+  Manual Chat request returned exactly `BETA6-CLAUDE-LIVE-OK` in 8,014 ms;
+  details show anthropic / claude-code-default. No Provider substitution.
+- PASS: Council 7-call local workflow, Arena 5 generations / 3 rounds / 4 valid
+  scores, real Gemini credential read/refresh/catalog, Rust 1055/0/84 ignored,
+  P16/P17/Provider regression, 6 Claude CLI tests, bundle integrity/data hygiene.
+- FAIL: Council factual/safety/length quality and Arena complete requested answer.
+  Google catalog still lists 2.5 Flash despite generation HTTP 404 NOT_FOUND;
+  catalog membership must NOT be represented as proven generation availability.
+- BLOCKED: Gemini Flash Latest generation HTTP 402 RESOURCE_EXHAUSTED; configured
+  Google project owner permissions/test-user/verification audit; Developer ID /
+  notarization (0 valid identities; Gatekeeper rejected); real clean-user/friend Mac.
+  No-CLI, no/partial-Provider and removed-manual-model cases are simulated coverage.
+- `/Applications/AI OS.app` is now the exact original Beta 5 again, exe SHA-256
+  `91ff470bbb163233f891cf3bc16af86788b42f439aaf7b558a874353ab253ce5`.
+  Restore verifier PASS: version, original hash, full backup diff, strict signature,
+  final Beta6 DMG integrity. User data and personally authorized logins preserved.
+- Final Beta6 app archived at current chat
+  `work/beta6-final-acceptance/final-2e3be28/AI OS.app`; independent original Beta5
+  backup remains `work/beta6-final-acceptance/beta5-backup/AI OS.app`.
+  oMLX left running/idle with original DeepSeek model only (4.19 GB); manager closed.
+- Final delivery DMG: current chat `outputs/AI OS_1.0.1-beta.6_aarch64.dmg`;
+  SHA-256 `6f0206ae90ada9871fa199c3d11279b0d165c9e64d2b69d4247f625da749ca97`.
+  Full results: current chat `outputs/Beta6-最终验收记录.md`.
+- Overall Beta6 acceptance remains FAIL/BLOCKED, not complete or release-approved.
+  Next work is answer quality and external Google/signing/clean-user prerequisites,
+  not another Claude login repair. Do not repeat passed real Claude/Arena routing tests
+  unless relevant code, account or package changes.
+
+### Historical checkpoint — owner unlocked; Claude owner login pending
 
 - This block supersedes older checkpoints below. Owner confirmed Mac unlocked
   and personally handled the Keychain dialog. Code/artifact remains `2e3be28`;
@@ -76,11 +112,12 @@
 ### Latest checkpoint — source `2e3be28333a00931636ee7cb0557d72babd29d8d`
 
 - Installed `aab7837` Council finished all seven local generations; history 3 -> 4.
-  Final output was truncated/malformed JSON, exceeded the requested length, and
+  Final output contained malformed JSON, exceeded the requested length, and
   contained four plan items instead of the requested single reversible suggestion.
   Earlier contributions recommended the explicitly forbidden Disk Utility.
   The old parser nevertheless showed Approve recommendation and zero risks.
   This is a real answer-quality FAIL, not full Council acceptance.
+  Its clipped accessibility preview alone does not prove server-side truncation.
 - `2e3be28` now rejects malformed JSON or missing/wrong recommendation fields.
   A behavioral reproduction confirms malformed synthesis cannot become an
   accepted recommendation. It does not claim to fix small-model answer quality.
