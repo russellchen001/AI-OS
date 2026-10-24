@@ -2,6 +2,128 @@
 
 # START HERE — Beta 6 final installation acceptance (2026-10-24)
 
+## ACTIVE continuation after unexpected computer exit (2026-10-24)
+
+### Latest checkpoint — source `2e3be28333a00931636ee7cb0557d72babd29d8d`
+
+- Installed `aab7837` Council finished all seven local generations; history 3 -> 4.
+  Final output was truncated/malformed JSON, exceeded the requested length, and
+  contained four plan items instead of the requested single reversible suggestion.
+  Earlier contributions recommended the explicitly forbidden Disk Utility.
+  The old parser nevertheless showed Approve recommendation and zero risks.
+  This is a real answer-quality FAIL, not full Council acceptance.
+- `2e3be28` now rejects malformed JSON or missing/wrong recommendation fields.
+  A behavioral reproduction confirms malformed synthesis cannot become an
+  accepted recommendation. It does not claim to fix small-model answer quality.
+- Final package rebuild for `2e3be28` has started. `/Applications` still holds
+  temporary `aab7837`, executable SHA-256
+  `bd7d06fb5660fdee4ac37d2bd06c63ee0a4d143c88491f9453fa37511662ba20`.
+  Older HEAD/package statements below are historical, not the current candidate.
+- Remaining immediate work: final-package Arena scoring retry and safe Gemini
+  generation diagnostics, then Claude last, final artifact receipts and original
+  Beta 5 restoration verification. No release operations are authorized.
+
+- `6b7b593` corrects sanitized HTTP/category handling on the canonical non-streaming
+  cloud path actually used by unified Chat and removes its raw upstream error-body
+  logging. It also explicitly requires subjectId on every Arena strategy score.
+  Final Provider stability and P17 final integration suites PASS after these changes.
+- Installed `aab7837` Arena exact Chinese all-seat reproduction now assigns all
+  three seats Qwen2.5 PINNED. First run failed with 507 while DeepSeek occupied
+  RAM. Official oMLX GUI unloaded DeepSeek from RAM and loaded only Qwen2.5
+  (4.19 GB), preserving files/settings. Retry completed five real generations,
+  but outcome was degraded / max-rounds / Rounds 3 / Scores 0: evaluator omitted
+  subjectId on strategy scores. Strict parser correctly rejected that output.
+  `6b7b593` repackage and real retry are pending.
+- New grounded Council run on installed `aab7837` is underway (history starts at 3).
+  All seats/candidates are local; first-round and cross-review contributions again
+  recommended forbidden Disk Utility and included inaccurate backup/system claims.
+  Current small-model answer quality remains FAIL even if synthesis later finishes.
+
+- Owner made themselves available for Keychain authorization. Installed `5298a44`
+  subsequently completed real Gemini catalog refresh: "Connection tested. 46 models
+  found. Model catalog refreshed." Chat then removed old Gemini 2.0 entries and
+  displayed the refreshed set. This supersedes the earlier Keychain BLOCKED state
+  for that binary. Real generation with manually selected Gemini 3.6 Flash and
+  2.5 Flash both failed; generic Chat errors did not disclose the HTTP category.
+- `aab7837` adds sanitized HTTP status plus a whitelist of Google error-status
+  enums to streaming failures and actionable Chat error messages. Unknown error
+  bodies/strings remain hidden. Provider stability regression passed, including
+  403/429 display and private-string nondisclosure. New package/rerun pending.
+- Final source Rust library rerun after `aab7837`: 1055 passed, 0 failed,
+  84 ignored, 10.93 seconds. Main release app built; component/DMG sealing underway.
+- Google Console read-only inspection: configured resource project is
+  `ai-os-oauth-test`. Current signed-in owner account lacks
+  `clientauthconfig.clients.get/list`, `oauthconfig.verification.get`,
+  `resourcemanager.projects.get` and quota-view permission for this project.
+  The accessible OpenWebUI-MCP project has a different Desktop client from the
+  AI-OS build configuration; it was not substituted. Configured client's type,
+  test users, verification and actual registered redirects remain BLOCKED on
+  project-owner access. Console tabs were closed; no cloud configuration changed.
+
+- Recovery follow-up: `a501ed5` fixes Arena's provider-name alias being treated as
+  a second model request, recognizes Chinese "固定使用", and binds an explicit
+  all-seat request to every seat. The exact Chinese reproduction and existing
+  16 role/model-binding cases pass. `c1441da` prevents a local Council assembly
+  error from falling into the legacy cloud-capable workflow. Council orchestration
+  itself is now local-filtered; no-local and cross-provider model-ID collision
+  behavior checks pass. New candidate build and real reruns are pending.
+- Real installed `5298a44` My AI -> oMLX -> Refresh model catalog returned
+  "Connection tested. 3 models found. Model catalog refreshed." Existing default
+  remained DeepSeek. Light and Dark Arena Chinese/English input, with selection
+  cleared and focus moved away, is readable; Light Plan Arena label also readable.
+  Original Dark preference restored. No CSS changes were required in this recovery.
+
+- Current code HEAD: `754ac23` (after recovery fixes), branch `beta6`;
+  working tree checked clean on recovery. The records below this section predate
+  this continuation where they disagree with it. Work is still in progress.
+- `754ac23` retains a manually selected Chat model when a catalog refresh removes
+  it: unavailable status is visible and Send is disabled until explicit reselection.
+  Previously the Provider-change listener silently reset it to Auto. TypeScript
+  checks pass; the final installed UI rerun is pending.
+- `/Applications/AI OS.app` currently holds the authorized temporary Beta 6,
+  executable SHA-256 `dae70f004c96810da229d0fea1fe717c51273e665a019450b437e87c1497927e`.
+  Version and deep/strict signature verification passed after recovery.
+  Beta 5 has NOT yet been restored in this continuation.
+- Original Beta 5 remains at the current task's
+  `work/beta6-final-acceptance/beta5-moved/AI OS.app`, with an independent complete
+  copy at `work/beta6-final-acceptance/beta5-backup/AI OS.app`; both directories
+  were confirmed present after recovery. Original executable SHA remains
+  `91ff470bbb163233f891cf3bc16af86788b42f439aaf7b558a874353ab253ce5`.
+- Council fixes: `0fe32a2` binds complete report constraints and local-only model
+  assignment; `78620a4` makes execution honor the assignment fallback list.
+  Installed `78620a4` completed seven real oMLX calls with `1/3` local candidates,
+  four seats and history 2 -> 3. Final report had one backup suggestion, two reasons
+  and fewer than 180 characters, with no prohibited product/action recommendation.
+  **Answer quality is still FAIL**: the reason "未提及需要备份" contradicts the
+  prompt's explicit backup request; other seats assumed FileVault without evidence.
+  Earlier commentary calling the whole Council test PASS was too broad. No suggested
+  action was approved or executed. This evidence precedes the final UI/config repack.
+- `5298a44` adds an explicit live Provider model-catalog refresh in My AI while
+  preserving existing enabled flags and default where still present. Installation UI
+  shows both Refresh model catalog and enabled Google Sign in again.
+- Local Google OAuth build configuration was missing from the isolated worktree.
+  The main worktree's existing ignored `.env.local` was copied without displaying
+  values; it remains ignored/uncommitted. Official endpoint, client-ID shape,
+  resource-project and Gemini-scope presence checks passed. No client secret copied.
+- Gemini real manual request in installed `78620a4` passed routing then waited in
+  `SecItemCopyMatching` / `SecKeychainItemCopyContent`, confirmed by process sample.
+  No Google HTTP result was obtained; this does not reproduce or explain the earlier
+  403. The blocked process was closed. Owner Keychain authorization remains BLOCKED.
+- Google Cloud OAuth client type, audience/test users and verification state are
+  not yet inspected in the owner's console. A test-user restriction is a possible
+  cause, not a proven diagnosis of the earlier 403. No bypass or account change.
+- Regression: Rust library 1055 passed / 0 failed / 84 ignored; binary 4 passed;
+  Provider stability, P16 Dynamic Council and P17 final integration passed.
+  Final app/DMG signature and package/data hygiene passed; signature is ad-hoc,
+  not Developer ID/notarized. Stable signing remains an external release blocker.
+- Current built DMG SHA-256:
+  `9fcdc45b290c3ff347d0214ceb971c3276fb09d51f555e085c4afbd1a229dbe1`.
+  Path: `src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.6_aarch64.dmg`.
+- Remaining: finish current real Arena run, assess Council answer quality, verify
+  catalog refresh behavior and final theme UI, clean/partial/no-Provider environment,
+  then Claude last. Restore original Beta 5 and verify before final handoff.
+  No push, tag, Release, credentials/ACL changes or friend delivery.
+
 Authoritative update: the owner authorized temporary replacement of the installed
 app, with mandatory restoration of Beta 5. Branch/worktree remain `beta6` at
 `/Users/russellchen/AI-OS/dashboard-beta6`. No push, tag or Release is authorized.
