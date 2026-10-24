@@ -4,6 +4,15 @@
 
 ## CURRENT — isolated stability candidate built; owner unlock needed for real retest
 
+- Owner unlocked the Mac; isolated `db7687f` App process path was confirmed (not
+  `/Applications`). Qwen model-specific real generation verification PASS. The first
+  full Council run exposed nonzero generic-word profile matches (private-domain
+  marketing, studio operations, legal review, network engineering) on personal notes.
+  Follow-up now requires task-domain lexical evidence as well as seat relevance;
+  absent evidence uses existing built-in seats. Regression includes those exact
+  real catalog entries and passed full P16 dynamic/runtime/integration + frontend.
+  Candidate rebuild/retest is required; previous zero-score-only fix was insufficient.
+
 - Latest runtime code is `db7687ffcad36bb19d0b64a62fc70b361f02771f`, following
   `4e31e0f` implementation and `d9d6a32` negation-scope correction. Runtime code
   is frozen in the built candidate. Later changes only strengthen tests/docs.

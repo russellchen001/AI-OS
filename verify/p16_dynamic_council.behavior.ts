@@ -122,7 +122,13 @@ let irrelevantLoads = 0;
 const irrelevantPlan = await new CouncilChiefOfStaff({
   paperclip: { probe: async () => ({ id: "paperclip", name: "Paperclip", status: "unavailable", detail: "offline", checkedAt: "now" }), listCompanies: async () => [] },
   agencyAgents: {
-    loadCatalog: async () => ({ ...catalog, agents: [{ division: "database", slug: "gaussdb-expert", path: "database/gaussdb.md" }] }),
+    loadCatalog: async () => ({ ...catalog, agents: [
+      { division: "database", slug: "gaussdb-expert", path: "database/gaussdb.md" },
+      { division: "marketing", slug: "marketing-private-domain-operator", path: "marketing/private-domain.md" },
+      { division: "project-management", slug: "project-management-studio-operations", path: "project-management/operations.md" },
+      { division: "legal", slug: "legal-document-review", path: "legal/review.md" },
+      { division: "engineering", slug: "engineering-china-network-engineer", path: "engineering/network.md" },
+    ] }),
     loadAgent: async () => { irrelevantLoads += 1; return "Unrelated database profile must never enter note advice."; },
   },
   listModels: () => models,

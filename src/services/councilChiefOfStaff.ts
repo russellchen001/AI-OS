@@ -141,7 +141,9 @@ function selectAgencyAgent(
   requirement: CouncilSeatRequirement,
   catalog: AgencyAgentsCatalog,
   usedPaths: Set<string>,
+  objective: string,
 ): AgencyAgentDefinition | undefined {
+  const taskTerms = tokens([objective]);
   const wanted = tokens([
     requirement.purpose,
     ...requirement.requiredExpertise,
@@ -153,6 +155,10 @@ function selectAgencyAgent(
     .filter((agent) => !usedPaths.has(agent.path))
     .map((agent) => {
       const available = tokens([agent.slug, agent.division]);
+      // Seat boilerplate (domain, review, operations...) is not task-domain evidence.
+      if (![...available].some((token) => taskTerms.has(token))) {
+        return { agent, score: 0 };
+      }
       const score = [...wanted].reduce(
         (total, token) => total + (available.has(token) ? 3 : agent.slug.includes(token) ? 1 : 0),
         0,
@@ -361,7 +367,7 @@ export class CouncilChiefOfStaff {
     for (let index = 0; index < requirements.length; index += 1) {
       const requirement = requirements[index];
       const definition = catalog
-        ? selectAgencyAgent(requirement, catalog, usedPaths)
+        ? selectAgencyAgent(requirement, catalog, usedPaths, objective)
         : undefined;
       if (definition) usedPaths.add(definition.path);
       let profile: string | undefined;
