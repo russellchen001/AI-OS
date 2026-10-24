@@ -2,7 +2,36 @@
 
 # START HERE — Beta 6 core stability repair (2026-10-25; REAL RETEST PENDING)
 
-## CURRENT — scoped stability implementation; isolated package build next
+## CURRENT — isolated stability candidate built; owner unlock needed for real retest
+
+- Latest runtime code is `db7687ffcad36bb19d0b64a62fc70b361f02771f`, following
+  `4e31e0f` implementation and `d9d6a32` negation-scope correction. Runtime code
+  is frozen in the built candidate. Later changes only strengthen tests/docs.
+  Availability keys also bind creation generation and credential-item namespace;
+  reconnect/new connection cannot inherit old model proof, ordinary refresh retains it.
+- Final build exited 0. Code/artifact commit `db7687f`; test-only follow-up `681983b`.
+  Isolated App: current chat `work/beta6-stability-20261025/candidate-db7687f/AI OS.app`.
+  Executable SHA-256 `3fb666e7b3e157fd50565354c99d2f6df6b18de9001675b4e7e766577cea64a4`.
+  New DMG: current chat `outputs/AI OS_1.0.1-beta.6_stability-db7687f_aarch64.dmg`;
+  SHA-256 `01566b70fee0869497702ca4ead8df64f18161a6ce7ab5794e283da031bf4cae`.
+  DMG checksum verification, deep/strict signature and package/data hygiene PASS;
+  still ad-hoc/not notarized.
+- The Mac remained locked when the isolated App was opened after build. Owner
+  unlock question is pending. REAL Council/Arena/Chat acceptance has NOT run on this
+  candidate; do not label quality PASS or claim the whole task complete.
+- After unlock: open ONLY that isolated App path; verify Qwen via My AI model-specific
+  real generation (unknown models intentionally absent from normal lists). Run the
+  original <=180-character Council notes task; inspect full final accuracy/counts/
+  locality/original preservation. Run 3-step Qwen-pinned Arena; compare raw answer
+  with Final task answer and inspect scores. Verify Google 2.5 Flash via management
+  only; 404 must stay unavailable after catalog refresh/restart. Preserve Manual on
+  My AI navigation; verify an authorized CLI model only as shared-code regression.
+  Native completion logs are in `.ai-os/logs/ai-os.log`, marker AI_CENTER_COMPLETION;
+  they contain finish reason/char count, not credentials/prompts/raw user output.
+- During build preparation the Mac locked. Owner was asked to unlock manually;
+  real UI/model retests must wait for that. Build/regression work continues safely.
+  oMLX currently has ONLY Qwen2.5-7B-Instruct-4bit loaded (4.19 GB), temporarily;
+  restore original DeepSeek-only RAM state after this continuation's tests.
 
 - Owner narrowed this continuation to Council quality, Arena completeness and
   accurate Chat/AI Center model availability. No formal App overwrite is authorized.
@@ -32,7 +61,7 @@
 - Full cargo fmt --check reports pre-existing untouched Cloud Drive/browser/etc
   formatting differences (baseline reproduced from HEAD). Target providers.rs and
   git diff --check PASS. Do not bulk-format unrelated modules to hide this baseline.
-- REAL installed Council/Arena/model-verification retests and new DMG are pending.
+- REAL installed Council/Arena/model-verification retests are pending (DMG built above).
   Do not report the above behavior tests as real-answer quality PASS. Prior package
   evidence below is historical. No push/tag/release or external delivery.
 
@@ -40,7 +69,7 @@
 
 ### Historical — Claude real call PASS; temporary installation closed
 
-- This snapshot supersedes ALL historical checkpoints below. Branch `beta6`;
+- Historical prior-acceptance snapshot; CURRENT above supersedes it. Branch `beta6`;
   artifact/code commit `2e3be28333a00931636ee7cb0557d72babd29d8d`. Subsequent
   commits are acceptance documentation only. No push, tag, release or friend delivery.
 - Owner personally completed official Claude login. Redacted CLI status confirmed
