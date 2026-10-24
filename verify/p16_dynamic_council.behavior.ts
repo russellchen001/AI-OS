@@ -126,6 +126,37 @@ assert(
   "local-only Council could fall back to a cloud model",
 );
 
+const localRuntimeChoices: string[] = [];
+const localRuntime = new CouncilRuntime({
+  listModels: () => [
+    ...models,
+    { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-1", label: "Local 1" },
+    { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-2", label: "Local 2" },
+  ],
+  stream: (messages, choice, onChunk) => {
+    localRuntimeChoices.push(`${choice?.providerId}:${choice?.modelId}`);
+    const text = messages[1]?.content.includes("Return JSON only")
+      ? JSON.stringify({ summary: "Local", recommendedPlan: [], rationale: [], disagreements: [], risks: [], assumptions: [], uncertainty: [] })
+      : "Local contribution";
+    return {
+      operationId: `local-${localRuntimeChoices.length}`,
+      result: Promise.resolve().then(() => {
+        onChunk(text);
+        return { cancelled: false, response: { providerId: choice!.providerId, modelId: choice!.modelId, text, metadata: {} as AiCenterResponse["metadata"] } };
+      }),
+      cancel: async () => undefined,
+    };
+  },
+  resolveContext: async () => [],
+  now: () => 1,
+  uuid: () => "local-runtime",
+});
+await localRuntime.run({ prompt: localPlan.objective, members: [], assemblyPlan: localPlan });
+assert(
+  localRuntimeChoices.every((choice) => choice.startsWith("omlx:local-")),
+  "local-only Council runtime attempted a cloud model",
+);
+
 const metadata = {
   providerId: "chatgpt",
   modelId: "gpt-business",

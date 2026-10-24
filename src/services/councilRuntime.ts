@@ -243,7 +243,13 @@ export class CouncilRuntime {
       throw new Error(`${member.name}: no AI Center models are connected.`);
     }
 
-    const preferred = availableModels.find((model) =>
+    const allowedModelIds = assignedModel
+      ? new Set([assignedModel.modelId, ...assignedModel.fallbackModelIds])
+      : undefined;
+    const eligibleModels = allowedModelIds
+      ? availableModels.filter((model) => allowedModelIds.has(model.modelId))
+      : availableModels;
+    const preferred = eligibleModels.find((model) =>
       assignedModel
         ? model.providerId === assignedModel.providerId &&
           model.providerInstanceId === assignedModel.providerInstanceId &&
@@ -252,8 +258,11 @@ export class CouncilRuntime {
     );
     const candidates: AiCenterModelChoice[] = [
       ...(preferred ? [preferred] : []),
-      ...availableModels.filter((model) => model !== preferred),
+      ...eligibleModels.filter((model) => model !== preferred),
     ];
+    if (!candidates.length) {
+      throw new Error(`${member.name}: assigned AI Center models are unavailable.`);
+    }
     const errors: string[] = [];
 
     for (let index = 0; index < candidates.length; index += 1) {
