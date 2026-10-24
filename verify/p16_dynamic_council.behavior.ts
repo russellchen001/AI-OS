@@ -201,12 +201,16 @@ assert(
 );
 invalidLocalSynthesis = true;
 let invalidRecommendationRejected = false;
+let rejectedSynthesisOutput = "";
 try {
-  await localRuntime.run({ prompt: localPlan.objective, members: [], assemblyPlan: localPlan });
+  await localRuntime.run({ prompt: localPlan.objective, members: [], assemblyPlan: localPlan, callbacks: {
+    onMemberFailed: (step) => { if (step.stage === "final-synthesis") rejectedSynthesisOutput = step.output; },
+  } });
 } catch (error) {
   invalidRecommendationRejected = String(error).includes("invalid JSON");
 }
 assert(invalidRecommendationRejected, "malformed synthesis was accepted as a completed recommendation");
+assert(rejectedSynthesisOutput === '{"summary":"Invalid","rationale":["bad":"value"]}', "rejected raw synthesis output was lost");
 
 const metadata = {
   providerId: "chatgpt",

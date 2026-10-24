@@ -1144,7 +1144,9 @@ function AiCouncilPage({
                             step.providerId
                           }
                           content={
-                            step.output ||
+                            (step.status === "error" && step.output
+                              ? `${step.error ?? "Rejected output"}\n\n${step.output}`
+                              : step.output) ||
                             step.error ||
                             ""
                           }

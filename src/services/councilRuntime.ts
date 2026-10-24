@@ -344,6 +344,7 @@ export class CouncilRuntime {
     };
     const startedAt = this.dependencies.now();
     let activeProviderId = member.providerId;
+    let attemptedOutput = "";
     const runningStep: CouncilStepResult = {
       id: stepId,
       role: stepId,
@@ -360,6 +361,10 @@ export class CouncilRuntime {
     callbacks?.onMemberStarted?.(runningStep);
     const wrappedCallbacks = {
       ...callbacks,
+      onChunk: (memberId: string, providerId: ProviderId, text: string) => {
+        attemptedOutput += text;
+        callbacks?.onChunk?.(memberId, providerId, text);
+      },
       onProviderChanged: (
         memberId: string,
         providerId: ProviderId,
@@ -367,6 +372,7 @@ export class CouncilRuntime {
         total: number,
       ) => {
         activeProviderId = providerId;
+        attemptedOutput = "";
         callbacks?.onProviderChanged?.(memberId, providerId, attempt, total);
       },
     };
@@ -417,6 +423,7 @@ export class CouncilRuntime {
         ...runningStep,
         providerId: activeProviderId,
         status: "error",
+        output: attemptedOutput,
         error: error instanceof Error ? error.message : String(error),
         completedAt: this.dependencies.now(),
       };
