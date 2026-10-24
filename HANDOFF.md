@@ -2,7 +2,31 @@
 
 # START HERE — Beta 6 core stability repair (2026-10-25; REAL RETEST PENDING)
 
-## CURRENT — owner unlocked; real core retests and Council follow-up in progress
+## CURRENT — frozen 50d077d built; Mac relocked before new-package real acceptance
+
+- Latest code/artifact commit `50d077d63a6dfe5085fbdc476ba3fc8188378baa`; clean code
+  worktree at build start. Full build exited 0; signed-bundle integrity and package
+  privacy checks PASS. This supersedes the first `db7687f` candidate below.
+- Frozen-candidate postbuild Rust library rerun: 1060 passed / 0 failed / 84 ignored;
+  delivered DMG checksum and copied App deep/strict signature PASS. Formal Beta5
+  executable hash rechecked unchanged (`91ff470b...253ce5`). Mac remained locked on
+  the final retry; only HANDOFF is changed after the frozen code commit.
+- Isolated App: current chat `work/beta6-stability-20261025/candidate-50d077d/AI OS.app`;
+  executable SHA-256 `74fcbc4a7f630b7842adc8f886009a62dd6919d1b9aeb4c794a790f8a08c86cc`.
+  New DMG: current chat `outputs/AI OS_1.0.1-beta.6_stability-50d077d_aarch64.dmg`;
+  SHA-256 `49db1a76b7f2e495e45aab7f46a5492a356d50db7e0e034236d418bb2343c542`.
+- Owner unlocked for the first real run, but the Mac relocked during rebuild. CUA
+  could not open the new App at 02:57; a new unlock question is pending. Do NOT mark
+  the new candidate's Council/Arena/Chat quality PASS from earlier package evidence.
+  The last demonstrated local Council/Arena quality remains FAIL; newly patched
+  profile/domain binding and Arena full-seat control still require installed retests.
+- Resume ONLY the `candidate-50d077d` path. Check persisted two-model eligibility;
+  rerun original local Council and Qwen-pinned Arena, compare raw/final answer;
+  separately run the explicitly cloud-authorized Claude-pinned Arena control and
+  verify ALL seats are pinned before Start. Do not silently replace a local-only task.
+  Recheck Google model-specific 404 if owner completes any needed Keychain prompt.
+  Finish by restoring original DeepSeek-only RAM (currently Qwen-only) and checking
+  original `/Applications` Beta5 hash; no formal App overwrite is authorized.
 
 - Follow-ups: `c2727a6` task-evidence profile gate; `c79bf20` rejected Council raw
   output preservation; `34c48d6` concrete Arena deliverable drafts. Actual first Arena
@@ -34,9 +58,9 @@
   also retains rejected raw synthesis output in the failed step beside its reason;
   full P16 + frontend PASS. A clean frozen rebuild must follow these code commits.
 
-- Latest runtime code is `db7687ffcad36bb19d0b64a62fc70b361f02771f`, following
+- First candidate runtime was `db7687ffcad36bb19d0b64a62fc70b361f02771f`, following
   `4e31e0f` implementation and `d9d6a32` negation-scope correction. Runtime code
-  is frozen in the built candidate. Later changes only strengthen tests/docs.
+  was frozen in that candidate; subsequent runtime fixes are listed above.
   Availability keys also bind creation generation and credential-item namespace;
   reconnect/new connection cannot inherit old model proof, ordinary refresh retains it.
 - Final build exited 0. Code/artifact commit `db7687f`; test-only follow-up `681983b`.
