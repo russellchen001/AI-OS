@@ -127,6 +127,7 @@ assert(
 );
 
 const localRuntimeChoices: string[] = [];
+let invalidLocalSynthesis = false;
 let missingLocalRejected = false;
 try {
   await chief.assemble({ objective: "仅使用本地模型，禁止云端调用" });
@@ -144,7 +145,7 @@ const localRuntime = new CouncilRuntime({
   stream: (messages, choice, onChunk) => {
     localRuntimeChoices.push(`${choice?.providerId}:${choice?.modelId}`);
     const text = messages[1]?.content.includes("Return JSON only")
-      ? JSON.stringify({ summary: "Local", recommendedPlan: [], rationale: [], disagreements: [], risks: [], assumptions: [], uncertainty: [] })
+      ? invalidLocalSynthesis ? '{"summary":"Invalid","rationale":["bad":"value"]}' : JSON.stringify({ summary: "Local", recommendedPlan: [], rationale: [], disagreements: [], risks: [], assumptions: [], uncertainty: [] })
       : "Local contribution";
     return {
       operationId: `local-${localRuntimeChoices.length}`,
@@ -164,6 +165,14 @@ assert(
   localRuntimeChoices.every((choice) => choice.startsWith("omlx:local-")),
   "local-only Council runtime attempted a cloud model",
 );
+invalidLocalSynthesis = true;
+let invalidRecommendationRejected = false;
+try {
+  await localRuntime.run({ prompt: localPlan.objective, members: [], assemblyPlan: localPlan });
+} catch (error) {
+  invalidRecommendationRejected = String(error).includes("invalid JSON");
+}
+assert(invalidRecommendationRejected, "malformed synthesis was accepted as a completed recommendation");
 
 const metadata = {
   providerId: "chatgpt",

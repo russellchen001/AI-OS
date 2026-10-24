@@ -134,7 +134,12 @@ function parseRecommendation(
       parsed = value as Record<string, unknown>;
     }
   } catch {
-    parsed = {};
+    throw new Error("Council synthesis returned invalid JSON. Review the individual contributions; no recommendation was accepted.");
+  }
+  if (typeof parsed.summary !== "string" || !parsed.summary.trim() ||
+      ["recommendedPlan", "rationale", "disagreements", "risks", "assumptions", "uncertainty"].some((key) =>
+        !Array.isArray(parsed[key]) || (parsed[key] as unknown[]).some((item) => typeof item !== "string"))) {
+    throw new Error("Council synthesis returned an invalid recommendation schema. No recommendation was accepted.");
   }
   return {
     id,
