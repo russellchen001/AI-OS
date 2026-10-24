@@ -5,7 +5,16 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { ArenaContextStore } from "./arenaContextStore";
-import { collectArenaOutcome } from "./arenaOutcome";
+import { executionSource } from "./aiCenterObservability";
+import {
+  ARENA_SUPERSEDED_TAG,
+  arenaEvaluationOutputViolations,
+  collectArenaOutcome,
+} from "./arenaOutcome";
+import {
+  localModelGate,
+  type LocalModelGate,
+} from "./localModelGate";
 import { buildArenaStrategyDriver } from "./arenaStrategyDrivers";
 import type {
   ArenaAssemblyPlan,
@@ -24,13 +33,34 @@ type ArenaRuntimeDependencies = {
   stream: typeof streamThroughAiCenter;
   now: () => number;
   uuid: () => string;
+  localGate?: LocalModelGate;
 };
 
 const defaultDependencies: ArenaRuntimeDependencies = {
   stream: streamThroughAiCenter,
   now: () => Date.now(),
   uuid: () => crypto.randomUUID(),
+  localGate: localModelGate,
 };
+
+const EVALUATION_MARKER = "AI_OS_ARENA_EVALUATION_JSON";
+
+/** The single re-ask an evaluator gets after breaking the JSON contract. */
+function correctionAction(
+  action: ArenaStrategyAction,
+  violations: string[],
+): ArenaStrategyAction {
+  return {
+    ...action,
+    instruction: [
+      action.instruction,
+      "",
+      "Your previous evaluation JSON (visible above) was rejected for these reasons:",
+      ...violations.map((violation) => `- ${violation}`),
+      "Return the corrected complete JSON object only. Keep your judgement; fix only what was rejected.",
+    ].join("\n"),
+  };
+}
 
 class ArenaCancelledError extends Error {
   constructor() {
@@ -405,6 +435,14 @@ export class ArenaRuntime {
       this.assertCanContinue();
       await this.waitIfPaused();
 
+      const gate = this.dependencies.localGate;
+      const release =
+        gate && executionSource(choice) === "local"
+          ? await gate.acquire(
+              `${choice.providerInstanceId}/${choice.modelId}`,
+            )
+          : () => undefined;
+
       const startedAt = this.dependencies.now();
 
       this.emit(
@@ -420,6 +458,8 @@ export class ArenaRuntime {
       );
 
       try {
+        this.assertCanContinue();
+
         const stream = this.dependencies.stream(
           messages,
           choice,
@@ -494,8 +534,10 @@ export class ArenaRuntime {
           callback,
         );
 
+        release();
         return entry;
       } catch (error) {
+        release();
         this.activeStreams.delete(participant.seatId);
 
         if (
@@ -676,28 +718,69 @@ export class ArenaRuntime {
             continue;
           }
 
+          const invoke = (
+            seatId: string,
+            current: ArenaStrategyAction,
+          ) =>
+            this.invokeParticipant(
+              assembly,
+              participantFromSeat(assembly, seatId),
+              current,
+              context,
+              sessionId,
+              seed,
+              Math.max(
+                0,
+                config.maxRetriesPerInvocation ?? 1,
+              ),
+              metrics,
+              events,
+              onEvent,
+            );
+
           const results = await Promise.allSettled(
             actorIds.map(async (seatId) => {
-              const participant = participantFromSeat(
-                assembly,
-                seatId,
+              const entry = await invoke(seatId, action);
+
+              if (
+                !entry ||
+                !action.instruction.includes(EVALUATION_MARKER)
+              ) {
+                return entry;
+              }
+
+              const violations = arenaEvaluationOutputViolations(
+                entry.content,
+                { assembly, driver },
               );
 
-              return this.invokeParticipant(
-                assembly,
-                participant,
-                action,
-                context,
-                sessionId,
-                seed,
-                Math.max(
-                  0,
-                  config.maxRetriesPerInvocation ?? 1,
-                ),
-                metrics,
-                events,
-                onEvent,
-              );
+              if (!violations.length) return entry;
+
+              // One correction; a second invalid output stays and is
+              // rejected by governance.
+              let corrected: ArenaContextEntry | undefined;
+
+              try {
+                corrected = await invoke(
+                  seatId,
+                  correctionAction(action, violations),
+                );
+              } catch (error) {
+                if (
+                  error instanceof ArenaCancelledError ||
+                  error instanceof ArenaStoppedError
+                ) {
+                  throw error;
+                }
+
+                return entry;
+              }
+
+              if (corrected) {
+                context.tag(entry.id, ARENA_SUPERSEDED_TAG);
+              }
+
+              return corrected ?? entry;
             }),
           );
 

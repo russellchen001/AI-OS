@@ -18,6 +18,15 @@ export class ArenaContextStore {
     return entry;
   }
 
+  /** Adds a tag to an entry already recorded; the entry stays visible. */
+  tag(id: string, tag: string): void {
+    const entry = this.entries.find((candidate) => candidate.id === id);
+
+    if (entry && !entry.tags?.includes(tag)) {
+      entry.tags = [...(entry.tags ?? []), tag];
+    }
+  }
+
   all(): ArenaContextEntry[] {
     return this.entries.map((entry) => ({
       ...entry,

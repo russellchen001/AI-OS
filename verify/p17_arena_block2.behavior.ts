@@ -7,6 +7,9 @@ import {
 import {
   ArenaRuntime,
 } from "../src/services/arenaRuntime";
+import {
+  LocalModelGate,
+} from "../src/services/localModelGate";
 import type {
   ArenaAssemblyPlan,
   ArenaModelAssignment,
@@ -404,8 +407,9 @@ const tests: Array<{
       assert.equal(result.status, "completed");
       assert.equal(result.strategy, "competition");
       assert.equal(result.roundsCompleted, 2);
-      assert.equal(invocations, 3);
-      assert.equal(result.metrics.length, 3);
+      // The judge's non-JSON reply gets its one correction re-ask.
+      assert.equal(invocations, 4);
+      assert.equal(result.metrics.length, 4);
       assert.ok(
         result.contexts.some(
           (entry) =>
@@ -561,6 +565,186 @@ const tests: Array<{
         invoked.includes("must-not-run"),
         false,
       );
+    },
+  },
+
+  {
+    name: "invalid evaluator JSON gets exactly one correction naming each violation",
+    run: async () => {
+      const prompts: string[] = [];
+      const valid = JSON.stringify({
+        answer: "1. Copy notes\n2. Verify copy\n3. Restore one note",
+        taskComplete: true,
+        incompleteReason: "",
+        summary: "ok",
+        scores: [
+          { scope: "participant", subjectId: "p1", criterionId: "coverage", value: 80 },
+          { scope: "participant", subjectId: "p1", criterionId: "correctness", value: 70 },
+          { scope: "participant", subjectId: "p2", criterionId: "coverage", value: 75 },
+        ],
+        votes: [],
+        explicitWinnerIds: [],
+        consensusReached: true,
+        ruleComplete: true,
+        rationale: ["ok"],
+      });
+      const invalid = JSON.stringify({
+        ...JSON.parse(valid),
+        scores: [
+          { scope: "participant", subjectId: "p1", criterionId: "consensus", value: 80 },
+          { scope: "participant", subjectId: "p2", criterionId: "coverage", value: 75 },
+          { scope: "participant", subjectId: "p2", criterionId: "coverage", value: 60 },
+        ],
+      });
+
+      const runtime = new ArenaRuntime({
+        stream: (messages) => {
+          const text = messages.map((message) => message.content).join("\n");
+
+          if (!text.includes("AI_OS_ARENA_EVALUATION_JSON")) {
+            return fakeStream("1. draft");
+          }
+
+          prompts.push(text);
+          return fakeStream(prompts.length === 1 ? invalid : valid);
+        },
+        now: () => 1000,
+        uuid: () => "correction-session",
+      });
+
+      const result = await runtime.run(
+        assembly("collaboration", [
+          seat("p1", "participant"),
+          seat("p2", "participant"),
+          seat("synth", "synthesizer"),
+        ]),
+      );
+
+      assert.equal(prompts.length, 2);
+      assert.match(prompts[1], /Unknown criterion "consensus"/);
+      assert.match(prompts[1], /scored twice on "coverage"/);
+      assert.equal(result.degraded, false, result.errors.join(" | "));
+      assert.equal(result.outcome.scores.length, 3);
+      assert.ok(
+        result.contexts.some((entry) =>
+          entry.tags?.includes("arena-superseded"),
+        ),
+      );
+    },
+  },
+
+  {
+    name: "evaluator still invalid after its one correction is rejected, never passed",
+    run: async () => {
+      let evaluations = 0;
+      const runtime = new ArenaRuntime({
+        stream: (messages) => {
+          const text = messages.map((message) => message.content).join("\n");
+
+          if (!text.includes("AI_OS_ARENA_EVALUATION_JSON")) {
+            return fakeStream("1. draft");
+          }
+
+          evaluations += 1;
+          return fakeStream(JSON.stringify({
+            answer: "1. a\n2. b\n3. c",
+            taskComplete: true,
+            summary: "x",
+            scores: [{ scope: "participant", subjectId: "ghost", criterionId: "coverage", value: 50 }],
+            votes: [],
+            explicitWinnerIds: [],
+            consensusReached: false,
+            ruleComplete: true,
+            rationale: [],
+          }));
+        },
+        now: () => 1000,
+        uuid: () => "still-invalid-session",
+      });
+
+      const result = await runtime.run(
+        assembly("collaboration", [
+          seat("p1", "participant"),
+          seat("p2", "participant"),
+          seat("synth", "synthesizer"),
+        ]),
+      );
+
+      assert.equal(evaluations, 2);
+      assert.equal(result.degraded, true);
+      assert.equal(result.outcome.scores.length, 0);
+      assert.ok(
+        result.errors.some((error) => /Unknown participant "ghost"/.test(error)),
+        result.errors.join(" | "),
+      );
+    },
+  },
+
+  {
+    name: "different local models never generate at the same time; cloud and same-model calls do",
+    run: async () => {
+      const gate = new LocalModelGate();
+      const active = new Map<string, number>();
+      let overlapOfDifferentLocal = false;
+      let cloudOverlap = false;
+      let sameLocalOverlap = false;
+
+      const choices: Record<string, AiCenterModelChoice> = {
+        q1: { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "qwen-a", label: "a" },
+        q2: { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "qwen-a", label: "a" },
+        d1: { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "deepseek", label: "d" },
+        c1: model("cloud"),
+      };
+
+      const plan = assembly("compare", [
+        seat("q1", "participant"),
+        seat("q2", "participant"),
+        seat("d1", "participant"),
+        seat("c1", "participant"),
+        seat("judge", "judge"),
+      ]);
+      plan.modelAssignments = plan.modelAssignments.map((item) => ({
+        ...item,
+        choice: choices[item.seatId] ?? item.choice,
+      }));
+
+      const runtime = new ArenaRuntime({
+        stream: (_messages, choice) => {
+          const id = requireAssignedChoice(choice).modelId;
+          const local = requireAssignedChoice(choice).providerId === "omlx";
+          const others = [...active.entries()].filter(([, count]) => count > 0);
+
+          if (local && others.some(([other]) => other !== id && other !== "cloud")) {
+            overlapOfDifferentLocal = true;
+          }
+          if (local && (active.get(id) ?? 0) > 0) sameLocalOverlap = true;
+          if (!local && others.length) cloudOverlap = true;
+          if (local && (active.get("cloud") ?? 0) > 0) cloudOverlap = true;
+
+          active.set(id, (active.get(id) ?? 0) + 1);
+
+          return {
+            operationId: crypto.randomUUID(),
+            result: new Promise((resolve) => setTimeout(() => {
+              active.set(id, (active.get(id) ?? 1) - 1);
+              resolve({
+                response: { providerId: "test", modelId: id, text: "ok", metadata: {} as never },
+                cancelled: false,
+              });
+            }, 20)),
+            cancel: async () => undefined,
+          };
+        },
+        now: () => 1000,
+        uuid: () => "local-gate-session",
+        localGate: gate,
+      });
+
+      await runtime.run(plan);
+
+      assert.equal(overlapOfDifferentLocal, false);
+      assert.equal(sameLocalOverlap, true);
+      assert.equal(cloudOverlap, true);
     },
   },
 ];

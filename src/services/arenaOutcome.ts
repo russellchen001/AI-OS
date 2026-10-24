@@ -22,6 +22,9 @@ import type {
   ArenaVote,
 } from "../types/arenaGovernance";
 
+/** Tag on an evaluator output replaced by its one correction. */
+export const ARENA_SUPERSEDED_TAG = "arena-superseded";
+
 type CollectionInput = {
   assembly: ArenaAssemblyPlan;
   driver: ArenaStrategyDriverPlan;
@@ -32,6 +35,11 @@ type CollectionInput = {
   degraded: boolean;
 };
 
+type EvaluationSubjects = Pick<
+  CollectionInput,
+  "assembly" | "driver"
+>;
+
 export type ArenaOutcomeCollection = {
   outcome: ArenaOutcome;
   errors: string[];
@@ -40,7 +48,7 @@ export type ArenaOutcomeCollection = {
 function subjectValid(
   scope: "participant" | "team" | "strategy",
   id: string,
-  input: CollectionInput,
+  input: EvaluationSubjects,
 ): boolean {
   if (scope === "strategy") {
     return id === input.driver.strategy;
@@ -61,7 +69,7 @@ function subjectValid(
 
 function winnerScope(
   ids: string[],
-  input: CollectionInput,
+  input: EvaluationSubjects,
 ): "participant" | "team" | undefined {
   if (!ids.length) return undefined;
 
@@ -96,40 +104,72 @@ function winnerScope(
   return scopes[0];
 }
 
-function evaluationValid(
+/** Why an evaluation breaks the governance contract; empty when valid. */
+export function arenaEvaluationViolations(
   parsed: ParsedArenaEvaluation,
-  input: CollectionInput,
-): boolean {
-  const criteria = new Set(
-    ARENA_EVALUATION_CRITERIA[
-      input.driver.strategy
-    ],
-  );
+  input: EvaluationSubjects,
+): string[] {
+  const allowed = ARENA_EVALUATION_CRITERIA[
+    input.driver.strategy
+  ];
+  const criteria = new Set(allowed);
+  const violations: string[] = [];
+  const seen = new Set<string>();
 
-  return parsed.scores.every(
-    (score) =>
-      criteria.has(score.criterionId) &&
-      subjectValid(
-        score.scope,
-        score.subjectId,
-        input,
-      ),
-  ) &&
-    parsed.votes.every(
-      (vote) =>
-        subjectValid(
-          vote.scope,
-          vote.targetId,
-          input,
-        ),
-    ) &&
-    (
-      !parsed.explicitWinnerIds.length ||
-      !!winnerScope(
-        parsed.explicitWinnerIds,
-        input,
-      )
+  for (const score of parsed.scores) {
+    if (!criteria.has(score.criterionId)) {
+      violations.push(
+        `Unknown criterion "${score.criterionId}"; use only ${allowed.join(", ")}.`,
+      );
+    }
+
+    if (!subjectValid(score.scope, score.subjectId, input)) {
+      violations.push(
+        `Unknown ${score.scope} "${score.subjectId}" in scores.`,
+      );
+    }
+
+    const key = `${score.scope}\u0000${score.subjectId}\u0000${score.criterionId}`;
+
+    if (seen.has(key)) {
+      violations.push(
+        `${score.scope} "${score.subjectId}" was scored twice on "${score.criterionId}".`,
+      );
+    }
+
+    seen.add(key);
+  }
+
+  for (const vote of parsed.votes) {
+    if (!subjectValid(vote.scope, vote.targetId, input)) {
+      violations.push(
+        `Unknown ${vote.scope} "${vote.targetId}" in votes.`,
+      );
+    }
+  }
+
+  if (
+    parsed.explicitWinnerIds.length &&
+    !winnerScope(parsed.explicitWinnerIds, input)
+  ) {
+    violations.push(
+      `Winner IDs ${parsed.explicitWinnerIds.join(", ")} must all be listed participant IDs or all be listed team IDs.`,
     );
+  }
+
+  return [...new Set(violations)];
+}
+
+/** Violations of one raw evaluator output, including unparseable JSON. */
+export function arenaEvaluationOutputViolations(
+  content: string,
+  input: EvaluationSubjects,
+): string[] {
+  const parsed = parseArenaEvaluation(content);
+
+  return parsed
+    ? arenaEvaluationViolations(parsed, input)
+    : ["The output was not one complete JSON object in the required shape."];
 }
 
 export function collectArenaOutcome(
@@ -181,15 +221,17 @@ export function collectArenaOutcome(
       return;
     }
 
+    if (entry.tags?.includes(ARENA_SUPERSEDED_TAG)) return;
+
     const parsed =
       parseArenaEvaluation(entry.content);
+    const violations = parsed
+      ? arenaEvaluationViolations(parsed, input)
+      : [];
 
-    if (
-      !parsed ||
-      !evaluationValid(parsed, input)
-    ) {
+    if (!parsed || violations.length) {
       errors.push(
-        `Arena evaluator "${entry.authorId}" returned invalid governance output.`,
+        `Arena evaluator "${entry.authorId}" returned invalid governance output${violations.length ? `: ${violations.join(" ")}` : "."}`,
       );
       return;
     }
