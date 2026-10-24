@@ -312,6 +312,9 @@ function discoverCatalogModelMentions(
     ].join(":");
 
     for (const alias of modelAliases(model)) {
+      if (alias.toLowerCase() === model.providerId.toLowerCase() &&
+          availableModels.some((candidate) => candidate.providerId === model.providerId &&
+            objective.toLowerCase().includes(candidate.modelId.toLowerCase()))) continue;
       const matcher = new RegExp(
         escapeRegExp(alias),
         "gi",
@@ -385,7 +388,7 @@ function discoverCatalogModelMentions(
 function objectiveHasHardSelectionLanguage(
   objective: string,
 ): boolean {
-  return /(?:必须|只用|固定用|指定用|一定要用|must use|only use|use exactly|\bpin(?:ned)?\b)/i.test(
+  return /(?:必须|只用|固定(?:使)?用|指定用|一定要用|must use|only use|use exactly|\bpin(?:ned)?\b)/i.test(
     objective,
   );
 }
@@ -561,10 +564,10 @@ export function extractUserModelConstraints(
           ? "prefer"
           : "prefer";
 
-    return resolvedConstraint(
-      mention,
-      mode,
-    );
+    return {
+      ...resolvedConstraint(mention, mode),
+      allSeats: mentions.length === 1 && /(?:all|every)\s+(?:\w+\s+)?(?:seats?|participants?|roles?)|(?:全部|所有|三个|各个)席位|席位都/i.test(objective),
+    };
   });
 
   const seen = new Set<string>();

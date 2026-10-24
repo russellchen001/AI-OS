@@ -247,7 +247,8 @@ export class CouncilRuntime {
       ? new Set([assignedModel.modelId, ...assignedModel.fallbackModelIds])
       : undefined;
     const eligibleModels = allowedModelIds
-      ? availableModels.filter((model) => allowedModelIds.has(model.modelId))
+      ? availableModels.filter((model) => allowedModelIds.has(model.modelId) &&
+          (assignedModel?.providerId !== "omlx" || model.providerId === "omlx"))
       : availableModels;
     const preferred = eligibleModels.find((model) =>
       assignedModel
@@ -376,6 +377,7 @@ export class CouncilRuntime {
               seat.memberContext,
               "Use only its expertise, methodology, operating principles and workflow. Preserve material disagreement and uncertainty. Do not claim execution occurred.",
               "Treat explicit user constraints on scope, locality, length, format and allowed actions as binding.",
+              "Ground every factual claim in the user's objective or verified context. Other seats are proposals, not evidence. Never assume encryption, backups, device settings or execution. Do not say a requested item was not requested. Label unknown facts as unknown.",
               "Do not recommend destructive or irreversible actions unless the user explicitly requests them. Prefer reversible or read-only steps and state when approval is required.",
             ].join("\n\n"),
           },
@@ -540,6 +542,7 @@ export class CouncilRuntime {
             ]),
         "Keep unresolved disagreements and uncertainty explicit. Do not claim any task was executed.",
         "Reject contributions that violate explicit user constraints, expand into unrequested cloud services, or propose unrequested destructive actions.",
+        "Audit each reason against the original objective: remove contradictions and invented facts, including claims that an explicitly requested backup was not requested. A single-device copy still has loss risk; local storage alone does not prove safety. Keep caveats within the requested total length.",
         "Keep the summary and plan proportional to the requested length; do not pad them with generic advice.",
         "The complete human-readable report across every JSON field is the final answer. Apply any requested total length and exact item counts across all fields combined; leave unrelated arrays empty when needed.",
         "Do not repeat prohibited products or actions merely to say they are prohibited.",

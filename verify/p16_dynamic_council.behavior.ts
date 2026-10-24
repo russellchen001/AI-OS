@@ -127,9 +127,17 @@ assert(
 );
 
 const localRuntimeChoices: string[] = [];
+let missingLocalRejected = false;
+try {
+  await chief.assemble({ objective: "仅使用本地模型，禁止云端调用" });
+} catch (error) {
+  missingLocalRejected = String(error).includes("No local AI Center model");
+}
+assert(missingLocalRejected, "local-only Council silently assigned cloud when local models were absent");
 const localRuntime = new CouncilRuntime({
   listModels: () => [
     ...models,
+    { ...models[0], modelId: "local-2" },
     { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-1", label: "Local 1" },
     { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-2", label: "Local 2" },
   ],

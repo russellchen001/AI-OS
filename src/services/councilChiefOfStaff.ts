@@ -181,6 +181,9 @@ function assignModels(
     const eligibleModels = localOnly
       ? models.filter((model) => model.providerId === "omlx")
       : models;
+    if (!eligibleModels.length) {
+      throw new Error("No local AI Center model is connected for this local-only Council.");
+    }
     const eligibleRepresentatives = [
       ...new Map(eligibleModels.map((model) => [model.providerId, model])).values(),
     ];
@@ -318,7 +321,7 @@ export class CouncilChiefOfStaff {
     const assemblyDecision = await orchestrator.assemble({
       objective,
       domain: "council",
-      availableModels: models,
+      availableModels: localFirst ? models.filter((model) => model.providerId === "omlx") : models,
       governanceContext,
       agencyContext: agencySummary(catalog),
       constraints: {

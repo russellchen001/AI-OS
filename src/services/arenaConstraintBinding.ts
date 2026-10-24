@@ -18,6 +18,13 @@ export function resolveUserConstraintsForSeats(
   roles: ArenaSeatRole[],
   constraints: ArenaModelConstraint[],
 ): ArenaModelConstraint[] {
+  const globalConstraint = constraints.find((constraint) =>
+    constraint.mode !== "auto" && constraint.allSeats);
+  if (globalConstraint && globalConstraint.mode !== "auto" && constraints.every((constraint) => constraint.mode === "auto" ||
+      (!constraint.targetRole && constraint.modelId === globalConstraint.modelId &&
+       constraint.providerInstanceId === globalConstraint.providerInstanceId))) {
+    return roles.map(() => globalConstraint);
+  }
   const resolved: ArenaModelConstraint[] =
     roles.map(() => ({ mode: "auto" }));
 

@@ -59,6 +59,16 @@ await saveProviderInstance(instance);
 assertEqual(listAiCenterModels().length, 1);
 assertEqual(listAiCenterModels()[0].providerInstanceId, "beta6-fixture");
 const pinnedChoice = listAiCenterModels()[0];
+const globalChoice = { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "Qwen2.5-7B-Instruct-4bit", label: "oMLX · Qwen2.5-7B-Instruct-4bit" };
+const globalConstraints = extractUserModelConstraints(
+  "三个席位都固定使用 oMLX Qwen2.5-7B-Instruct-4bit，不使用云端模型。",
+  [{ ...globalChoice, modelId: "DeepSeek-local", label: "oMLX · DeepSeek-local" }, globalChoice],
+);
+assertEqual(globalConstraints.length, 1);
+const globalResolved = resolveUserConstraintsForSeats(["participant", "participant", "synthesizer"], [
+  { mode: "pinned", ...globalChoice }, ...globalConstraints,
+]);
+assertEqual(globalResolved.every((constraint) => constraint.mode === "pinned" && constraint.modelId === globalChoice.modelId), true);
 const roleConstraints = extractUserModelConstraints(
   `Only use ${pinnedChoice.modelId} as participant. Use ${pinnedChoice.modelId} as synthesizer.`,
   [pinnedChoice],

@@ -23,6 +23,7 @@ export type ArenaModelConstraint =
       modelId?: string;
       label?: string;
       targetRole?: ArenaSeatRole;
+      allSeats?: boolean;
     }
   | {
       mode: "pinned";
@@ -31,6 +32,7 @@ export type ArenaModelConstraint =
       modelId: string;
       label?: string;
       targetRole?: ArenaSeatRole;
+      allSeats?: boolean;
     }
   | {
       mode: "pinned";
@@ -39,6 +41,7 @@ export type ArenaModelConstraint =
       providerInstanceId?: never;
       modelId?: never;
       targetRole?: ArenaSeatRole;
+      allSeats?: boolean;
     };
 
 export type ArenaSeatRole =
