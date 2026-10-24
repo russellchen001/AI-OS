@@ -250,6 +250,9 @@ function AiCouncilPage({
         });
         setAssemblyPlan(nextAssemblyPlan);
       } catch (error) {
+        if (/private|privacy|confidential|local|隐私|机密|本地/i.test(userPrompt)) {
+          throw error;
+        }
         onMessage(
           `Dynamic assembly unavailable; using the legacy Council fallback: ${
             error instanceof Error ? error.message : String(error)
