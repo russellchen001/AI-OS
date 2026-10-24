@@ -4,6 +4,42 @@
 
 ## ACTIVE continuation after unexpected computer exit (2026-10-24)
 
+### RESUME FIRST — final candidate installed; Mac locked
+
+- Current code/artifact commit: `2e3be28333a00931636ee7cb0557d72babd29d8d`.
+  Build and full Rust rerun both exited 0. Rust: 1055 passed, 0 failed,
+  84 ignored, 9.97 seconds. P16 dynamic/runtime/integration regression PASS.
+- Final candidate is temporarily installed in `/Applications/AI OS.app`.
+  Executable SHA-256:
+  `584ae1889512dd9d117df72604674e398ab43db2e29d8b2c5551e121307f4cc9`.
+  Deep/strict signature and final DMG package/data hygiene PASS (ad-hoc only).
+- Final DMG copied to current chat `outputs/AI OS_1.0.1-beta.6_aarch64.dmg`.
+  SHA-256 `6f0206ae90ada9871fa199c3d11279b0d165c9e64d2b69d4247f625da749ca97`.
+  Previous output preserved as `work/beta6-final-acceptance/previous-output-91bce062.dmg`.
+- REAL final Arena PASS for binding/calls/scoring: exact Chinese all-seat Qwen
+  objective produced 3 Qwen PINNED seats, 5 real generations, 3 rounds, 4 valid
+  scores, Outcome completed / Completion winner. No false NO_CONNECTED_PROVIDER.
+  Content quality is NOT full PASS: participants discussed encryption/storage but
+  did not deliver the requested complete three-step checklist. No actions executed.
+- Final Gemini manual 2.5 Flash request was started; no HTTP category obtained.
+  The app process was sampled waiting in SecItemCopyMatching/SecKeychainItemCopyContent.
+  Stop response was requested. Owner was asked whether an authorization dialog
+  was visible; no answer yet. Earlier catalog refresh PASS remains binary-specific.
+- Final Council first rerun was stopped before completion. A second identical
+  local-only run is active, 4 assembled DeepSeek seats, first seat pending.
+  oMLX service statistics show DeepSeek generating (~9 tok/s); do NOT attribute
+  this Council wait solely to the process-wide Keychain sample. RAM restored to
+  only DeepSeek (1 loaded / 4.19 GB), verified by full native accessibility state.
+- Latest native UI attempt returned: Mac locked; automatic unlock unavailable.
+  Owner must unlock manually. Do not bypass lockscreen. Resume by checking actual
+  Council/Gemini results, then Claude LAST. Claude has not been attempted in this
+  final binary. Do not claim final Council acceptance or completed final delivery.
+- Original Beta 5 is STILL safely stored in `beta5-moved/AI OS.app`, with a full
+  independent `beta5-backup/AI OS.app`; temporary Beta 6 has NOT been restored away.
+  Prior candidate archived in `pre-2e3be28/AI OS.app`. Final cleanup must restore
+  the original Beta 5 and run `verify/verify_beta6_install_restore.sh` before final
+  delivery. No user data, credentials, ACLs or cloud project settings changed.
+
 ### Latest checkpoint — source `2e3be28333a00931636ee7cb0557d72babd29d8d`
 
 - Installed `aab7837` Council finished all seven local generations; history 3 -> 4.
