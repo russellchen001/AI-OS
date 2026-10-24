@@ -118,17 +118,18 @@ assert(
   ),
   "Agency Agent provenance was not retained",
 );
+let irrelevantLoads = 0;
 const irrelevantPlan = await new CouncilChiefOfStaff({
   paperclip: { probe: async () => ({ id: "paperclip", name: "Paperclip", status: "unavailable", detail: "offline", checkedAt: "now" }), listCompanies: async () => [] },
   agencyAgents: {
     loadCatalog: async () => ({ ...catalog, agents: [{ division: "database", slug: "gaussdb-expert", path: "database/gaussdb.md" }] }),
-    loadAgent: async () => { throw new Error("Unrelated profile must not be loaded"); },
+    loadAgent: async () => { irrelevantLoads += 1; return "Unrelated database profile must never enter note advice."; },
   },
   listModels: () => models,
   invokeChiefOfStaff: async () => { throw new Error("fallback"); },
   uuid: () => "irrelevant-profile",
 }).assemble({ objective: "Decide whether two personal notes should stay on this Mac." });
-assert(irrelevantPlan.seats.every((seat) => seat.kind === "builtin"), "zero-relevance profile polluted Council seats");
+assert(irrelevantLoads === 0 && irrelevantPlan.seats.every((seat) => seat.kind === "builtin"), "zero-relevance profile loaded or polluted Council seats");
 assert(
   new Set(plan.seats.map((seat) => seat.assignedModel.providerId)).size === 2,
   "dynamic model assignment did not preserve provider diversity",
