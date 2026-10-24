@@ -177,12 +177,20 @@ function assignModels(
   ];
 
   return requirements.map((requirement, index) => {
-    const local = models.find((model) => model.providerId === "omlx");
+    const localOnly = requirement.localFirst || localFirstObjective;
+    const eligibleModels = localOnly
+      ? models.filter((model) => model.providerId === "omlx")
+      : models;
+    const eligibleRepresentatives = [
+      ...new Map(eligibleModels.map((model) => [model.providerId, model])).values(),
+    ];
+    const local = eligibleModels.find((model) => model.providerId === "omlx");
     const preferred =
-      (requirement.localFirst || localFirstObjective) && local
+      localOnly && local
         ? local
-        : providerRepresentatives[index % providerRepresentatives.length] ??
-          models[index % models.length];
+        : eligibleRepresentatives[index % eligibleRepresentatives.length] ??
+          providerRepresentatives[index % providerRepresentatives.length] ??
+          eligibleModels[index % eligibleModels.length] ?? models[index % models.length];
     return {
       ...preferred,
       rationale:
@@ -191,7 +199,7 @@ function assignModels(
           : preferred.providerId === "omlx" && (requirement.localFirst || localFirstObjective)
             ? "Local-first assignment for privacy-sensitive work."
             : "Assigned dynamically to preserve useful provider diversity.",
-      fallbackModelIds: models
+      fallbackModelIds: eligibleModels
         .filter((model) => model.modelId !== preferred.modelId)
         .map((model) => model.modelId),
     };

@@ -532,6 +532,8 @@ export class CouncilRuntime {
         "Keep unresolved disagreements and uncertainty explicit. Do not claim any task was executed.",
         "Reject contributions that violate explicit user constraints, expand into unrequested cloud services, or propose unrequested destructive actions.",
         "Keep the summary and plan proportional to the requested length; do not pad them with generic advice.",
+        "The complete human-readable report across every JSON field is the final answer. Apply any requested total length and exact item counts across all fields combined; leave unrelated arrays empty when needed.",
+        "Do not repeat prohibited products or actions merely to say they are prohibited.",
         deliberation,
       ].join("\n\n"),
       request.callbacks,

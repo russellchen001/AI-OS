@@ -107,6 +107,25 @@ assert(
   "dynamic model assignment did not preserve provider diversity",
 );
 
+const localPlan = await new CouncilChiefOfStaff({
+  paperclip: {
+    probe: async () => ({ id: "paperclip", name: "Paperclip", status: "unavailable", detail: "offline", checkedAt: "now" }),
+    listCompanies: async () => [],
+  },
+  agencyAgents: { loadCatalog: async () => catalog, loadAgent: async () => "Local role" },
+  listModels: () => [
+    ...models,
+    { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-1", label: "Local 1" },
+    { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-2", label: "Local 2" },
+  ],
+  invokeChiefOfStaff: async () => { throw new Error("use fallback"); },
+  uuid: () => "local-assembly",
+}).assemble({ objective: "Keep this private local 本地 and never use cloud providers." });
+assert(
+  localPlan.seats.every((seat) => seat.assignedModel.providerId === "omlx" && seat.assignedModel.fallbackModelIds.every((id) => id === "local-1" || id === "local-2")),
+  "local-only Council could fall back to a cloud model",
+);
+
 const metadata = {
   providerId: "chatgpt",
   modelId: "gpt-business",
@@ -202,7 +221,7 @@ assert(
   "Council seats did not receive binding user and safety constraints",
 );
 assert(
-  runtimeMessages.at(-1)?.[1].includes("unrequested cloud services") && runtimeMessages.at(-1)?.[1].includes("requested length"),
+  runtimeMessages.at(-1)?.[1].includes("unrequested cloud services") && runtimeMessages.at(-1)?.[1].includes("across all fields combined"),
   "final synthesis did not enforce scope and response-length constraints",
 );
 
