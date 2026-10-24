@@ -669,8 +669,17 @@ fn provider_state_lock() -> &'static Mutex<()> {
 
 fn availability_key(instance: &ProviderInstance, model_id: &str) -> String {
     format!(
-        "{}|{}|{:?}|{}",
-        instance.id, instance.provider_id, instance.credential.kind, model_id
+        "{}|{}|{:?}|{}|{}|{}",
+        instance.id,
+        instance.provider_id,
+        instance.credential.kind,
+        instance
+            .credential
+            .keychain_account
+            .as_deref()
+            .unwrap_or(""),
+        instance.created_at,
+        model_id
     )
 }
 
@@ -902,8 +911,11 @@ pub(crate) fn save_provider_instance(
         .iter()
         .find(|candidate| candidate.id == instance.id)
     {
-        instance.created_at = existing.created_at.clone();
-        for model in &mut instance.models {
+        let same_connection = instance.created_at == existing.created_at
+            && instance.provider_id == existing.provider_id
+            && instance.credential.kind == existing.credential.kind
+            && instance.credential.keychain_account == existing.credential.keychain_account;
+        for model in instance.models.iter_mut().filter(|_| same_connection) {
             if model.availability.is_none() {
                 model.availability = existing
                     .models
@@ -5846,6 +5858,15 @@ mod tests {
             1
         );
         let original_key = availability_key(&instance, "same-model");
+        let mut other_namespace = instance.clone();
+        other_namespace.credential.keychain_account =
+            Some("another-credential-namespace".to_owned());
+        assert_ne!(
+            original_key,
+            availability_key(&other_namespace, "same-model")
+        );
+        instance.created_at = "2026-10-25T01:00:00Z".to_owned();
+        assert_ne!(original_key, availability_key(&instance, "same-model"));
         instance.id = "second-account".to_owned();
         assert_ne!(original_key, availability_key(&instance, "same-model"));
     }
