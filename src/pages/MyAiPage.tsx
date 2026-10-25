@@ -45,6 +45,21 @@ import {
 
 const OAUTH_FRONTEND_TIMEOUT_MS = 5 * 60 * 1000;
 type ClaudeCodeStatus = { installed: boolean; authenticated: boolean; message: string };
+type GrokCliStatus = ClaudeCodeStatus & { models: string[]; defaultModel?: string };
+/** Providers whose account sign-in is owned by their official local CLI. */
+const CLI_ACCOUNT_PROVIDERS = new Set(["anthropic", "grok"]);
+
+function grokCliModelEntries(instanceId: string, status: GrokCliStatus): ProviderModelEntry[] {
+  return status.models.map((model) => ({
+    id: `${instanceId}:${model}`,
+    providerInstanceId: instanceId,
+    remoteModelId: model,
+    displayName: `${model} (Grok CLI)`,
+    capabilities: ["chat", "reasoning"],
+    enabled: true,
+    isDefault: model === (status.defaultModel ?? status.models[0]),
+  }));
+}
 type OmlxRuntimeStatus = { supported: boolean; installed: boolean; running: boolean };
 type DeviceAuth = {
   state: string;
@@ -630,7 +645,15 @@ function MyAiPage({
     if (!instance) return;
     setIsConnecting(true); setSetupError("");
     try {
-      const verification = await (await getProviderAdapter(setup.providerId)).testConnection(instanceId);
+      const verification = setup.providerId === "grok" && instance.credential.kind === "local"
+        ? await invoke<GrokCliStatus>("get_grok_cli_status").then((status) => {
+            if (!status.authenticated) throw new Error(status.message);
+            return {
+              ok: true, level: "live", checkedAt: new Date().toISOString(),
+              message: status.message, discoveredModels: grokCliModelEntries(instanceId, status),
+            };
+          })
+        : await (await getProviderAdapter(setup.providerId)).testConnection(instanceId);
       const previous = new Map(instance.models.map((model) => [model.id, model]));
       const currentDefault = instance.models.find((model) => model.isDefault)?.id;
       const models = verification.discoveredModels.map((model) => ({
@@ -719,7 +742,30 @@ function MyAiPage({
         return;
       }
 
-      if (setup.providerId === "grok" || setup.providerId === "kimi") {
+      if (setup.providerId === "grok") {
+        try {
+          const status = await invoke<GrokCliStatus>("get_grok_cli_status");
+          if (!status.installed || !status.authenticated) throw new Error(status.message);
+          const models = grokCliModelEntries(instanceId, status);
+          if (!models.length) throw new Error("Grok CLI reported no available models.");
+          setSetup({
+            ...setup,
+            phase: "models",
+            models,
+            defaultModelId: models.find((model) => model.isDefault)?.id ?? models[0].id,
+            verificationMessage: "Official Grok CLI account connection verified on this Mac.",
+            liveTested: true,
+            credentialRefreshable: false,
+          });
+        } catch (error) {
+          setSetupError(error instanceof Error ? error.message : "Grok CLI could not be verified.");
+        } finally {
+          setIsConnecting(false);
+        }
+        return;
+      }
+
+      if (setup.providerId === "kimi") {
         const isKimi = setup.providerId === "kimi";
         const commandPrefix = isKimi ? "kimi" : "grok";
         let auth: DeviceAuth | undefined;
@@ -997,7 +1043,7 @@ function MyAiPage({
         providerId: setup.providerId,
         displayName: setup.provider,
         credentialKind:
-          setup.providerId === "anthropic" && setup.method === "account"
+          CLI_ACCOUNT_PROVIDERS.has(setup.providerId) && setup.method === "account"
             ? "local"
             : setup.method === "account"
               ? "oauth"
@@ -1082,7 +1128,7 @@ function MyAiPage({
           const supportsApiKey =
             descriptor?.authenticationMethods.includes("api-key") === true;
           const supportsAccountSignIn =
-            provider.id === "anthropic"
+            CLI_ACCOUNT_PROVIDERS.has(provider.id)
               ? descriptor?.authenticationMethods.includes("cli-account") === true
               : descriptor?.authenticationMethods.some(
                   (method) =>
@@ -1343,7 +1389,7 @@ function MyAiPage({
             descriptor.providerId === setup.providerId,
         );
         const accountSignInAvailable =
-          setup.providerId === "anthropic"
+          CLI_ACCOUNT_PROVIDERS.has(setup.providerId)
             ? setupDescriptor?.authenticationMethods.includes("cli-account") === true
             : setupDescriptor?.authenticationMethods.includes("device-code") === true ||
               (isProviderOAuthConfigured(setup.providerId) &&
@@ -1426,10 +1472,15 @@ function MyAiPage({
                       <span>Account access</span>
                       <strong>
                         {setup.credentialExpiresAt
-                          ? new Date(setup.credentialExpiresAt).getTime() <= Date.now()
-                            ? "Expired"
-                            : `Until ${new Date(setup.credentialExpiresAt).toLocaleString()}`
-                          : "No expiry reported"}
+                          ? new Date(setup.credentialExpiresAt).getTime() > Date.now()
+                            ? `Until ${new Date(setup.credentialExpiresAt).toLocaleString()} · renews automatically`
+                            : setup.credentialRefreshable
+                              // The short-lived token renews on the next request.
+                              ? "Signed in · renews automatically on next use"
+                              : "Expired"
+                          : CLI_ACCOUNT_PROVIDERS.has(setup.providerId)
+                            ? "Managed by the official CLI"
+                            : "No expiry reported"}
                       </strong>
                     </div>}
                   </div>
@@ -1474,6 +1525,8 @@ function MyAiPage({
                       disabled={
                         setup.providerId === "anthropic"
                           ? claudeCodeStatus?.authenticated !== true
+                          : setup.providerId === "grok"
+                            ? false
                           : setupDescriptor?.authenticationMethods.includes(
                                 "device-code",
                               ) !== true &&
@@ -1497,8 +1550,8 @@ function MyAiPage({
               ) : setup.phase === "models" ? (
                 <>
                   <h3>Choose the default model</h3>
-                  <p>{setup.providerId === "anthropic" && setup.method === "account"
-                    ? "Claude Code manages the subscription credential. AI‑OS stores only this connection and your model preference."
+                  <p>{CLI_ACCOUNT_PROVIDERS.has(setup.providerId) && setup.method === "account"
+                    ? `${setup.providerId === "grok" ? "The Grok CLI" : "Claude Code"} manages the account credential. AI‑OS stores only this connection and your model preference.`
                     : "The credential is safely stored. These models were returned by the Provider connection."}</p>
                   <div className="provider-model-choice">
                     {setup.models.map((model) => (
@@ -1525,13 +1578,13 @@ function MyAiPage({
                 </>
               ) : setup.method === "account" ? (
                 <>
-                  <h3>{setup.providerId === "anthropic" ? "Use Claude Code on this Mac" : "Sign in in your browser"}</h3>
+                  <h3>{setup.providerId === "anthropic" ? "Use Claude Code on this Mac" : setup.providerId === "grok" ? "Use the Grok CLI on this Mac" : "Sign in in your browser"}</h3>
                   <p>{setup.providerId === "anthropic"
                     ? claudeCodeStatus?.installed
                       ? "AI‑OS uses the official Claude Code CLI and never reads or stores its subscription credential."
                       : "Install the official Claude Code CLI, sign in there, then return here and verify the connection."
                     : setup.providerId === "grok"
-                      ? "AI‑OS will open the official xAI device authorization page for your SuperGrok or X Premium+ account."
+                      ? "Install the official Grok CLI from x.ai/cli and run `grok login` in Terminal. AI‑OS never reads or stores its account credential."
                       : setup.providerId === "kimi"
                         ? "AI‑OS will open Kimi Code's official device authorization page for your coding account."
                       : `AI‑OS will open the official ${setup.provider} sign-in page. Your password is never entered into AI‑OS.`}</p>
@@ -1540,7 +1593,7 @@ function MyAiPage({
                     <p><strong>Protected connection</strong><small>{setup.providerId === "anthropic"
                       ? "Claude Code owns authentication. AI‑OS only checks its status and sends bounded requests through the local CLI."
                       : setup.providerId === "grok"
-                        ? "AI‑OS uses xAI's official Grok Build device flow. Tokens stay in macOS Keychain and account traffic uses the dedicated Grok CLI route."
+                        ? "The Grok CLI owns authentication and keeps it current. AI‑OS only checks its status and sends bounded requests with tools and web access turned off."
                         : setup.providerId === "kimi"
                           ? "AI‑OS uses Kimi Code's official device flow. Tokens stay in macOS Keychain and requests use the managed coding API."
                         : "AI‑OS uses PKCE and a one-time local callback. The authorization code and tokens stay in the native security layer."}</small></p>
@@ -1551,7 +1604,7 @@ function MyAiPage({
                       <p><strong>Google approval may be required</strong><small>If Google shows 403 access_denied, AI‑OS cannot bypass it. The OAuth app owner must add this account as a test user or complete Google verification, then you can retry here.</small></p>
                     </div>
                   )}
-                  {(setup.providerId === "grok" || setup.providerId === "kimi") && setup.verificationMessage && (
+                  {setup.providerId === "kimi" && setup.verificationMessage && (
                     <div className="provider-security-note">
                       <span>→</span>
                       <p>
@@ -1600,6 +1653,8 @@ function MyAiPage({
                     : setup.method === "account"
                       ? setup.providerId === "anthropic"
                         ? "Checking Claude Code…"
+                        : setup.providerId === "grok"
+                          ? "Checking Grok CLI…"
                         : "Waiting for sign-in…"
                       : "Saving…"
                   : setup.phase === "models"
@@ -1607,6 +1662,8 @@ function MyAiPage({
                     : setup.method === "account"
                       ? setup.providerId === "anthropic"
                         ? "Verify Claude Code"
+                        : setup.providerId === "grok"
+                          ? "Verify Grok CLI"
                         : "Continue in browser"
                       : "Save and choose model"}
                 <span>→</span>

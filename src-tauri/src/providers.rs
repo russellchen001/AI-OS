@@ -2477,6 +2477,7 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             &[
                 ProviderCredentialKind::OAuth,
                 ProviderCredentialKind::ApiKey,
+                ProviderCredentialKind::Local,
             ],
             &["chat", "reasoning", "vision", "tool-use"],
             true,
@@ -2603,16 +2604,19 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
         .iter_mut()
         .find(|registration| registration.descriptor.provider_id == "grok")
     {
+        // Account sign-in goes through the official Grok CLI, which keeps
+        // its own credential current; AI-OS no longer impersonates it.
         grok.descriptor.authentication_methods.retain(|method| {
             !matches!(
                 method,
                 ProviderAuthenticationMethod::OAuthPkce
                     | ProviderAuthenticationMethod::OAuthLoopback
+                    | ProviderAuthenticationMethod::Local
             )
         });
         grok.descriptor
             .authentication_methods
-            .insert(0, ProviderAuthenticationMethod::DeviceCode);
+            .insert(0, ProviderAuthenticationMethod::CliAccount);
     }
 
     if let Some(kimi) = registrations
@@ -4538,6 +4542,24 @@ async fn execute_candidate(
             && instance.provider_id == "anthropic"
             && instance.credential.kind == ProviderCredentialKind::Local
     });
+    let uses_grok_cli = instances.iter().any(|instance| {
+        instance.id == candidate.provider_instance_id
+            && instance.provider_id == "grok"
+            && instance.credential.kind == ProviderCredentialKind::Local
+    });
+    if uses_grok_cli {
+        let response = crate::grok_cli::generate_grok_cli_response(crate::grok_cli::GrokCliRequest {
+            operation_id,
+            model_id: candidate.model_id.clone(),
+            prompt: prompt.to_owned(),
+        })
+        .await?;
+        return Ok(GenerateProviderResponseResult {
+            provider_id: "grok".to_owned(),
+            model_id: response.model_id,
+            text: response.text,
+        });
+    }
     if uses_claude_code {
         let response = crate::claude_code::generate_claude_code_response(
             crate::claude_code::ClaudeCodeRequest {
@@ -5351,7 +5373,8 @@ pub(crate) async fn execute_ai_center_stream(
             );
             tokio::select! {
                 _ = token.cancelled() => {
-                    let _ = crate::claude_code::cancel_claude_code_request(attempt_operation_id);
+                    let _ = crate::claude_code::cancel_claude_code_request(attempt_operation_id.clone());
+                    let _ = crate::grok_cli::cancel_grok_cli_request(attempt_operation_id);
                     Err("cancelled".to_owned())
                 }
                 result = execution => result
@@ -7080,16 +7103,19 @@ mod tests {
     }
 
     #[test]
-    fn grok_advertises_device_login_and_api_key_without_generic_oauth() {
+    fn grok_advertises_official_cli_login_and_api_key_without_generic_oauth() {
         let grok = get_provider_adapter("grok".to_owned()).unwrap();
 
         assert_eq!(
             grok.authentication_methods,
             vec![
-                ProviderAuthenticationMethod::DeviceCode,
+                ProviderAuthenticationMethod::CliAccount,
                 ProviderAuthenticationMethod::ApiKey,
             ]
         );
+        assert!(grok
+            .credential_kinds
+            .contains(&ProviderCredentialKind::Local));
         assert!(grok.supports_token_refresh);
     }
 

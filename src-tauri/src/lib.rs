@@ -1,6 +1,7 @@
 mod backup;
 mod browser;
 mod claude_code;
+mod grok_cli;
 pub mod cloud_drive_core;
 pub mod cloud_drive_baidu;
 pub mod cloud_drive_123;
@@ -359,6 +360,9 @@ pub fn run() {
             claude_code::get_claude_code_status,
             claude_code::generate_claude_code_response,
             claude_code::cancel_claude_code_request,
+            grok_cli::get_grok_cli_status,
+            grok_cli::generate_grok_cli_response,
+            grok_cli::cancel_grok_cli_request,
             memory::save_memory,
             memory::list_memory,
             memory::delete_memory,
