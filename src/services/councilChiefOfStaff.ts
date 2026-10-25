@@ -9,6 +9,10 @@ import {
 } from "./chiefOfStaffOrchestrator";
 import { AgencyAgentsAdapter } from "./integrations/agencyAgentsAdapter";
 import {
+  extractUserModelConstraints,
+  withoutModelMentions,
+} from "./arenaStrategyRouter";
+import {
   PAPERCLIP_SOURCE_COMMIT,
   PaperclipAdapter,
 } from "./integrations/paperclipAdapter";
@@ -172,12 +176,61 @@ function selectAgencyAgent(
     )[0]?.agent;
 }
 
+/** Connected models the user explicitly named as participants, in order. */
+function namedParticipantModels(
+  objective: string,
+  models: AiCenterModelChoice[],
+): AiCenterModelChoice[] {
+  const named: AiCenterModelChoice[] = [];
+  for (const constraint of extractUserModelConstraints(objective, models)) {
+    if (constraint.mode !== "pinned" || !constraint.modelId) continue;
+    const model = models.find((candidate) =>
+      candidate.providerInstanceId === constraint.providerInstanceId &&
+      candidate.modelId === constraint.modelId);
+    if (model && !named.includes(model)) named.push(model);
+  }
+  return named;
+}
+
+/** Adds expert seats before the synthesizer until `count` seats exist. */
+function withSeatCapacity(
+  requirements: CouncilSeatRequirement[],
+  count: number,
+): CouncilSeatRequirement[] {
+  const result = [...requirements];
+  while (result.length < count) {
+    const synthesizerAt = result.findIndex((requirement) => requirement.synthesizer);
+    result.splice(synthesizerAt < 0 ? result.length : synthesizerAt, 0, {
+      id: `additional-expert-${result.length + 1}`,
+      title: `Additional Expert ${result.length + 1}`,
+      purpose: "Contribute another independent, objective-specific perspective.",
+      requiredExpertise: ["independent analysis", "critical review"],
+    });
+  }
+  return result;
+}
+
 function assignModels(
   requirements: CouncilSeatRequirement[],
   models: AiCenterModelChoice[],
   objective: string,
+  named: AiCenterModelChoice[] = [],
 ): CouncilModelAssignment[] {
   if (!models.length) throw new Error("No generation-verified model is available. Verify a model in My AI.");
+  if (named.length) {
+    // Every named model takes exactly one seat and is never silently replaced.
+    return requirements.map((requirement, index) => {
+      const pinned = named[index];
+      if (!pinned) {
+        return assignModels([requirement], models, objective)[0];
+      }
+      return {
+        ...pinned,
+        rationale: "User-named participant; no silent substitution.",
+        fallbackModelIds: [],
+      };
+    });
+  }
   const localFirstObjective = /private|privacy|confidential|local|隐私|机密|本地/.test(
     objective.toLowerCase(),
   );
@@ -313,16 +366,33 @@ export class CouncilChiefOfStaff {
       catalog = undefined;
     }
 
+    // Model names identify participants; they are not task-domain evidence.
+    const taskText = withoutModelMentions(objective, models);
+    const named = namedParticipantModels(objective, models);
+    const localFirst = /private|privacy|confidential|local|隐私|机密|本地/.test(
+      taskText.toLowerCase(),
+    );
+    const namedCloud = named.filter((model) => model.providerId !== "omlx");
+    if (localFirst && namedCloud.length) {
+      throw new Error(
+        `This Council is local-only but names cloud models: ${namedCloud.map((model) => model.label).join(", ")}. ` +
+        "AI-OS will not silently drop a named model; remove it or allow cloud reasoning.",
+      );
+    }
+    if (named.length > MAX_DYNAMIC_SEATS) {
+      throw new Error(
+        `The Council can seat at most ${MAX_DYNAMIC_SEATS} models; ${named.length} were named.`,
+      );
+    }
+    const seatFloor = Math.max(MIN_DYNAMIC_SEATS, named.length);
     const seatLimit = Math.min(
       MAX_DYNAMIC_SEATS,
-      Math.max(MIN_DYNAMIC_SEATS, request.maxSeats ?? MAX_DYNAMIC_SEATS),
+      Math.max(seatFloor, request.maxSeats ?? MAX_DYNAMIC_SEATS),
     );
-    const deterministicFallback = (): CouncilSeatRequirement[] => (
-      this.dependencies.deriveRequirements?.(objective) ?? deriveRequirements(objective)
+    const deterministicFallback = (): CouncilSeatRequirement[] => withSeatCapacity(
+      this.dependencies.deriveRequirements?.(taskText) ?? deriveRequirements(taskText),
+      seatFloor,
     ).slice(0, seatLimit);
-    const localFirst = /private|privacy|confidential|local|隐私|机密|本地/.test(
-      objective.toLowerCase(),
-    );
     const orchestrator = new ChiefOfStaffOrchestrator({
       invokeModel: this.dependencies.invokeChiefOfStaff ?? answerThroughAiCenter,
       timeoutMs: this.dependencies.chiefOfStaffTimeoutMs ?? 20_000,
@@ -334,7 +404,7 @@ export class CouncilChiefOfStaff {
       governanceContext,
       agencyContext: agencySummary(catalog),
       constraints: {
-        minSeats: MIN_DYNAMIC_SEATS,
+        minSeats: seatFloor,
         maxSeats: seatLimit,
         localFirst,
       },
@@ -354,20 +424,21 @@ export class CouncilChiefOfStaff {
         },
       ];
     }
+    requirements = withSeatCapacity(requirements, seatFloor);
     const synthesizerIndex = requirements.findIndex((requirement) => requirement.synthesizer);
     requirements = requirements.map((requirement, index) => ({
       ...requirement,
       id: `${slugify(requirement.id || requirement.title, `seat-${index + 1}`)}-${index + 1}`,
       synthesizer: index === synthesizerIndex,
     }));
-    const assignments = assignModels(requirements, models, objective);
+    const assignments = assignModels(requirements, models, taskText, named);
     const usedPaths = new Set<string>();
     const seats: CouncilSeat[] = [];
 
     for (let index = 0; index < requirements.length; index += 1) {
       const requirement = requirements[index];
       const definition = catalog
-        ? selectAgencyAgent(requirement, catalog, usedPaths, objective)
+        ? selectAgencyAgent(requirement, catalog, usedPaths, taskText)
         : undefined;
       if (definition) usedPaths.add(definition.path);
       let profile: string | undefined;

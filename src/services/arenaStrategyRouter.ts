@@ -530,6 +530,29 @@ function constraintIdentity(
   ].join("|");
 }
 
+/**
+ * The objective with every connected-model mention blanked out. Model names
+ * say who takes part, not what the task is about, so they must not steer
+ * domain matching (e.g. "account" in a model label is not an accounts task).
+ */
+export function withoutModelMentions(
+  objective: string,
+  availableModels: AiCenterModelChoice[],
+): string {
+  let text = objective;
+
+  // Repeated mentions of one model are reported once per pass.
+  for (let pass = 0; pass < 12; pass += 1) {
+    const mentions = discoverCatalogModelMentions(text, availableModels);
+    if (!mentions.length) break;
+    for (const mention of [...mentions].sort((left, right) => right.start - left.start)) {
+      text = `${text.slice(0, mention.start)} ${text.slice(mention.end)}`;
+    }
+  }
+
+  return text;
+}
+
 export function extractUserModelConstraints(
   objective: string,
   availableModels: AiCenterModelChoice[] = [],

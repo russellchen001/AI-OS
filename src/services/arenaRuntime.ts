@@ -373,6 +373,7 @@ export class ArenaRuntime {
             : "Team: none",
           `Deterministic session seed: ${seed}`,
           "You may use only the context projected below.",
+          "Model names in the objective identify the Arena participants; they are not services, storage, tools or products for the task itself.",
           "Never infer or claim access to hidden participant-private, team-private, or runtime-private information that is not projected to you.",
           "Do not execute tools, Skills, OpenClaw actions, system actions, purchases, messages, files, or external side effects.",
         ].join("\n"),

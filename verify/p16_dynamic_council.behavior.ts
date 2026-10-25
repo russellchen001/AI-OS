@@ -150,6 +150,45 @@ assert(
   "dynamic model assignment did not preserve provider diversity",
 );
 
+// Named participants: each named model gets its own pinned seat, and model
+// labels never count as task-domain evidence for professional profiles.
+const namedModels = [
+  ...models,
+  { providerId: "acme", providerInstanceId: "acme-1", modelId: "acme-account-default", label: "Acme account default" },
+  { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-1", label: "Local 1" },
+  { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-2", label: "Local 2" },
+];
+let accountProfileLoads = 0;
+const namedChief = new CouncilChiefOfStaff({
+  paperclip: { probe: async () => ({ id: "paperclip", name: "Paperclip", status: "unavailable", detail: "offline", checkedAt: "now" }), listCompanies: async () => [] },
+  agencyAgents: {
+    loadCatalog: async () => ({ ...catalog, agents: [
+      { division: "marketing", slug: "marketing-official-account", path: "marketing/official-account.md" },
+    ] }),
+    loadAgent: async () => { accountProfileLoads += 1; return "Official account marketing profile"; },
+  },
+  listModels: () => namedModels,
+  invokeChiefOfStaff: async () => { throw new Error("use fallback"); },
+  uuid: () => "named-assembly",
+});
+const namedPlan = await namedChief.assemble({
+  objective: "让 gpt-business、claude-review、acme-account-default、local-1 和 local-2 都参与讨论：家庭照片如何长期备份？",
+});
+equal(
+  namedPlan.seats.map((seat) => seat.assignedModel.modelId).sort(),
+  ["acme-account-default", "claude-review", "gpt-business", "local-1", "local-2"],
+  "every named model must hold exactly one Council seat",
+);
+assert(namedPlan.seats.every((seat) => seat.assignedModel.fallbackModelIds.length === 0), "a named seat may silently fall back");
+assert(accountProfileLoads === 0, "a model label was used as task-domain evidence for a profile");
+let namedCloudRejected = false;
+try {
+  await namedChief.assemble({ objective: "仅使用本机本地模型，让 local-1、gpt-business 都参与讨论笔记是否保留在本地。" });
+} catch (error) {
+  namedCloudRejected = String(error).includes("gpt-business") || String(error).includes("ChatGPT Business");
+}
+assert(namedCloudRejected, "a local-only Council silently dropped a named cloud model");
+
 const localPlan = await new CouncilChiefOfStaff({
   paperclip: {
     probe: async () => ({ id: "paperclip", name: "Paperclip", status: "unavailable", detail: "offline", checkedAt: "now" }),
