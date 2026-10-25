@@ -7,6 +7,8 @@ function count(text: string | undefined): number | undefined {
 export function answerRequirements(objective: string) {
   return {
     maxChars: count(objective.match(/不超过\s*(\d+)\s*(?:个)?(?:汉字|字|字符)/)?.[1]),
+    // "汉字" limits Han characters; "字"/"字符" limits every character.
+    hanOnly: /不超过\s*\d+\s*(?:个)?汉字/.test(objective),
     reasons: count(objective.match(/([\d一二两三四五六七八九十]+)\s*条理由/)?.[1]),
     plans: count(objective.match(/([\d一二两三四五六七八九十]+)\s*条(?:可逆的?|具体的?)?(?:本地)?备份建议/)?.[1]),
     steps: count(objective.match(/([\d一二两三四五六七八九十]+)\s*步(?:的|骤|计划|清单|方案)/)?.[1]),
@@ -20,7 +22,10 @@ export function validateCouncilAnswer(objective: string, report: {
   const limits = answerRequirements(objective);
   const text = [report.summary, ...report.recommendedPlan, ...report.rationale,
     ...report.disagreements, ...report.risks, ...report.assumptions, ...report.uncertainty].join("");
-  if (limits.maxChars && [...text].length > limits.maxChars) throw new Error(`Council answer exceeds ${limits.maxChars} characters.`);
+  const length = limits.hanOnly ? text.match(/\p{Script=Han}/gu)?.length ?? 0 : [...text].length;
+  if (limits.maxChars && length > limits.maxChars) {
+    throw new Error(`Council answer exceeds ${limits.maxChars} ${limits.hanOnly ? "Han characters" : "characters"} (it has ${length}).`);
+  }
   if (limits.reasons && report.rationale.length !== limits.reasons) throw new Error(`Council answer requires exactly ${limits.reasons} reasons.`);
   if (limits.plans && report.recommendedPlan.length !== limits.plans) throw new Error(`Council answer requires exactly ${limits.plans} backup suggestion(s).`);
   if (/不删除|不格式化|不修改任何文件|read.only/i.test(objective) &&

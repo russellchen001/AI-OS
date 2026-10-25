@@ -49,6 +49,15 @@ for (const bad of [
   assert(rejected, "Council accepted an explicit length/count/original-preservation violation");
 }
 
+// "汉字" limits count Han characters only; "字" limits count every character.
+const hanOnlyReport = { ...qualityReport, summary: "长".repeat(100) + "!".repeat(100), recommendedPlan: ["复制"], rationale: ["a", "b"] };
+validateCouncilAnswer(qualityObjective, hanOnlyReport);
+let allCharactersCounted = false;
+try { validateCouncilAnswer(qualityObjective.replace("个汉字", "个字"), hanOnlyReport); } catch (error) {
+  allCharactersCounted = String(error).includes("(it has 204)");
+}
+assert(allCharactersCounted, "a 字 limit must count every character and report the measured length");
+
 const catalog: AgencyAgentsCatalog = {
   commit: "agency-commit",
   divisions: [
@@ -210,7 +219,35 @@ try {
   invalidRecommendationRejected = String(error).includes("invalid JSON");
 }
 assert(invalidRecommendationRejected, "malformed synthesis was accepted as a completed recommendation");
-assert(rejectedSynthesisOutput === '{"summary":"Invalid","rationale":["bad":"value"]}', "rejected raw synthesis output was lost");
+assert(rejectedSynthesisOutput.startsWith('{"summary":"Invalid","rationale":["bad":"value"]}'), "rejected raw synthesis output was lost");
+
+// An over-limit synthesis gets one correction from the same model first.
+const correctionCalls: string[] = [];
+const correctionRuntime = new CouncilRuntime({
+  listModels: () => [{ providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-1", label: "Local 1" }],
+  stream: (messages, choice, onChunk) => {
+    const synthesis = messages[1]?.content.includes("Return JSON only");
+    const correcting = messages.some((message) => message.content.startsWith("Your answer was rejected"));
+    if (synthesis) correctionCalls.push(correcting ? "correction" : "synthesis");
+    const text = !synthesis
+      ? "Local contribution"
+      : JSON.stringify({ ...qualityReport, summary: correcting ? qualityReport.summary : "长".repeat(181) });
+    return {
+      operationId: `correction-${correctionCalls.length}`,
+      result: Promise.resolve().then(() => {
+        onChunk(text);
+        return { cancelled: false, response: { providerId: choice!.providerId, modelId: choice!.modelId, text, metadata: {} as AiCenterResponse["metadata"] } };
+      }),
+      cancel: async () => undefined,
+    };
+  },
+  resolveContext: async () => [],
+  now: () => 1,
+  uuid: () => "correction-runtime",
+});
+const corrected = await correctionRuntime.run({ prompt: `${localPlan.objective}${qualityObjective}`, members: [], assemblyPlan: localPlan });
+equal(correctionCalls, ["synthesis", "correction"], "over-limit synthesis must get exactly one same-model correction");
+assert(corrected.recommendation?.summary === qualityReport.summary, "corrected synthesis was not used");
 
 const metadata = {
   providerId: "chatgpt",

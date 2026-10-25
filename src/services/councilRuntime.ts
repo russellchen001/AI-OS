@@ -292,9 +292,32 @@ export class CouncilRuntime {
         const result = await stream.result;
         this.activeStream = undefined;
         if (result.cancelled || this.cancelled) throw new CouncilCancelledError();
-        validate?.(result.response.text);
+        let output = result.response.text;
+        try {
+          validate?.(output);
+        } catch (rejection) {
+          // One correction from the same model, naming the measured
+          // violation; if it is still invalid the next model is tried.
+          errors.push(`${choice.label}: ${rejection instanceof Error ? rejection.message : String(rejection)}`);
+          const correction = this.dependencies.stream([
+            ...messages,
+            { role: "assistant", content: output },
+            {
+              role: "user",
+              content: `Your answer was rejected: ${rejection instanceof Error ? rejection.message : String(rejection)} Return the corrected complete answer in the same JSON shape only. Keep its substance; fix only what was rejected.`,
+            },
+          ], choice, (text) => {
+            callbacks?.onChunk?.(member.id, providerId, text);
+          });
+          this.activeStream = correction;
+          const corrected = await correction.result;
+          this.activeStream = undefined;
+          if (corrected.cancelled || this.cancelled) throw new CouncilCancelledError();
+          output = corrected.response.text;
+          validate?.(output);
+        }
         return {
-          output: result.response.text,
+          output,
           providerId,
           modelId: choice.modelId,
           errors,
