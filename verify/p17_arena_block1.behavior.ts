@@ -220,6 +220,26 @@ function seat(
 
 const tests: TestCase[] = [
   {
+    name: "every named model in a multi-model objective gets exactly one seat",
+    run: () => {
+      const objective =
+        "让 Orion X1、Nebula R2、Helios J9 和 Aster M4 合作，设计一个家庭备份方案。";
+      // The planner extracts mentions before routing; routing extracts again.
+      const planned = extractUserModelConstraints(objective, models);
+      const plan = routeArenaStrategy(objective, planned, models);
+      const pinned = plan.userModelConstraints.filter((item) => item.mode === "pinned");
+      assert.equal(pinned.length, 4);
+      const bound = resolveUserConstraintsForSeats(
+        ["participant", "participant", "participant", "synthesizer"],
+        plan.userModelConstraints,
+      );
+      assert.deepEqual(
+        bound.map((item) => nonAuto(item).modelId).sort(),
+        models.map((item) => item.modelId).sort(),
+      );
+    },
+  },
+  {
     name: "strategy routing uses connected catalog for all-seat model pinning",
     run: () => {
       const chosen = models[0];

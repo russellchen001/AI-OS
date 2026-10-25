@@ -159,6 +159,26 @@ function deterministicRequirements(
   ];
 }
 
+/** Adds generic specialists before the synthesizer until `count` seats exist. */
+function withSeatCapacity<T extends { id: string; synthesizer?: boolean }>(
+  requirements: T[],
+  count: number,
+  specialist: (index: number) => T,
+): T[] {
+  const result = [...requirements];
+  let next = 0;
+
+  while (result.length < count) {
+    const synthesizerAt = result.findIndex((item) => item.synthesizer);
+    const seat = specialist(next);
+    next += 1;
+    if (result.some((item) => item.id === seat.id)) continue;
+    result.splice(synthesizerAt < 0 ? result.length : synthesizerAt, 0, seat);
+  }
+
+  return result;
+}
+
 function inferRole(
   title: string,
   synthesizer: boolean | undefined,
@@ -258,18 +278,38 @@ export class ArenaChiefOfStaff {
       availableModels,
     );
 
+    // Every explicitly pinned model needs its own seat.
+    const pinnedCount = strategyPlan.userModelConstraints.filter(
+      (constraint) => constraint.mode === "pinned",
+    ).length;
+
     const maxSeats = Math.min(
       Math.max(
         request.maxParticipants ??
           strategyPlan.suggestedMaxParticipants,
         MIN_ARENA_SEATS,
+        pinnedCount,
       ),
       MAX_ARENA_SEATS,
     );
 
-    const deterministicFallback =
-      deterministicRequirements(strategyPlan.strategies)
-        .slice(0, maxSeats);
+    const requiredSeats = Math.min(pinnedCount, maxSeats);
+
+    const deterministicFallback = withSeatCapacity<
+      ReturnType<typeof deterministicRequirements>[number]
+    >(
+      deterministicRequirements(strategyPlan.strategies),
+      requiredSeats,
+      (index) => {
+        const letter = String.fromCharCode(67 + index);
+        return {
+          id: `specialist-${letter.toLowerCase()}`,
+          title: `Specialist ${letter}`,
+          purpose: "Contribute another distinct expert perspective.",
+          requiredExpertise: ["domain analysis", "critical reasoning"],
+        };
+      },
+    ).slice(0, maxSeats);
 
     const orchestrator = new ChiefOfStaffOrchestrator({
       invokeModel: answerThroughAiCenter,
@@ -295,6 +335,7 @@ export class ArenaChiefOfStaff {
             strategyPlan.suggestedMinParticipants,
             maxSeats,
           ),
+          requiredSeats,
         ),
         maxSeats,
         localFirst: /private|privacy|confidential|local|隐私|机密|本地/.test(

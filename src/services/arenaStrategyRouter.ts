@@ -629,10 +629,18 @@ export function routeArenaStrategy(
   }
 
   const detectedConstraints = extractUserModelConstraints(normalized, availableModels);
+  // The planner may already have extracted the same mentions; one model
+  // named once is one constraint.
+  const seenConstraints = new Set<string>();
   const mergedConstraints = [
     ...userModelConstraints,
     ...detectedConstraints,
-  ].slice(0, 12);
+  ].filter((constraint) => {
+    const key = constraintIdentity(constraint);
+    if (seenConstraints.has(key)) return false;
+    seenConstraints.add(key);
+    return true;
+  }).slice(0, 12);
 
   return {
     id: crypto.randomUUID(),
