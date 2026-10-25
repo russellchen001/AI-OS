@@ -220,6 +220,20 @@ function seat(
 
 const tests: TestCase[] = [
   {
+    name: "stated and default synthesizer binding",
+    run: () => {
+      const stated = extractUserModelConstraints("让 Orion X1 和 Nebula R2 合作，由 Helios J9 汇总。", models);
+      const synthesizer = stated.find((item) => item.mode !== "auto" && item.targetRole === "synthesizer");
+      assert.equal(synthesizer && nonAuto(synthesizer).modelId, "helios-j9");
+
+      const local = { ...models[0], providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-a", label: "Local A" };
+      const constraints: ArenaModelConstraint[] = [models[1], local, { ...local, modelId: "local-b", label: "Local B" }]
+        .map((model) => ({ mode: "pinned", providerId: model.providerId, providerInstanceId: model.providerInstanceId, modelId: model.modelId, label: model.label }));
+      const bound = resolveUserConstraintsForSeats(["participant", "participant", "synthesizer"], constraints);
+      assert.equal(nonAuto(bound[2]).modelId, "nebula-r2");
+    },
+  },
+  {
     name: "every named model in a multi-model objective gets exactly one seat",
     run: () => {
       const objective =

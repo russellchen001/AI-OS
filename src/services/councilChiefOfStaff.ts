@@ -12,6 +12,7 @@ import {
   extractUserModelConstraints,
   withoutModelMentions,
 } from "./arenaStrategyRouter";
+import { preferredSynthesizerIndex } from "./synthesizerChoice";
 import {
   PAPERCLIP_SOURCE_COMMIT,
   PaperclipAdapter,
@@ -176,20 +177,38 @@ function selectAgencyAgent(
     )[0]?.agent;
 }
 
+type NamedParticipants = {
+  models: AiCenterModelChoice[];
+  /** The model the user asked to synthesize ("由 X 汇总"), if any. */
+  synthesizer?: AiCenterModelChoice;
+};
+
 /** Connected models the user explicitly named as participants, in order. */
 function namedParticipantModels(
   objective: string,
   models: AiCenterModelChoice[],
-): AiCenterModelChoice[] {
-  const named: AiCenterModelChoice[] = [];
+): NamedParticipants {
+  const named: NamedParticipants = { models: [] };
   for (const constraint of extractUserModelConstraints(objective, models)) {
     if (constraint.mode !== "pinned" || !constraint.modelId) continue;
     const model = models.find((candidate) =>
       candidate.providerInstanceId === constraint.providerInstanceId &&
       candidate.modelId === constraint.modelId);
-    if (model && !named.includes(model)) named.push(model);
+    if (!model) continue;
+    if (!named.models.includes(model)) named.models.push(model);
+    if (constraint.targetRole === "synthesizer") named.synthesizer ??= model;
   }
   return named;
+}
+
+/** Named models in seat order: experts first, the synthesizer's model last. */
+function seatOrder(named: NamedParticipants): AiCenterModelChoice[] {
+  const synthesizer = named.synthesizer ??
+    named.models[preferredSynthesizerIndex(named.models)];
+  return [
+    ...named.models.filter((model) => model !== synthesizer),
+    ...(synthesizer ? [synthesizer] : []),
+  ];
 }
 
 /** Adds expert seats before the synthesizer until `count` seats exist. */
@@ -218,9 +237,16 @@ function assignModels(
 ): CouncilModelAssignment[] {
   if (!models.length) throw new Error("No generation-verified model is available. Verify a model in My AI.");
   if (named.length) {
-    // Every named model takes exactly one seat and is never silently replaced.
+    // Every named model takes exactly one seat and is never silently replaced;
+    // the last named model in seat order goes to the synthesizer seat.
+    const synthesizerAt = requirements.findIndex((requirement) => requirement.synthesizer);
+    const experts = named.slice(0, -1);
+    const synthesizerModel = named.at(-1);
+    let expertIndex = 0;
     return requirements.map((requirement, index) => {
-      const pinned = named[index];
+      const pinned = index === synthesizerAt
+        ? synthesizerModel
+        : experts[expertIndex++];
       if (!pinned) {
         return assignModels([requirement], models, objective)[0];
       }
@@ -253,7 +279,9 @@ function assignModels(
     const preferred =
       localOnly && local
         ? local
-        : eligibleRepresentatives[index % eligibleRepresentatives.length] ??
+        : requirement.synthesizer
+          ? eligibleRepresentatives[preferredSynthesizerIndex(eligibleRepresentatives)]
+          : eligibleRepresentatives[index % eligibleRepresentatives.length] ??
           providerRepresentatives[index % providerRepresentatives.length] ??
           eligibleModels[index % eligibleModels.length] ?? models[index % models.length];
     return {
@@ -368,7 +396,7 @@ export class CouncilChiefOfStaff {
 
     // Model names identify participants; they are not task-domain evidence.
     const taskText = withoutModelMentions(objective, models);
-    const named = namedParticipantModels(objective, models);
+    const named = seatOrder(namedParticipantModels(objective, models));
     const localFirst = /private|privacy|confidential|local|隐私|机密|本地/.test(
       taskText.toLowerCase(),
     );
@@ -385,10 +413,13 @@ export class CouncilChiefOfStaff {
       );
     }
     const seatFloor = Math.max(MIN_DYNAMIC_SEATS, named.length);
-    const seatLimit = Math.min(
-      MAX_DYNAMIC_SEATS,
-      Math.max(seatFloor, request.maxSeats ?? MAX_DYNAMIC_SEATS),
-    );
+    // A Council of named models is exactly those models (at least the minimum).
+    const seatLimit = named.length >= MIN_DYNAMIC_SEATS
+      ? named.length
+      : Math.min(
+          MAX_DYNAMIC_SEATS,
+          Math.max(seatFloor, request.maxSeats ?? MAX_DYNAMIC_SEATS),
+        );
     const deterministicFallback = (): CouncilSeatRequirement[] => withSeatCapacity(
       this.dependencies.deriveRequirements?.(taskText) ?? deriveRequirements(taskText),
       seatFloor,

@@ -253,9 +253,10 @@ function inferRoleNearMention(
     {
       role: "synthesizer",
       before:
-        /(?:synthesizer|总结员|综合员)\s*(?:用|由|是|:|：)?\s*$/i,
+        /(?:synthesizer|总结员|综合员|汇总者|综合者|(?:最终)?(?:汇总|综合|总结|统稿)(?:人|者|员)?\s*(?:交给|由|用|是))\s*(?:用|由|是|:|：)?\s*$/i,
       after:
-        /^\s*(?:[,，:：\-–—]\s*)?(?:(?:as|is|当|作为|做|担任)\s*)?(?:synthesizer|总结员|综合员)/i,
+        // "由 X 汇总", "X 负责汇总", "X as synthesizer"; not "X 合作/讨论".
+        /^\s*(?:[,，:：\-–—]\s*)?(?:(?:as|is|当|作为|做|担任|来|负责|进行)\s*)?(?:(?:the\s+)?synthesizer|synthesi[sz]es?|总结员|综合员|汇总者|综合者|(?:最终)?(?:汇总|综合|总结|统稿))/i,
     },
     {
       role: "observer",

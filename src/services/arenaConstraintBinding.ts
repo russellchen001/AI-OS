@@ -1,3 +1,4 @@
+import { preferredSynthesizerIndex } from "./synthesizerChoice";
 import type {
   ArenaModelConstraint,
   ArenaSeatRole,
@@ -53,6 +54,22 @@ export function resolveUserConstraintsForSeats(
 
     resolved[seatIndex] = match.constraint;
     match.used = true;
+  }
+
+  // Pass 1b:
+  // Without a role-bound synthesizer, the strongest unscoped user-selected
+  // model synthesizes (see preferredSynthesizerIndex) rather than whichever
+  // happens to be left over after participants are filled.
+  const synthesizerSeat = roles.findIndex((role) => role === "synthesizer");
+  if (synthesizerSeat >= 0 && resolved[synthesizerSeat].mode === "auto") {
+    const unscoped = remaining.filter((entry) =>
+      !entry.used && entry.constraint.mode !== "auto" && !entry.constraint.targetRole);
+    const pick = unscoped[preferredSynthesizerIndex(unscoped.map((entry) =>
+      entry.constraint.mode === "auto" ? {} : { providerId: entry.constraint.providerId }))];
+    if (pick && unscoped.length >= 2) {
+      resolved[synthesizerSeat] = pick.constraint;
+      pick.used = true;
+    }
   }
 
   // Pass 2:

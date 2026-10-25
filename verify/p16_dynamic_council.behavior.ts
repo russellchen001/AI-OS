@@ -181,6 +181,20 @@ equal(
 );
 assert(namedPlan.seats.every((seat) => seat.assignedModel.fallbackModelIds.length === 0), "a named seat may silently fall back");
 assert(accountProfileLoads === 0, "a model label was used as task-domain evidence for a profile");
+// Without a stated synthesizer the strongest named model synthesizes (cloud
+// above local, then the one named last); "由 X 汇总" overrides that.
+const synthOf = (assembly: typeof namedPlan) =>
+  assembly.seats.find((seat) => seat.id === assembly.synthesizerSeatId)?.assignedModel.modelId;
+equal(synthOf(namedPlan), "acme-account-default", "the last-named cloud model should synthesize by default");
+const statedPlan = await namedChief.assemble({
+  objective: "让 gpt-business、claude-review 和 local-1 都参与讨论，由 local-1 汇总：家庭照片如何长期备份？",
+});
+equal(synthOf(statedPlan), "local-1", "a stated synthesizer must be honoured");
+equal(
+  statedPlan.seats.map((seat) => seat.assignedModel.modelId).sort(),
+  ["claude-review", "gpt-business", "local-1"],
+  "a stated synthesizer must still seat every named model once",
+);
 let namedCloudRejected = false;
 try {
   await namedChief.assemble({ objective: "仅使用本机本地模型，让 local-1、gpt-business 都参与讨论笔记是否保留在本地。" });

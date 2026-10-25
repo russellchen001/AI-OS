@@ -414,6 +414,7 @@ export class CouncilRuntime {
               seat.memberContext,
               "Use only its expertise, methodology, operating principles and workflow. Preserve material disagreement and uncertainty. Do not claim execution occurred.",
               "Treat explicit user constraints on scope, locality, length, format and allowed actions as binding.",
+              "Model names in the objective identify the Council members; they are not services, storage, tools or products for the task itself.",
               "Ground every factual claim in the user's objective or verified context. Other seats are proposals, not evidence. Never assume encryption, backups, device settings or execution. Do not say a requested item was not requested. Label unknown facts as unknown.",
               "Do not recommend destructive or irreversible actions unless the user explicitly requests them. Prefer reversible or read-only steps and state when approval is required.",
             ].join("\n\n"),
