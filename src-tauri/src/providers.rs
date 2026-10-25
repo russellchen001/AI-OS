@@ -972,6 +972,22 @@ static KIMI_DEVICE_SESSIONS: OnceLock<Mutex<HashMap<String, GrokDeviceSession>>>
 /// Matches the output share AI-OS reserves when it budgets a local model's
 /// context (32k safe default / 8); 2048 truncated complete local answers.
 const OMLX_MAX_OUTPUT_TOKENS: u32 = 4096;
+
+/// A local chat request. Thinking templates are asked to answer directly
+/// (`enable_thinking: false`): at 9-15 tokens/s within the output budget, an
+/// open-ended reasoning preamble (Qwen3.5 measured 4096 tokens of untagged
+/// "Thinking Process") never reached the answer. Templates without the
+/// switch ignore it; models that always reason keep their tagged reasoning,
+/// which oMLX returns separately from the answer.
+fn omlx_chat_body(model_id: &str, messages: Value, stream: bool) -> Value {
+    serde_json::json!({
+        "model": model_id,
+        "stream": stream,
+        "messages": messages,
+        "max_tokens": OMLX_MAX_OUTPUT_TOKENS,
+        "chat_template_kwargs": { "enable_thinking": false },
+    })
+}
 const GROK_OAUTH_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 const GROK_OAUTH_ISSUER: &str = "https://auth.x.ai";
 const GROK_OAUTH_SCOPES: &str = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write";
@@ -4411,11 +4427,11 @@ pub(crate) async fn generate_provider_response(
         ),
         "omlx" => (
             client.post("http://127.0.0.1:8000/v1/chat/completions"),
-            serde_json::json!({
-                "model": model_id,
-                "stream": false,
-                "messages": [{"role": "user", "content": prompt}]
-            }),
+            omlx_chat_body(
+                model_id,
+                serde_json::json!([{"role": "user", "content": prompt}]),
+                false,
+            ),
         ),
         _ => return Err("this Provider cannot answer through AI Center yet".to_owned()),
     };
@@ -5102,12 +5118,7 @@ async fn send_omlx_stream_request(
         }
     }
 
-    let body = serde_json::json!({
-        "model": candidate.model_id,
-        "stream": true,
-        "messages": messages,
-        "max_tokens": OMLX_MAX_OUTPUT_TOKENS,
-    });
+    let body = omlx_chat_body(&candidate.model_id, serde_json::json!(messages), true);
     let response = tokio::select! {
         _ = token.cancelled() => return Err("cancelled".to_owned()),
         response = request.json(&body).send() => response
@@ -7351,6 +7362,14 @@ mod tests {
             serde_json::to_value(ProviderAuthenticationMethod::Local).unwrap(),
             serde_json::json!("local")
         );
+    }
+
+    #[test]
+    fn local_chat_requests_answer_directly_within_the_output_budget() {
+        let body = omlx_chat_body("any-local-model", serde_json::json!([]), true);
+        assert_eq!(body["max_tokens"], OMLX_MAX_OUTPUT_TOKENS);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(body["stream"], true);
     }
 
     #[test]
