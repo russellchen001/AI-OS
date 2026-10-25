@@ -1,32 +1,213 @@
 <!-- BETA41_HANDOFF_START -->
 
-# START HERE — Beta 6 core stability repair (2026-10-25; REAL RETEST PENDING)
+# START HERE — Beta 6 最新交接（2026-10-26；以下 CURRENT 为唯一当前状态）
 
-## CURRENT — frozen 50d077d built; Mac relocked before new-package real acceptance
+## CURRENT（2026-10-26 07:34）— 1380a39 复杂题真实调用完成；最终质量验收受锁屏阻塞，不建议发布
 
-- Latest code/artifact commit `50d077d63a6dfe5085fbdc476ba3fc8188378baa`; clean code
-  worktree at build start. Full build exited 0; signed-bundle integrity and package
-  privacy checks PASS. This supersedes the first `db7687f` candidate below.
-- Frozen-candidate postbuild Rust library rerun: 1060 passed / 0 failed / 84 ignored;
-  delivered DMG checksum and copied App deep/strict signature PASS. Formal Beta5
-  executable hash rechecked unchanged (`91ff470b...253ce5`). Mac remained locked on
-  the final retry; only HANDOFF is changed after the frozen code commit.
-- Isolated App: current chat `work/beta6-stability-20261025/candidate-50d077d/AI OS.app`;
-  executable SHA-256 `74fcbc4a7f630b7842adc8f886009a62dd6919d1b9aeb4c794a790f8a08c86cc`.
-  New DMG: current chat `outputs/AI OS_1.0.1-beta.6_stability-50d077d_aarch64.dmg`;
-  SHA-256 `49db1a76b7f2e495e45aab7f46a5492a356d50db7e0e034236d418bb2343c542`.
-- Owner unlocked for the first real run, but the Mac relocked during rebuild. CUA
-  could not open the new App at 02:57; a new unlock question is pending. Do NOT mark
-  the new candidate's Council/Arena/Chat quality PASS from earlier package evidence.
-  The last demonstrated local Council/Arena quality remains FAIL; newly patched
-  profile/domain binding and Arena full-seat control still require installed retests.
-- Resume ONLY the `candidate-50d077d` path. Check persisted two-model eligibility;
-  rerun original local Council and Qwen-pinned Arena, compare raw/final answer;
-  separately run the explicitly cloud-authorized Claude-pinned Arena control and
-  verify ALL seats are pinned before Start. Do not silently replace a local-only task.
-  Recheck Google model-specific 404 if owner completes any needed Keychain prompt.
-  Finish by restoring original DeepSeek-only RAM (currently Qwen-only) and checking
-  original `/Applications` Beta5 hash; no formal App overwrite is authorized.
+- 本次已用 **candidate-1380a39** 完整运行下方复杂题：六席、无重复/无静默替换，十次分析/交叉审阅
+  加一次 Claude 汇总全部调用成功；本地六次均 stop / malformed=false。GPT 两轮约 96.663 / 67.279 秒，
+  已实际越过旧 90 秒失败点；汇总确实调用 Claude，约 100.102 秒，没有落到 DeepSeek。
+- **尚不能报 Council 质量 PASS：**约 07:16 Mac 自动锁屏，后台继续至 07:33 Claude 返回。
+  最终报告原文、前端是否成功接受结构、事实/预算/五项要求仍待解锁后读取；已问本人解锁，勿重跑任务。
+  Qwen2.5 第一轮仍把模型当云存储；GPT 交叉审阅明确识别并纠正该错误。最终是否剔除仍须看 Claude 原文。
+- 续接证据单独存于产物根 `outputs/Beta6-1380a39-Council复测-20261026.md`。
+  原始未提交 HANDOFF 已备份为 `work/beta6-final-acceptance/HANDOFF-before-1380a39-retest-20261026.md`，
+  先前未提交修改均保留；本次仅更新文档，未改代码/重新构建/推送/替换正式 App。
+
+本节是唯一当前状态；与下方旧节冲突时以本节为准。下方旧任务里的“每次发言不超过60个汉字”
+是旧交接人自拟的测试条件，**不是产品规则**；用户明确不同意以 60 字判定超长。
+
+### 仓库与候选
+
+- 目录 `/Users/russellchen/AI-OS/dashboard-beta6`，分支 `beta6`，运行代码/候选提交 `1380a39`。
+  此阶段 9 个代码修复提交（`549216b..1380a39`），本次随后仅本地提交 HANDOFF。
+  **未推送/未打 Tag/未发布**。续接前只有 HANDOFF 未提交；原有内容已备份并保留后纳入文档提交，勿 reset/覆盖。
+- 最新隔离候选：产物根 `work/beta6-stability-20261025/candidate-1380a39/AI OS.app`
+  （主程序 SHA-256 前缀 `cd89977961a8679071c05b49`），正在运行。构建日志
+  `work/beta6-final-acceptance/stability-1380a39-build.log`（EXIT 0，签名/包隐私检查 PASS）。
+  产物根 = `/Users/russellchen/Documents/Codex/2026-10-24/referenced-chatgpt-conversation-this-is-an-2`。
+- 已单独保存本候选 DMG：产物根 `outputs/AI OS_1.0.1-beta.6_stability-1380a39_aarch64.dmg`，
+  SHA-256 `a19f94f4209e234e1ee5894b380d244e05a71658f51b54c19128a6fa16455364`。
+  DMG 校验、只读挂载后的包内主程序哈希与运行候选一致、深层严格签名 PASS，随后已卸载镜像。
+- `/Applications/AI OS.app` 仍是正式 Beta5，主程序哈希 `91ff470b…253ce5`，每次构建后核对未变。
+- 每次重建都是新 ad-hoc 签名：启动时 oMLX 密钥、首次调用 OpenAI 各弹一次钥匙串，需用户本人点
+  “始终允许”。1380a39 包两次都已点过。根治需 Developer ID 签名（已在发布阻塞清单）。
+
+### 用户决定（本轮）
+
+- Arena/Council 让所有已登录/已下载模型同场，构造复杂场景。
+- Council 两题都测：原 180 汉字题测“守不守规则”；新复杂题测“复杂问题答得好不好”。
+- Grok 无 API Key：走 xAI 官方 Grok CLI（用户同意安装并已本人 `grok login`）。
+- Council/Arena 汇总者：**B+C** —— 题目写明“由 X 汇总”则听用户；否则自动选最强（云端优先于本地，
+  同档取最后点名者），不硬编码模型名。
+
+### 模型（My AI 真实生成验证）
+
+Claude Code 账号默认、GPT-6.1-Sol（OpenAI 账号，授权到 11/4、自动续期）、grok-4.7（Grok CLI，
+`~/.grok/bin/grok` v1.0.70）、oMLX Qwen2.5-7B / Qwen3.5-9B / DeepSeek-R1-Distill-7B 均 PASS。
+Gemini：账号额度用尽 HTTP 402 RESOURCE_EXHAUSTED（3.6 Flash、Pro Latest），非 AI-OS 缺陷，缺席。
+
+### 本轮提交（均有行为/单元回归）
+
+1. `e06c026` Arena 评审 JSON 违规（未知评分项/主体、同主体同项重复、胜者范围混用、不可解析）给一次
+   逐条改正，二次仍违规如实拒绝；不同本地 oMLX 模型排队生成（oMLX 换模型会 immediate abort）。
+2. `5bda8d2` Arena 点名多模型：约束去重，席位下限 ≥ 点名数。
+3. `344172b` Grok 账号改走官方 Grok CLI（空临时目录、关工具/联网/子代理，凭证由 CLI 管理）；原冒充
+   CLI 版本通道被 xAI 返回 426，弃用。My AI 不再把可自动续期账号显示为 Expired。
+4. `57c6c05` Claude Code / Grok CLI 超时 90→300 s（Arena 综合实测 129 s）；oMLX 输出上限
+   2048→4096（与前端预留一致）。
+5. `cc871a5` oMLX 请求带 `chat_template_kwargs.enable_thinking=false`（Qwen3.5 曾把 4096 token
+   全用于无标签 “Thinking Process”）。
+6. `b82c8c6` Council：“N 个汉字”只数汉字；汇总不合规先给同一模型一次带实测违规的改正。
+7. `14f3459` Council 读取点名模型，每个点名模型一个固定席位、无静默替换；本地限定题点名云端模型
+   明确报错；模型名不参与任务领域/本地判断（原 “account”→微信公众号资料、“local-1”→误判本地）。
+   Arena 席位提示“模型名是参赛者，不是任务资源”。
+8. `69d9f71` 非流式云端回答超时 90→300 s（Council 中 GPT 两次恰好 90 s 失败，显示
+   “unreadable streaming response”）。
+9. `1380a39` B+C 汇总者选择（Council + Arena）；点名 Council 席位数 = 点名数（≥3），不重复发言；
+   Council 席位同样提示模型名不是任务资源。
+
+最新回归：Rust `cargo test --lib` 1068/0/84 ignored；`verify/verify_p16_dynamic_council.sh`
+15/0；`verify/verify_p17_arena_final.sh` 全 PASS；前端构建、`git diff --check` PASS。
+本次续接又跑了全量 `cargo test`（库 1068/0/84、二进制 4/0）、`cargo check`、前端构建，均 PASS；
+P16/P17 同代码未重复跑。全库 fmt 仍有既有无关 Cloud Drive/browser 差异，未批量改动，不声称格式全过。
+
+### 实测结果（以答案原文核对）
+
+- **Arena 6 模型复杂题（b82c8c6 包）：Completed / winner / 3 轮 / 21 分，优胜 Grok。**
+  最终答案覆盖五项要求，按数据类别列副本表，诚实指出视频原片在预算内不满足 3-2-1，列待家庭确认
+  假设。Outcome 仍 degraded：Qwen3.5 第二轮审阅过长（4096 `length`）被拒。Qwen2.5 草案曾把参赛
+  模型当云存储（综合者未采纳；1380a39 已加提示，**未实测**）。
+- **Council 原 180 汉字题（b82c8c6 包，仅本地）：FAIL（模型能力）。** 三个本地汇总者各一次实测改正：
+  DeepSeek 199→字数合格但理由 1 条；Qwen2.5 287→242；Qwen3.5 结构错→371。全部如实拒绝。
+  专家内容仍有无依据断言与不合理建议。不得硬编码模型/偷偷换云端来“通过”。
+- **Council 复杂题（14f3459 包）：FAIL。** 6 个点名模型全部入席、无无关资料（修复生效）；但 GPT 席
+  两次 90 s 失败（69d9f71 已修），汇总按旧规则落在 DeepSeek，两次输出 JSON 混乱夹杂俄文，
+  无建议被采纳。5 位专家内容可用。
+- **1380a39 Council 复杂题：调用链 PASS，最终回答质量 BLOCKED（锁屏，未读原文）。**
+  十一次均成功、无回退；GPT 两轮不再旧 90 秒失败，Claude 汇总路由已真测。不能据此宣布报告质量通过。
+  未用 1380a39 重跑 Arena/原 180 字题；它们仍沿用上方已有结果，不虚构新包全通过。
+
+### 接手后按顺序
+
+1. **先本人解锁，读取当前 Council 结果，勿重复 Run。**核对 Claude 最终 JSON/界面报告被接受，
+   读完整原文，评估备份结构/3-2-1、自动化、季度恢复、年度费用、风险取舍；确认错误模型存储建议被排除。
+   原题备查（只有后续必要修复后才重新运行；中文用剪贴板粘贴，按钮用最新 AX 索引；顶部偶有 NotchNook 遮挡）：
+   `允许使用云端模型推理。让 GPT-6.1-Sol、grok-4.7、Claude Code account default、Qwen3.5-9B-4bit、Qwen2.5-7B-Instruct-4bit 和 DeepSeek-R1-Distill-Qwen-7B-4bit 都参与讨论并给出决策建议：一个三口之家应如何长期备份家庭照片与重要文件？已知条件：一台 MacBook（512GB，照片库约 300GB）、一块 2TB 外接硬盘、一台两盘位 NAS（RAID1，可用 4TB），每月新增约 50GB 照片和视频；预算每年不超过 600 元人民币，可以使用云端存储。最终建议需要包括：备份结构以及与 3-2-1 原则的对应关系、自动化方式、每季度的恢复演练步骤、年度费用估算、主要风险与取舍。只讨论方案，不执行任何文件操作。`
+   本次六席/Claude/GPT 调用已核验，仍缺最终原文质量与结构验收；完整再跑约需 40 分钟，勿无故重复。
+2. 可选：用同包重跑 Arena 6 模型题（题干同上，以“让 … 合作，为一个三口之家设计…”开头）与原
+   180 字 Council 题，确认无回归；可再测“由 X 汇总”显式指定。
+3. 收尾：本次最后本地请求是 DeepSeek，但**锁屏下未实际核查 RAM 状态**（测试前为 Qwen3.5-only）。
+   解锁后查看 oMLX；若已仅 DeepSeek，无需重复操作；否则只从 RAM 卸载 Qwen、加载 DeepSeek。
+   勿 Delete、勿删模型/缓存、勿停服务器/改配置。正式 Beta5 哈希已再次核对 `91ff470b…253ce5` 未变。
+4. 更新本节为真实结果，窄范围本地提交 HANDOFF；不 Push/Tag/发布。
+
+### 已知限制 / 待决
+
+- Qwen3.5-9B 在本机约 8–13 tok/s，长审阅仍可能超过 4096 输出上限被拒；DeepSeek-R1 7B 不适合做
+  结构化汇总。属模型能力/硬件限制，如实记录，勿靠无限放大上限掩盖。
+- Council 跑完整 6 席很慢（顺序执行）；Arena 本地席位已排队、云端并行。
+- Grok 旧 OAuth 设备码代码仍在仓库（已不暴露在 UI）；可后续清理。
+- 本机新增：`~/.grok/`（官方 Grok CLI）、`~/.local/bin/grok` 链接、`~/.zshrc` 一行 PATH（安装器所加）。
+
+## CURRENT — 用户要求交接，已停止界面验收；不建议发布
+
+### 仓库、候选和边界
+
+- 开发目录 `/Users/russellchen/AI-OS/dashboard-beta6`，分支 `beta6`。交接前实际 HEAD：
+  `549216b8e3f5e4d4be68b0a1a062cd214db18034`（文档提交）；运行代码/候选提交：
+  `50d077d63a6dfe5085fbdc476ba3fc8188378baa`。本次只更新 HANDOFF，尚未提交这次交接文档。
+  更新前 Git 工作区干净；不要 reset、覆盖接手后其他人的未提交成果。
+- 本聊天产物根目录（下文称“产物根”）：
+  `/Users/russellchen/Documents/Codex/2026-10-24/referenced-chatgpt-conversation-this-is-an-2`。
+- 最新隔离 App：产物根 `work/beta6-stability-20261025/candidate-50d077d/AI OS.app`。
+  可执行文件 SHA-256：`74fcbc4a7f630b7842adc8f886009a62dd6919d1b9aeb4c794a790f8a08c86cc`。
+- 最新 DMG：产物根 `outputs/AI OS_1.0.1-beta.6_stability-50d077d_aarch64.dmg`。
+  SHA-256：`49db1a76b7f2e495e45aab7f46a5492a356d50db7e0e034236d418bb2343c542`。
+  完整构建、DMG 校验、深层严格签名完整性和包隐私检查 PASS；仍为 ad-hoc，未公证。
+- `/Applications/AI OS.app` 仍是原 Beta5，最近核对的主程序 SHA-256：
+  `91ff470bbb163233f891cf3bc16af86788b42f439aaf7b558a874353ab253ce5`。
+  本轮没有替换正式 App，没有 Push、Tag、Release 或向朋友发送包。
+  继续仅操作隔离 App；不得删除/覆盖用户数据、提取凭证或自行变更账号/Keychain。
+- 用户已亲自处理钥匙串弹窗并解锁。07:29 后的新包真实测试已进行，不能再把“等待解锁”
+  当作当前结论。最后因用户主动中断并要求交接而停止，不是完成终验。
+
+### 三项核心功能：已经做到哪里
+
+1. **Council 真实回答质量：FAIL（50d077d 新包已复测）。**
+   原始本地任务完整跑过：四席均为 Built-in fallback、全部使用本地 Qwen2.5；
+   不再加载营销私域、法务、网络工程等无关资料。七次席位生成全部正常 `stop`，无 malformed。
+   最终 JSON 385 字符，全部人类可读字段合计 256 字符、其中汉字 234，超过用户 180 字。
+   还无依据断言“现有设置满足数据安全与隐私需求”“当前配置合理，数据安全与隐私得到保障”，
+   重复结论和建议，交叉审阅没有纠正这些假设。新包明确拒绝报告、展示完整被拒绝原文及原因，
+   没有产生可批准报告。**失败保护 PASS 不等于回答质量 PASS。**
+   无关资料和传输截断已被这次实测排除为全部问题的解释；本地模型指令遵循/推理仍有问题，
+   不能只靠再加提示词、延长超时或统计调用次数宣布解决。
+2. **Arena 答案完整性：最近实测 FAIL；50d077d 的实际完整任务尚未重跑。**
+   较早 db7687f 包五次正常结束生成/三轮，答案仅为泛泛三项技术描述，评分引用不存在的席位；
+   系统 Outcome degraded / Scores 0，没有正常计分。已修复“实际答案”和评分分离、缺失答案/
+   步数不足拒绝计分，轮次改为实际任务草案→缺项纠正→完整交付物再评分。
+   另发现明确要求三个席位固定 Claude 时仍混入 Auto Qwen（违规计划未执行）；
+   已修复路由未传当前连接目录和不带 Provider 前缀的显示名识别，全席位固定回归通过。
+   **这些最新修复只有自动回归，尚无新包真实 Arena PASS；不能沿用旧包调用/评分通过。**
+3. **Chat 模型目录：针对本轮目标的真实验收 PASS。**
+   普通选择器仅显示实际生成验证成功的 Qwen 与 Claude CLI 账号默认模型，不混入 API 静态型号。
+   新包对 Gemini 2.5 Flash 的真实请求再次返回 HTTP 404 NOT_FOUND，标为 unavailable；
+   刷新目录成功发现 46 个型号后仍 unavailable；退出并重新启动隔离 App 后也仍 unavailable。
+   普通 Chat 不展示该 404 模型；Manual Qwen 从 My AI 刷新返回仍保持，不静默变为 Auto。
+   真实验证证据重启后保留；**没有声称 Manual 选择跨 App 重启保留**（当前会回到 Auto）。
+   模型生成验证不等于模型回答质量：Qwen 可调用但“只回复指定文字”任务曾不遵守要求。
+
+### 其他真实状态与回归
+
+- Gemini/Keychain：本人处理弹窗后，新包正常凭证刷新成功，界面有效期至 2026-10-25 08:31；
+  目录刷新成功。2.5 Flash 真实生成 404，不是账号授权失败；其他 Gemini 型号未在本轮证明可生成。
+  有效期会过期，接手时按正常入口刷新，不要复制 Token、读取密钥文件或绕过官方限制。
+- Claude 登录、Verify 和真实调用此前通过。本轮共享代码回归中，账号默认模型真实验证成功；
+  Chat 精确返回 `BETA6-STABILITY-CLAUDE-OK`，5,581ms，`anthropic / claude-code-default`。
+  不需重新开发登录流程，不把 CLI 订阅当作 API Key，不擅自重新登录/退出账号。
+- 冻结包构建后 Rust 库重跑：1060 passed / 0 failed / 84 ignored；此前二进制 4 passed、cargo check PASS。
+  前端正式构建、Provider 专项、完整 P16、完整 P17 PASS。验收入口：
+  `cargo test --lib`（src-tauri 内）、`npm run build`、`bash verify/verify_p16_dynamic_council.sh`、
+  `bash verify/verify_p17_arena_final.sh`、`bash verify/verify_beta6_provider_stability.sh`。
+  全库 fmt 仍有既有无关 Cloud Drive/browser 等格式差异；目标文件格式及 diff --check 通过，勿批量格式化。
+- 独立发布阻塞仍保留：Google OAuth 官方管理配置/测试用户/验证审计、Developer ID/公证、
+  真正干净 macOS 用户/朋友端验收。无 Provider/部分 Provider 等目前主要是模拟覆盖，不冒充干净用户真测。
+
+### 接手后按顺序继续
+
+1. 先检查本节、Git 状态、上述隔离 App 路径/哈希。需要界面时重新读取最新状态，不能复用旧 AX 索引。
+   最后停留在新包 My AI 附近，鼠标点击在原生下拉框之后有输入异常；Tab/Return 能操作，
+   关闭 Google 面板曾用键盘成功。随后尝试键盘定位 Arena 被用户中断，可能已部分移动焦点；
+   **不要假定已进入 Arena、已启动任务或这是已证实的产品代码缺陷。**
+2. 优先完成新包 Arena：原始 Qwen 本地任务，以及明确允许云端推理、全部席位固定 Claude 的对照任务。
+   Start 前核对每个席位都按要求固定；原始本地任务不得偷偷换云端。
+   比对原始 `answer` 与最终显示全文，检查确有可执行的三步清单、长度/范围/不执行操作限制、评分对象合法。
+3. 继续 Council 根因修复/能力对照，真实检查最终事实、逻辑与约束；可评估已有可用模型，
+   不能硬编码特定模型、下载新模型或扩大架构来掩盖问题。若本地模型能力不足，要明确记录 FAIL，
+   不允许悄悄云端回退或把拒绝报告算作质量通过。任何新修复需行为回归及新包真测。
+4. **收尾未做：恢复原本 oMLX 的 DeepSeek-only RAM 状态。** 目前仅 Qwen2.5-7B-Instruct-4bit
+   加载约 4.19GB；测试结束后只从 RAM 卸载 Qwen、加载原 DeepSeek，勿点 Delete、勿删模型文件/缓存、
+   勿停止服务器或改配置。再次核对正式 Beta5 哈希未变。
+5. 更新报告与本节，窄范围本地提交相关代码/文档；不 Push/Tag/发布。只有真测完成才更新 PASS。
+
+### 原始验收任务与证据位置
+
+- Council 原任务：
+  `仅使用本机本地模型，在不删除、不格式化、不上传到云端、不修改任何文件的前提下，判断“两份个人笔记应继续只保存在这台 Mac 上吗？”请用中文给出最终答案，严格不超过 180 个汉字，包含：结论、2条理由、1条可逆的本地备份建议。不要推荐云服务、Disk Utility、抹盘、删除或任何破坏性操作。`
+- Arena 原任务：
+  `让两位专家与一位综合者合作制定一个三步的本地笔记备份检查清单。三个席位都固定使用 oMLX Qwen2.5-7B-Instruct-4bit，不使用云端模型。只讨论方案，不执行任何文件操作。每次发言不超过60个汉字，最终由综合者汇总。`
+- 独立云端对照任务（此前只规划，违规计划未启动；新包还没重跑）：
+  `让两位专家与一位综合者合作制定一个三步的笔记备份检查清单。允许使用云端 Claude 模型推理，三个席位都固定使用 Claude Code account default。备份方案仅使用这台 Mac 与已有外接硬盘，不使用网盘。只讨论方案，不执行任何文件操作。每次发言不超过60个汉字，最终由综合者汇总。`
+- 详细记录：产物根 `outputs/Beta6-稳定性修复验收-20261025.md`，已补 07:29 后 Council 和 Google 实测；
+  部分旧“待验收”条目未整理，以本节最新分类为准。
+- 日志：产物根 `work/beta6-final-acceptance/stability-*.log`，最新构建 `stability-frozen-candidate-build.log`，
+  Rust `stability-rust-frozen.log`，P16 `stability-council-rejected-output.log`，
+  P17 `stability-arena-connected-catalog.log`，DMG `stability-frozen-dmg-verify.log`。
+  运行日志 `/Users/russellchen/.ai-os/logs/ai-os.log`，`AI_CENTER_COMPLETION` 为模型/长度/finish reason 脱敏元数据；
+  07:29 本地 Council 对应 UTC 2026-10-24T20:29–20:30。不要把账号/凭证内容写入报告。
+
+## 以下均为历史过程记录：与 CURRENT 冲突时不作为当前状态
 
 - Follow-ups: `c2727a6` task-evidence profile gate; `c79bf20` rejected Council raw
   output preservation; `34c48d6` concrete Arena deliverable drafts. Actual first Arena
