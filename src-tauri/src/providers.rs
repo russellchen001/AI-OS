@@ -971,6 +971,10 @@ static KIMI_DEVICE_SESSIONS: OnceLock<Mutex<HashMap<String, GrokDeviceSession>>>
 
 /// Matches the output share AI-OS reserves when it budgets a local model's
 /// context (32k safe default / 8); 2048 truncated complete local answers.
+/// Whole-answer bound for non-streamed cloud requests. A Council domain
+/// analysis on GPT-6.1-Sol was cut off at exactly 90 s twice (body read
+/// timed out, reported as an unreadable stream); matches the CLI bound.
+const CLOUD_ANSWER_TIMEOUT: Duration = Duration::from_secs(300);
 const OMLX_MAX_OUTPUT_TOKENS: u32 = 4096;
 
 /// A local chat request. Thinking templates are asked to answer directly
@@ -4327,7 +4331,8 @@ pub(crate) async fn generate_provider_response(
     }
     let spec = adapter_spec(provider_id)?;
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(CLOUD_ANSWER_TIMEOUT)
         .build()
         .map_err(|_| "AI-OS could not initialize AI Center".to_owned())?;
     let secret = if matches!(spec.auth, AuthStyle::None) {
