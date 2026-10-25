@@ -18,7 +18,8 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
+// Same bound as Claude Code: long syntheses need minutes; cancellable.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const GROK_CLI_DEFAULT_MODEL: &str = "grok-cli-default";
 static GROK_CLI_REQUESTS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();

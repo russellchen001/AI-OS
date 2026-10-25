@@ -969,6 +969,9 @@ static OAUTH_CANCELLATIONS: OnceLock<Mutex<HashMap<String, CancellationToken>>> 
 static GROK_DEVICE_SESSIONS: OnceLock<Mutex<HashMap<String, GrokDeviceSession>>> = OnceLock::new();
 static KIMI_DEVICE_SESSIONS: OnceLock<Mutex<HashMap<String, GrokDeviceSession>>> = OnceLock::new();
 
+/// Matches the output share AI-OS reserves when it budgets a local model's
+/// context (32k safe default / 8); 2048 truncated complete local answers.
+const OMLX_MAX_OUTPUT_TOKENS: u32 = 4096;
 const GROK_OAUTH_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 const GROK_OAUTH_ISSUER: &str = "https://auth.x.ai";
 const GROK_OAUTH_SCOPES: &str = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write";
@@ -5103,7 +5106,7 @@ async fn send_omlx_stream_request(
         "model": candidate.model_id,
         "stream": true,
         "messages": messages,
-        "max_tokens": 2048,
+        "max_tokens": OMLX_MAX_OUTPUT_TOKENS,
     });
     let response = tokio::select! {
         _ = token.cancelled() => return Err("cancelled".to_owned()),

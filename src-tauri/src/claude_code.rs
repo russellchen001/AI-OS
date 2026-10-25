@@ -14,7 +14,9 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(90);
+// A five-seat Arena synthesis (about 18 KB of drafts) measured 129 s, so
+// 90 s cut off complete answers. Requests stay cancellable throughout.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 static CLAUDE_CODE_REQUESTS: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
 
