@@ -15,13 +15,66 @@ export function answerRequirements(objective: string) {
   };
 }
 
+function humanReadableReport(report: {
+  summary: string; recommendedPlan: string[]; rationale: string[]; disagreements: string[];
+  risks: string[]; assumptions: string[]; uncertainty: string[];
+}): string {
+  return [report.summary, ...report.recommendedPlan, ...report.rationale,
+    ...report.disagreements, ...report.risks, ...report.assumptions, ...report.uncertainty].join("\n");
+}
+
+function validateCostEstimate(objective: string, text: string): void {
+  if (!/(?:年度|每年|annual|yearly).{0,8}(?:费用|成本|预算|cost|price|budget).{0,8}(?:估算|估计|estimate|breakdown)/i.test(objective)) return;
+
+  const amounts = [...text.matchAll(/(?:¥|￥|CNY|RMB|USD|\$)?\s*\d+(?:\.\d+)?\s*(?:元|人民币|美元|\/年|每年|year|annum)/gi)];
+  const hasTotal = /(?:合计|总计|总费用|年度费用|年费|每年约|total|annual total|yearly total)/i.test(text);
+  const amountLines = text.split("\n").filter((line) => /\d+(?:\.\d+)?\s*(?:元|人民币|美元|\/年|每年|year|annum)/i.test(line));
+  const hasBasis = amountLines.some((line) => /(?:按|假设|估算依据|价格|套餐|单价|范围|约|以.{0,12}为准|assum|basis|price|range|approximately|about)/i.test(line));
+  const onlyRepeatsBudgetCeiling = amounts.length <= 1 && /(?:预算|上限|不超过|以内|budget|ceiling|up to|under)/i.test(text);
+
+  if (amounts.length < 2 || !hasTotal || !hasBasis || onlyRepeatsBudgetCeiling) {
+    throw new Error("Council answer requires an annual cost estimate with component amounts, an explicit total, and an estimate basis; repeating the budget ceiling is not an estimate.");
+  }
+}
+
+function validateRequestedSections(objective: string, text: string): void {
+  const requirements: Array<{ requested: RegExp; evidence: RegExp; label: string }> = [
+    {
+      requested: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1.{0,12}(?:对应|原则)|(?:对应|原则).{0,12}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
+      evidence: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1.{0,80}(?:副本|介质|异地|离线|copy|media|offsite)|(?:副本|介质|异地|离线|copy|media|offsite).{0,80}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
+      label: "a concrete 3-2-1 mapping",
+    },
+    {
+      requested: /(?:自动化方式|自动备份|automation)/i,
+      evidence: /(?:自动|定时|计划任务|同步|增量|schedule|automatic|incremental).{0,80}(?:备份|快照|复制|同步|backup|snapshot|copy|sync)/i,
+      label: "an automation method",
+    },
+    {
+      requested: /(?:每季度|季度).{0,12}(?:恢复|还原).{0,12}(?:演练|测试|步骤)|quarterly.{0,20}(?:restore|recovery).{0,20}(?:drill|test|steps?)/i,
+      evidence: /(?:每季度|季度|每三个月|quarterly).{0,100}(?:恢复|还原|抽样|校验|restore|recovery|sample|verify)/i,
+      label: "quarterly restore-drill steps",
+    },
+    {
+      requested: /(?:主要风险.{0,8}(?:取舍|权衡)|risks?.{0,12}trade[- ]?offs?)/i,
+      evidence: /(?:风险|故障|丢失|勒索|泄露|中断|risk|failure|loss|ransomware|breach).{0,100}(?:取舍|权衡|代价|但|相比|trade[- ]?off|cost|however|versus)/i,
+      label: "risks and trade-offs",
+    },
+  ];
+
+  for (const requirement of requirements) {
+    if (requirement.requested.test(objective) && !requirement.evidence.test(text)) {
+      throw new Error(`Council answer is missing ${requirement.label} explicitly requested by the user.`);
+    }
+  }
+}
+
 export function validateCouncilAnswer(objective: string, report: {
   summary: string; recommendedPlan: string[]; rationale: string[]; disagreements: string[];
   risks: string[]; assumptions: string[]; uncertainty: string[];
 }): void {
   const limits = answerRequirements(objective);
-  const text = [report.summary, ...report.recommendedPlan, ...report.rationale,
-    ...report.disagreements, ...report.risks, ...report.assumptions, ...report.uncertainty].join("");
+  const readableText = humanReadableReport(report);
+  const text = readableText.replaceAll("\n", "");
   const length = limits.hanOnly ? text.match(/\p{Script=Han}/gu)?.length ?? 0 : [...text].length;
   if (limits.maxChars && length > limits.maxChars) {
     throw new Error(`Council answer exceeds ${limits.maxChars} ${limits.hanOnly ? "Han characters" : "characters"} (it has ${length}).`);
@@ -35,6 +88,8 @@ export function validateCouncilAnswer(objective: string, report: {
       }))) {
     throw new Error("Council backup plan changes originals despite the read-only/non-destructive constraint.");
   }
+  validateCostEstimate(objective, readableText);
+  validateRequestedSections(objective, readableText);
 }
 
 export function validateArenaAnswer(objective: string, answer: string): void {

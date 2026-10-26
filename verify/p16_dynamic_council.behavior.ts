@@ -58,6 +58,40 @@ try { validateCouncilAnswer(qualityObjective.replace("个汉字", "个字"), han
 }
 assert(allCharactersCounted, "a 字 limit must count every character and report the measured length");
 
+const annualCostObjective = "最终建议需要包括：备份结构、自动化方式、年度费用估算、主要风险；预算每年不超过600元。";
+const annualCostReport = {
+  summary: "采用本地双副本与云端异地副本。",
+  recommendedPlan: ["本地硬盘与NAS为已有设备，新增存储费用按0元估算，并用计划任务自动增量备份。", "云端按500GB套餐约360元/年估算，价格以购买时官方页面为准。"],
+  rationale: ["年度新增约600GB，需定期归档控制云端容量。"],
+  disagreements: [], risks: ["套餐价格与容量可能变化。"], assumptions: ["不计已有设备购置费。"],
+  uncertainty: ["年度合计约360元，低于600元预算上限。"],
+};
+validateCouncilAnswer(annualCostObjective, annualCostReport);
+for (const bad of [
+  { ...annualCostReport, recommendedPlan: ["年度预算不超过600元。"], uncertainty: [] },
+  { ...annualCostReport, uncertainty: ["费用低于预算。"] },
+  { ...annualCostReport, assumptions: [], recommendedPlan: ["本地0元。", "云端360元。"], uncertainty: ["年度合计360元。"] },
+]) {
+  let rejected = false;
+  try { validateCouncilAnswer(annualCostObjective, bad); } catch { rejected = true; }
+  assert(rejected, "Council accepted an incomplete annual cost estimate");
+}
+
+const coverageObjective = "最终建议需要包括：备份结构以及与3-2-1原则的对应关系、自动化方式、每季度的恢复演练步骤、主要风险与取舍。";
+const coverageReport = {
+  summary: "保留3份副本、2种介质，其中1份为异地副本，对应3-2-1原则。",
+  recommendedPlan: ["用计划任务每天自动增量备份到外接盘，并把照片同步到异地存储。", "每季度抽样恢复照片与文档，校验能打开后记录结果。"],
+  rationale: ["异地副本降低同址损失风险，但增加费用与隐私管理代价。"],
+  disagreements: [], risks: [], assumptions: [], uncertainty: [],
+};
+validateCouncilAnswer(coverageObjective, coverageReport);
+for (const key of ["summary", "recommendedPlan", "rationale"] as const) {
+  const bad = { ...coverageReport, [key]: Array.isArray(coverageReport[key]) ? [] : "普通备份方案。" };
+  let rejected = false;
+  try { validateCouncilAnswer(coverageObjective, bad); } catch { rejected = true; }
+  assert(rejected, `Council accepted a report missing required coverage from ${key}`);
+}
+
 const catalog: AgencyAgentsCatalog = {
   commit: "agency-commit",
   divisions: [
