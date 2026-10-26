@@ -26,6 +26,16 @@ try {
     if (!markdown.includes(expected)) throw new Error(`step output missing: ${step.memberName}`);
   }
   console.log(`✓ all ${session.steps.length} step outputs/errors are preserved`);
+  const synthesis = session.steps.find(step => step.stage === 'final-synthesis');
+  if (session.recommendation && synthesis) {
+    const raw = synthesis.output;
+    const original = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
+    for (const key of ['summary', 'recommendedPlan', 'rationale', 'disagreements', 'risks', 'assumptions', 'uncertainty']) {
+      if (JSON.stringify(original[key]) !== JSON.stringify(session.recommendation[key])) throw new Error(`structured field changed: ${key}`);
+      for (const value of [original[key]].flat()) if (!session.finalAnswer.includes(value)) throw new Error(`final answer lost content: ${key}`);
+    }
+    console.log('✓ all 7 raw synthesis fields and final answer content match');
+  }
   console.log('PASS: Council export');
 } catch (error) {
   console.error(`FAIL: Council export — ${error.message}`);

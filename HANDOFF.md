@@ -2,15 +2,17 @@
 
 # START HERE — Beta 6 最新交接（2026-10-26；以下 CURRENT 为唯一当前状态）
 
-## CURRENT（2026-10-26）— 复杂题原文已读；导出缺陷修复验收中，不建议发布
+## CURRENT（2026-10-26）— 复杂题复测及导出修复验收完成；仍有质量缺口，不建议发布
 
 - 本人已解锁，已实际读完 Claude 报告：结构成功解析并保存为 07:33:18 的新会话，正常显示 Final Answer。
   备份结构、自动化、恢复演练和风险取舍主体内容可靠，明确剔除“模型当云存储”及自动删除等错误建议。
   **严格完整性未全项 PASS：年度费用只重述≤600元预算，未给分项估算；还保留“无法确认六模型参与”的
   多余元不确定性（实际调用链已由机器回执证实）。**不把这些缺口说成已解决。
-- 新发现实物导出 FAIL：原生保存对话框正常，写入时报 `plugin:fs|write_text_file not allowed by ACL`。
-  已定位并仅将 Council 页切换到现有 `fs:allow-write-file` 对应 API，UTF-8 编码写入；权限配置完全不变，
-  仍只使用保存对话框选定路径。P16 全部通过；需重建隔离候选后导出同一历史会话真测，**不重跑模型**。
+- **导出修复 PASS（2da8fe1 新隔离包实测）：**1380a39 原先写入时报
+  `plugin:fs|write_text_file not allowed by ACL`；仅将 Council 页切换到现有文件写命令、UTF-8 编码，
+  不新增权限/范围。新包加载同一历史会话，JSON 和 Markdown 实际保存成功；取消导出不生成文件。
+  实物脚本确认有效 UTF-8、11 个步骤与最终答案逐字保留；模型原始 JSON 的七个字段与结构化报告、
+  最终显示内容全部一致。费用缺项来自模型原文，不是显示/导出截断。**没有重跑模型或批准建议。**
 - 内存收尾已实看 PASS：oMLX 仅 DeepSeek-R1-Distill-Qwen-7B-4bit 4.19GB，Qwen2.5/3.5 均未加载；
   关闭了模型管理窗口，服务仍运行。正式 Beta5 哈希未变。
 
@@ -23,28 +25,30 @@
 - 本次已用 **candidate-1380a39** 完整运行下方复杂题：六席、无重复/无静默替换，十次分析/交叉审阅
   加一次 Claude 汇总全部调用成功；本地六次均 stop / malformed=false。GPT 两轮约 96.663 / 67.279 秒，
   已实际越过旧 90 秒失败点；汇总确实调用 Claude，约 100.102 秒，没有落到 DeepSeek。
-- **尚不能报 Council 质量 PASS：**约 07:16 Mac 自动锁屏，后台继续至 07:33 Claude 返回。
-  最终报告原文、前端是否成功接受结构、事实/预算/五项要求仍待解锁后读取；已问本人解锁，勿重跑任务。
-  Qwen2.5 第一轮仍把模型当云存储；GPT 交叉审阅明确识别并纠正该错误。最终是否剔除仍须看 Claude 原文。
+- **Council 严格完整性 FAIL，不再是锁屏 BLOCKED。**本人解锁后已读完整原文，报告正常解析/显示/持久化；
+  Claude 实际剔除了模型存储幻觉与删除建议，主体方案合格。仍缺分项费用估算，且报告残留无法确认模型
+  参与的多余不确定性。不要把调用/解析/拒错 PASS 写成最终回答全项 PASS；原文已导出留证，不作润色覆盖。
 - 续接证据单独存于产物根 `outputs/Beta6-1380a39-Council复测-20261026.md`。
   原始未提交 HANDOFF 已备份为 `work/beta6-final-acceptance/HANDOFF-before-1380a39-retest-20261026.md`，
-  先前未提交修改均保留；本次仅更新文档，未改代码/重新构建/推送/替换正式 App。
+  先前未提交修改均保留；本次只新增窄范围导出修复、实物脚本与文档，未推送或替换正式 App。
 
 本节是唯一当前状态；与下方旧节冲突时以本节为准。下方旧任务里的“每次发言不超过60个汉字”
 是旧交接人自拟的测试条件，**不是产品规则**；用户明确不同意以 60 字判定超长。
 
 ### 仓库与候选
 
-- 目录 `/Users/russellchen/AI-OS/dashboard-beta6`，分支 `beta6`，运行代码/候选提交 `1380a39`。
-  此阶段 9 个代码修复提交（`549216b..1380a39`），本次随后仅本地提交 HANDOFF。
+- 目录 `/Users/russellchen/AI-OS/dashboard-beta6`，分支 `beta6`；六模型复测代码为 `1380a39`，
+  最新代码/候选提交 `2da8fe12cd1956d13806115125f51afc900b9325`，随后只有验收文档提交。
+  前阶段 9 个代码修复提交（`549216b..1380a39`）保持不动，本次只新增 Council 导出修复。
   **未推送/未打 Tag/未发布**。续接前只有 HANDOFF 未提交；原有内容已备份并保留后纳入文档提交，勿 reset/覆盖。
-- 最新隔离候选：产物根 `work/beta6-stability-20261025/candidate-1380a39/AI OS.app`
-  （主程序 SHA-256 前缀 `cd89977961a8679071c05b49`），正在运行。构建日志
-  `work/beta6-final-acceptance/stability-1380a39-build.log`（EXIT 0，签名/包隐私检查 PASS）。
+- 最新隔离候选：产物根 `work/beta6-stability-20261025/candidate-2da8fe1/AI OS.app`，正在运行。
+  主程序 SHA-256 `17ab7a63f3da7859d62da7fe835fa80ea281146a584517c85ed012fd38a8f425`。
+  构建日志 `work/beta6-final-acceptance/stability-council-export-build.log`（EXIT 0，签名/包隐私检查 PASS）。
+  1380a39 原候选完整保留；其模型执行代码未被导出修复改动，模型复测证据与新包导出证据分开记录。
   产物根 = `/Users/russellchen/Documents/Codex/2026-10-24/referenced-chatgpt-conversation-this-is-an-2`。
-- 已单独保存本候选 DMG：产物根 `outputs/AI OS_1.0.1-beta.6_stability-1380a39_aarch64.dmg`，
-  SHA-256 `a19f94f4209e234e1ee5894b380d244e05a71658f51b54c19128a6fa16455364`。
-  DMG 校验、只读挂载后的包内主程序哈希与运行候选一致、深层严格签名 PASS，随后已卸载镜像。
+- 最新 DMG：产物根 `outputs/AI OS_1.0.1-beta.6_stability-2da8fe1_aarch64.dmg`，
+  SHA-256 `9184b74d5b59d63d49ce080c1eda701ae025aef2ac429b570c0dfca0fdb38664`。
+  DMG 校验、复制后 App 深层严格签名及构建包隐私检查 PASS；仍为 ad-hoc，未公证。
 - `/Applications/AI OS.app` 仍是正式 Beta5，主程序哈希 `91ff470b…253ce5`，每次构建后核对未变。
 - 每次重建都是新 ad-hoc 签名：启动时 oMLX 密钥、首次调用 OpenAI 各弹一次钥匙串，需用户本人点
   “始终允许”。1380a39 包两次都已点过。根治需 Developer ID 签名（已在发布阻塞清单）。
@@ -82,11 +86,14 @@ Gemini：账号额度用尽 HTTP 402 RESOURCE_EXHAUSTED（3.6 Flash、Pro Latest
    “unreadable streaming response”）。
 9. `1380a39` B+C 汇总者选择（Council + Arena）；点名 Council 席位数 = 点名数（≥3），不重复发言；
    Council 席位同样提示模型名不是任务资源。
+10. `2da8fe1` Council 导出改用已有权限的 writeFile + UTF-8 TextEncoder；新增导出实物行为脚本。
+    P16 及前端构建 PASS，新隔离包实际保存 JSON/Markdown、取消保存、原始汇总与展示逐字段比对 PASS。
 
 最新回归：Rust `cargo test --lib` 1068/0/84 ignored；`verify/verify_p16_dynamic_council.sh`
 15/0；`verify/verify_p17_arena_final.sh` 全 PASS；前端构建、`git diff --check` PASS。
 本次续接又跑了全量 `cargo test`（库 1068/0/84、二进制 4/0）、`cargo check`、前端构建，均 PASS；
-P16/P17 同代码未重复跑。全库 fmt 仍有既有无关 Cloud Drive/browser 差异，未批量改动，不声称格式全过。
+导出修复后完整 P16/运行时/集成与前端又通过，实物导出脚本 PASS；P17 模型流程未改，沿用原记录。
+全库 fmt 仍有既有无关 Cloud Drive/browser 差异，未批量改动，不声称格式全过。
 
 ### 实测结果（以答案原文核对）
 
@@ -100,23 +107,26 @@ P16/P17 同代码未重复跑。全库 fmt 仍有既有无关 Cloud Drive/browse
 - **Council 复杂题（14f3459 包）：FAIL。** 6 个点名模型全部入席、无无关资料（修复生效）；但 GPT 席
   两次 90 s 失败（69d9f71 已修），汇总按旧规则落在 DeepSeek，两次输出 JSON 混乱夹杂俄文，
   无建议被采纳。5 位专家内容可用。
-- **1380a39 Council 复杂题：调用链 PASS，最终回答质量 BLOCKED（锁屏，未读原文）。**
-  十一次均成功、无回退；GPT 两轮不再旧 90 秒失败，Claude 汇总路由已真测。不能据此宣布报告质量通过。
+- **1380a39 Council 复杂题：调用链/结构/安全筛选 PASS；严格最终完整性 FAIL。**
+  十一次均成功、无回退；GPT 两轮不再旧 90 秒失败，Claude 汇总路由已真测。最终原文已读，剔除错误建议，
+  但费用只列预算上限而非分项估算；还残留对实际模型参与的不必要怀疑，不据此宣布全部质量通过。
   未用 1380a39 重跑 Arena/原 180 字题；它们仍沿用上方已有结果，不虚构新包全通过。
 
 ### 接手后按顺序
 
-1. **先本人解锁，读取当前 Council 结果，勿重复 Run。**核对 Claude 最终 JSON/界面报告被接受，
-   读完整原文，评估备份结构/3-2-1、自动化、季度恢复、年度费用、风险取舍；确认错误模型存储建议被排除。
+1. 下一轮若继续修质量：优先补齐费用估算的分项/范围、假设/来源及合计，区分预算上限与估算结果；
+   另完善报告对机器已验证模型调用事实的表述。不伪造价格、不直接改展示文字冒充模型通过，保留原始证据。
+   当前会话已完成原文、结构与安全评审，不要无故重跑；原始完整 JSON/Markdown 已导出，可直接复核。
    原题备查（只有后续必要修复后才重新运行；中文用剪贴板粘贴，按钮用最新 AX 索引；顶部偶有 NotchNook 遮挡）：
    `允许使用云端模型推理。让 GPT-6.1-Sol、grok-4.7、Claude Code account default、Qwen3.5-9B-4bit、Qwen2.5-7B-Instruct-4bit 和 DeepSeek-R1-Distill-Qwen-7B-4bit 都参与讨论并给出决策建议：一个三口之家应如何长期备份家庭照片与重要文件？已知条件：一台 MacBook（512GB，照片库约 300GB）、一块 2TB 外接硬盘、一台两盘位 NAS（RAID1，可用 4TB），每月新增约 50GB 照片和视频；预算每年不超过 600 元人民币，可以使用云端存储。最终建议需要包括：备份结构以及与 3-2-1 原则的对应关系、自动化方式、每季度的恢复演练步骤、年度费用估算、主要风险与取舍。只讨论方案，不执行任何文件操作。`
-   本次六席/Claude/GPT 调用已核验，仍缺最终原文质量与结构验收；完整再跑约需 40 分钟，勿无故重复。
+   完整再跑约需 40 分钟。仅在必要根因修复后做新一轮真实验收，不改题来制造通过。
 2. 可选：用同包重跑 Arena 6 模型题（题干同上，以“让 … 合作，为一个三口之家设计…”开头）与原
    180 字 Council 题，确认无回归；可再测“由 X 汇总”显式指定。
-3. 收尾：本次最后本地请求是 DeepSeek，但**锁屏下未实际核查 RAM 状态**（测试前为 Qwen3.5-only）。
-   解锁后查看 oMLX；若已仅 DeepSeek，无需重复操作；否则只从 RAM 卸载 Qwen、加载 DeepSeek。
-   勿 Delete、勿删模型/缓存、勿停服务器/改配置。正式 Beta5 哈希已再次核对 `91ff470b…253ce5` 未变。
-4. 更新本节为真实结果，窄范围本地提交 HANDOFF；不 Push/Tag/发布。
+3. 收尾已完成：两次实看仅 DeepSeek 4.19GB、服务运行；没有删除模型/缓存或改配置。
+   正式 Beta5 哈希已再次核对 `91ff470b…253ce5` 未变。后续测试仍须保持这些边界。
+4. 当前报告/原文：产物根 `outputs/Beta6-1380a39-Council复测-20261026.md`、
+   `outputs/Beta6-1380a39-Council-final.json` 与 `.md`。最新文件导出验证命令：
+   `bash verify/verify_beta6_council_export.sh <导出JSON路径> <导出Markdown路径>`。不 Push/Tag/发布。
 
 ### 已知限制 / 待决
 
@@ -126,7 +136,7 @@ P16/P17 同代码未重复跑。全库 fmt 仍有既有无关 Cloud Drive/browse
 - Grok 旧 OAuth 设备码代码仍在仓库（已不暴露在 UI）；可后续清理。
 - 本机新增：`~/.grok/`（官方 Grok CLI）、`~/.local/bin/grok` 链接、`~/.zshrc` 一行 PATH（安装器所加）。
 
-## CURRENT — 用户要求交接，已停止界面验收；不建议发布
+## 历史记录（2026-10-25，以下不作为当前状态）
 
 ### 仓库、候选和边界
 
