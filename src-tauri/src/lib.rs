@@ -1,6 +1,7 @@
 mod backup;
 mod browser;
 mod claude_code;
+mod cli_provider_manager;
 mod grok_cli;
 pub mod cloud_drive_core;
 pub mod cloud_drive_baidu;
@@ -296,6 +297,8 @@ pub fn run() {
             managed_openclaw_actions::repair_managed_openclaw,
             managed_openclaw_complete::complete_managed_openclaw_setup,
             managed_openclaw_start::start_managed_openclaw,
+            cli_provider_manager::prepare_cli_provider_install,
+            cli_provider_manager::install_cli_provider,
             openclaw::export_openclaw_servers,
             openclaw::import_openclaw_servers,
             openclaw::invoke_active_openclaw_gateway,

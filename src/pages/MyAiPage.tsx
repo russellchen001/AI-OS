@@ -43,7 +43,11 @@ import {
   type ProviderOAuthCompletedEvent,
   type ProviderOAuthErrorEvent,
 } from "../services/providers";
-import { getCliProviderAdapter } from "../services/cliProviderManager";
+import {
+  getCliProviderAdapter,
+  installCliProvider,
+  prepareCliProviderInstall,
+} from "../services/cliProviderManager";
 
 const OAUTH_FRONTEND_TIMEOUT_MS = 5 * 60 * 1000;
 type ClaudeCodeStatus = { installed: boolean; authenticated: boolean; message: string };
@@ -708,9 +712,25 @@ function MyAiPage({
       const cliAdapter = getCliProviderAdapter(setup.providerId);
       if (cliAdapter) {
         try {
-          const status = await cliAdapter.probe();
+          let status = await cliAdapter.probe();
+          if (!status.installed && cliAdapter.officialPackage) {
+            const plan = await prepareCliProviderInstall(cliAdapter.id);
+            const approved = await dialog.confirm({
+              title: `Install ${cliAdapter.displayName}?`,
+              message: `AI-OS will install ${plan.packageName} ${plan.version} from the official npm registry after rechecking its published SHA-512 integrity. Existing versions are retained for rollback.`,
+              confirmLabel: "Install verified package",
+              cancelLabel: "Not now",
+              tone: "default",
+            });
+            if (!approved) throw new Error(`${cliAdapter.displayName} installation was cancelled.`);
+            const installed = await installCliProvider(plan);
+            if (!installed.success) throw new Error(installed.message);
+            status = await cliAdapter.probe();
+          }
           if (setup.providerId === "anthropic") setClaudeCodeStatus(status);
-          if (!status.installed || !status.authenticated) throw new Error(status.message);
+          if (!status.installed || !status.authenticated) {
+            throw new Error(`${status.message} Sign in with \`${cliAdapter.loginCommand}\`, then retry.`);
+          }
           const models = cliAdapter.models(instanceId, status);
           if (!models.length) throw new Error(`${cliAdapter.displayName} reported no available models.`);
           setSetup({

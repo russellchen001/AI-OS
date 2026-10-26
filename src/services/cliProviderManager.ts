@@ -19,6 +19,23 @@ export type CliProviderAdapter = {
   models: (instanceId: string, status: CliProviderStatus) => ProviderModelEntry[];
 };
 
+export type CliInstallPlan = {
+  providerId: string;
+  packageName: string;
+  version: string;
+  integrity: string;
+  installedVersion?: string;
+  action: "install" | "upgrade";
+  requiresApproval: true;
+};
+
+export type CliInstallResult = {
+  success: boolean;
+  message: string;
+  version?: string;
+  loginCommand?: string;
+};
+
 function modelEntry(
   instanceId: string,
   remoteModelId: string,
@@ -72,4 +89,19 @@ export function listCliProviderAdapters(): CliProviderAdapter[] {
 
 export function getCliProviderAdapter(providerId: string): CliProviderAdapter | undefined {
   return adapters.find((adapter) => adapter.id === providerId);
+}
+
+export function prepareCliProviderInstall(providerId: string): Promise<CliInstallPlan> {
+  return invoke<CliInstallPlan>("prepare_cli_provider_install", { providerId });
+}
+
+export function installCliProvider(plan: CliInstallPlan): Promise<CliInstallResult> {
+  return invoke<CliInstallResult>("install_cli_provider", {
+    request: {
+      providerId: plan.providerId,
+      version: plan.version,
+      integrity: plan.integrity,
+      userApproved: true,
+    },
+  });
 }

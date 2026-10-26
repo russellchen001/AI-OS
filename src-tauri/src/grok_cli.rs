@@ -28,6 +28,20 @@ fn active_requests() -> &'static Mutex<HashMap<String, CancellationToken>> {
     GROK_CLI_REQUESTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn has_active_requests() -> bool {
+    active_requests()
+        .lock()
+        .is_ok_and(|requests| !requests.is_empty())
+}
+
+pub(crate) fn installed_version() -> Option<String> {
+    discover_binary()
+        .and_then(|binary| run_bounded(&binary, &["--version"], None, STATUS_TIMEOUT, None).ok())
+        .and_then(|output| String::from_utf8(output).ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GrokCliStatus {
