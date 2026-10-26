@@ -265,7 +265,10 @@ export function describeChatTaskError(
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   if (detail.startsWith("NO_GENERATION_VERIFIED_MODEL")) return "Your AI connection has no generation-verified model yet. Open My AI and verify a model before continuing.";
   const providerFailure = detail.match(/^The selected Provider returned HTTP (\d{3})(?: \((UNAUTHENTICATED|PERMISSION_DENIED|RESOURCE_EXHAUSTED|NOT_FOUND|INVALID_ARGUMENT|UNAVAILABLE|FAILED_PRECONDITION)\))?$/);
-  if (providerFailure) return `The selected AI returned HTTP ${providerFailure[1]}${providerFailure[2] ? ` (${providerFailure[2]})` : ""}. Check this model's access, quota and connection in My AI.`;
+  if (providerFailure?.[2] === "RESOURCE_EXHAUSTED" || providerFailure?.[1] === "429") return "The selected AI has reached a Provider quota or resource limit. This requires quota, billing, or account-capacity changes at the Provider; changing AI-OS locally will not remove it.";
+  if (providerFailure?.[2] === "PERMISSION_DENIED" || providerFailure?.[1] === "403") return "The selected AI account or OAuth app is not permitted by the Provider. Reconnect only if access expired; Google app review, organization policy, or account approval must be resolved outside AI-OS.";
+  if (providerFailure?.[2] === "UNAUTHENTICATED" || providerFailure?.[1] === "401") return "The selected AI credential has expired or is invalid. Reconnect it in My AI.";
+  if (providerFailure) return `The selected AI returned HTTP ${providerFailure[1]}${providerFailure[2] ? ` (${providerFailure[2]})` : ""}. Check this model's availability and connection in My AI.`;
   if (detail === "The selected Provider needs to be reconnected") return "The selected AI needs to be reconnected in My AI.";
   if (detail === "The selected Provider is busy or rate limited") return "The selected AI is busy or rate limited. Check its quota or try again later.";
   return error instanceof Error && error.message === "NO_CONNECTED_PROVIDER"

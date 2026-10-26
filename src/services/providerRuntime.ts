@@ -7,6 +7,7 @@ export type ProviderHealth =
   | "rate-limited"
   | "busy"
   | "invalid-key"
+  | "account-blocked"
   | "invalid-model"
   | "offline"
   | "disabled"
@@ -101,7 +102,10 @@ export function classifyProviderError(
     ) ||
     normalized.includes(
       "credit balance",
-    )
+    ) ||
+    normalized.includes("resource_exhausted") ||
+    normalized.includes("resource exhausted") ||
+    normalized.includes("quota exceeded")
   ) {
     return {
       health: "quota",
@@ -112,13 +116,26 @@ export function classifyProviderError(
   }
 
   if (
-    normalized.includes("401") ||
     normalized.includes("403") ||
+    normalized.includes("permission_denied") ||
+    normalized.includes("permission denied") ||
+    normalized.includes("access_denied") ||
+    normalized.includes("app is blocked") ||
+    normalized.includes("app is not verified")
+  ) {
+    return {
+      health: "account-blocked",
+      message: "Account or OAuth app access is blocked by the Provider",
+      lastCheckedAt: Date.now(),
+    };
+  }
+
+  if (
+    normalized.includes("401") ||
     normalized.includes("unauthorized") ||
     normalized.includes("invalid api key") ||
     normalized.includes("invalid_api_key") ||
-    normalized.includes("authentication") ||
-    normalized.includes("permission denied")
+    normalized.includes("authentication")
   ) {
     return {
       health: "invalid-key",
@@ -222,6 +239,7 @@ export function canRouteToProvider(
     "quota",
     "busy",
     "invalid-key",
+    "account-blocked",
     "invalid-model",
     "offline",
     "disabled",
@@ -249,6 +267,8 @@ export function healthLabel(
       return "Busy";
     case "invalid-key":
       return "Invalid key";
+    case "account-blocked":
+      return "Account access blocked";
     case "invalid-model":
       return "Invalid model";
     case "offline":

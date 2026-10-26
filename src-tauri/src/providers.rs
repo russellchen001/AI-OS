@@ -1981,7 +1981,17 @@ fn safe_attempt_error(message: &str) -> String {
     let message = message.to_lowercase();
     if message.contains("cancel") {
         "cancelled"
-    } else if ["401", "403", "reconnect", "credential", "auth"]
+    } else if ["resource_exhausted", "resource exhausted", "quota"]
+        .iter()
+        .any(|value| message.contains(value))
+    {
+        "quota"
+    } else if ["403", "permission_denied", "permission denied", "account blocked"]
+        .iter()
+        .any(|value| message.contains(value))
+    {
+        "account-blocked"
+    } else if ["401", "reconnect", "credential", "auth"]
         .iter()
         .any(|value| message.contains(value))
     {
@@ -3581,7 +3591,8 @@ async fn discover_models(
     let status = response.status();
     if !status.is_success() {
         return Err(match status.as_u16() {
-            401 | 403 => "Provider rejected this credential".to_owned(),
+            401 => "Provider rejected this credential; reconnect it in My AI".to_owned(),
+            403 => "Provider denied this account or OAuth app (HTTP 403); Provider review or administrator approval is required".to_owned(),
             429 => "Provider rate limit reached; try again shortly".to_owned(),
             _ => format!("Provider connection failed with status {}", status.as_u16()),
         });
@@ -6948,10 +6959,8 @@ mod tests {
     #[test]
     fn canonical_error_categories_match_existing_semantics() {
         assert_eq!(safe_attempt_error("cancelled"), "cancelled");
-        assert_eq!(
-            safe_attempt_error("Provider returned 403"),
-            "authentication"
-        );
+        assert_eq!(safe_attempt_error("Provider returned 403"), "account-blocked");
+        assert_eq!(safe_attempt_error("RESOURCE_EXHAUSTED quota"), "quota");
         assert_eq!(safe_attempt_error("rate limit 429"), "rate-limited");
         assert_eq!(safe_attempt_error("request timeout"), "timeout");
         assert_eq!(safe_attempt_error("returned no text"), "empty-response");

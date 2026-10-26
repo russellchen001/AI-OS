@@ -39,8 +39,8 @@ assertEqual(
 );
 
 console.log("provider model filtering behavior passed");
-assertEqual(describeChatTaskError(new Error("The selected Provider returned HTTP 403 (PERMISSION_DENIED)"), false).includes("403 (PERMISSION_DENIED)"), true);
-assertEqual(describeChatTaskError(new Error("The selected Provider returned HTTP 429 (RESOURCE_EXHAUSTED)"), false).includes("429 (RESOURCE_EXHAUSTED)"), true);
+assertEqual(describeChatTaskError(new Error("The selected Provider returned HTTP 403 (PERMISSION_DENIED)"), false).includes("outside AI-OS"), true);
+assertEqual(describeChatTaskError(new Error("The selected Provider returned HTTP 429 (RESOURCE_EXHAUSTED)"), false).includes("quota"), true);
 assertEqual(describeChatTaskError(new Error("private-token-do-not-display"), false).includes("private-token"), false);
 
 const testWindow = Object.assign(new EventTarget(), {
