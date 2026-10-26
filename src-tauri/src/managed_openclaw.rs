@@ -1,6 +1,5 @@
 use serde::Serialize;
 use std::{
-    io::Write,
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
@@ -11,6 +10,8 @@ use crate::openclaw::{self, OpenClawServerInput};
 pub(crate) const MANAGED_OPENCLAW_NAME: &str = "AI-OS Managed OpenClaw";
 pub(crate) const MANAGED_OPENCLAW_URL: &str = "http://127.0.0.1:18789";
 const OPENCLAW_INSTALLER_URL: &str = "https://openclaw.ai/install-cli.sh";
+const OPENCLAW_INSTALLER_SHA256: &str =
+    "7ad6910e76cf692eb60bed987a26637548cc5363164031ddf6ffec480ae1458b";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -311,40 +312,18 @@ pub fn get_managed_openclaw_status() -> Result<ManagedOpenClawStatus, String> {
     })
 }
 
-fn download_official_installer() -> Result<tempfile::NamedTempFile, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .user_agent("AI-OS/1.0.1-beta.3 Managed OpenClaw")
-        .build()
-        .map_err(|_| "AI-OS could not initialize the OpenClaw download client.".to_string())?;
-
-    let response = client
-        .get(OPENCLAW_INSTALLER_URL)
-        .send()
-        .map_err(|_| "AI-OS could not download the official OpenClaw installer.".to_string())?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "OpenClaw installer download returned HTTP {}.",
-            response.status()
-        ));
-    }
-
-    let bytes = response
-        .bytes()
-        .map_err(|_| "AI-OS could not read the downloaded OpenClaw installer.".to_string())?;
-
-    if bytes.is_empty() || bytes.len() > 5_000_000 {
-        return Err("The downloaded OpenClaw installer had an unexpected size.".to_string());
-    }
-
-    let mut file = tempfile::NamedTempFile::new()
-        .map_err(|_| "AI-OS could not create a temporary installer file.".to_string())?;
-
-    file.write_all(&bytes)
-        .map_err(|_| "AI-OS could not save the temporary OpenClaw installer.".to_string())?;
-
-    Ok(file)
+fn download_official_installer(user_approved: bool) -> Result<tempfile::NamedTempFile, String> {
+    crate::software_installation::download_verified(
+        &crate::software_installation::VerifiedDownloadPolicy {
+            id: "openclaw-cli-installer",
+            url: OPENCLAW_INSTALLER_URL,
+            sha256: OPENCLAW_INSTALLER_SHA256,
+            max_bytes: 5_000_000,
+            supported_os: &["macos"],
+            supported_arches: &["aarch64", "x86_64"],
+        },
+        user_approved,
+    )
 }
 
 pub(crate) fn upsert_managed_gateway(credential_reference: &str) -> Result<(), String> {
@@ -434,7 +413,7 @@ pub(crate) fn complete_secure_managed_gateway(cli: &Path) -> Result<(), String> 
     finish_secure_managed_gateway(cli)
 }
 
-fn install_managed_openclaw_blocking() -> Result<String, String> {
+fn install_managed_openclaw_blocking(user_approved: bool) -> Result<String, String> {
     let existing = get_managed_openclaw_status()?;
 
     if existing.state == "ready" {
@@ -454,7 +433,7 @@ AI-OS will not overwrite it automatically."
     let prefix = managed_prefix()?;
     let prefix_text = prefix.to_string_lossy().to_string();
 
-    let installer = download_official_installer()?;
+    let installer = download_official_installer(user_approved)?;
 
     command_text(
         Path::new("/bin/bash"),
@@ -479,8 +458,12 @@ AI-OS will not overwrite it automatically."
 }
 
 #[tauri::command]
-pub async fn install_managed_openclaw() -> ManagedOpenClawInstallResult {
-    match tauri::async_runtime::spawn_blocking(install_managed_openclaw_blocking).await {
+pub async fn install_managed_openclaw(user_approved: bool) -> ManagedOpenClawInstallResult {
+    match tauri::async_runtime::spawn_blocking(move || {
+        install_managed_openclaw_blocking(user_approved)
+    })
+    .await
+    {
         Ok(Ok(version)) => ManagedOpenClawInstallResult {
             success: true,
             state: "ready".to_string(),

@@ -39,6 +39,7 @@ export async function installManagedOpenClaw():
 Promise<ManagedOpenClawInstallResult> {
   return invoke<ManagedOpenClawInstallResult>(
     "install_managed_openclaw",
+    { userApproved: true },
   );
 }
 

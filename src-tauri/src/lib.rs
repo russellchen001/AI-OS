@@ -50,6 +50,7 @@ mod provider_selection;
 mod providers;
 mod remote_linco;
 mod runtime;
+mod software_installation;
 mod system;
 mod task_execution;
 pub mod task_plan_orchestration;
