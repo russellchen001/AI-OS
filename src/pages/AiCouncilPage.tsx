@@ -9,7 +9,7 @@ import {
   save,
 } from "@tauri-apps/plugin-dialog";
 import {
-  writeTextFile,
+  writeFile,
 } from "@tauri-apps/plugin-fs";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import {
@@ -662,9 +662,9 @@ function AiCouncilPage({
                 "",
               ].join("\n");
 
-        await writeTextFile(
+        await writeFile(
           filePath,
-          content,
+          new TextEncoder().encode(content),
         );
 
         onMessage(
