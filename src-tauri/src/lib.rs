@@ -1,5 +1,6 @@
 mod backup;
 mod browser;
+mod agent_lifecycle_manager;
 mod claude_code;
 mod cli_provider_manager;
 mod grok_cli;
@@ -299,6 +300,8 @@ pub fn run() {
             managed_openclaw_start::start_managed_openclaw,
             cli_provider_manager::prepare_cli_provider_install,
             cli_provider_manager::install_cli_provider,
+            agent_lifecycle_manager::check_agent_version,
+            agent_lifecycle_manager::upgrade_agent,
             openclaw::export_openclaw_servers,
             openclaw::import_openclaw_servers,
             openclaw::invoke_active_openclaw_gateway,

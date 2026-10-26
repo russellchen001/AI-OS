@@ -457,6 +457,86 @@ AI-OS will not overwrite it automatically."
     command_text(&cli, &["--version"])
 }
 
+pub(crate) fn upgrade_managed_openclaw_blocking(
+    version: &str,
+    user_approved: bool,
+) -> Result<String, String> {
+    if !user_approved {
+        return Err("OpenClaw upgrade requires explicit user approval.".to_string());
+    }
+    let before = get_managed_openclaw_status()?;
+    if before.state != "ready" || !before.managed {
+        return Err(
+            "Only a ready AI-OS managed OpenClaw installation can be upgraded.".to_string(),
+        );
+    }
+    let previous_version = before
+        .version
+        .ok_or_else(|| "The installed OpenClaw version could not be verified.".to_string())?;
+    let prefix = managed_prefix()?;
+    let prefix_text = prefix.to_string_lossy().to_string();
+    let installer = download_official_installer(true)?;
+    let run_installer = |requested_version: &str| {
+        command_text(
+            Path::new("/bin/bash"),
+            &[
+                installer.path().to_string_lossy().as_ref(),
+                "--runtime-only",
+                "--json",
+                "--prefix",
+                &prefix_text,
+                "--version",
+                requested_version,
+            ],
+        )
+    };
+
+    crate::logs::append_ai_os_diagnostic("agent-lifecycle id=openclaw event=upgrade-started");
+    if let Err(error) = run_installer(version) {
+        let _ = run_installer(&previous_version);
+        crate::logs::append_ai_os_diagnostic(
+            "agent-lifecycle id=openclaw event=upgrade-failed rollback=attempted",
+        );
+        return Err(format!(
+            "OpenClaw upgrade failed and AI-OS attempted to restore the previous version: {error}"
+        ));
+    }
+
+    let Some((cli, installed_version)) = discover_cli() else {
+        let _ = run_installer(&previous_version);
+        return Err(
+            "OpenClaw upgrade completed but the CLI health check failed; AI-OS attempted rollback."
+                .to_string(),
+        );
+    };
+    if !installed_version.contains(version) {
+        let _ = run_installer(&previous_version);
+        return Err(
+            "OpenClaw reported an unexpected version after upgrade; AI-OS attempted rollback."
+                .to_string(),
+        );
+    }
+    let _ = command_text(&cli, &["gateway", "restart", "--json"]);
+    if wait_for_gateway(&cli).is_err() {
+        let _ = run_installer(&previous_version);
+        let _ = command_text(&cli, &["gateway", "restart", "--json"]);
+        return Err(
+            "OpenClaw Gateway did not recover after upgrade; AI-OS attempted rollback.".to_string(),
+        );
+    }
+    if get_managed_openclaw_status()?.state != "ready" {
+        let _ = run_installer(&previous_version);
+        let _ = command_text(&cli, &["gateway", "restart", "--json"]);
+        return Err(
+            "OpenClaw failed its post-upgrade Gateway check; AI-OS attempted rollback.".to_string(),
+        );
+    }
+    crate::logs::append_ai_os_diagnostic(
+        "agent-lifecycle id=openclaw event=upgrade-health-verified",
+    );
+    Ok(installed_version)
+}
+
 #[tauri::command]
 pub async fn install_managed_openclaw(user_approved: bool) -> ManagedOpenClawInstallResult {
     match tauri::async_runtime::spawn_blocking(move || {

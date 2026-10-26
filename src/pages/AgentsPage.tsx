@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   HERMES_AGENT_TEMPLATE,
   deleteCustomAgent,
@@ -8,6 +8,14 @@ import {
 import type { AgentAdapterKind, AgentRecord } from "../types/agent";
 import type { PageName } from "../types/index";
 import SectionTabs from "../components/SectionTabs";
+import { useDialog } from "../components/DialogProvider";
+import {
+  getAgentLifecycleAdapter,
+  type AgentVersionPlan,
+} from "../services/agentLifecycleManager";
+
+const VERSION_CHECK_KEY = "ai-os.agent-version-check.openclaw";
+const VERSION_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 type AgentsPageProps = {
   onMessage: (message: string) => void;
@@ -15,10 +23,57 @@ type AgentsPageProps = {
 };
 
 function AgentsPage({ onMessage, onPageChange }: AgentsPageProps) {
+  const dialog = useDialog();
   const [agents, setAgents] = useState<AgentRecord[]>(loadAgentRegistry);
+  const [versionPlans, setVersionPlans] = useState<Record<string, AgentVersionPlan>>({});
+  const [checkingAgent, setCheckingAgent] = useState<string>();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("Hermes Agent");
   const [adapterKind, setAdapterKind] = useState<AgentAdapterKind>("hermes-api");
+
+  async function checkVersion(agentId: string, announce = true) {
+    const adapter = getAgentLifecycleAdapter(agentId);
+    if (!adapter?.checkVersion) return;
+    setCheckingAgent(agentId);
+    try {
+      const plan = await adapter.checkVersion();
+      setVersionPlans((current) => ({ ...current, [agentId]: plan }));
+      localStorage.setItem(VERSION_CHECK_KEY, String(Date.now()));
+      if (announce) onMessage(plan.updateAvailable
+        ? `${agentId} ${plan.latestVersion} is available.`
+        : `${agentId} is up to date.`);
+    } catch (error) {
+      if (announce) onMessage(error instanceof Error ? error.message : "Agent version check failed.");
+    } finally {
+      setCheckingAgent(undefined);
+    }
+  }
+
+  async function upgradeAgent(plan: AgentVersionPlan) {
+    const adapter = getAgentLifecycleAdapter(plan.agentId);
+    if (!adapter?.upgrade) return;
+    const approved = await dialog.confirm({
+      title: `Upgrade OpenClaw to ${plan.latestVersion}?`,
+      message: "AI-OS will recheck the official package integrity, refuse while tasks are active, then restart and health-check the managed Gateway. It will attempt to restore the current version if verification fails.",
+      confirmLabel: "Upgrade and verify",
+      cancelLabel: "Not now",
+      tone: "default",
+    });
+    if (!approved) return;
+    setCheckingAgent(plan.agentId);
+    try {
+      const result = await adapter.upgrade(plan);
+      onMessage(result.message);
+      if (result.success) await checkVersion(plan.agentId, false);
+    } finally {
+      setCheckingAgent(undefined);
+    }
+  }
+
+  useEffect(() => {
+    const lastCheck = Number(localStorage.getItem(VERSION_CHECK_KEY) ?? "0");
+    if (Date.now() - lastCheck >= VERSION_CHECK_INTERVAL_MS) void checkVersion("openclaw", false);
+  }, []);
 
   function deleteAgent(agent: AgentRecord) {
     if (agent.builtIn) return;
@@ -109,8 +164,21 @@ function AgentsPage({ onMessage, onPageChange }: AgentsPageProps) {
             </div>
 
             <footer>
-              <span>{agent.adapterKind.replaceAll("-", " ")}</span>
+              <span>
+                {agent.adapterKind.replaceAll("-", " ")}
+                {versionPlans[agent.id]?.installedVersion && ` · ${versionPlans[agent.id].installedVersion}`}
+              </span>
               <div className="agent-record-actions">
+                {getAgentLifecycleAdapter(agent.id)?.versionManaged && (
+                  <button type="button" disabled={checkingAgent === agent.id} onClick={() => void checkVersion(agent.id)}>
+                    {checkingAgent === agent.id ? "Checking…" : "Check updates"}
+                  </button>
+                )}
+                {versionPlans[agent.id]?.updateAvailable && (
+                  <button type="button" disabled={checkingAgent === agent.id} onClick={() => void upgradeAgent(versionPlans[agent.id])}>
+                    Upgrade to {versionPlans[agent.id].latestVersion}
+                  </button>
+                )}
                 <button type="button" onClick={() => onMessage(
                   agent.builtIn
                     ? "OpenClaw connection is managed through the existing Gateway settings."

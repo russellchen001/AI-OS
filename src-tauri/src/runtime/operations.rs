@@ -66,6 +66,14 @@ impl Default for RuntimeOperationManager {
 
 #[allow(dead_code)]
 impl RuntimeOperationManager {
+    pub(crate) fn has_active_runtime(&self, runtime_id: &str) -> bool {
+        self.store.lock().is_ok_and(|store| {
+            store.operations.values().any(|snapshot| {
+                snapshot.runtime_id == runtime_id && !snapshot.state.is_terminal()
+            })
+        })
+    }
+
     pub fn admit_operation(
         &self,
         runtime_id: &str,
