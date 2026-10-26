@@ -101,15 +101,7 @@ type CloudProviderCard = {
   accountLabel: string;
 };
 
-const cloudProviders: CloudProviderCard[] = [
-  {
-    id: "microsoft-graph",
-    mark: "M",
-    name: "Microsoft Graph",
-    description: "Microsoft 365, OneDrive, SharePoint and Excel",
-    models: ["Microsoft 365 account", "Excel workbooks"],
-    accountLabel: "Connect Microsoft",
-  },
+export const cloudProviders: CloudProviderCard[] = [
   {
     id: "openai",
     mark: "O",

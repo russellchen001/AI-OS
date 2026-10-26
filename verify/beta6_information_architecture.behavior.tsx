@@ -2,6 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Sidebar from "../src/components/Sidebar";
 import SettingsPage from "../src/pages/SettingsPage";
+import { cloudProviders } from "../src/pages/MyAiPage";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -36,5 +37,6 @@ const settings = renderToStaticMarkup(
   />,
 );
 assert(settings.includes("Advanced · Skills"), "Skills are not reachable from Settings advanced controls");
+assert(!cloudProviders.some((provider) => provider.id === "microsoft-graph"), "Office accounts must not render in AI Models");
 
 console.log("PASS: Beta 6 information architecture behavior");
