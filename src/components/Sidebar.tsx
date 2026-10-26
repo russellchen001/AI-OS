@@ -34,39 +34,19 @@ const navItems: Array<{
     label: "Workspace",
   },
   {
-    name: "Artifacts",
-    icon: "◫",
-    label: "Files",
-  },
-  {
     name: "My AI",
     icon: "◎",
     label: "My AI",
   },
   {
-    name: "Agents",
-    icon: "⌁",
-    label: "Agents",
+    name: "AI Lab",
+    icon: "◉",
+    label: "AI Lab",
   },
   {
     name: "Person Profiles",
     icon: "☴",
     label: "Person Profiles",
-  },
-  {
-    name: "AI Council",
-    icon: "◉",
-    label: "AI Council",
-  },
-  {
-    name: "AI Arena",
-    icon: "◐",
-    label: "AI Arena",
-  },
-  {
-    name: "MCP",
-    icon: "◇",
-    label: "Skills",
   },
   {
     name: "Settings",
@@ -169,9 +149,10 @@ function Sidebar({
       >
         {navItems.map(
           (item) => {
-            const active =
-              activePage ===
-              item.name;
+            const active = activePage === item.name ||
+              (item.name === "Chat" && activePage === "Artifacts") ||
+              (item.name === "My AI" && ["Agents", "Accounts & Services"].includes(activePage)) ||
+              (item.name === "AI Lab" && ["AI Council", "AI Arena"].includes(activePage));
 
             return (
               <button

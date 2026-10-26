@@ -133,7 +133,7 @@ function SettingsPage({
         {[
           ["My AI", "Providers, accounts and models", "My AI"],
           ["Agents", "OpenClaw, Hermes and custom agents", "Agents"],
-          ["Skills", "MCP servers and tool connections", "MCP"],
+          ["Advanced · Skills", "MCP servers, permissions and tool connections", "MCP"],
           ["Local models", "Local models powered by oMLX", "Models"],
         ].map(([title, description, page]) => (
           <button

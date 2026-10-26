@@ -6,12 +6,15 @@ import {
   saveCustomAgent,
 } from "../services/agentRegistry";
 import type { AgentAdapterKind, AgentRecord } from "../types/agent";
+import type { PageName } from "../types/index";
+import SectionTabs from "../components/SectionTabs";
 
 type AgentsPageProps = {
   onMessage: (message: string) => void;
+  onPageChange: (page: PageName) => void;
 };
 
-function AgentsPage({ onMessage }: AgentsPageProps) {
+function AgentsPage({ onMessage, onPageChange }: AgentsPageProps) {
   const [agents, setAgents] = useState<AgentRecord[]>(loadAgentRegistry);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("Hermes Agent");
@@ -65,6 +68,17 @@ function AgentsPage({ onMessage }: AgentsPageProps) {
           <span>+</span> Add Agent
         </button>
       </header>
+
+      <SectionTabs
+        activePage="Agents"
+        label="My AI sections"
+        onPageChange={onPageChange}
+        items={[
+          { label: "AI Models", page: "My AI" },
+          { label: "Agents", page: "Agents" },
+          { label: "Accounts & Services", page: "Accounts & Services" },
+        ]}
+      />
 
       <div className="agent-record-list">
         {agents.map((agent) => (

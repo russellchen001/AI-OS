@@ -12,6 +12,7 @@ import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import CommandPalette from "./components/CommandPalette";
 import ManagedOpenClawOnboarding from "./components/ManagedOpenClawOnboarding";
+import SectionTabs from "./components/SectionTabs";
 
 import McpPage from "./pages/McpPage";
 import ModelsPage from "./pages/ModelsPage";
@@ -23,6 +24,7 @@ import MyAiPage from "./pages/MyAiPage";
 import PersonProfilesPage from "./pages/PersonProfilesPage";
 import AiArenaPage from "./pages/AiArenaPage";
 import AgentsPage from "./pages/AgentsPage";
+import AccountsServicesPage from "./pages/AccountsServicesPage";
 import {
   CONVERSATIONS_CHANGED_EVENT,
   createConversation,
@@ -603,7 +605,7 @@ function App() {
       />
 
       <main className="main-content">
-        {!["Chat", "My AI", "Settings", "Agents", "AI Arena", "AI Council", "Artifacts", "Person Profiles"].includes(activePage) && <Header
+        {!["Chat", "My AI", "Settings", "Agents", "Accounts & Services", "AI Lab", "AI Arena", "AI Council", "Artifacts", "Person Profiles"].includes(activePage) && <Header
           isChecking={
             isChecking
           }
@@ -611,6 +613,18 @@ function App() {
             lastUpdated
           }
         />}
+
+        {["Chat", "Artifacts"].includes(activePage) && (
+          <SectionTabs
+            activePage={activePage}
+            label="Workspace sections"
+            onPageChange={setActivePage}
+            items={[
+              { label: "Chat", page: "Chat" },
+              { label: "Artifacts", page: "Artifacts" },
+            ]}
+          />
+        )}
 
         {activePage === "Chat" && (
           <ChatPage
@@ -629,6 +643,7 @@ function App() {
 
         {activePage === "My AI" && (
           <MyAiPage
+            onPageChange={setActivePage}
             onConnect={(provider) =>
               handleMessage(
                 `${provider} is connected and its available models were discovered.`,
@@ -636,6 +651,10 @@ function App() {
               )
             }
           />
+        )}
+
+        {activePage === "Accounts & Services" && (
+          <AccountsServicesPage onPageChange={setActivePage} />
         )}
 
         {activePage ===
@@ -762,8 +781,19 @@ function App() {
           />
         )}
 
-        {activePage ===
-          "AI Council" && (
+        {["AI Lab", "AI Council", "AI Arena"].includes(activePage) && (
+          <SectionTabs
+            activePage={activePage === "AI Arena" ? "AI Arena" : "AI Council"}
+            label="AI Lab sections"
+            onPageChange={setActivePage}
+            items={[
+              { label: "AI Council", page: "AI Council" },
+              { label: "AI Arena", page: "AI Arena" },
+            ]}
+          />
+        )}
+
+        {(activePage === "AI Lab" || activePage === "AI Council") && (
           <AiCouncilPage
             cardStyle={
               cardStyle
@@ -783,7 +813,7 @@ function App() {
         )}
 
         {activePage === "Agents" && (
-          <AgentsPage onMessage={handleMessage} />
+          <AgentsPage onMessage={handleMessage} onPageChange={setActivePage} />
         )}
 
         {activePage === "Person Profiles" && (

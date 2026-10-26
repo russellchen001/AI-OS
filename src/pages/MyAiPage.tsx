@@ -17,7 +17,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import { useDialog } from "../components/DialogProvider";
-import ConnectionsCenter from "../components/ConnectionsCenter";
+import SectionTabs from "../components/SectionTabs";
+import type { PageName } from "../types/index";
 import type {
   ProviderAdapterDescriptor,
   ProviderModelEntry,
@@ -96,6 +97,7 @@ function assessmentDetails(assessment: ModelFitAssessment): string {
 
 type MyAiPageProps = {
   onConnect: (provider: string, method: "account" | "api-key") => void;
+  onPageChange: (page: PageName) => void;
 };
 
 type CloudProviderCard = {
@@ -222,6 +224,7 @@ function loadConfiguredProviderIds(): Set<string> {
 
 function MyAiPage({
   onConnect,
+  onPageChange,
 }: MyAiPageProps) {
   const dialog = useDialog();
   const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([]);
@@ -1113,7 +1116,16 @@ function MyAiPage({
         </div>
       </header>
 
-      <ConnectionsCenter />
+      <SectionTabs
+        activePage="My AI"
+        label="My AI sections"
+        onPageChange={onPageChange}
+        items={[
+          { label: "AI Models", page: "My AI" },
+          { label: "Agents", page: "Agents" },
+          { label: "Accounts & Services", page: "Accounts & Services" },
+        ]}
+      />
 
       <div className="provider-section-heading">
         <h2>Cloud AI</h2>

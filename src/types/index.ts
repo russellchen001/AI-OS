@@ -22,6 +22,8 @@ export type PageName =
   | "Models"
   | "MCP"
   | "Artifacts"
+  | "Accounts & Services"
+  | "AI Lab"
   | "AI Council"
   | "AI Arena"
   | "Agents"
