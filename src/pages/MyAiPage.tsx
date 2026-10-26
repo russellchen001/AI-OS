@@ -43,24 +43,12 @@ import {
   type ProviderOAuthCompletedEvent,
   type ProviderOAuthErrorEvent,
 } from "../services/providers";
+import { getCliProviderAdapter } from "../services/cliProviderManager";
 
 const OAUTH_FRONTEND_TIMEOUT_MS = 5 * 60 * 1000;
 type ClaudeCodeStatus = { installed: boolean; authenticated: boolean; message: string };
-type GrokCliStatus = ClaudeCodeStatus & { models: string[]; defaultModel?: string };
 /** Providers whose account sign-in is owned by their official local CLI. */
 const CLI_ACCOUNT_PROVIDERS = new Set(["anthropic", "grok"]);
-
-function grokCliModelEntries(instanceId: string, status: GrokCliStatus): ProviderModelEntry[] {
-  return status.models.map((model) => ({
-    id: `${instanceId}:${model}`,
-    providerInstanceId: instanceId,
-    remoteModelId: model,
-    displayName: `${model} (Grok CLI)`,
-    capabilities: ["chat", "reasoning"],
-    enabled: true,
-    isDefault: model === (status.defaultModel ?? status.models[0]),
-  }));
-}
 type OmlxRuntimeStatus = { supported: boolean; installed: boolean; running: boolean };
 type DeviceAuth = {
   state: string;
@@ -648,12 +636,15 @@ function MyAiPage({
     if (!instance) return;
     setIsConnecting(true); setSetupError("");
     try {
-      const verification = setup.providerId === "grok" && instance.credential.kind === "local"
-        ? await invoke<GrokCliStatus>("get_grok_cli_status").then((status) => {
+      const cliAdapter = instance.credential.kind === "local"
+        ? getCliProviderAdapter(setup.providerId)
+        : undefined;
+      const verification = cliAdapter
+        ? await cliAdapter.probe().then((status) => {
             if (!status.authenticated) throw new Error(status.message);
             return {
               ok: true, level: "live", checkedAt: new Date().toISOString(),
-              message: status.message, discoveredModels: grokCliModelEntries(instanceId, status),
+              message: status.message, discoveredModels: cliAdapter.models(instanceId, status),
             };
           })
         : await (await getProviderAdapter(setup.providerId)).testConnection(instanceId);
@@ -714,54 +705,25 @@ function MyAiPage({
       setIsConnecting(true);
       setSetupError("");
 
-      if (setup.providerId === "anthropic") {
+      const cliAdapter = getCliProviderAdapter(setup.providerId);
+      if (cliAdapter) {
         try {
-          const status = await invoke<ClaudeCodeStatus>("get_claude_code_status");
-          setClaudeCodeStatus(status);
+          const status = await cliAdapter.probe();
+          if (setup.providerId === "anthropic") setClaudeCodeStatus(status);
           if (!status.installed || !status.authenticated) throw new Error(status.message);
-          const models: ProviderModelEntry[] = [{
-            id: `${instanceId}:claude-code-default`,
-            providerInstanceId: instanceId,
-            remoteModelId: "claude-code-default",
-            displayName: "Claude Code account default",
-            capabilities: ["chat", "reasoning", "vision", "tool-use"],
-            enabled: true,
-            isDefault: true,
-          }];
+          const models = cliAdapter.models(instanceId, status);
+          if (!models.length) throw new Error(`${cliAdapter.displayName} reported no available models.`);
           setSetup({
             ...setup,
             phase: "models",
             models,
             defaultModelId: models[0].id,
-            verificationMessage: "Official Claude Code subscription connection verified on this Mac.",
+            verificationMessage: `Official ${cliAdapter.displayName} account connection verified on this Mac.`,
             liveTested: true,
             credentialRefreshable: false,
           });
         } catch (error) {
-          setSetupError(error instanceof Error ? error.message : "Claude Code could not be verified.");
-        } finally {
-          setIsConnecting(false);
-        }
-        return;
-      }
-
-      if (setup.providerId === "grok") {
-        try {
-          const status = await invoke<GrokCliStatus>("get_grok_cli_status");
-          if (!status.installed || !status.authenticated) throw new Error(status.message);
-          const models = grokCliModelEntries(instanceId, status);
-          if (!models.length) throw new Error("Grok CLI reported no available models.");
-          setSetup({
-            ...setup,
-            phase: "models",
-            models,
-            defaultModelId: models.find((model) => model.isDefault)?.id ?? models[0].id,
-            verificationMessage: "Official Grok CLI account connection verified on this Mac.",
-            liveTested: true,
-            credentialRefreshable: false,
-          });
-        } catch (error) {
-          setSetupError(error instanceof Error ? error.message : "Grok CLI could not be verified.");
+          setSetupError(error instanceof Error ? error.message : `${cliAdapter.displayName} could not be verified.`);
         } finally {
           setIsConnecting(false);
         }
