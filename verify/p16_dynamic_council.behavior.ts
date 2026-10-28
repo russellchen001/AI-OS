@@ -4,7 +4,7 @@ import {
   CouncilRuntime,
 } from "../src/services/councilRuntime";
 import { loadCouncilMembers } from "../src/services/council";
-import { validateCouncilAnswer } from "../src/services/answerRequirements";
+import { validateCouncilAnswer, validateCouncilParticipation, annualCostEstimateText } from "../src/services/answerRequirements";
 import type { CouncilMember } from "../src/types/council";
 import type { AgencyAgentsCatalog } from "../src/types/councilIntegrations";
 import type { AiCenterResponse } from "../src/services/aiCenter";
@@ -65,18 +65,30 @@ const annualCostReport = {
   rationale: ["年度新增约600GB，需定期归档控制云端容量。"],
   disagreements: [], risks: ["套餐价格与容量可能变化。"], assumptions: ["不计已有设备购置费。"],
   uncertainty: ["年度合计约360元，低于600元预算上限。"],
+  annualCostEstimate: {
+    currency: "CNY", scope: "已有设备与500GB精选异地副本，不覆盖全量增长", pricing: "assumed" as const,
+    items: [{ name: "已有硬盘", amount: 0, basis: "已有设备不计新增购置" },
+      { name: "云存储", amount: 360, basis: "假设每月30元乘12月，待核实报价" }], total: 360,
+  },
 };
 validateCouncilAnswer(annualCostObjective, annualCostReport);
+assert(annualCostEstimateText(annualCostReport.annualCostEstimate).includes("Total: 360 CNY"), "cost table omitted arithmetic total");
 for (const bad of [
-  { ...annualCostReport, recommendedPlan: ["年度预算不超过600元。"], uncertainty: [] },
-  { ...annualCostReport, uncertainty: ["费用低于预算。"] },
-  { ...annualCostReport, assumptions: [], recommendedPlan: ["本地0元。", "云端360元。"], uncertainty: ["年度合计360元。"] },
-  { ...annualCostReport, recommendedPlan: ["以下仅为预算分配框架：云端约300–450元，恢复流量约50–100元，软件按免费工具估算0元。合计目标不超过600元/年。"], uncertainty: [] },
+  { ...annualCostReport, annualCostEstimate: undefined },
+  { ...annualCostReport, annualCostEstimate: { ...annualCostReport.annualCostEstimate, total: 600 } },
+  { ...annualCostReport, annualCostEstimate: { ...annualCostReport.annualCostEstimate, items: [{ name: "预算分配", amount: 360, basis: "预留上限" }, { name: "已有设备", amount: 0, basis: "已有" }] } },
+  { ...annualCostReport, annualCostEstimate: { ...annualCostReport.annualCostEstimate, items: [{ name: "云端", amount: 360, basis: "" }, { name: "已有设备", amount: 0, basis: "已有" }] } },
 ]) {
   let rejected = false;
   try { validateCouncilAnswer(annualCostObjective, bad); } catch { rejected = true; }
   assert(rejected, "Council accepted an incomplete annual cost estimate");
 }
+for (const model of ["Claude Code account default", "grok-4.7"]) {
+  let rejected = false;
+  try { validateCouncilParticipation(`${model}未见任何提交内容。`, [model]); } catch { rejected = true; }
+  assert(rejected, "runtime-confirmed model was falsely reported absent");
+}
+validateCouncilParticipation("Qwen独立阶段失败；Claude Code account default汇总已完成。", ["Claude Code account default"]);
 
 const coverageObjective = "最终建议需要包括：备份结构以及与3-2-1原则的对应关系、自动化方式、每季度的恢复演练步骤、主要风险与取舍。";
 const coverageReport = {

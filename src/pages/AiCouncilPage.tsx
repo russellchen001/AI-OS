@@ -236,7 +236,19 @@ function AiCouncilPage({
     if (!userPrompt || isRunning) return;
 
     const startedAt = Date.now();
+    let evidenceSession: CouncilSession | undefined;
+    const persistEvidence = () => {
+      if (!evidenceSession) return;
+      setSessions(upsertCouncilSession(evidenceSession));
+      setSelectedSessionId(evidenceSession.id);
+    };
+    const retainStep = (role: string, patch: Partial<CouncilStepResult>, persist = false) => {
+      if (!evidenceSession) return;
+      evidenceSession = { ...evidenceSession, updatedAt: Date.now(), steps: evidenceSession.steps.map(step => step.role === role ? { ...step, ...patch } : step) };
+      if (persist) persistEvidence();
+    };
     setIsRunning(true);
+    setSelectedSessionId(null);
     setFinalAnswer("");
     setRecommendation(null);
     setAssemblyPlan(null);
@@ -268,6 +280,8 @@ function AiCouncilPage({
         assemblyPlan: nextAssemblyPlan,
         callbacks: {
           onCouncilStarted: (sessionId, initialSteps) => {
+            evidenceSession = { id: sessionId, title: userPrompt.slice(0, 60), prompt: userPrompt, createdAt: startedAt, updatedAt: startedAt, favorite: false, steps: initialSteps, finalAnswer: "", assemblyPlan: nextAssemblyPlan };
+            persistEvidence();
             setSteps(initialSteps);
             recordAnalyticsEvent({
               module: "council",
@@ -283,6 +297,7 @@ function AiCouncilPage({
             });
           },
           onMemberStarted: (nextStep) => {
+            retainStep(nextStep.role, nextStep);
             setSteps((current) =>
               current.map((step) =>
                 step.role === nextStep.role ? nextStep : step,
@@ -290,6 +305,7 @@ function AiCouncilPage({
             );
           },
           onProviderChanged: (memberId, providerId, attempt, total) => {
+            retainStep(memberId, { providerId, status: "running", output: "", error: undefined });
             setSteps((current) =>
               current.map((step) =>
                 step.role === memberId
@@ -308,6 +324,7 @@ function AiCouncilPage({
             );
           },
           onChunk: (memberId, providerId, text) => {
+            retainStep(memberId, { providerId, output: (evidenceSession?.steps.find(step => step.role === memberId)?.output ?? "") + text });
             setSteps((current) =>
               current.map((step) =>
                 step.role === memberId
@@ -321,6 +338,7 @@ function AiCouncilPage({
             );
           },
           onMemberCompleted: (nextStep) => {
+            retainStep(nextStep.role, nextStep, true);
             setSteps((current) =>
               current.map((step) =>
                 step.role === nextStep.role ? nextStep : step,
@@ -341,6 +359,7 @@ function AiCouncilPage({
             });
           },
           onMemberFailed: (nextStep) => {
+            retainStep(nextStep.role, nextStep, true);
             setSteps((current) =>
               current.map((step) =>
                 step.role === nextStep.role ? nextStep : step,
@@ -373,6 +392,12 @@ function AiCouncilPage({
       });
       onMessage("AI Council completed successfully.");
     } catch (error) {
+      if (evidenceSession) {
+        const cancelled = error instanceof CouncilCancelledError;
+        evidenceSession = { ...evidenceSession, updatedAt: Date.now(), steps: evidenceSession.steps.map(step => step.status === "running" ? { ...step, status: cancelled ? "skipped" : "error", error: String(error), completedAt: Date.now() } : step.status === "idle" ? { ...step, status: "skipped" } : step) };
+        persistEvidence();
+        setSteps(evidenceSession.steps);
+      }
       if (error instanceof CouncilCancelledError) {
         onMessage("AI Council stopped.");
       } else {
@@ -1174,7 +1199,7 @@ function AiCouncilPage({
             </div>
           )}
 
-          {finalAnswer && (
+          {(finalAnswer || (selectedSession && !isRunning)) && (
             <article
               className="settings-card council-final-answer"
               style={cardStyle}
@@ -1182,10 +1207,10 @@ function AiCouncilPage({
               <header>
                 <div>
                   <strong>
-                    ⚖️ Final Answer
+                    {finalAnswer ? "⚖️ Final Answer" : "Run evidence"}
                   </strong>
                   <small>
-                    {assemblyPlan
+                    {!finalAnswer ? "No accepted final answer; raw contributions are retained." : assemblyPlan
                       ? "Synthesised by the assembled Council"
                       : "Synthesised by the Judge"}
                   </small>
@@ -1193,7 +1218,7 @@ function AiCouncilPage({
 
                 {selectedSession && (
                   <div className="council-export-actions">
-                    {!selectedSession.execution && (
+                    {recommendation && !selectedSession.execution && (
                       <button
                         type="button"
                         className="action-button"
@@ -1266,7 +1291,7 @@ function AiCouncilPage({
                     )?.providerId
                   }
                   content={
-                    finalAnswer
+                    finalAnswer || "This run did not produce an accepted final answer. Export its raw contributions and errors for review."
                   }
                 />
                 {recommendation && (

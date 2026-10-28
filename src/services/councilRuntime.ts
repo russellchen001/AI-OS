@@ -6,7 +6,7 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { formatCouncilContext, resolveCouncilContext } from "./councilMemberContext";
-import { validateCouncilAnswer } from "./answerRequirements";
+import { annualCostEstimateText, requiresAnnualCostEstimate, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
 import type { CouncilMember, CouncilRole, CouncilStepResult } from "../types/council";
 import type {
   CouncilContextSource,
@@ -156,6 +156,7 @@ function parseRecommendation(
     risks: stringArray(parsed.risks),
     assumptions: stringArray(parsed.assumptions),
     uncertainty: stringArray(parsed.uncertainty),
+    annualCostEstimate: parsed.annualCostEstimate as CouncilRecommendation["annualCostEstimate"],
     provenance,
     createdAt,
     simulationReport:
@@ -194,6 +195,7 @@ function recommendationMarkdown(recommendation: CouncilRecommendation): string {
     section("Risks", recommendation.risks),
     section("Assumptions", recommendation.assumptions),
     section("Uncertainty", recommendation.uncertainty),
+    recommendation.annualCostEstimate ? `\n\n${annualCostEstimateText(recommendation.annualCostEstimate)}` : "",
     recommendation.simulationReport
       ? [
           section("Simulation evidence", recommendation.simulationReport.evidence),
@@ -239,7 +241,7 @@ export class CouncilRuntime {
     messages: AiCenterConversationMessage[],
     callbacks: CouncilRunRequest["callbacks"],
     assignedModel?: CouncilModelAssignment,
-    validate?: (output: string) => void,
+    validate?: (output: string, choice: AiCenterModelChoice) => void,
     attempts: NonNullable<CouncilStepResult["attempts"]> = [],
   ): Promise<{
     output: string;
@@ -289,7 +291,10 @@ export class CouncilRuntime {
       try {
         const invoke = async (request: AiCenterConversationMessage[]) => {
           let raw = "";
-          const stream = this.dependencies.stream(request, choice, (text) => {
+          const identifiedRequest = request.map((message, index) => index === 0 && message.role === "system"
+            ? { ...message, content: `${message.content}\nRuntime-selected model: ${choice.label} (${choice.modelId}). Your current answer is itself participation in this Council. Do not confuse missing independent analysis with absence from synthesis.` }
+            : message);
+          const stream = this.dependencies.stream(identifiedRequest, choice, (text) => {
             raw += text;
             callbacks?.onChunk?.(member.id, providerId, text);
           });
@@ -319,7 +324,7 @@ export class CouncilRuntime {
         if (result.cancelled || this.cancelled) throw new CouncilCancelledError();
         let output = result.response.text;
         try {
-          validate?.(output);
+          validate?.(output, choice);
         } catch (rejection) {
           // One correction from the same model, naming the measured
           // violation; if it is still invalid the next model is tried.
@@ -336,7 +341,7 @@ export class CouncilRuntime {
           this.activeStream = undefined;
           if (corrected.cancelled || this.cancelled) throw new CouncilCancelledError();
           output = corrected.response.text;
-          validate?.(output);
+          validate?.(output, choice);
         }
         return {
           output,
@@ -372,6 +377,7 @@ export class CouncilRuntime {
     prompt: string,
     task: string,
     callbacks: CouncilRunRequest["callbacks"],
+    verifiedModels: string[] = [],
   ): Promise<CouncilStepResult> {
     const stepId = `${seat.id}:${stage}`;
     const member: CouncilMember = {
@@ -452,9 +458,11 @@ export class CouncilRuntime {
         ],
         wrappedCallbacks,
         seat.assignedModel,
-        stage === "final-synthesis" ? (output) => {
+        stage === "final-synthesis" ? (output, choice) => {
           const report = parseRecommendation(output, "validation", "validation", [], 0);
           validateCouncilAnswer(prompt, report);
+          validateCouncilParticipation([report.summary, ...report.disagreements, ...report.uncertainty].join("\n"),
+            [...verifiedModels, choice.modelId, choice.label.split("·").at(-1)?.trim() ?? choice.label]);
         } : undefined,
         attempts,
       );
@@ -614,6 +622,9 @@ export class CouncilRuntime {
               '{"summary":"...","recommendedPlan":["..."],"rationale":["..."],"disagreements":["..."],"risks":["..."],"assumptions":["..."],"uncertainty":["..."]}',
             ]),
         "Keep unresolved disagreements and uncertainty explicit. Do not claim any task was executed.",
+        ...(requiresAnnualCostEstimate(prompt) ? [
+          'Also include annualCostEstimate: {"currency":"CNY","scope":"what this annual estimate covers","pricing":"assumed or verified","items":[{"name":"expense","amount":0,"basis":"annual calculation or explicit price assumption"}],"total":0}. Use at least two distinct actual expense components. Amounts are annual numeric estimates, not spending caps. Sum items exactly; exclude reserves from expenses. If current quotes are unavailable use clearly labeled assumed prices and scope, never invent a verified quote. Rendered final answer includes this cost table.',
+        ] : []),
         "Reject contributions that violate explicit user constraints, expand into unrequested cloud services, or propose unrequested destructive actions.",
         "Audit each reason against the original objective: remove contradictions and invented facts, including claims that an explicitly requested backup was not requested. A single-device copy still has loss risk; local storage alone does not prove safety. Keep caveats within the requested total length.",
         "Keep the summary and plan proportional to the requested length; do not pad them with generic advice.",
@@ -622,6 +633,10 @@ export class CouncilRuntime {
         deliberation,
       ].join("\n\n"),
       request.callbacks,
+      completed.filter((step) => step.status === "done").flatMap((step) => {
+        const model = this.dependencies.listModels().find((candidate) => candidate.modelId === step.modelId && candidate.providerId === step.providerId);
+        return [step.modelId ?? "", model?.label.split("·").at(-1)?.trim() ?? ""].filter(Boolean);
+      }),
     );
     completed.push(synthesis);
 

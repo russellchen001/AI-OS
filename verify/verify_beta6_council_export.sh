@@ -13,11 +13,11 @@ try {
   const markdown = decode(markdownPath);
   if (typeof session.prompt !== 'string' || !session.prompt.trim() ||
       !Array.isArray(session.steps) || !session.steps.length ||
-      typeof session.finalAnswer !== 'string' || !session.finalAnswer.trim()) {
-    throw new Error('exported session lacks request, steps or final answer');
+      typeof session.finalAnswer !== 'string' || (!session.finalAnswer.trim() && !session.steps.some(step => step.status === 'error' || step.status === 'skipped'))) {
+    throw new Error('exported session lacks request, steps, or an accepted answer/terminal failure');
   }
   console.log('✓ JSON and Markdown are valid UTF-8; session is complete');
-  if (!markdown.includes(session.prompt) || !markdown.includes(session.finalAnswer)) {
+  if (!markdown.includes(session.prompt) || !markdown.includes(session.finalAnswer || '_No final answer._')) {
     throw new Error('Markdown lost or changed the original request/final answer');
   }
   console.log('✓ request and final answer match the exported session exactly');
@@ -40,6 +40,15 @@ try {
       for (const value of [original[key]].flat()) if (!session.finalAnswer.includes(value)) throw new Error(`final answer lost content: ${key}`);
     }
     console.log('✓ all 7 raw synthesis fields and final answer content match');
+    if (original.annualCostEstimate) {
+      if (JSON.stringify(original.annualCostEstimate) !== JSON.stringify(session.recommendation.annualCostEstimate)) throw new Error('annual cost fields changed');
+      const cost = original.annualCostEstimate;
+      for (const item of cost.items) {
+        if (!session.finalAnswer.includes(`${item.name}: ${item.amount} ${cost.currency}/年`) || !session.finalAnswer.includes(item.basis)) throw new Error('annual expense or basis lost');
+      }
+      if (!session.finalAnswer.includes(`Total: ${cost.total} ${cost.currency}/年`) || !session.finalAnswer.includes(cost.scope)) throw new Error('annual total or scope lost');
+      console.log('✓ structured annual cost and rendered amounts match raw synthesis');
+    }
   }
   console.log('PASS: Council export');
 } catch (error) {

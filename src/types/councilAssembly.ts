@@ -112,6 +112,14 @@ export type CouncilAssemblyPlan = {
   simulation?: CouncilSimulationMetadata;
 };
 
+export type CouncilAnnualCostEstimate = {
+  currency: string;
+  scope: string;
+  pricing: "assumed" | "verified";
+  items: Array<{ name: string; amount: number; basis: string }>;
+  total: number;
+};
+
 export type CouncilRecommendation = {
   id: string;
   councilSessionId: string;
@@ -122,6 +130,7 @@ export type CouncilRecommendation = {
   risks: string[];
   assumptions: string[];
   uncertainty: string[];
+  annualCostEstimate?: CouncilAnnualCostEstimate;
   provenance: string[];
   createdAt: number;
   simulationReport?: CouncilSimulationReport;

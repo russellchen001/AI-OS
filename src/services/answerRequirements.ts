@@ -1,3 +1,5 @@
+import type { CouncilAnnualCostEstimate } from "../types/councilAssembly";
+
 // Checks only explicit, mechanically verifiable requirements. This is not a factual-quality judge.
 const numbers: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
 function count(text: string | undefined): number | undefined {
@@ -18,9 +20,45 @@ export function answerRequirements(objective: string) {
 function humanReadableReport(report: {
   summary: string; recommendedPlan: string[]; rationale: string[]; disagreements: string[];
   risks: string[]; assumptions: string[]; uncertainty: string[];
+  annualCostEstimate?: CouncilAnnualCostEstimate;
 }): string {
   return [report.summary, ...report.recommendedPlan, ...report.rationale,
-    ...report.disagreements, ...report.risks, ...report.assumptions, ...report.uncertainty].join("\n");
+    ...report.disagreements, ...report.risks, ...report.assumptions, ...report.uncertainty,
+    annualCostEstimateText(report.annualCostEstimate)].join("\n");
+}
+
+export function requiresAnnualCostEstimate(objective: string): boolean {
+  return /(?:年度|每年|annual|yearly).{0,8}(?:费用|成本|预算|cost|price|budget).{0,8}(?:估算|估计|estimate|breakdown)/i.test(objective);
+}
+
+export function annualCostEstimateText(cost?: CouncilAnnualCostEstimate): string {
+  if (!cost) return "";
+  return [`年度费用 / Annual cost (${cost.currency}; ${cost.pricing})`, cost.scope,
+    ...cost.items.map((item) => `${item.name}: ${item.amount} ${cost.currency}/年 — ${item.basis}`),
+    `合计 / Total: ${cost.total} ${cost.currency}/年`].join("\n");
+}
+
+function validateStructuredCost(cost: CouncilAnnualCostEstimate | undefined): void {
+  const nonempty = (value: unknown): value is string => typeof value === "string" && Boolean(value.trim());
+  if (!cost || !nonempty(cost.currency) || !nonempty(cost.scope) ||
+      !["assumed", "verified"].includes(cost.pricing) || !Array.isArray(cost.items) || cost.items.length < 2 ||
+      !Number.isFinite(cost.total) || cost.total < 0 ||
+      cost.items.some((item) => !item || !nonempty(item.name) || !nonempty(item.basis) ||
+        !Number.isFinite(item.amount) || item.amount < 0 ||
+        /预算分配|支出上限|预备金|预留|budget allocation|spending cap|contingency|reserve/i.test(`${item.name} ${item.basis}`)) ||
+      new Set(cost.items.map((item) => item.name.trim().toLowerCase())).size !== cost.items.length ||
+      Math.abs(cost.items.reduce((sum, item) => sum + item.amount, 0) - cost.total) > 0.01) {
+    throw new Error("Council annualCostEstimate requires currency, scope, pricing (assumed or verified), at least two distinct expense items with numeric annual amounts and bases, and their arithmetic total. Budget allocations and reserves are not expense estimates. State an explicit assumed price when no quote is verified.");
+  }
+}
+
+export function validateCouncilParticipation(text: string, verifiedModels: string[]): void {
+  for (const clause of text.split(/[。；;\n]/)) {
+    if (!/未见.{0,20}提交|未参与|没有提交|缺席|did not (?:contribute|participate|submit)/i.test(clause)) continue;
+    if (verifiedModels.some((model) => model.length >= 4 && clause.toLowerCase().includes(model.toLowerCase()))) {
+      throw new Error("Council report contradicts runtime-confirmed model participation. Do not claim a successful contributor or the current synthesizer was absent; distinguish a failed stage from non-participation.");
+    }
+  }
 }
 
 function validateCostEstimate(objective: string, text: string): void {
@@ -73,7 +111,9 @@ function validateRequestedSections(objective: string, text: string): void {
 export function validateCouncilAnswer(objective: string, report: {
   summary: string; recommendedPlan: string[]; rationale: string[]; disagreements: string[];
   risks: string[]; assumptions: string[]; uncertainty: string[];
+  annualCostEstimate?: CouncilAnnualCostEstimate;
 }): void {
+  if (requiresAnnualCostEstimate(objective) || report.annualCostEstimate) validateStructuredCost(report.annualCostEstimate);
   const limits = answerRequirements(objective);
   const readableText = humanReadableReport(report);
   const text = readableText.replaceAll("\n", "");
@@ -90,7 +130,7 @@ export function validateCouncilAnswer(objective: string, report: {
       }))) {
     throw new Error("Council backup plan changes originals despite the read-only/non-destructive constraint.");
   }
-  validateCostEstimate(objective, readableText);
+  if (!report.annualCostEstimate) validateCostEstimate(objective, readableText);
   validateRequestedSections(objective, readableText);
 }
 
