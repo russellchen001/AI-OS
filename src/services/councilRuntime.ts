@@ -84,6 +84,7 @@ function previousWork(steps: CouncilStepResult[]): string {
       [
         `## ${step.memberName}`,
         `Provider: ${step.providerId}`,
+        `Runtime-verified model: ${step.modelId ?? "not recorded"}; stage: ${step.stage ?? step.role}; status: ${step.status}`,
         "",
         step.status === "done"
           ? step.output
@@ -555,6 +556,7 @@ export class CouncilRuntime {
               "Cross-review the independent analyses below.",
               "Identify concrete agreements, disagreements, unsupported assumptions, missing evidence and corrections.",
               "Do not erase unresolved uncertainty.",
+              "Return a complete review without restating every contribution. Stay within 6,000 characters or 1,200 words, whichever is shorter, and prioritize corrections that can change the final decision.",
               independentWork,
             ].join("\n\n"),
             request.callbacks,

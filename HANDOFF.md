@@ -1,8 +1,46 @@
 <!-- BETA41_HANDOFF_START -->
 
-# START HERE — Beta 6 最新交接（2026-10-26；以下 CURRENT 为唯一当前状态）
+# START HERE — Beta 6 最新交接（2026-10-28；以下 CURRENT 为唯一当前状态）
 
-## CURRENT（2026-10-26）— 复杂题复测及导出修复验收完成；仍有质量缺口，不建议发布
+## CURRENT（2026-10-28）— 冻结计划持续实施；P0 尚未全 PASS，不建议发布
+
+- 工作树 `/Users/russellchen/AI-OS/dashboard-beta6`，分支 `beta6`。已提交至 `eb01a4c`；下方历史 SHA 不代表最新状态。
+- 本轮新增提交：`e3f42e1` Council 显式需求校验；`e84abaf` 五入口与二级导航；`b98e147` 共享验证安装服务；
+  `73f3da1` 通用 CLI adapters；`e81d2e4` 官方 Grok 安装/升级计划；`c6d6bc7` 通用 Agent 生命周期与 OpenClaw；
+  `0b22548` 外部账号/配额阻塞分类；`eb01a4c` 从 AI Models 移出 Microsoft 365。
+- 候选 eb01a4c 已真实检查五入口、My AI 三个二级页、AI Lab、Workspace/Artifacts、Person Profiles、Settings/高级 Skills 与主题控件。
+  Claude 手动 Chat 真实返回，详情仍为 anthropic/claude-code-default；模型输出有额外提示注入警告，严格“只回复”未通过。
+- eb01a4c 六模型 Council 于 2026-10-27 01:00 完成。11 步中 9 done、2 error：Grok 交叉评审 300 秒超时；Qwen3.5 交叉评审流中断。
+  Claude 最终结构正常，拒绝破坏性建议，覆盖五类要求；费用仍为预算分配框架，严格质量 FAIL。不得把完成报告写成全部通过。
+  原始 JSON：产物根 `outputs/Beta6-eb01a4c-Council-20261027.json`，2026-10-28 原生保存面板实际导出；数据未润色。
+- 新修复正在验收：Grok 子进程在退出前并行读取 stdout/stderr，避免长输出填满管道死锁；保留 300 秒上限；
+  增加真实 128KiB stdout+stderr 子进程行为测试。Council 交叉评审限制冗余重述、给出完整评审长度预算；
+  上下文附机器已验证的模型/阶段/状态；最终费用校验拒绝以预算分配框架替代估算结果。
+- 自动验证：eb01a4c Rust 全库 1071/0/84 ignored；前端 build、P16/P17、Provider 稳定性/阻塞分类、信息架构、
+  CLI/Agent 生命周期、Beta release verifier 全 PASS。最后的 Grok 管道测试 8/0；最终修复后的 P16 与新构建继续验收。
+- 现有候选：产物根 `work/beta6-final/candidate-eb01a4c/AI OS.app`，主程序 SHA256
+  `a4ad2138d6e339815ec561e44a3b1c030497a570059cecbe8abbf86ade56f15c`。
+- DMG：产物根 `outputs/AI OS_1.0.1-beta.6_candidate-eb01a4c_aarch64.dmg`，SHA256
+  `e5cb2c23a8e856a1c630e4aab4a2696bce4ed27ce0b6a1ab60f6c4b2339ff701`。
+  deep/strict 签名、DMG CRC 与包数据卫生 PASS；ad-hoc，无 TeamIdentifier/公证，正式 Developer ID 证书 BLOCKED。
+- 产物根：`/Users/russellchen/Documents/Codex/2026-10-26/referenced-chatgpt-conversation-this-is-an`。
+- 正式 `/Applications/AI OS.app` Beta5 未改，主程序 SHA256
+  `91ff470bbb163233f891cf3bc16af86788b42f439aaf7b558a874353ab253ce5`。
+- 下一步：完成新修复回归/提交/隔离候选；真实复测 Council 与 Arena 原复杂题，导出原文核验；继续 Chat/权限/干净环境矩阵。
+  原有 180 汉字本地 Council 题仍为已知 FAIL，不能遗忘；有外部账户或证书阻塞如实 BLOCKED，继续可自主项目。
+- 未 Push/Tag/Release/分发；未替换 Beta5；未执行第三方安装/升级、未改账号或采集凭证。
+
+### 技术决策（本轮）
+
+- Council 使用确定性显式需求校验与同模型一次纠正；保留原始回答与失败状态，人工核验事实质量。
+- 导航统一为五入口，兼容旧路由；Artifacts/项目与账号数据保留，服务账号从 LLM 目录分离。
+- 安装服务集中执行官方 HTTPS 来源、固定完整性、平台/版本匹配、显式批准、进度/审计/回滚。
+- CLI 与 Agent 均用可扩展 adapter registry；API Key 与 CLI 登录独立。OpenClaw 是首个 Agent adapter，Hermes 不假称可用。
+- Grok 通过并行排空输出管道解决进程互等；单纯增加超时不作为修复。
+
+下方均为历史记录，与本节冲突时以本节为准。
+
+## 历史（2026-10-26）— 复杂题复测及导出修复验收完成；仍有质量缺口，不建议发布
 
 - 本人已解锁，已实际读完 Claude 报告：结构成功解析并保存为 07:33:18 的新会话，正常显示 Final Answer。
   备份结构、自动化、恢复演练和风险取舍主体内容可靠，明确剔除“模型当云存储”及自动删除等错误建议。

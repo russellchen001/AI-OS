@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Mutex, OnceLock},
@@ -170,6 +170,23 @@ fn run_bounded(
     let mut child = command
         .spawn()
         .map_err(|_| "Grok CLI could not be started".to_owned())?;
+    // Drain both pipes while the child is running; waiting first can deadlock
+    // once a complete long answer fills the OS pipe buffer.
+    let read_pipe = |mut pipe: Box<dyn Read + Send>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.by_ref().take(2_000_001).read_to_end(&mut bytes)
+                .map_err(|_| "Grok CLI output could not be read".to_owned())?;
+            std::io::copy(&mut pipe, &mut std::io::sink())
+                .map_err(|_| "Grok CLI output could not be read".to_owned())?;
+            if bytes.len() > 2_000_000 {
+                return Err("Grok CLI output exceeded the response limit".to_owned());
+            }
+            Ok(bytes)
+        })
+    };
+    let stdout = read_pipe(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = read_pipe(Box::new(child.stderr.take().expect("piped stderr")));
     if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
         pipe.write_all(input.as_bytes())
             .map_err(|_| "Grok CLI could not receive the request".to_owned())?;
@@ -182,14 +199,15 @@ fn run_bounded(
             return Err("Grok CLI request was cancelled".to_owned());
         }
         match child.try_wait() {
-            Ok(Some(_)) => {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|_| "Grok CLI output could not be read".to_owned())?;
-                return if output.status.success() {
-                    Ok(output.stdout)
+            Ok(Some(status)) => {
+                let output = stdout.join()
+                    .map_err(|_| "Grok CLI output reader was interrupted".to_owned())??;
+                let error = stderr.join()
+                    .map_err(|_| "Grok CLI error reader was interrupted".to_owned())??;
+                return if status.success() {
+                    Ok(output)
                 } else {
-                    Err(sanitized_process_error(&output.stderr))
+                    Err(sanitized_process_error(&error))
                 };
             }
             Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(25)),
@@ -396,6 +414,19 @@ pub(crate) fn cancel_grok_cli_request(operation_id: String) -> Result<bool, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn long_stdout_and_stderr_are_drained_before_process_exit() {
+        let output = run_bounded(
+            Path::new("/bin/sh"),
+            &["-c", "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2"],
+            None,
+            Duration::from_secs(5),
+            None,
+        ).expect("long CLI output must not deadlock on a full pipe");
+        assert_eq!(output.len(), 131072);
+    }
 
     #[test]
     fn cli_candidates_cover_official_install_location_without_duplicates() {

@@ -71,6 +71,7 @@ for (const bad of [
   { ...annualCostReport, recommendedPlan: ["年度预算不超过600元。"], uncertainty: [] },
   { ...annualCostReport, uncertainty: ["费用低于预算。"] },
   { ...annualCostReport, assumptions: [], recommendedPlan: ["本地0元。", "云端360元。"], uncertainty: ["年度合计360元。"] },
+  { ...annualCostReport, recommendedPlan: ["以下仅为预算分配框架：云端约300–450元，恢复流量约50–100元，软件按免费工具估算0元。合计目标不超过600元/年。"], uncertainty: [] },
 ]) {
   let rejected = false;
   try { validateCouncilAnswer(annualCostObjective, bad); } catch { rejected = true; }
@@ -429,6 +430,12 @@ assert(result.session.recommendation?.risks.length === 1, "structured recommenda
 assert(
   runtimeMessages.every(([system]) => system.includes("explicit user constraints") && system.includes("destructive or irreversible")),
   "Council seats did not receive binding user and safety constraints",
+);
+assert(
+  runtimeMessages
+    .filter(([, task]) => task.includes("Cross-review"))
+    .every(([, task]) => task.includes("without restating every contribution") && task.includes("6,000 characters or 1,200 words")),
+  "cross-review did not receive the bounded complete-response contract",
 );
 assert(
   runtimeMessages.at(-1)?.[1].includes("unrequested cloud services") && runtimeMessages.at(-1)?.[1].includes("across all fields combined"),
