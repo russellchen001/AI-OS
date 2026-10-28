@@ -76,6 +76,8 @@ assert(annualCostEstimateText(annualCostReport.annualCostEstimate).includes("Tot
 for (const bad of [
   { ...annualCostReport, annualCostEstimate: undefined },
   { ...annualCostReport, annualCostEstimate: { ...annualCostReport.annualCostEstimate, total: 600 } },
+  { ...annualCostReport, annualCostEstimate: { ...annualCostReport.annualCostEstimate, currency: "USD" } },
+  { ...annualCostReport, annualCostEstimate: { ...annualCostReport.annualCostEstimate, total: 720, items: [{ name: "云端", amount: 720, basis: "假设每月60元乘12月" }, { name: "已有设备", amount: 0, basis: "已有" }] } },
   { ...annualCostReport, annualCostEstimate: { ...annualCostReport.annualCostEstimate, items: [{ name: "预算分配", amount: 360, basis: "预留上限" }, { name: "已有设备", amount: 0, basis: "已有" }] } },
   { ...annualCostReport, annualCostEstimate: { ...annualCostReport.annualCostEstimate, items: [{ name: "云端", amount: 360, basis: "" }, { name: "已有设备", amount: 0, basis: "已有" }] } },
 ]) {

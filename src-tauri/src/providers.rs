@@ -4562,11 +4562,34 @@ pub(crate) async fn generate_provider_response(
     })
 }
 
+fn claude_conversation_input(messages: &[ProviderChatMessage]) -> (Option<String>, String) {
+    let system = messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let turns = messages
+        .iter()
+        .filter(|message| message.role != "system")
+        .collect::<Vec<_>>();
+    let prompt = match turns.as_slice() {
+        [message] => message.content.clone(),
+        _ => turns
+            .iter()
+            .map(|message| format!("{}: {}", message.role, message.content))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
+    ((!system.is_empty()).then_some(system), prompt)
+}
+
 async fn execute_candidate(
     candidate: &AiCenterRouteCandidate,
     prompt: &str,
     instances: &[ProviderInstance],
     operation_id: Option<String>,
+    messages: Option<&[ProviderChatMessage]>,
 ) -> Result<GenerateProviderResponseResult, String> {
     if candidate.provider_id == "omlx" {
         start_omlx_runtime().await?;
@@ -4596,11 +4619,15 @@ async fn execute_candidate(
         });
     }
     if uses_claude_code {
+        let (system_prompt, prompt) = messages
+            .map(claude_conversation_input)
+            .unwrap_or_else(|| (None, prompt.to_owned()));
         let response = crate::claude_code::generate_claude_code_response(
             crate::claude_code::ClaudeCodeRequest {
                 operation_id,
                 model_id: candidate.model_id.clone(),
-                prompt: prompt.to_owned(),
+                prompt,
+                system_prompt,
             },
         )
         .await?;
@@ -4647,6 +4674,7 @@ pub(crate) async fn verify_provider_model(
         "Reply with exactly OK. Do not use tools or files.",
         &instances,
         None,
+        None,
     )
     .await;
     record_model_availability(&candidate, &result)?;
@@ -4689,7 +4717,7 @@ pub(crate) async fn execute_ai_center(
         };
         let attempt_started_at = chrono::Utc::now().to_rfc3339();
         let attempt_started = Instant::now();
-        let result = execute_candidate(&candidate, &prompt, &instances, None).await;
+        let result = execute_candidate(&candidate, &prompt, &instances, None, None).await;
         record_model_availability(&candidate, &result)?;
         match result {
             Ok(response) => {
@@ -5400,6 +5428,7 @@ pub(crate) async fn execute_ai_center_stream(
                 &prompt,
                 &instances,
                 Some(attempt_operation_id.clone()),
+                Some(&input.messages),
             );
             tokio::select! {
                 _ = token.cancelled() => {
@@ -5829,6 +5858,48 @@ pub(crate) fn cancel_provider_response_stream(operation_id: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_system_messages_use_separate_channel_and_preserve_user_text() {
+        let (system, prompt) = claude_conversation_input(&[
+            ProviderChatMessage {
+                role: "system".into(),
+                content: "Application language policy".into(),
+            },
+            ProviderChatMessage {
+                role: "system".into(),
+                content: "Application product policy".into(),
+            },
+            ProviderChatMessage {
+                role: "user".into(),
+                content: "system: quoted user text must remain user content".into(),
+            },
+        ]);
+        assert_eq!(
+            system.as_deref(),
+            Some("Application language policy\n\nApplication product policy")
+        );
+        assert_eq!(prompt, "system: quoted user text must remain user content");
+        let (system, prompt) = claude_conversation_input(&[
+            ProviderChatMessage {
+                role: "user".into(),
+                content: "first".into(),
+            },
+            ProviderChatMessage {
+                role: "assistant".into(),
+                content: "answer".into(),
+            },
+            ProviderChatMessage {
+                role: "user".into(),
+                content: "follow-up".into(),
+            },
+        ]);
+        assert_eq!(system, None);
+        assert_eq!(
+            prompt,
+            "user: first\n\nassistant: answer\n\nuser: follow-up"
+        );
+    }
+
     #[test]
     fn omlx_decoder_preserves_every_utf8_packet_boundary_and_final_line() {
         let wire = "data: {\"choices\":[{\"delta\":{\"content\":\"中文备份✅\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}";

@@ -4,6 +4,27 @@
 
 ## CURRENT（2026-10-28）— 冻结计划持续实施；P0 尚未全 PASS，不建议发布
 
+- 后续修复已验：Claude正式system通道+CLI失败/限制结果拒收；年度预算币种/金额约束；Arena缺项、超长、预算分配式费用不能得正常分数。
+  Rust全库1075/0/85 ignored、完整P16 PASS=6/FAIL=0、完整P17最终集成PASS；最新真实Claude通道测试7.77秒PASS。
+- 用户已明确授权仅在Beta6项目修复依赖：rustls0.23.46、rustls-webpki0.103.16、tokio1.53.3、KaTeX0.18.2。
+  执行前备份manifest/lock，Node依赖从Beta5共用链接隔离；不改Beta5、系统CLI/Agent。升级后需再次审计/回归/冻结构建。
+- 未安装cargo-audit；通过OSV官方API检查480个macOS arm64正常/构建公开依赖，发现TLS/证书/Tokio、zip及停止维护告警。
+  原始结果 `work/beta6-final/osv-rust-audit-result.json`；非全部可达：本应用的zip文档读取不使用extract，正在做恶意归档行为验证。
+
+- 最新已提交修复 `630fcb2` 已 clean/frozen 完整构建 PASS，隔离 App `work/beta6-final/candidate-630fcb2/AI OS.app`，
+  主程序 SHA256 `41dc094c69815fc947ec5d4c566a4473adae1fc783ae6a4df5a74eaf76616486`；
+  DMG `outputs/AI OS_1.0.1-beta.6_candidate-630fcb2_aarch64.dmg` SHA256 `e65c3cf335fd5b1e9a5dcd65fbce3230a46846ceffcf5a8480e834954ea14eb1`。
+- 7efe1ff 安装版真实新增：手动 Claude 选择退出/重启保持；浅/深主题切换并恢复原深色；OpenClaw自动/手动查询均成功，
+  当前2026.8.2 (0965053)、可升级2026.10.8，未升级。六模型 Arena 复杂题已开始，固定席位不静默替换，等待实际结果。
+- 干净应用配置真实首次启动（同一macOS用户/Keychain）：空历史、云端均未连接，聊天明确要求先连接测试；
+  随后9个配置路径原样恢复，会话数据库哈希一致，测试配置另存且未删除。恢复后原历史/连接/手动选择均实看正常。
+- Claude 新会话可调用但严格只回复格式仍 FAIL；根因 AI Center 把 system/user 拼进普通CLI输入。
+  已窄修复为system内容走官方 `--append-system-prompt`，用户文字保持普通输入，不提升用户自带system伪标签权限。
+  8项Rust行为测试PASS；新增真实官方CLI system优先级测试1/0、8.99秒PASS（不是安装版E2E，需下一候选复测）。
+- Grok同复杂题直连诊断300秒超时，退出143，未取得结束元数据，记录FAIL；不能将旧46字引言写成完整评审PASS。
+- npm生产依赖审计：0 high/critical、5 low（KaTeX同一原型污染条件性问题及依赖传播）；安全审计尚未全收口。
+  官方说明 https://github.com/KaTeX/KaTeX/security/advisories/GHSA-238p-pmpm-9mq7 。cargo-audit未安装，未擅自安装。
+
 - 继续验收：实际 HEAD 已到 `7efe1ff`，其 clean/frozen 源码完整构建 PASS；隔离候选 `candidate-7efe1ff/AI OS.app`，
   DMG `outputs/AI OS_1.0.1-beta.6_candidate-7efe1ff_aarch64.dmg` SHA256 `76a429a1531074a894706d7e44ac782f8c04135f9bb983ae3d8ed18ec8fc0635`。
 - fbe4028 真实六模型结果已完成并原生导出 `outputs/Beta6-fbe4028-Council-20261028.{json,md}`：10 done、1 error。
@@ -59,6 +80,8 @@
 - 未 Push/Tag/Release/分发；未替换 Beta5；未执行第三方安装/升级、未改账号或采集凭证。
 
 ### 技术决策（本轮）
+
+- Claude CLI 的应用system指令通过其正式追加system参数传递，保留官方CLI安全策略；不通过取消安全检查修复回复格式。
 
 - 多个真实报告证明纯费用关键词不足以判断分项估算，因此新增可校验结构化年度费用字段，旧历史保持兼容；
   数值与依据仍来自模型原文，程序仅核验结构和加总，不伪造报价，也不把机械校验等同事实验收。

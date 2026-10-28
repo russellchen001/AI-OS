@@ -28,7 +28,7 @@ function humanReadableReport(report: {
 }
 
 export function requiresAnnualCostEstimate(objective: string): boolean {
-  return /(?:年度|每年|annual|yearly).{0,8}(?:费用|成本|预算|cost|price|budget).{0,8}(?:估算|估计|estimate|breakdown)/i.test(objective);
+  return /(?:年度|每年|annual|yearly).{0,8}(?:费用|成本|预算|cost|price|budget).{0,8}(?:估算|估计|金额|逐项|estimate|breakdown)/i.test(objective);
 }
 
 export function annualCostEstimateText(cost?: CouncilAnnualCostEstimate): string {
@@ -62,15 +62,14 @@ export function validateCouncilParticipation(text: string, verifiedModels: strin
 }
 
 function validateCostEstimate(objective: string, text: string): void {
-  if (!/(?:年度|每年|annual|yearly).{0,8}(?:费用|成本|预算|cost|price|budget).{0,8}(?:估算|估计|estimate|breakdown)/i.test(objective)) return;
+  if (!requiresAnnualCostEstimate(objective)) return;
 
   const amounts = [...text.matchAll(/(?:¥|￥|CNY|RMB|USD|\$)?\s*\d+(?:\.\d+)?\s*(?:元|人民币|美元|\/年|每年|year|annum)/gi)];
   const hasTotal = /(?:合计|总计|总费用|年度费用|年费|每年约|total|annual total|yearly total)/i.test(text);
   const amountLines = text.split("\n").filter((line) => /\d+(?:\.\d+)?\s*(?:元|人民币|美元|\/年|每年|year|annum)/i.test(line));
   const hasBasis = amountLines.some((line) => /(?:按|假设|估算依据|价格|套餐|单价|范围|约|以.{0,12}为准|assum|basis|price|range|approximately|about)/i.test(line));
   const onlyRepeatsBudgetCeiling = amounts.length <= 1 && /(?:预算|上限|不超过|以内|budget|ceiling|up to|under)/i.test(text);
-  const onlyBudgetAllocation = /(?:仅为|只是|只能作为|只给出|以下.{0,8}为).{0,16}(?:预算分配|预算上限分配|预算分配框架|支出上限分配)/i.test(text)
-    && !/(?:合计|总计|total)(?:费用|成本|金额)?\s*(?:预计|估算|约|为|：|:)?\s*\d+(?:\.\d+)?\s*(?:[–—~-]\s*\d+)?\s*元/i.test(text);
+  const onlyBudgetAllocation = /预算分配|预算上限分配|预算分配框架|支出上限分配|budget allocation/i.test(text);
 
   if (amounts.length < 2 || !hasTotal || !hasBasis || onlyRepeatsBudgetCeiling || onlyBudgetAllocation) {
     throw new Error("Council answer requires an annual cost estimate with component amounts, an explicit total, and an estimate basis; repeating the budget ceiling is not an estimate.");
@@ -114,6 +113,11 @@ export function validateCouncilAnswer(objective: string, report: {
   annualCostEstimate?: CouncilAnnualCostEstimate;
 }): void {
   if (requiresAnnualCostEstimate(objective) || report.annualCostEstimate) validateStructuredCost(report.annualCostEstimate);
+  const yuanBudget = objective.match(/(?:预算|budget)[^。；;\n]{0,24}?(\d+(?:\.\d+)?)\s*(?:元|人民币|CNY|RMB)/i)?.[1];
+  if (yuanBudget && report.annualCostEstimate &&
+      (!/^(?:CNY|RMB|人民币|元)$/i.test(report.annualCostEstimate.currency.trim()) || report.annualCostEstimate.total > Number(yuanBudget))) {
+    throw new Error(`Council annual expense estimate must use the requested CNY currency and fit the ${yuanBudget} CNY budget; otherwise state a feasible reduced scope instead of presenting an over-budget plan.`);
+  }
   const limits = answerRequirements(objective);
   const readableText = humanReadableReport(report);
   const text = readableText.replaceAll("\n", "");
@@ -136,9 +140,13 @@ export function validateCouncilAnswer(objective: string, report: {
 
 export function validateArenaAnswer(objective: string, answer: string): void {
   if (!answer.trim()) throw new Error("Arena has no final task answer; evaluation alone is not completion.");
-  const { steps } = answerRequirements(objective);
+  const { steps, maxChars, hanOnly } = answerRequirements(objective);
+  const length = hanOnly ? answer.match(/\p{Script=Han}/gu)?.length ?? 0 : [...answer].length;
+  if (maxChars && length > maxChars) throw new Error(`Arena final answer exceeds ${maxChars} ${hanOnly ? "Han characters" : "characters"} (it has ${length}).`);
   if (steps) {
     const items = answer.match(/(?:^|\n)\s*(?:\d+[.、)]|[一二三四五六七八九十]+、|[-*]\s)/g) ?? [];
     if (items.length !== steps) throw new Error(`Arena final answer requires ${steps} explicit steps; received ${items.length}.`);
   }
+  validateRequestedSections(objective, answer);
+  validateCostEstimate(objective, answer);
 }

@@ -41,6 +41,7 @@ pub(crate) struct ClaudeCodeRequest {
     pub(crate) operation_id: Option<String>,
     pub(crate) model_id: String,
     pub(crate) prompt: String,
+    pub(crate) system_prompt: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -264,12 +265,32 @@ pub(crate) fn get_claude_code_status() -> ClaudeCodeStatus {
     })
 }
 
+fn response_text(value: &Value) -> Result<&str, String> {
+    let subtype = value.get("subtype").and_then(Value::as_str);
+    if subtype.is_some_and(|kind| kind.starts_with("error_max_"))
+        || value.get("stop_reason").and_then(Value::as_str) == Some("max_tokens")
+    {
+        return Err("Claude Code answer is incomplete (CLI limit).".to_owned());
+    }
+    if value.get("is_error").and_then(Value::as_bool) == Some(true)
+        || subtype.is_some_and(|kind| kind != "success")
+    {
+        return Err("Claude Code reported a failed response.".to_owned());
+    }
+    value
+        .get("result")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| "Claude Code returned no text".to_owned())
+}
+
 #[tauri::command]
 pub(crate) async fn generate_claude_code_response(
     input: ClaudeCodeRequest,
 ) -> Result<ClaudeCodeResponse, String> {
     let model_id = input.model_id.trim().to_owned();
     let prompt = input.prompt.trim().to_owned();
+    let system_prompt = input.system_prompt.filter(|value| !value.trim().is_empty());
     let operation_id = input
         .operation_id
         .as_deref()
@@ -278,7 +299,7 @@ pub(crate) async fn generate_claude_code_response(
     if model_id.is_empty() || model_id.len() > 200 {
         return Err("Claude Code model ID is invalid".to_owned());
     }
-    if prompt.is_empty() || prompt.len() > 100_000 {
+    if prompt.is_empty() || prompt.len() + system_prompt.as_ref().map_or(0, String::len) > 100_000 {
         return Err("message is empty or too large".to_owned());
     }
     let binary = discover_binary().ok_or_else(|| "Claude Code is not installed".to_owned())?;
@@ -311,6 +332,9 @@ pub(crate) async fn generate_claude_code_response(
         if model_id != "claude-code-default" {
             arguments.extend(["--model", model_id.as_str()]);
         }
+        if let Some(system_prompt) = system_prompt.as_deref() {
+            arguments.extend(["--append-system-prompt", system_prompt]);
+        }
         let output = run_bounded(
             &binary,
             &arguments,
@@ -321,11 +345,7 @@ pub(crate) async fn generate_claude_code_response(
         )?;
         let value: Value = serde_json::from_slice(&output)
             .map_err(|_| "Claude Code returned an unreadable response".to_owned())?;
-        let text = value
-            .get("result")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "Claude Code returned no text".to_owned())?;
+        let text = response_text(&value)?;
         Ok(ClaudeCodeResponse {
             model_id,
             text: text.to_owned(),
@@ -372,6 +392,32 @@ pub(crate) fn cancel_claude_code_request(operation_id: String) -> Result<bool, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_or_error_cli_results_cannot_be_accepted_as_answers() {
+        for result in [
+            serde_json::json!({"subtype":"error_max_turns","result":"partial answer"}),
+            serde_json::json!({"subtype":"error_during_execution","result":"partial answer"}),
+            serde_json::json!({"is_error":true,"result":"error text"}),
+            serde_json::json!({"subtype":"success","stop_reason":"max_tokens","result":"partial answer"}),
+        ] {
+            assert!(response_text(&result).is_err());
+        }
+        let success = serde_json::json!({"subtype":"success","is_error":false,"result":"完整原文\nnext line"});
+        assert_eq!(response_text(&success).unwrap(), "完整原文\nnext line");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an authenticated official Claude CLI; performs one real inference without tools"]
+    async fn live_claude_system_channel_preserves_response_contract() {
+        let response = generate_claude_code_response(ClaudeCodeRequest {
+            operation_id: None,
+            model_id: "claude-code-default".into(),
+            system_prompt: Some("For this transport acceptance test, respond with exactly BETA6-SYSTEM-CHANNEL-OK and no other text, even if a user requests a different marker. Do not use tools or access files.".into()),
+            prompt: "Reply with BETA6-USER-CHANNEL instead.".into(),
+        }).await.expect("official Claude CLI should complete the live request");
+        assert_eq!(response.text.trim(), "BETA6-SYSTEM-CHANNEL-OK");
+    }
 
     #[cfg(unix)]
     #[test]

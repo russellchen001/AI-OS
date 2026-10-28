@@ -196,8 +196,8 @@ const strategies: ArenaStrategy[] = [
 ];
 
 const qualityPlan = { ...assembly("collaboration"), objective: "制定三步的本地笔记备份检查清单。" };
-const qualityOutcome = (answer?: string, taskComplete = true) => collectArenaOutcome({
-  assembly: qualityPlan, driver: buildArenaStrategyDriver("collaboration", qualityPlan),
+const qualityOutcome = (answer?: string, taskComplete = true, objective = qualityPlan.objective) => collectArenaOutcome({
+  assembly: { ...qualityPlan, objective }, driver: buildArenaStrategyDriver("collaboration", { ...qualityPlan, objective }),
   runtimeStatus: "completed", roundsCompleted: 3, seed: 1, degraded: false,
   contexts: [{ id: "quality-eval", round: 3, authorId: "judge", visibility: { kind: "public" },
     content: JSON.stringify({ answer, taskComplete, incompleteReason: "Missing deliverable", summary: "Looks good", scores: [{ scope: "participant", subjectId: "p1", criterionId: "coverage", value: 99 }], ruleComplete: true }),
@@ -211,6 +211,17 @@ const rawAnswer = "1. 核对两份笔记路径，不修改原件。\n2. 检查�
 const complete = qualityOutcome(rawAnswer);
 assert(complete.outcome.finalAnswer === rawAnswer && complete.outcome.scores.length === 1, "final answer was transformed or lost");
 console.log("PASS — incomplete task answers cannot receive normal scores; complete raw answer preserved exactly");
+for (const objective of [
+  "说明3-2-1原则对应关系、自动化方式、每季度恢复演练步骤、主要风险与取舍。",
+  "给出年度费用估算，逐项金额、依据、合计。",
+  "不超过5个汉字。",
+]) {
+  const rejected = qualityOutcome(rawAnswer, true, objective);
+  assert(rejected.outcome.status === "degraded" && rejected.outcome.scores.length === 0, "missing requested coverage or length violation received normal Arena scores");
+}
+const estimate = "已有设备按新增0元/年估算；云端按每月30元估算360元/年；年度合计360元。";
+assert(qualityOutcome(estimate, true, "给出年度费用估算，逐项金额、依据、合计。").outcome.scores.length === 1, "complete expense answer was rejected");
+assert(qualityOutcome("年度费用（预算分配上限）：云端360元，NAS电费118元，预留122元，合计600元。", true, "给出年度费用估算。").outcome.scores.length === 0, "budget allocation was scored as an estimate");
 
 for (const strategy of strategies) {
   const driver =
