@@ -175,7 +175,9 @@ fn run_bounded(
     let read_pipe = |mut pipe: Box<dyn Read + Send>| {
         thread::spawn(move || {
             let mut bytes = Vec::new();
-            pipe.by_ref().take(2_000_001).read_to_end(&mut bytes)
+            pipe.by_ref()
+                .take(2_000_001)
+                .read_to_end(&mut bytes)
                 .map_err(|_| "Grok CLI output could not be read".to_owned())?;
             std::io::copy(&mut pipe, &mut std::io::sink())
                 .map_err(|_| "Grok CLI output could not be read".to_owned())?;
@@ -200,9 +202,11 @@ fn run_bounded(
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                let output = stdout.join()
+                let output = stdout
+                    .join()
                     .map_err(|_| "Grok CLI output reader was interrupted".to_owned())??;
-                let error = stderr.join()
+                let error = stderr
+                    .join()
                     .map_err(|_| "Grok CLI error reader was interrupted".to_owned())??;
                 return if status.success() {
                     Ok(output)
@@ -235,7 +239,9 @@ fn parse_models_output(output: &str) -> (bool, Option<String>, Vec<String>) {
         .skip(1)
         .filter_map(|line| {
             let line = line.trim();
-            let name = line.strip_prefix("* ").or_else(|| line.strip_prefix("- "))?;
+            let name = line
+                .strip_prefix("* ")
+                .or_else(|| line.strip_prefix("- "))?;
             let name = name.split_whitespace().next()?;
             name.chars()
                 .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
@@ -420,11 +426,15 @@ mod tests {
     fn long_stdout_and_stderr_are_drained_before_process_exit() {
         let output = run_bounded(
             Path::new("/bin/sh"),
-            &["-c", "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2"],
+            &[
+                "-c",
+                "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2",
+            ],
             None,
             Duration::from_secs(5),
             None,
-        ).expect("long CLI output must not deadlock on a full pipe");
+        )
+        .expect("long CLI output must not deadlock on a full pipe");
         assert_eq!(output.len(), 131072);
     }
 
@@ -462,7 +472,8 @@ mod tests {
                 ]
             )
         );
-        let signed_out = "You are not authenticated.\n\nDefault model: grok-4.6\n\nAvailable models:\n";
+        let signed_out =
+            "You are not authenticated.\n\nDefault model: grok-4.6\n\nAvailable models:\n";
         assert!(!parse_models_output(signed_out).0);
     }
 
@@ -473,7 +484,10 @@ mod tests {
         for flag in ["--disable-web-search", "--no-subagents"] {
             assert!(arguments.contains(&flag));
         }
-        let tools = arguments.iter().position(|item| *item == "--tools").unwrap();
+        let tools = arguments
+            .iter()
+            .position(|item| *item == "--tools")
+            .unwrap();
         assert_eq!(arguments[tools + 1], "");
         assert!(!arguments.contains(&"--model"));
         assert!(request_arguments("grok-4.6").ends_with(&["--model", "grok-4.6"]));
@@ -485,7 +499,10 @@ mod tests {
             sanitized_process_error(b"Authorization: Bearer private-value"),
             "Grok CLI returned a credential-related error"
         );
-        assert_eq!(sanitized_process_error(b"rate limited\nmore"), "rate limited");
+        assert_eq!(
+            sanitized_process_error(b"rate limited\nmore"),
+            "rate limited"
+        );
     }
 
     #[test]

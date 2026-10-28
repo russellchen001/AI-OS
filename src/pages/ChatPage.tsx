@@ -412,7 +412,18 @@ async function shareText(title: string, text: string) {
 }
 
 // Navigation to My AI must not silently turn a manual selection back into Auto.
-let lastManualChatModel: AiCenterModelChoice | undefined;
+const manualChatModelKey = "ai-os.chat.manual-model.v1";
+function readManualChatModel(): AiCenterModelChoice | undefined {
+  try {
+    const choice = JSON.parse(localStorage.getItem(manualChatModelKey) ?? "null");
+    return choice && ["providerId", "providerInstanceId", "modelId", "label"]
+      .every((key) => typeof choice[key] === "string" && choice[key].length > 0)
+      ? choice : undefined;
+  } catch {
+    return undefined;
+  }
+}
+let lastManualChatModel: AiCenterModelChoice | undefined = readManualChatModel();
 
 function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const dialog = useDialog();
@@ -428,6 +439,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const [selectedModel, setSelectedModelState] = useState<AiCenterModelChoice | undefined>(lastManualChatModel);
   function setSelectedModel(choice: AiCenterModelChoice | undefined) {
     lastManualChatModel = choice;
+    if (choice) localStorage.setItem(manualChatModelKey, JSON.stringify(choice));
+    else localStorage.removeItem(manualChatModelKey);
     setSelectedModelState(choice);
   }
   const [availableModels, setAvailableModels] = useState(() => listAiCenterModels());

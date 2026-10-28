@@ -32,7 +32,7 @@ function validateCostEstimate(objective: string, text: string): void {
   const hasBasis = amountLines.some((line) => /(?:按|假设|估算依据|价格|套餐|单价|范围|约|以.{0,12}为准|assum|basis|price|range|approximately|about)/i.test(line));
   const onlyRepeatsBudgetCeiling = amounts.length <= 1 && /(?:预算|上限|不超过|以内|budget|ceiling|up to|under)/i.test(text);
   const onlyBudgetAllocation = /(?:仅为|只是|只能作为|只给出|以下.{0,8}为).{0,16}(?:预算分配|预算上限分配|预算分配框架|支出上限分配)/i.test(text)
-    && !/(?:预计|估算|估计|estimated|expected).{0,12}(?:合计|总计|年度总|total).{0,12}\d|(?:合计|总计|total).{0,8}(?:约|为|：|:)?\s*\d+(?:\.\d+)?\s*(?:[–—~-]\s*\d+)?\s*元/i.test(text);
+    && !/(?:合计|总计|total)(?:费用|成本|金额)?\s*(?:预计|估算|约|为|：|:)?\s*\d+(?:\.\d+)?\s*(?:[–—~-]\s*\d+)?\s*元/i.test(text);
 
   if (amounts.length < 2 || !hasTotal || !hasBasis || onlyRepeatsBudgetCeiling || onlyBudgetAllocation) {
     throw new Error("Council answer requires an annual cost estimate with component amounts, an explicit total, and an estimate basis; repeating the budget ceiling is not an estimate.");

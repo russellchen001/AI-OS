@@ -4,7 +4,7 @@
 
 ## CURRENT（2026-10-28）— 冻结计划持续实施；P0 尚未全 PASS，不建议发布
 
-- 工作树 `/Users/russellchen/AI-OS/dashboard-beta6`，分支 `beta6`。已提交至 `eb01a4c`；下方历史 SHA 不代表最新状态。
+- 工作树 `/Users/russellchen/AI-OS/dashboard-beta6`，分支 `beta6`。代码至少已提交至 `fbe4028`；以 git 实际 HEAD 为准，下方历史 SHA 不代表最新状态。
 - 本轮新增提交：`e3f42e1` Council 显式需求校验；`e84abaf` 五入口与二级导航；`b98e147` 共享验证安装服务；
   `73f3da1` 通用 CLI adapters；`e81d2e4` 官方 Grok 安装/升级计划；`c6d6bc7` 通用 Agent 生命周期与 OpenClaw；
   `0b22548` 外部账号/配额阻塞分类；`eb01a4c` 从 AI Models 移出 Microsoft 365。
@@ -16,6 +16,16 @@
 - 新修复正在验收：Grok 子进程在退出前并行读取 stdout/stderr，避免长输出填满管道死锁；保留 300 秒上限；
   增加真实 128KiB stdout+stderr 子进程行为测试。Council 交叉评审限制冗余重述、给出完整评审长度预算；
   上下文附机器已验证的模型/阶段/状态；最终费用校验拒绝以预算分配框架替代估算结果。
+- 2026-10-28 追加证据：Grok 官方 CLI 长评审直连 211622ms、stdout 37850 字节、最终 3015 字符、退出 0；
+  原文为产物根 `outputs/Beta6-Grok-long-review-probe.txt`，属于直连证据，不代替安装版 E2E。
+- fbe4028 新包已构建/签名/卫生校验 PASS，已启动六模型 Council 同题复测，当前运行中。
+  新包主程序 SHA256 `755813aa78e1f81c63500ed74c11ef080c3a554e8aaf0b186fe2497e129cf62a`；
+  DMG `outputs/AI OS_1.0.1-beta.6_candidate-fbe4028_aarch64.dmg`，SHA256
+  `b62d69d8a28c03a806752633150d21b7cd0e5a61c24c2763de0abf18dff205a3`。
+- 后续窄修复：Claude CLI 同类管道问题并行读取；Chat 手动模型选择保存到现有 localStorage，重启不再回 Auto。
+  真实导出的旧 Council 报告反测揭示“合计目标不超过600元”误被当作估算合计，已收紧并真实拒绝该原报告。
+  Claude 进程测试 7/0、P16 行为验证与前端构建 PASS；上述后续修复尚需进入下一个隔离候选验收。
+- Gemini 3.6 Flash 本日安装版真实验证再次返回 HTTP 402 RESOURCE_EXHAUSTED：外部资源阻塞，未重连/改账号。
 - 自动验证：eb01a4c Rust 全库 1071/0/84 ignored；前端 build、P16/P17、Provider 稳定性/阻塞分类、信息架构、
   CLI/Agent 生命周期、Beta release verifier 全 PASS。最后的 Grok 管道测试 8/0；最终修复后的 P16 与新构建继续验收。
 - 现有候选：产物根 `work/beta6-final/candidate-eb01a4c/AI OS.app`，主程序 SHA256
