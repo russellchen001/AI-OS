@@ -1,9 +1,12 @@
-import type { CouncilAnnualCostEstimate } from "../types/councilAssembly";
+import type { CouncilAnnualCostEstimate, CouncilRecommendation } from "../types/councilAssembly";
 
 // Checks only explicit, mechanically verifiable requirements. This is not a factual-quality judge.
 const numbers: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
 function count(text: string | undefined): number | undefined {
-  return text === undefined ? undefined : numbers[text] ?? Number(text);
+  if (text === undefined) return undefined;
+  const tens = text.match(/^([一二两三四五六七八九]?)十([一二两三四五六七八九]?)$/);
+  const value = numbers[text] ?? (tens ? (numbers[tens[1]] ?? 1) * 10 + (numbers[tens[2]] ?? 0) : Number(text));
+  return Number.isFinite(value) ? value : undefined;
 }
 
 export function answerRequirements(objective: string) {
@@ -17,14 +20,87 @@ export function answerRequirements(objective: string) {
   };
 }
 
-function humanReadableReport(report: {
+export function formatCouncilAnswer(report: {
   summary: string; recommendedPlan: string[]; rationale: string[]; disagreements: string[];
   risks: string[]; assumptions: string[]; uncertainty: string[];
   annualCostEstimate?: CouncilAnnualCostEstimate;
+  simulationReport?: CouncilRecommendation["simulationReport"];
 }): string {
-  return [report.summary, ...report.recommendedPlan, ...report.rationale,
-    ...report.disagreements, ...report.risks, ...report.assumptions, ...report.uncertainty,
-    annualCostEstimateText(report.annualCostEstimate)].join("\n");
+  const section = (title: string, items: string[]) => items.length ? `\n\n## ${title}\n\n${items.map(item => `- ${item}`).join("\n")}` : "";
+  return [report.summary,
+    section("Recommended plan", report.recommendedPlan), section("Rationale", report.rationale),
+    section("Disagreements", report.disagreements), section("Risks", report.risks),
+    section("Assumptions", report.assumptions), section("Uncertainty", report.uncertainty),
+    report.annualCostEstimate ? `\n\n${annualCostEstimateText(report.annualCostEstimate)}` : "",
+    report.simulationReport ? [
+      section("Simulation evidence", report.simulationReport.evidence),
+      section("Likely responses", report.simulationReport.likelyResponses),
+      section("Alternative scenarios", report.simulationReport.alternativeScenarios),
+      section("Trigger conditions", report.simulationReport.triggerConditions),
+      section("Counterarguments", report.simulationReport.counterarguments),
+      section("Forecast confidence", report.simulationReport.confidence),
+      section("Evidence that would change the forecast", report.simulationReport.evidenceThatWouldChangeForecast),
+      section("Recommended response", report.simulationReport.recommendedResponse),
+    ].join("") : "",
+  ].join("");
+}
+
+export function councilResponseSchema(objective: string): Record<string, unknown> | undefined {
+  const limits = answerRequirements(objective);
+  if (!limits.maxChars || limits.maxChars > 2000 || requiresAnnualCostEstimate(objective)) return undefined;
+  const required = requestedDeliverables(objective);
+  const counts: Record<string, number> = {
+    recommendedPlan: limits.plans ?? limits.steps ?? (required.length ? required.length : 0), rationale: limits.reasons ?? 0,
+    disagreements: required.some(item => /分歧|disagreement/i.test(item)) ? 1 : 0,
+    risks: required.some(item => /风险|risk/i.test(item)) ? 1 : 0,
+    assumptions: required.some(item => /假设|assumption/i.test(item)) ? 1 : 0,
+    uncertainty: required.some(item => /不确定|uncertainty/i.test(item)) ? 1 : 0,
+  };
+  const units = 1 + Object.values(counts).reduce((sum, count) => sum + count, 0);
+  if (units > limits.maxChars) return undefined;
+  const blank = Object.fromEntries(Object.entries(counts).map(([key, count]) => [key, Array(count).fill("")])) as Pick<CouncilRecommendation, "recommendedPlan" | "rationale" | "disagreements" | "risks" | "assumptions" | "uncertainty">;
+  const overheadText = formatCouncilAnswer({ ...blank, summary: "" });
+  const overhead = limits.hanOnly ? overheadText.match(/\p{Script=Han}/gu)?.length ?? 0 : [...overheadText].length;
+  const budget = Math.floor((limits.maxChars - overhead) / units);
+  if (budget < 1) return undefined;
+  const properties: Record<string, unknown> = { summary: { type: "string", minLength: 1, maxLength: budget } };
+  for (const [key, count] of Object.entries(counts)) properties[key] = { type: "array", minItems: count, maxItems: count, items: { type: "string", minLength: 1, maxLength: budget } };
+  if (required.length) properties.requirementCoverage = { type: "array", minItems: required.length, maxItems: required.length, items: {
+    type: "object", properties: { requirement: { type: "string", enum: required }, evidence: { type: "string", minLength: 1, maxLength: limits.maxChars } },
+    required: ["requirement", "evidence"], additionalProperties: false,
+  } };
+  return { type: "object", properties, required: Object.keys(properties), additionalProperties: false };
+}
+
+export function requestedDeliverables(objective: string): string[] {
+  const list = objective.match(/(?:最终(?:建议|答案|回答|报告|方案|结果|输出)[^：:。！？]{0,80}?(?:包括|包含)|(?:需要|必须)(?:包括|包含)|(?:must|should|needs? to) include|include the following)\s*[：:]\s*([^。！？]+)/i)?.[1];
+  if (!list) return [];
+  const items: string[] = [];
+  const numbered = /(?:^|\n)\s*(?:\d+[.)]|[-*•])\s/.test(list);
+  let depth = 0, item = "";
+  for (let index = 0; index < list.length; index++) {
+    const character = list[index];
+    if ("(（[【".includes(character)) depth++;
+    if (")）]】".includes(character)) depth = Math.max(0, depth - 1);
+    if (!depth && !numbered && character === "." && /[a-z]/i.test(list[index - 1] ?? "") && (!list[index + 1] || /\s/.test(list[index + 1]))) break;
+    if (!depth && "、,，;；\n".includes(character)) {
+      if (item.trim()) items.push(item.trim());
+      item = "";
+    } else item += character;
+  }
+  if (item.trim()) items.push(item.trim().replace(/[.!?]$/, ""));
+  return [...new Set(items.map(value => value.replace(/^(?:\d+[.)、]|[-*•])\s*/, "").replace(/^and\s+/i, "").replace(/[.!?]$/, "").trim()).filter(Boolean))];
+}
+
+function validateRequirementCoverage(objective: string, coverage: Array<{ requirement: string; evidence: string }> | undefined, text: string): void {
+  const required = requestedDeliverables(objective);
+  if (!required.length) return;
+  const key = (value: string) => value.normalize("NFKC").replace(/\s+/g, "").toLowerCase();
+  if (!Array.isArray(coverage) || coverage.length !== required.length ||
+      required.some(requirement => coverage.filter(entry => entry && typeof entry.requirement === "string" && key(entry.requirement) === key(requirement)).length !== 1) ||
+      coverage.some(entry => !entry || typeof entry.evidence !== "string" || !entry.evidence.trim() || !text.includes(entry.evidence))) {
+    throw new Error(`Council requirementCoverage must link every explicitly listed deliverable to a verbatim excerpt of the actual report, exactly once. Required labels: ${JSON.stringify(required)}. Evidence must come from the seven report text fields or rendered annual cost, not an invented completion claim. This traceability check does not establish factual quality.`);
+  }
 }
 
 export function requiresAnnualCostEstimate(objective: string): boolean {
@@ -84,7 +160,7 @@ function validateRequestedSections(objective: string, text: string): void {
       label: "a concrete 3-2-1 mapping",
     },
     {
-      requested: /(?:自动化方式|自动备份|automation)/i,
+      requested: /(?:自动化(?:方式)?|自动备份|automation)/i,
       evidence: /(?:自动|定时|计划任务|同步|增量|schedule|automatic|incremental).{0,80}(?:备份|快照|复制|同步|backup|snapshot|copy|sync)/i,
       label: "an automation method",
     },
@@ -100,42 +176,60 @@ function validateRequestedSections(objective: string, text: string): void {
     },
   ];
 
-  for (const requirement of requirements) {
-    if (requirement.requested.test(objective) && !requirement.evidence.test(text)) {
-      throw new Error(`Council answer is missing ${requirement.label} explicitly requested by the user.`);
-    }
-  }
+  const missing = requirements.filter(requirement => requirement.requested.test(objective) && !requirement.evidence.test(text));
+  if (missing.length) throw new Error(`Council answer is missing ${missing.map(requirement => requirement.label).join(", ")} explicitly requested by the user.`);
 }
 
 export function validateCouncilAnswer(objective: string, report: {
   summary: string; recommendedPlan: string[]; rationale: string[]; disagreements: string[];
   risks: string[]; assumptions: string[]; uncertainty: string[];
   annualCostEstimate?: CouncilAnnualCostEstimate;
+  requirementCoverage?: Array<{ requirement: string; evidence: string }>;
 }): void {
-  if (requiresAnnualCostEstimate(objective) || report.annualCostEstimate) validateStructuredCost(report.annualCostEstimate);
+  const violations: string[] = [];
+  const check = (action: () => void) => {
+    try { action(); } catch (error) { violations.push(error instanceof Error ? error.message : String(error)); }
+  };
+  let costValid = true;
+  if (requiresAnnualCostEstimate(objective) || report.annualCostEstimate) {
+    check(() => { try { validateStructuredCost(report.annualCostEstimate); } catch (error) { costValid = false; throw error; } });
+  }
   const yuanBudget = objective.match(/(?:预算|budget)[^。；;\n]{0,24}?(\d+(?:\.\d+)?)\s*(?:元|人民币|CNY|RMB)/i)?.[1];
-  if (yuanBudget && report.annualCostEstimate &&
+  if (costValid && yuanBudget && report.annualCostEstimate &&
       (!/^(?:CNY|RMB|人民币|元)$/i.test(report.annualCostEstimate.currency.trim()) || report.annualCostEstimate.total > Number(yuanBudget))) {
-    throw new Error(`Council annual expense estimate must use the requested CNY currency and fit the ${yuanBudget} CNY budget; otherwise state a feasible reduced scope instead of presenting an over-budget plan.`);
+    violations.push(`Council annual expense estimate must use the requested CNY currency and fit the ${yuanBudget} CNY budget; otherwise state a feasible reduced scope instead of presenting an over-budget plan.`);
   }
   const limits = answerRequirements(objective);
-  const readableText = humanReadableReport(report);
-  const text = readableText.replaceAll("\n", "");
+  const readableText = formatCouncilAnswer({ ...report, annualCostEstimate: costValid ? report.annualCostEstimate : undefined });
+  const text = readableText;
   const length = limits.hanOnly ? text.match(/\p{Script=Han}/gu)?.length ?? 0 : [...text].length;
   if (limits.maxChars && length > limits.maxChars) {
-    throw new Error(`Council answer exceeds ${limits.maxChars} ${limits.hanOnly ? "Han characters" : "characters"} (it has ${length}).`);
+    violations.push(`Council answer exceeds ${limits.maxChars} ${limits.hanOnly ? "Han characters" : "characters"} (it has ${length}).`);
   }
-  if (limits.reasons && report.rationale.length !== limits.reasons) throw new Error(`Council answer requires exactly ${limits.reasons} reasons.`);
-  if (limits.plans && report.recommendedPlan.length !== limits.plans) throw new Error(`Council answer requires exactly ${limits.plans} backup suggestion(s).`);
+  if (limits.reasons && report.rationale.length !== limits.reasons) violations.push(`Council answer requires exactly ${limits.reasons} reasons; received ${report.rationale.length}.`);
+  if (limits.plans && report.recommendedPlan.length !== limits.plans) violations.push(`Council answer requires exactly ${limits.plans} backup suggestion(s); received ${report.recommendedPlan.length}.`);
+  if (!limits.plans && limits.steps && report.recommendedPlan.length !== limits.steps) violations.push(`Council answer requires exactly ${limits.steps} plan step(s); received ${report.recommendedPlan.length}.`);
   if (/不删除|不格式化|不修改任何文件|read.only/i.test(objective) &&
       report.recommendedPlan.some((item) => [...item.matchAll(/移动|删除|抹盘|格式化|\b(?:move|delete|erase|format)\b/gi)].some((match) => {
         const clause = item.slice(0, match.index).split(/[，。；,.;]|但|而|却|\bbut\b/i).pop() ?? "";
         return !/不|勿|禁止|无需|避免|不要|不得|never|avoid|without|do not|don't/i.test(clause);
       }))) {
-    throw new Error("Council backup plan changes originals despite the read-only/non-destructive constraint.");
+    violations.push("Council backup plan changes originals despite the read-only/non-destructive constraint.");
   }
-  if (!report.annualCostEstimate) validateCostEstimate(objective, readableText);
-  validateRequestedSections(objective, readableText);
+  const prohibited = objective.match(/(?:不要|禁止|不得)推荐([^。！？]+)/)?.[1]?.split(/[、，,]|或(?:任何)?/).map(term => term.trim()).filter(Boolean) ?? [];
+  for (const term of prohibited) {
+    const forbidden = /云服务|云端|云存储|cloud/i.test(term) ? /云(?:端|服务|存储|盘)|icloud|onedrive|dropbox|google drive|cloud/i : undefined;
+    if (report.recommendedPlan.some(item => {
+      const index = forbidden ? item.search(forbidden) : item.toLowerCase().indexOf(term.toLowerCase());
+      if (index < 0) return false;
+      const clause = item.slice(0, index).split(/[，。；,.;]|但|而|却|\bbut\b/i).pop() ?? "";
+      return !/不|勿|禁止|无需|避免|不要|不得|never|avoid|without|do not|don't/i.test(clause);
+    })) violations.push(`Council recommendation includes a user-prohibited option: ${term}.`);
+  }
+  if (!report.annualCostEstimate) check(() => validateCostEstimate(objective, readableText));
+  check(() => validateRequestedSections(objective, readableText));
+  check(() => validateRequirementCoverage(objective, report.requirementCoverage, readableText));
+  if (violations.length) throw new Error(violations.join(" "));
 }
 
 export function validateArenaAnswer(objective: string, answer: string): void {

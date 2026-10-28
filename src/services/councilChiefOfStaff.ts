@@ -278,7 +278,7 @@ function assignModels(
     const local = eligibleModels.find((model) => model.providerId === "omlx");
     const preferred =
       localOnly && local
-        ? local
+        ? eligibleModels[index % eligibleModels.length]
         : requirement.synthesizer
           ? eligibleRepresentatives[preferredSynthesizerIndex(eligibleRepresentatives)]
           : eligibleRepresentatives[index % eligibleRepresentatives.length] ??
@@ -287,7 +287,9 @@ function assignModels(
     return {
       ...preferred,
       rationale:
-        providerRepresentatives.length === 1
+        localOnly && eligibleModels.length > 1
+          ? "Local-only assignment distributed across available local models for independent perspectives."
+          : providerRepresentatives.length === 1
           ? "Only one connected AI Center provider is available."
           : preferred.providerId === "omlx" && (requirement.localFirst || localFirstObjective)
             ? "Local-first assignment for privacy-sensitive work."

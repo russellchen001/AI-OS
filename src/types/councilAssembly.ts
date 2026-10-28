@@ -131,6 +131,7 @@ export type CouncilRecommendation = {
   assumptions: string[];
   uncertainty: string[];
   annualCostEstimate?: CouncilAnnualCostEstimate;
+  requirementCoverage?: Array<{ requirement: string; evidence: string }>;
   provenance: string[];
   createdAt: number;
   simulationReport?: CouncilSimulationReport;

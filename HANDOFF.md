@@ -1,8 +1,29 @@
 <!-- BETA41_HANDOFF_START -->
 
-# START HERE — Beta 6 最新交接（2026-10-28；以下 CURRENT 为唯一当前状态）
+# START HERE — Beta 6 最新交接（2026-10-29；以下 CURRENT 为唯一当前状态）
 
-## CURRENT（2026-10-28）— 冻结计划持续实施；P0 尚未全 PASS，不建议发布
+## CURRENT（2026-10-29）— 继续开发与真实验收；P0 尚未全 PASS，不建议发布
+
+- 实际已提交 HEAD 为 `29fa0a1`（仍须每次检查 Git）；`630fcb2` 为费用结构/失败原文导出，`ee5c530` 为 Claude system 通道和不完整评分拒收，`29fa0a1` 为已授权四项项目依赖补丁。当前有未提交的 Council、Artifacts 修复，不能把旧候选当作当前工作树的验收结果。
+- 最新 clean/frozen 构建候选：产物根 `outputs/AI OS_1.0.1-beta.6_candidate-29fa0a1_aarch64.dmg`，SHA256 `529d7d2155a6d3ea814e852e78d0749fc56bc2662f0148341bc01ff39b5c5f74`；隔离 App `work/beta6-final/candidate-29fa0a1/AI OS.app`，主程序 SHA256 `ef1b9b8f04be07522318c3a18fd7b1fe57285e96cf39f387121cdaf7fb1c09e2`。产物根为 `/Users/russellchen/Documents/Codex/2026-10-26/referenced-chatgpt-conversation-this-is-an`。仅 ad-hoc 签名；本机有效官方签名身份为 0，公证 BLOCKED。
+- 29fa0a1 安装版 Claude 严格单行回复真实 PASS（BETA6-29FA-CLAUDE-OK，4.77 秒）。同包 local180 原题真实 FAIL：全部六次最终生成均未被接受，原因包括超长、数量错误、schema 类型错误。失败过程确实持久化，原生 JSON/Markdown 导出和全原文核验 PASS：`outputs/Beta6-29fa0a1-local180-failed-20261029.{json,md}`。
+- 7efe1ff 六模型 Arena 已完成，结果 degraded：第二轮 Grok 超时、Qwen3.5 token 截断被隔离，失败片段未作正常评分上下文；完整首轮仍有正常评分。实际界面全文复制与原始最终回答 2536 字逐字相等，`outputs/Beta6-7efe1ff-Arena-visible-20261028.txt` 与 `...-raw-evaluation-20261028.json` 保存证据。AX 单字段约 1000 字显示上限并非产品截断。该证据不替代新代码的安装版回归。
+- 当前 Council 修复：实际显示全文长度与各项错误一起校验；显式交付项绑定正文逐字证据；短回答本地合成请求使用 oMLX 真实 JSON Schema；保留 JSON 字段顺序；本地自动席位轮换可用本地模型，保持固定席位与隐私边界。结构约束不是事实/语义质量证明。真实本地生产链回放 v1/v2 均 FAIL，原文在 `work/beta6-final/local180-live-replay-PEY1sZ/`；字段顺序修复单测 PASS，v3 正在真实复测。仍需全新安装版 local180 和复杂多模型 Council 验收。
+- 当前 Artifacts 修复：个别/工作区导出改用现有 ACL 允许的 UTF-8 writeFile；项目 ZIP 在创建前拒绝路径越界、大小写/NFC 重名、文件目录冲突及保留元数据路径。实际 ZIP 内容/元数据往返和恶意路径行为脚本 PASS；原生导入导出、重启持久化、公式/Mermaid 仍待新候选真实验收。
+- Computer Use：专项路由/契约测试通过，但真实 Peekaboo readiness FAIL，`/opt/homebrew/bin/peekaboo` 严格签名校验显示 code/signature modified；未重新签名、绕过或升级，未到达真实 GUI 超时/取消阶段。项目依赖授权不包含该第三方修复，标 BLOCKED 并继续其他项目。
+- 已有真实干净应用配置（同一 macOS 用户/Keychain）无 Provider 首启、手动模型跨重启、深浅主题、OpenClaw 自动/手动版本查询证据；9 个原配置已恢复且数据库哈希一致。不是全新系统用户/全权限矩阵。Gemini 外部配额、Google OAuth 外部审核、Cloud Drive 真实所有者授权/下载及正式证书等未满足项目保持 BLOCKED。
+- Beta5 正式安装未改，主程序 SHA256 `91ff470bbb163233f891cf3bc16af86788b42f439aaf7b558a874353ab253ce5`。没有 Push/Tag/Release/分发，没有系统 CLI/Agent 安装升级或采集凭证。用户已再次解锁，可恢复原生界面验收。
+- 下一步：完成当前真实本地回放与修复；全套适用回归后按模块本地提交，冻结新候选构建；真实验收 Artifacts 与两个 Council 原题、当前 Arena/Provider 回归；最终提交 12 项完整证据矩阵。不能因旧包存在或测试可解析而建议发布。
+
+- 最新追加：Artifacts 已本地提交 `6293c99`。字段顺序修复后的真实回放仍为 6 次全部拒收，原文在 `work/beta6-final/local180-live-replay-NIojRv/`，错误引用没有被放过，答案本身仍不合格；受旧六份同模型讨论影响，下一轮必须全新多本地模型讨论。P16 完整 6/0、P17 最终集成、渲染安全和 Artifacts ZIP 行为均 PASS；Rust 当前全库 1077 passed / 0 failed / 86 ignored。下一提交仅表示结构/需求验证改进，不表示 P0 质量通过。
+
+### 技术决策（2026-10-29）
+
+- 短回答 schema 仅发送到明确的本机 oMLX 手动请求，服务器鉴权沿用生产链；serde_json 启用同版本 preserve_order，避免结构化解码把结论排到最后。字段数量/长度与证据校验共同执行，保留失败原文，不能靠截取文本假修复。
+- 自动本地 Council 席位在真实可用本地模型间分配，用户固定命名模型保持不变；API/CLI 不静默切换。
+- Artifacts 的 ZIP 验证在现有 service 创建入口统一完成，输出前拒绝不安全路径/碰撞，保持原数据与 UTF-8 内容，不删除用户数据。
+
+## 历史进展（2026-10-28；以下 SHA/运行状态不代表当前）
 
 - 已按用户明确授权完成四项项目内依赖修复：rustls0.23.46、rustls-webpki0.103.16、tokio1.53.3、KaTeX0.18.2。
   KaTeX传递旧版本统一到修复版本；npm锁文件其他依赖版本未变。Beta6已有独立node_modules，旧共享链接和清单锁文件备份在

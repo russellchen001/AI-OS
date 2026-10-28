@@ -1986,9 +1986,14 @@ fn safe_attempt_error(message: &str) -> String {
         .any(|value| message.contains(value))
     {
         "quota"
-    } else if ["403", "permission_denied", "permission denied", "account blocked"]
-        .iter()
-        .any(|value| message.contains(value))
+    } else if [
+        "403",
+        "permission_denied",
+        "permission denied",
+        "account blocked",
+    ]
+    .iter()
+    .any(|value| message.contains(value))
     {
         "account-blocked"
     } else if ["401", "reconnect", "credential", "auth"]
@@ -2311,6 +2316,8 @@ pub(crate) struct ExecuteAiCenterStreamInput {
     route_mode: AiCenterRouteMode,
     manual_candidate: Option<AiCenterRouteCandidate>,
     messages: Vec<ProviderChatMessage>,
+    #[serde(default)]
+    response_schema: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -4606,12 +4613,13 @@ async fn execute_candidate(
             && instance.credential.kind == ProviderCredentialKind::Local
     });
     if uses_grok_cli {
-        let response = crate::grok_cli::generate_grok_cli_response(crate::grok_cli::GrokCliRequest {
-            operation_id,
-            model_id: candidate.model_id.clone(),
-            prompt: prompt.to_owned(),
-        })
-        .await?;
+        let response =
+            crate::grok_cli::generate_grok_cli_response(crate::grok_cli::GrokCliRequest {
+                operation_id,
+                model_id: candidate.model_id.clone(),
+                prompt: prompt.to_owned(),
+            })
+            .await?;
         return Ok(GenerateProviderResponseResult {
             provider_id: "grok".to_owned(),
             model_id: response.model_id,
@@ -5133,7 +5141,11 @@ async fn send_omlx_stream_request(
     candidate: &AiCenterRouteCandidate,
     messages: &[ProviderChatMessage],
     token: &CancellationToken,
+    response_schema: Option<&Value>,
 ) -> Result<reqwest::Response, String> {
+    if let Some(schema) = response_schema {
+        validate_response_schema(schema)?;
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(600))
         .build()
@@ -5162,7 +5174,10 @@ async fn send_omlx_stream_request(
         }
     }
 
-    let body = omlx_chat_body(&candidate.model_id, serde_json::json!(messages), true);
+    let mut body = omlx_chat_body(&candidate.model_id, serde_json::json!(messages), true);
+    if let Some(schema) = response_schema {
+        body["response_format"] = serde_json::json!({"type":"json_schema","json_schema":{"name":"ai_os_response","strict":true,"schema":schema}});
+    }
     let response = tokio::select! {
         _ = token.cancelled() => return Err("cancelled".to_owned()),
         response = request.json(&body).send() => response
@@ -5239,11 +5254,44 @@ async fn consume_omlx_stream(
     outcome
 }
 
+fn validate_response_schema(schema: &Value) -> Result<(), String> {
+    fn safe(value: &Value, depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        match value {
+            Value::Object(fields) => fields.iter().all(|(key, value)| {
+                !key.starts_with('$') && key != "pattern" && safe(value, depth + 1)
+            }),
+            Value::Array(items) => items.iter().all(|value| safe(value, depth + 1)),
+            _ => true,
+        }
+    }
+    if schema.get("type").and_then(Value::as_str) != Some("object")
+        || schema.to_string().len() > 32_768
+        || !safe(schema, 0)
+    {
+        return Err("Response schema must be a bounded object schema without references or regular-expression patterns.".to_owned());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn execute_ai_center_stream(
     app: AppHandle,
     input: ExecuteAiCenterStreamInput,
 ) -> Result<(), String> {
+    if let Some(schema) = input.response_schema.as_ref() {
+        validate_response_schema(schema)?;
+        if input.route_mode != AiCenterRouteMode::Manual
+            || !input
+                .manual_candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.provider_id == "omlx")
+        {
+            return Err("Structured response schemas require an explicitly selected local oMLX model; no silent Provider substitution is allowed.".to_owned());
+        }
+    }
     let operation_id = validate_instance_id(input.operation_id.trim())?.to_owned();
     if input.messages.is_empty() || input.messages.len() > 100 {
         return Err("conversation is empty or too long".to_owned());
@@ -5387,7 +5435,14 @@ pub(crate) async fn execute_ai_center_stream(
             Err(error)
         } else if response_streamed {
             let request_started = Instant::now();
-            match send_omlx_stream_request(&candidate, omlx_messages, &token).await {
+            match send_omlx_stream_request(
+                &candidate,
+                omlx_messages,
+                &token,
+                input.response_schema.as_ref(),
+            )
+            .await
+            {
                 Ok(response) => {
                     let outcome =
                         consume_omlx_stream(&app, &operation_id, response, &token, request_started)
@@ -5858,6 +5913,78 @@ pub(crate) fn cancel_provider_response_stream(operation_id: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+    #[test]
+    fn response_schema_is_bounded_and_never_resolves_external_references() {
+        let ordered: Value = serde_json::from_str(r#"{"type":"object","properties":{"summary":{"type":"string"},"recommendedPlan":{"type":"array"},"rationale":{"type":"array"}}}"#).unwrap();
+        let wire = serde_json::to_vec(&ordered).unwrap();
+        let roundtrip: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(
+            roundtrip["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["summary", "recommendedPlan", "rationale"]
+        );
+        assert!(validate_response_schema(&json!({"type":"object","properties":{"answer":{"type":"string","maxLength":45}},"additionalProperties":false})).is_ok());
+        for invalid in [
+            json!({"type":"object","$ref":"https://example.invalid/schema"}),
+            json!({"type":"object","properties":{"answer":{"pattern":"(a+)+"}}}),
+            json!({"type":"object","description":"x".repeat(32769)}),
+        ] {
+            assert!(validate_response_schema(&invalid).is_err());
+        }
+        let old: ExecuteAiCenterStreamInput = serde_json::from_value(json!({"operationId":"old-client","routeMode":"auto","messages":[{"role":"user","content":"Hello"}]})).unwrap();
+        assert!(old.response_schema.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the running authenticated local oMLX and an explicit synthetic schema fixture/output path"]
+    async fn live_omlx_bounded_response_schema() {
+        let fixture_path = std::env::var("AI_OS_LIVE_SCHEMA_FIXTURE")
+            .expect("provide the synthetic request fixture");
+        let output_path =
+            std::env::var("AI_OS_LIVE_SCHEMA_OUTPUT").expect("provide a new evidence output path");
+        let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
+        let messages: Vec<ProviderChatMessage> =
+            serde_json::from_value(fixture["messages"].clone()).unwrap();
+        let model = std::env::var("AI_OS_LIVE_SCHEMA_MODEL")
+            .unwrap_or_else(|_| fixture["model"].as_str().unwrap().to_owned());
+        let candidate = AiCenterRouteCandidate {
+            provider_id: "omlx".into(),
+            provider_instance_id: "omlx-local".into(),
+            model_id: model.clone(),
+        };
+        let response = send_omlx_stream_request(
+            &candidate,
+            &messages,
+            &CancellationToken::new(),
+            Some(&fixture["responseSchema"]),
+        )
+        .await
+        .expect("production local request must succeed");
+        let mut decoder = OmlxStreamDecoder::default();
+        let text = decoder
+            .feed(&response.bytes().await.unwrap(), true)
+            .concat();
+        let mut output = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(output_path)
+            .unwrap();
+        std::io::Write::write_all(&mut output, text.as_bytes()).unwrap();
+        assert_eq!(
+            decoder.completion_error(),
+            None,
+            "local structured response was incomplete"
+        );
+        let _: Value =
+            serde_json::from_str(&text).expect("constrained generation must return complete JSON");
+        println!("production local schema request: model={model}, characters={}, finish={:?}; raw text retained", text.chars().count(), decoder.finish_reason);
+    }
+
     #[test]
     fn claude_system_messages_use_separate_channel_and_preserve_user_text() {
         let (system, prompt) = claude_conversation_input(&[
@@ -7030,7 +7157,10 @@ mod tests {
     #[test]
     fn canonical_error_categories_match_existing_semantics() {
         assert_eq!(safe_attempt_error("cancelled"), "cancelled");
-        assert_eq!(safe_attempt_error("Provider returned 403"), "account-blocked");
+        assert_eq!(
+            safe_attempt_error("Provider returned 403"),
+            "account-blocked"
+        );
         assert_eq!(safe_attempt_error("RESOURCE_EXHAUSTED quota"), "quota");
         assert_eq!(safe_attempt_error("rate limit 429"), "rate-limited");
         assert_eq!(safe_attempt_error("request timeout"), "timeout");

@@ -6,7 +6,7 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { formatCouncilContext, resolveCouncilContext } from "./councilMemberContext";
-import { annualCostEstimateText, requiresAnnualCostEstimate, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
+import { councilResponseSchema, formatCouncilAnswer, requestedDeliverables, requiresAnnualCostEstimate, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
 import type { CouncilMember, CouncilRole, CouncilStepResult } from "../types/council";
 import type {
   CouncilContextSource,
@@ -138,10 +138,10 @@ function parseRecommendation(
   } catch {
     throw new Error("Council synthesis returned invalid JSON. Review the individual contributions; no recommendation was accepted.");
   }
-  if (typeof parsed.summary !== "string" || !parsed.summary.trim() ||
-      ["recommendedPlan", "rationale", "disagreements", "risks", "assumptions", "uncertainty"].some((key) =>
-        !Array.isArray(parsed[key]) || (parsed[key] as unknown[]).some((item) => typeof item !== "string"))) {
-    throw new Error("Council synthesis returned an invalid recommendation schema. No recommendation was accepted.");
+  const invalidArrays = ["recommendedPlan", "rationale", "disagreements", "risks", "assumptions", "uncertainty"].filter((key) =>
+    !Array.isArray(parsed[key]) || (parsed[key] as unknown[]).some((item) => typeof item !== "string"));
+  if (typeof parsed.summary !== "string" || !parsed.summary.trim() || invalidArrays.length) {
+    throw new Error(`Council synthesis returned an invalid recommendation schema. summary must be a nonempty string; these fields must be arrays of strings (use [] when not requested): ${invalidArrays.join(", ") || "none"}. No recommendation was accepted.`);
   }
   return {
     id,
@@ -157,6 +157,7 @@ function parseRecommendation(
     assumptions: stringArray(parsed.assumptions),
     uncertainty: stringArray(parsed.uncertainty),
     annualCostEstimate: parsed.annualCostEstimate as CouncilRecommendation["annualCostEstimate"],
+    requirementCoverage: parsed.requirementCoverage as CouncilRecommendation["requirementCoverage"],
     provenance,
     createdAt,
     simulationReport:
@@ -185,36 +186,7 @@ function parseRecommendation(
 }
 
 function recommendationMarkdown(recommendation: CouncilRecommendation): string {
-  const section = (title: string, items: string[]): string =>
-    items.length ? `\n\n## ${title}\n\n${items.map((item) => `- ${item}`).join("\n")}` : "";
-  return [
-    recommendation.summary,
-    section("Recommended plan", recommendation.recommendedPlan),
-    section("Rationale", recommendation.rationale),
-    section("Disagreements", recommendation.disagreements),
-    section("Risks", recommendation.risks),
-    section("Assumptions", recommendation.assumptions),
-    section("Uncertainty", recommendation.uncertainty),
-    recommendation.annualCostEstimate ? `\n\n${annualCostEstimateText(recommendation.annualCostEstimate)}` : "",
-    recommendation.simulationReport
-      ? [
-          section("Simulation evidence", recommendation.simulationReport.evidence),
-          section("Likely responses", recommendation.simulationReport.likelyResponses),
-          section("Alternative scenarios", recommendation.simulationReport.alternativeScenarios),
-          section("Trigger conditions", recommendation.simulationReport.triggerConditions),
-          section("Counterarguments", recommendation.simulationReport.counterarguments),
-          section("Forecast confidence", recommendation.simulationReport.confidence),
-          section(
-            "Evidence that would change the forecast",
-            recommendation.simulationReport.evidenceThatWouldChangeForecast,
-          ),
-          section(
-            "Recommended response",
-            recommendation.simulationReport.recommendedResponse,
-          ),
-        ].join("")
-      : "",
-  ].join("");
+  return formatCouncilAnswer(recommendation);
 }
 
 export class CouncilRuntime {
@@ -243,6 +215,7 @@ export class CouncilRuntime {
     assignedModel?: CouncilModelAssignment,
     validate?: (output: string, choice: AiCenterModelChoice) => void,
     attempts: NonNullable<CouncilStepResult["attempts"]> = [],
+    responseSchema?: Record<string, unknown>,
   ): Promise<{
     output: string;
     providerId: ProviderId;
@@ -292,12 +265,12 @@ export class CouncilRuntime {
         const invoke = async (request: AiCenterConversationMessage[]) => {
           let raw = "";
           const identifiedRequest = request.map((message, index) => index === 0 && message.role === "system"
-            ? { ...message, content: `${message.content}\nRuntime-selected model: ${choice.label} (${choice.modelId}). Your current answer is itself participation in this Council. Do not confuse missing independent analysis with absence from synthesis.` }
+            ? { ...message, content: `${message.content}\nRuntime-selected model: ${choice.label} (${choice.modelId}). Your current answer is itself participation in this Council. Do not confuse missing independent analysis with absence from synthesis.${choice.providerId === "omlx" && responseSchema ? `\nThe local engine enforces this output schema: ${JSON.stringify(responseSchema)}\nPlan complete, concise sentences within each field's maxLength BEFORE writing them; never rely on a forced cutoff. summary must directly answer the exact original question, not restate the brief. rationale contains actual reasons; recommendedPlan contains only the requested allowed proposals. Evidence quotes must match your final concise values, not an earlier longer draft.` : ""}` }
             : message);
           const stream = this.dependencies.stream(identifiedRequest, choice, (text) => {
             raw += text;
             callbacks?.onChunk?.(member.id, providerId, text);
-          });
+          }, choice.providerId === "omlx" && responseSchema ? { responseSchema } : undefined);
           this.activeStream = stream;
           try {
             const result = await stream.result;
@@ -335,7 +308,7 @@ export class CouncilRuntime {
             { role: "assistant", content: output },
             {
               role: "user",
-              content: `Your answer was rejected: ${rejection instanceof Error ? rejection.message : String(rejection)} Return the corrected complete answer in the same JSON shape only. Keep its substance; fix only what was rejected.`,
+              content: `Your answer was rejected: ${rejection instanceof Error ? rejection.message : String(rejection)} Return corrected complete JSON, fixing every listed violation together. Re-evaluate the original question, including qualifiers such as 'only' and 'should'; do not replace it with a weaker question. Ensure the conclusion agrees with the recommendations. Keep valid findings, remove unsupported claims and contradictions, and leave unrequested metadata arrays empty when brevity is required.`,
             },
           ]);
           this.activeStream = undefined;
@@ -378,6 +351,7 @@ export class CouncilRuntime {
     task: string,
     callbacks: CouncilRunRequest["callbacks"],
     verifiedModels: string[] = [],
+    responseSchema?: Record<string, unknown>,
   ): Promise<CouncilStepResult> {
     const stepId = `${seat.id}:${stage}`;
     const member: CouncilMember = {
@@ -465,6 +439,7 @@ export class CouncilRuntime {
             [...verifiedModels, choice.modelId, choice.label.split("·").at(-1)?.trim() ?? choice.label]);
         } : undefined,
         attempts,
+        responseSchema,
       );
       const completed: CouncilStepResult = {
         ...runningStep,
@@ -622,12 +597,16 @@ export class CouncilRuntime {
               '{"summary":"...","recommendedPlan":["..."],"rationale":["..."],"disagreements":["..."],"risks":["..."],"assumptions":["..."],"uncertainty":["..."]}',
             ]),
         "Keep unresolved disagreements and uncertainty explicit. Do not claim any task was executed.",
+        ...(requestedDeliverables(prompt).length ? [
+          `Also include requirementCoverage: [{"requirement":"exact requested label","evidence":"verbatim excerpt from your report text"}]. Cover each of these explicit deliverables exactly once: ${JSON.stringify(requestedDeliverables(prompt))}. Every excerpt must appear verbatim in one of your seven report text fields or rendered annual cost. Do not use a generic completion claim as a substitute for the requested content; this evidence is audited against the original request and actual answer.`,
+        ] : []),
         ...(requiresAnnualCostEstimate(prompt) ? [
           'Also include annualCostEstimate: {"currency":"CNY","scope":"what this annual estimate covers","pricing":"assumed or verified","items":[{"name":"expense","amount":0,"basis":"annual calculation or explicit price assumption"}],"total":0}. Use at least two distinct actual expense components. Amounts are annual numeric estimates, not spending caps. Sum items exactly; exclude reserves from expenses. If current quotes are unavailable use clearly labeled assumed prices and scope, never invent a verified quote. Rendered final answer includes this cost table.',
         ] : []),
         "Reject contributions that violate explicit user constraints, expand into unrequested cloud services, or propose unrequested destructive actions.",
         "Audit each reason against the original objective: remove contradictions and invented facts, including claims that an explicitly requested backup was not requested. A single-device copy still has loss risk; local storage alone does not prove safety. Keep caveats within the requested total length.",
         "Keep the summary and plan proportional to the requested length; do not pad them with generic advice.",
+        "Answer the exact question, preserving qualifiers such as 'only', 'continue', and 'should'. Do not replace an exclusive claim with a weaker claim; the conclusion and recommendations must agree.",
         "The complete human-readable report across every JSON field is the final answer. Apply any requested total length and exact item counts across all fields combined; leave unrelated arrays empty when needed.",
         "Do not repeat prohibited products or actions merely to say they are prohibited.",
         deliberation,
@@ -637,6 +616,7 @@ export class CouncilRuntime {
         const model = this.dependencies.listModels().find((candidate) => candidate.modelId === step.modelId && candidate.providerId === step.providerId);
         return [step.modelId ?? "", model?.label.split("·").at(-1)?.trim() ?? ""].filter(Boolean);
       }),
+      plan.mode === "simulation" ? undefined : councilResponseSchema(prompt),
     );
     completed.push(synthesis);
 

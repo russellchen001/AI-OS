@@ -40,6 +40,11 @@ try {
       for (const value of [original[key]].flat()) if (!session.finalAnswer.includes(value)) throw new Error(`final answer lost content: ${key}`);
     }
     console.log('✓ all 7 raw synthesis fields and final answer content match');
+    if (original.requirementCoverage) {
+      if (JSON.stringify(original.requirementCoverage) !== JSON.stringify(session.recommendation.requirementCoverage)) throw new Error('requirement coverage changed');
+      for (const entry of original.requirementCoverage) if (!session.finalAnswer.includes(entry.evidence)) throw new Error('coverage excerpt absent from final answer');
+      console.log('✓ requested-deliverable evidence is preserved in the raw report and visible answer');
+    }
     if (original.annualCostEstimate) {
       if (JSON.stringify(original.annualCostEstimate) !== JSON.stringify(session.recommendation.annualCostEstimate)) throw new Error('annual cost fields changed');
       const cost = original.annualCostEstimate;

@@ -379,6 +379,7 @@ export function streamThroughAiCenter(
   messages: AiCenterConversationMessage[],
   selectedModel: AiCenterModelChoice | undefined,
   onChunk: (text: string) => void,
+  options?: { responseSchema?: Record<string, unknown> },
 ): AiCenterStream {
   const operationId = `chat-${crypto.randomUUID()}`;
   let output = "";
@@ -437,6 +438,7 @@ export function streamThroughAiCenter(
             routeMode: selectedModel ? "manual" : "auto",
             manualCandidate: selectedModel,
             messages,
+            responseSchema: options?.responseSchema,
           },
         });
       } catch (error) {

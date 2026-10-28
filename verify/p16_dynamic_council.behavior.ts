@@ -4,7 +4,7 @@ import {
   CouncilRuntime,
 } from "../src/services/councilRuntime";
 import { loadCouncilMembers } from "../src/services/council";
-import { validateCouncilAnswer, validateCouncilParticipation, annualCostEstimateText } from "../src/services/answerRequirements";
+import { validateCouncilAnswer, validateCouncilParticipation, annualCostEstimateText, requestedDeliverables, formatCouncilAnswer, councilResponseSchema } from "../src/services/answerRequirements";
 import type { CouncilMember } from "../src/types/council";
 import type { AgencyAgentsCatalog } from "../src/types/councilIntegrations";
 import type { AiCenterResponse } from "../src/services/aiCenter";
@@ -51,12 +51,23 @@ for (const bad of [
 
 // "汉字" limits count Han characters only; "字" limits count every character.
 const hanOnlyReport = { ...qualityReport, summary: "长".repeat(100) + "!".repeat(100), recommendedPlan: ["复制"], rationale: ["a", "b"] };
+let combinedViolations = "";
+try { validateCouncilAnswer(`${qualityObjective}不要推荐云服务、Disk Utility。`, { ...qualityReport, summary: "长".repeat(181), recommendedPlan: ["移动原件", "备份到iCloud"], rationale: ["只有一条"] }); } catch (error) { combinedViolations = String(error); }
+assert(["exceeds", "exactly 2 reasons", "exactly 1 backup", "changes originals", "prohibited option"].every(message => combinedViolations.includes(message)), "one correction did not receive all measurable violations");
+validateCouncilAnswer(`${qualityObjective}不要推荐云服务。`, { ...qualityReport, recommendedPlan: ["复制到已有外盘，不推荐云服务。"] });
 validateCouncilAnswer(qualityObjective, hanOnlyReport);
 let allCharactersCounted = false;
 try { validateCouncilAnswer(qualityObjective.replace("个汉字", "个字"), hanOnlyReport); } catch (error) {
-  allCharactersCounted = String(error).includes("(it has 204)");
+  allCharactersCounted = String(error).includes(`(it has ${[...formatCouncilAnswer(hanOnlyReport)].length})`);
 }
 assert(allCharactersCounted, "a 字 limit must count every character and report the measured length");
+const briefSchema = councilResponseSchema(qualityObjective) as { properties: Record<string, { minItems?: number; maxItems?: number; maxLength?: number; items?: { maxLength: number } }> };
+assert(briefSchema.properties.rationale.minItems === 2 && briefSchema.properties.rationale.maxItems === 2 && briefSchema.properties.recommendedPlan.maxItems === 1, "bounded generation lost exact reason/suggestion counts");
+assert(briefSchema.properties.assumptions.maxItems === 0 && briefSchema.properties.uncertainty.maxItems === 0, "unrequested boilerplate remained in a brief constrained answer");
+const characterSchema = councilResponseSchema(qualityObjective.replace("汉字", "字")) as typeof briefSchema;
+const worstCase = { ...qualityReport, summary: "x".repeat(characterSchema.properties.summary.maxLength!), rationale: ["x".repeat(characterSchema.properties.rationale.items!.maxLength), "x".repeat(characterSchema.properties.rationale.items!.maxLength)], recommendedPlan: ["x".repeat(characterSchema.properties.recommendedPlan.items!.maxLength)] };
+assert([...formatCouncilAnswer(worstCase)].length <= 180, "generation budget omitted actual visible headings/bullets/newlines");
+assert(councilResponseSchema("不超过1个字，给出10000000条理由。") === undefined, "impossible counts allocated an unbounded schema");
 
 const annualCostObjective = "最终建议需要包括：备份结构、自动化方式、年度费用估算、主要风险；预算每年不超过600元。";
 const annualCostReport = {
@@ -65,6 +76,13 @@ const annualCostReport = {
   rationale: ["年度新增约600GB，需定期归档控制云端容量。"],
   disagreements: [], risks: ["套餐价格与容量可能变化。"], assumptions: ["不计已有设备购置费。"],
   uncertainty: ["年度合计约360元，低于600元预算上限。"],
+  requirementCoverage: [
+    { requirement: "备份结构", evidence: "采用本地双副本与云端异地副本。" },
+    { requirement: "自动化方式", evidence: "并用计划任务自动增量备份。" },
+    { requirement: "年度费用估算", evidence: "云端按500GB套餐约360元/年估算，价格以购买时官方页面为准。" },
+    { requirement: "主要风险", evidence: "套餐价格与容量可能变化。" },
+    { requirement: "预算每年不超过600元", evidence: "年度合计约360元，低于600元预算上限。" },
+  ],
   annualCostEstimate: {
     currency: "CNY", scope: "已有设备与500GB精选异地副本，不覆盖全量增长", pricing: "assumed" as const,
     items: [{ name: "已有硬盘", amount: 0, basis: "已有设备不计新增购置" },
@@ -98,6 +116,12 @@ const coverageReport = {
   recommendedPlan: ["用计划任务每天自动增量备份到外接盘，并把照片同步到异地存储。", "每季度抽样恢复照片与文档，校验能打开后记录结果。"],
   rationale: ["异地副本降低同址损失风险，但增加费用与隐私管理代价。"],
   disagreements: [], risks: [], assumptions: [], uncertainty: [],
+  requirementCoverage: [
+    { requirement: "备份结构以及与3-2-1原则的对应关系", evidence: "保留3份副本、2种介质，其中1份为异地副本，对应3-2-1原则。" },
+    { requirement: "自动化方式", evidence: "用计划任务每天自动增量备份到外接盘，并把照片同步到异地存储。" },
+    { requirement: "每季度的恢复演练步骤", evidence: "每季度抽样恢复照片与文档，校验能打开后记录结果。" },
+    { requirement: "主要风险与取舍", evidence: "异地副本降低同址损失风险，但增加费用与隐私管理代价。" },
+  ],
 };
 validateCouncilAnswer(coverageObjective, coverageReport);
 for (const key of ["summary", "recommendedPlan", "rationale"] as const) {
@@ -105,6 +129,30 @@ for (const key of ["summary", "recommendedPlan", "rationale"] as const) {
   let rejected = false;
   try { validateCouncilAnswer(coverageObjective, bad); } catch { rejected = true; }
   assert(rejected, `Council accepted a report missing required coverage from ${key}`);
+}
+
+assert(requestedDeliverables("最终回答必须包括：路线、费用（金额、合计）、雨天方案。").length === 3, "parenthesized subitems split a requested deliverable");
+assert(requestedDeliverables("请给出最终答案，严格不超过180个汉字，包含：结论、2条理由、1条可逆的本地备份建议。").length === 3, "a length constraint before the deliverable list hid required content");
+assert(requestedDeliverables("The response must include:\n1. Daily route.\n2. Travel times.\n3. Rain alternative.").join("|") === "Daily route|Travel times|Rain alternative", "numbered generic requirements were lost");
+const travelObjective = "The final response must include: route options, travel times, and a rainy-day alternative.";
+const travelReport = {
+  summary: "Use the coastal route on day one.",
+  recommendedPlan: ["Allow 40 minutes for the bus.", "If it rains, visit the indoor museum."],
+  rationale: [], disagreements: [], risks: [], assumptions: [], uncertainty: [],
+  requirementCoverage: [
+    { requirement: "route options", evidence: "Use the coastal route on day one." },
+    { requirement: "travel times", evidence: "Allow 40 minutes for the bus." },
+    { requirement: "a rainy-day alternative", evidence: "If it rains, visit the indoor museum." },
+  ],
+};
+validateCouncilAnswer(travelObjective, travelReport);
+for (const coverage of [undefined, travelReport.requirementCoverage.slice(1),
+  travelReport.requirementCoverage.map((entry, index) => index === 1 ? { ...entry, evidence: "The missing train timetable has been verified." } : entry),
+  travelReport.requirementCoverage.map((entry, index) => index === 1 ? travelReport.requirementCoverage[0] : entry),
+]) {
+  let rejected = false;
+  try { validateCouncilAnswer(travelObjective, { ...travelReport, requirementCoverage: coverage }); } catch { rejected = true; }
+  assert(rejected, "generic cross-domain coverage accepted missing, duplicated, or invented evidence");
 }
 
 const catalog: AgencyAgentsCatalog = {
@@ -270,8 +318,12 @@ assert(
   localPlan.seats.every((seat) => seat.assignedModel.providerId === "omlx" && seat.assignedModel.fallbackModelIds.every((id) => id === "local-1" || id === "local-2")),
   "local-only Council could fall back to a cloud model",
 );
+assert(new Set(localPlan.seats.filter(seat => seat.id !== localPlan.synthesizerSeatId).map(seat => seat.assignedModel.modelId)).size === 2, "local-only experts all reused one model while another local model was available");
 
 const localRuntimeChoices: string[] = [];
+const localSchemas: string[] = [];
+let boundedLocal = false;
+let activeLocalStage: string | undefined;
 let invalidLocalSynthesis = false;
 let missingLocalRejected = false;
 try {
@@ -287,10 +339,14 @@ const localRuntime = new CouncilRuntime({
     { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-1", label: "Local 1" },
     { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-2", label: "Local 2" },
   ],
-  stream: (messages, choice, onChunk) => {
+  stream: (messages, choice, onChunk, options) => {
     localRuntimeChoices.push(`${choice?.providerId}:${choice?.modelId}`);
+    if (options?.responseSchema) {
+      assert(activeLocalStage === "final-synthesis", "a final-answer schema constrained an expert discussion step");
+      localSchemas.push(choice!.providerId);
+    }
     const text = messages[1]?.content.includes("Return JSON only")
-      ? invalidLocalSynthesis ? '{"summary":"Invalid","rationale":["bad":"value"]}' : JSON.stringify({ summary: "Local", recommendedPlan: [], rationale: [], disagreements: [], risks: [], assumptions: [], uncertainty: [] })
+      ? invalidLocalSynthesis ? '{"summary":"Invalid","rationale":["bad":"value"]}' : JSON.stringify(boundedLocal ? qualityReport : { summary: "Local", recommendedPlan: [], rationale: [], disagreements: [], risks: [], assumptions: [], uncertainty: [] })
       : "Local contribution";
     return {
       operationId: `local-${localRuntimeChoices.length}`,
@@ -310,6 +366,10 @@ assert(
   localRuntimeChoices.every((choice) => choice.startsWith("omlx:local-")),
   "local-only Council runtime attempted a cloud model",
 );
+boundedLocal = true;
+await localRuntime.run({ prompt: qualityObjective, members: [], assemblyPlan: { ...localPlan, objective: qualityObjective }, callbacks: { onMemberStarted: step => { activeLocalStage = step.stage; } } });
+assert(localSchemas.length === 1 && localSchemas[0] === "omlx", "the bounded final request never reached the local Provider with its schema");
+boundedLocal = false;
 invalidLocalSynthesis = true;
 let invalidRecommendationRejected = false;
 let rejectedSynthesisOutput = "";
