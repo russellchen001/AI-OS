@@ -12,9 +12,7 @@ import {
 import {
   readTextFile,
   writeFile,
-  writeTextFile,
 } from "@tauri-apps/plugin-fs";
-import JSZip from "jszip";
 import mermaid from "mermaid";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import {
@@ -23,6 +21,7 @@ import {
 import {
   addTagsToArtifacts,
   createArtifactProject,
+  createArtifactProjectArchive,
   deleteArtifact,
   deleteArtifactProject,
   deleteArtifacts,
@@ -994,9 +993,9 @@ function ArtifactsPage({
         return;
       }
 
-      await writeTextFile(
+      await writeFile(
         filePath,
-        artifact.content,
+        new TextEncoder().encode(artifact.content),
       );
 
       onMessage(
@@ -1026,6 +1025,8 @@ function ArtifactsPage({
           return;
         }
 
+        const bytes = await createArtifactProjectArchive(project, files);
+
         const filePath =
           await save({
             defaultPath:
@@ -1045,41 +1046,6 @@ function ArtifactsPage({
         if (!filePath) {
           return;
         }
-
-        const zip =
-          new JSZip();
-
-        for (
-          const artifact
-          of files
-        ) {
-          zip.file(
-            artifact.path,
-            artifact.content,
-          );
-        }
-
-        zip.file(
-          "ai-os-project.json",
-          JSON.stringify(
-            {
-              project,
-              artifacts: files,
-            },
-            null,
-            2,
-          ),
-        );
-
-        const bytes =
-          await zip.generateAsync({
-            type: "uint8array",
-            compression:
-              "DEFLATE",
-            compressionOptions: {
-              level: 6,
-            },
-          });
 
         await writeFile(
           filePath,
@@ -1128,13 +1094,13 @@ function ArtifactsPage({
         artifacts,
       };
 
-      await writeTextFile(
+      await writeFile(
         filePath,
-        JSON.stringify(
+        new TextEncoder().encode(JSON.stringify(
           document,
           null,
           2,
-        ),
+        )),
       );
 
       onMessage(

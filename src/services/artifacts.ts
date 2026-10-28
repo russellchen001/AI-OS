@@ -1,6 +1,7 @@
 import {
   recordAnalyticsEvent,
 } from "./analytics";
+import JSZip from "jszip";
 import type {
   ArtifactKind,
   ArtifactLanguage,
@@ -852,6 +853,25 @@ export function deleteArtifactProject(
     projects,
     artifacts,
   };
+}
+
+export async function createArtifactProjectArchive(project: ArtifactProject, files: ArtifactRecord[]): Promise<Uint8Array> {
+  const used = new Set(["ai-os-project.json"]);
+  const entries = files.map(artifact => {
+    const path = artifact.path.replace(/\\/g, "/");
+    const key = path.normalize("NFC").toLowerCase();
+    if (!path || path.startsWith("/") || /[\u0000-\u001f\u007f:]/.test(path) ||
+        path.split("/").some(part => !part || part === "." || part === "..") ||
+        [...used].some(existing => existing === key || existing.startsWith(`${key}/`) || key.startsWith(`${existing}/`))) {
+      throw new Error("Project files contain an unsafe or conflicting export path. No archive was created; the original Artifacts are unchanged.");
+    }
+    used.add(key);
+    return { artifact, path };
+  });
+  const zip = new JSZip();
+  for (const { artifact, path } of entries) zip.file(path, artifact.content);
+  zip.file("ai-os-project.json", JSON.stringify({ project, artifacts: files }, null, 2));
+  return zip.generateAsync({ type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 6 } });
 }
 
 export function replaceArtifactWorkspace(
