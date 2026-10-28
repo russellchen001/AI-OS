@@ -645,12 +645,21 @@ function AiCouncilPage({
                     `## ${step.memberName}`,
                     "",
                     `- Provider: ${step.providerId}`,
+                    `- Model: ${step.modelId ?? "not recorded"}`,
                     `- Status: ${step.status}`,
+                    ...(step.error ? [`- Error: ${step.error}`] : []),
                     "",
                     step.output ||
                       step.error ||
                       "_No output._",
                     "",
+                    ...(step.attempts?.flatMap((attempt, index) => [
+                      `### Raw attempt ${index + 1} · ${attempt.providerId} · ${attempt.modelId}`,
+                      attempt.error ? `Error: ${attempt.error}` : "Completed",
+                      "",
+                      attempt.output || "_No output._",
+                      "",
+                    ]) ?? []),
                   ],
                 ),
                 "---",

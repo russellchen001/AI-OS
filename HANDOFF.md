@@ -26,6 +26,14 @@
   真实导出的旧 Council 报告反测揭示“合计目标不超过600元”误被当作估算合计，已收紧并真实拒绝该原报告。
   Claude 进程测试 7/0、P16 行为验证与前端构建 PASS；上述后续修复尚需进入下一个隔离候选验收。
 - Gemini 3.6 Flash 本日安装版真实验证再次返回 HTTP 402 RESOURCE_EXHAUSTED：外部资源阻塞，未重连/改账号。
+- fbe4028 本轮真实复测：GPT/Grok 独立分析完成；Qwen3.5 独立分析触及 4096 token，被明确拒绝；
+  Qwen2.5/DeepSeek 第一轮完成，目前进入交叉评审。未将不完整输出当成功，也未增加 Token 上限。
+- 为此追加 bounded same-model recovery：token-limit/stream-interrupted 仅同模型精简重试一次，仍失败则明确 error；
+  每次原文与错误记录到 step.attempts，JSON 与 Markdown 均导出。新行为测试覆盖成功恢复、二次失败、两次原文保留、零模型替换，PASS。
+- 加强导出验收后，旧 eb01a4c Markdown 暴露漏报错：有 partial output 的失败步骤未同时导出 error；旧 JSON 完整。
+  已修复 Markdown 同时导出模型、error 与 attempts。旧“导出 PASS”只证明旧脚本范围，不能解释为所有错误也已保留；新包需原生导出再测。
+- 同模型 recovery 新改动已通过完整 P16（PASS=6/FAIL=0，包括 TypeScript、生产 build、运行时与集成回归）。
+  79896a1 构建期间继续了前端修复与测试，因此该中间构建不作为最终候选证据；后续将以冻结后的新 HEAD 单独重建，构建期间不再改源码/重写前端产物。
 - 自动验证：eb01a4c Rust 全库 1071/0/84 ignored；前端 build、P16/P17、Provider 稳定性/阻塞分类、信息架构、
   CLI/Agent 生命周期、Beta release verifier 全 PASS。最后的 Grok 管道测试 8/0；最终修复后的 P16 与新构建继续验收。
 - 现有候选：产物根 `work/beta6-final/candidate-eb01a4c/AI OS.app`，主程序 SHA256

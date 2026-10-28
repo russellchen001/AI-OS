@@ -24,6 +24,11 @@ try {
   for (const step of session.steps) {
     const expected = step.output || step.error || '_No output._';
     if (!markdown.includes(expected)) throw new Error(`step output missing: ${step.memberName}`);
+    if (step.error && !markdown.includes(step.error)) throw new Error(`step error missing: ${step.memberName}`);
+    for (const attempt of step.attempts ?? []) {
+      if (attempt.output && !markdown.includes(attempt.output)) throw new Error(`raw attempt missing: ${step.memberName}`);
+      if (attempt.error && !markdown.includes(attempt.error)) throw new Error(`raw attempt error missing: ${step.memberName}`);
+    }
   }
   console.log(`✓ all ${session.steps.length} step outputs/errors are preserved`);
   const synthesis = session.steps.find(step => step.stage === 'final-synthesis');

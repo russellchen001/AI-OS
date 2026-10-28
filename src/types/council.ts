@@ -52,6 +52,7 @@ export type CouncilStepResult = {
   source?: CouncilMemberSource;
   status: CouncilStepStatus;
   output: string;
+  attempts?: Array<{ providerId: ProviderId; modelId: string; output: string; error?: string }>;
   error?: string;
   startedAt?: number;
   completedAt?: number;

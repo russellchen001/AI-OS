@@ -337,6 +337,40 @@ const corrected = await correctionRuntime.run({ prompt: `${localPlan.objective}$
 equal(correctionCalls, ["synthesis", "correction"], "over-limit synthesis must get exactly one same-model correction");
 assert(corrected.recommendation?.summary === qualityReport.summary, "corrected synthesis was not used");
 
+let failRecovery = false;
+const incompleteRuntime = new CouncilRuntime({
+  listModels: () => [
+    { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-1", label: "Local 1" },
+    { providerId: "omlx", providerInstanceId: "omlx-local", modelId: "local-2", label: "Local 2" },
+  ],
+  stream: (messages, choice, onChunk) => {
+    const synthesis = messages[1]?.content.includes("Return JSON only");
+    const recovery = messages.at(-1)?.content.startsWith("The previous response was incomplete");
+    const text = synthesis ? JSON.stringify(qualityReport) : recovery ? "Complete concise contribution." : "Raw unfinished contribution";
+    return {
+      operationId: "incomplete-test",
+      result: Promise.resolve().then(() => {
+        onChunk(text);
+        if (!synthesis && (!recovery || failRecovery)) throw new Error("The Provider output reached its token limit; answer is incomplete");
+        return { cancelled: false, response: { providerId: choice!.providerId, modelId: choice!.modelId, text, metadata: {} as AiCenterResponse["metadata"] } };
+      }),
+      cancel: async () => undefined,
+    };
+  },
+  resolveContext: async () => [], now: () => 1, uuid: () => "incomplete-runtime",
+});
+const incompletePlan = { ...localPlan, seats: localPlan.seats.map(seat => ({ ...seat, assignedModel: { ...seat.assignedModel, fallbackModelIds: [] } })) };
+const recovered = await incompleteRuntime.run({ prompt: localPlan.objective, members: [], assemblyPlan: incompletePlan });
+assert(recovered.steps.filter(s => s.stage !== "final-synthesis").every(s =>
+  s.status === "done" && s.attempts?.length === 2 && s.attempts[0].output === "Raw unfinished contribution"
+  && Boolean(s.attempts[0].error) && s.attempts.every(a => a.modelId === s.modelId)
+  && s.output === "Complete concise contribution."), "incomplete answer must retry once on the pinned model and retain both raw attempts");
+failRecovery = true;
+const stillIncomplete = await incompleteRuntime.run({ prompt: localPlan.objective, members: [], assemblyPlan: incompletePlan });
+assert(stillIncomplete.steps.filter(s => s.stage !== "final-synthesis").every(s =>
+  s.status === "error" && s.attempts?.length === 2 && s.attempts.every(a => Boolean(a.error))),
+  "a second incomplete result must fail with exactly two preserved attempts");
+
 const metadata = {
   providerId: "chatgpt",
   modelId: "gpt-business",

@@ -240,6 +240,7 @@ export class CouncilRuntime {
     callbacks: CouncilRunRequest["callbacks"],
     assignedModel?: CouncilModelAssignment,
     validate?: (output: string) => void,
+    attempts: NonNullable<CouncilStepResult["attempts"]> = [],
   ): Promise<{
     output: string;
     providerId: ProviderId;
@@ -286,11 +287,34 @@ export class CouncilRuntime {
       );
 
       try {
-        const stream = this.dependencies.stream(messages, choice, (text) => {
-          callbacks?.onChunk?.(member.id, providerId, text);
-        });
-        this.activeStream = stream;
-        const result = await stream.result;
+        const invoke = async (request: AiCenterConversationMessage[]) => {
+          let raw = "";
+          const stream = this.dependencies.stream(request, choice, (text) => {
+            raw += text;
+            callbacks?.onChunk?.(member.id, providerId, text);
+          });
+          this.activeStream = stream;
+          try {
+            const result = await stream.result;
+            attempts.push({ providerId, modelId: choice.modelId, output: result.response.text });
+            return result;
+          } catch (error) {
+            attempts.push({ providerId, modelId: choice.modelId, output: raw, error: String(error) });
+            throw error;
+          }
+        };
+        let result;
+        try {
+          result = await invoke(messages);
+        } catch (error) {
+          this.assertNotCancelled();
+          if (!/token limit|answer is incomplete|Provider stream was interrupted/i.test(String(error))) throw error;
+          errors.push(`${choice.label}: ${String(error)}`);
+          result = await invoke([
+            ...messages,
+            { role: "user", content: "The previous response was incomplete. Start again with a complete, concise answer within 1,800 characters. Cover the original task's essential requirements, omit repeated background, and use the original requested response format. Do not continue the truncated sentence." },
+          ]);
+        }
         this.activeStream = undefined;
         if (result.cancelled || this.cancelled) throw new CouncilCancelledError();
         let output = result.response.text;
@@ -300,18 +324,15 @@ export class CouncilRuntime {
           // One correction from the same model, naming the measured
           // violation; if it is still invalid the next model is tried.
           errors.push(`${choice.label}: ${rejection instanceof Error ? rejection.message : String(rejection)}`);
-          const correction = this.dependencies.stream([
+          attempts[attempts.length - 1].error = String(rejection);
+          const corrected = await invoke([
             ...messages,
             { role: "assistant", content: output },
             {
               role: "user",
               content: `Your answer was rejected: ${rejection instanceof Error ? rejection.message : String(rejection)} Return the corrected complete answer in the same JSON shape only. Keep its substance; fix only what was rejected.`,
             },
-          ], choice, (text) => {
-            callbacks?.onChunk?.(member.id, providerId, text);
-          });
-          this.activeStream = correction;
-          const corrected = await correction.result;
+          ]);
           this.activeStream = undefined;
           if (corrected.cancelled || this.cancelled) throw new CouncilCancelledError();
           output = corrected.response.text;
@@ -325,6 +346,8 @@ export class CouncilRuntime {
         };
       } catch (error) {
         this.activeStream = undefined;
+        const lastAttempt = attempts.at(-1);
+        if (lastAttempt && !lastAttempt.error) lastAttempt.error = String(error);
         if (
           this.cancelled ||
           error instanceof CouncilCancelledError ||
@@ -369,6 +392,7 @@ export class CouncilRuntime {
     const startedAt = this.dependencies.now();
     let activeProviderId = member.providerId;
     let attemptedOutput = "";
+    const attempts: NonNullable<CouncilStepResult["attempts"]> = [];
     const runningStep: CouncilStepResult = {
       id: stepId,
       role: stepId,
@@ -416,6 +440,7 @@ export class CouncilRuntime {
               "Use only its expertise, methodology, operating principles and workflow. Preserve material disagreement and uncertainty. Do not claim execution occurred.",
               "Treat explicit user constraints on scope, locality, length, format and allowed actions as binding.",
               "Model names in the objective identify the Council members; they are not services, storage, tools or products for the task itself.",
+              ...(stage !== "final-synthesis" ? ["Give a complete contribution within 6,000 characters or 1,200 words, whichever is shorter. Use the language of the user's objective unless they request another language. Prioritize decision-changing findings and avoid repeating the whole brief."] : []),
               "Ground every factual claim in the user's objective or verified context. Other seats are proposals, not evidence. Never assume encryption, backups, device settings or execution. Do not say a requested item was not requested. Label unknown facts as unknown.",
               "Do not recommend destructive or irreversible actions unless the user explicitly requests them. Prefer reversible or read-only steps and state when approval is required.",
             ].join("\n\n"),
@@ -431,6 +456,7 @@ export class CouncilRuntime {
           const report = parseRecommendation(output, "validation", "validation", [], 0);
           validateCouncilAnswer(prompt, report);
         } : undefined,
+        attempts,
       );
       const completed: CouncilStepResult = {
         ...runningStep,
@@ -438,6 +464,7 @@ export class CouncilRuntime {
         modelId: result.modelId,
         status: "done",
         output: result.output,
+        attempts,
         completedAt: this.dependencies.now(),
       };
       callbacks?.onMemberCompleted?.(completed);
@@ -449,6 +476,7 @@ export class CouncilRuntime {
         providerId: activeProviderId,
         status: "error",
         output: attemptedOutput,
+        attempts,
         error: error instanceof Error ? error.message : String(error),
         completedAt: this.dependencies.now(),
       };
