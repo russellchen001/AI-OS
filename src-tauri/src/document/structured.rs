@@ -1203,6 +1203,35 @@ fn shape_texts_in_order(tree: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn document_reader_never_extracts_zip_links_paths_or_privileged_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let sentinel = root.path().join("sentinel.txt");
+        std::fs::write(&sentinel, "original outside data").unwrap();
+        std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let package_dir = root.path().join("packages");
+        std::fs::create_dir(&package_dir).unwrap();
+        let document = package_dir.join("adversarial.docx");
+        let mut archive = zip::ZipWriter::new(std::fs::File::create(&document).unwrap());
+        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        archive.start_file("word/document.xml", options).unwrap();
+        std::io::Write::write_all(&mut archive, DOCUMENT_XML.as_bytes()).unwrap();
+        archive.add_symlink("outside-link", sentinel.to_str().unwrap(), options).unwrap();
+        archive.start_file("../sentinel.txt", options.unix_permissions(0o6777)).unwrap();
+        std::io::Write::write_all(&mut archive, b"must never be extracted").unwrap();
+        archive.finish().unwrap();
+        let before = std::fs::read_dir(root.path()).unwrap().count();
+        let result = read_structured_document(&json!({"path": document.to_str().unwrap()})).unwrap();
+        assert!(result["operationResult"]["text"].as_str().unwrap().contains("Quarterly Report"));
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original outside data");
+        assert_eq!(std::fs::metadata(&sentinel).unwrap().permissions().mode() & 0o7777, 0o600);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), before);
+        assert!(!root.path().join("outside-link").exists());
+        assert_eq!(std::fs::read_dir(package_dir).unwrap().count(), 1);
+    }
+
     #[test]
     fn cell_references_are_parsed_and_malformed_ones_refused() {
         assert_eq!(parse_cell_reference("A1"), Some((1, 1)));

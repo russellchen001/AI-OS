@@ -4,6 +4,18 @@
 
 ## CURRENT（2026-10-28）— 冻结计划持续实施；P0 尚未全 PASS，不建议发布
 
+- 已按用户明确授权完成四项项目内依赖修复：rustls0.23.46、rustls-webpki0.103.16、tokio1.53.3、KaTeX0.18.2。
+  KaTeX传递旧版本统一到修复版本；npm锁文件其他依赖版本未变。Beta6已有独立node_modules，旧共享链接和清单锁文件备份在
+  `work/beta6-final/dependency-backup-ee5c530/`，Beta5开发清单哈希验证OK，系统CLI/Agent未动。
+- 安全更新后 Rust全库1076/0/85 ignored；P16完整PASS=6/FAIL=0、P17完整最终集成PASS；
+  新增专门renderer行为脚本（现有Council/Arena测试不适合承载渲染安全）：`bash verify/verify_beta6_render_security.sh` PASS。
+  同一原型污染输入在旧KaTeX0.17生成javascript链接、新0.18.2不生成；实际MarkdownRenderer也不生成外链图片/脚本，正常行内和块公式保留。
+- npm生产依赖审计现在0项；OSV复查480个macOS正常/构建依赖，三个Rust升级目标已无告警。
+  仍有zip2.4.2的extract专用问题和停止维护依赖告警；本产品只读OOXML路径无extract调用，恶意ZIP实际行为测试确认未提取路径/符号链接或改特权权限。
+  block-buffer0.10.4告警：官方旧版源码cursor独立存储；本机精确版本的捕获panic情境仍维持边界，未复现公告inline-cursor问题，
+  仅作有界复现证据，不能宣称全面内存安全或抹掉上游告警。详情原文在 `work/beta6-final/osv-rust-audit-after-security-result.json`。
+- 下一步冻结新HEAD单独构建，不在候选构建期间改源码/重写前端产物；7efe1ff六模型Arena仍在完成汇总/纠正，保留当前应用直到读取最终结果。
+
 - 后续修复已验：Claude正式system通道+CLI失败/限制结果拒收；年度预算币种/金额约束；Arena缺项、超长、预算分配式费用不能得正常分数。
   Rust全库1075/0/85 ignored、完整P16 PASS=6/FAIL=0、完整P17最终集成PASS；最新真实Claude通道测试7.77秒PASS。
 - 用户已明确授权仅在Beta6项目修复依赖：rustls0.23.46、rustls-webpki0.103.16、tokio1.53.3、KaTeX0.18.2。
@@ -80,6 +92,8 @@
 - 未 Push/Tag/Release/分发；未替换 Beta5；未执行第三方安装/升级、未改账号或采集凭证。
 
 ### 技术决策（本轮）
+
+- 四项依赖升级限定在Beta6项目；Node不再共用Beta5目录，KaTeX通过npm override统一传递版本，避免仅修根依赖漏掉实际renderer使用版本。
 
 - Claude CLI 的应用system指令通过其正式追加system参数传递，保留官方CLI安全策略；不通过取消安全检查修复回复格式。
 
