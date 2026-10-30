@@ -160,6 +160,11 @@ fn run_bounded(
         // The account sign-in is the credential; never a stray key.
         .env_remove("XAI_API_KEY")
         .env_remove("GROK_DEPLOYMENT_KEY")
+        // Don't load the user's Claude/Cursor MCP servers (one exposed a
+        // delete tool) or workflows into AI-OS requests.
+        .env("GROK_CLAUDE_MCPS_ENABLED", "0")
+        .env("GROK_CURSOR_MCPS_ENABLED", "0")
+        .env("GROK_WORKFLOWS", "0")
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
@@ -312,18 +317,32 @@ fn validate_model_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Every built-in tool the official CLI can offer, removed by its documented
+/// `--disallowed-tools`. An empty `--tools ""` "names no tool, so other tools
+/// stay available" (Grok docs): a Council cross-review then tried a shell
+/// command, the headless run could not ask for approval and stopped with only
+/// its opening sentence ("Grok CLI returned no text").
+const GROK_DISALLOWED_TOOLS: &str = "run_terminal_cmd,task,Agent,read_file,grep,list_dir,write,search_replace,Delete,web_search,web_fetch,image_gen,image_edit,image_to_video,reference_to_video,CallMcpTool,FetchMcpResource,ListMcpResources,todo_write,monitor,search_tool,use_tool,workflow,enter_plan_mode,exit_plan_mode,ask_user_question,send_feedback,update_goal,CreateGoal";
+
 fn request_arguments(model_id: &str) -> Vec<&str> {
     let mut arguments = vec![
         "-p",
         "-",
         "--output-format",
         "json",
-        "--tools",
-        "",
+        "--disallowed-tools",
+        GROK_DISALLOWED_TOOLS,
+        // Any remaining tool call is denied instead of waiting for approval.
+        "--permission-mode",
+        "dontAsk",
         "--disable-web-search",
         "--no-subagents",
         "--max-turns",
         "1",
+        // A 22 KB cross-review took 381 s at the default effort (18k reasoning
+        // tokens) and 167 s at medium with a complete answer.
+        "--reasoning-effort",
+        "medium",
     ];
     if model_id != GROK_CLI_DEFAULT_MODEL {
         arguments.extend(["--model", model_id]);
@@ -484,11 +503,17 @@ mod tests {
         for flag in ["--disable-web-search", "--no-subagents"] {
             assert!(arguments.contains(&flag));
         }
-        let tools = arguments
+        // An empty --tools leaves every tool available; tools are removed instead.
+        assert!(!arguments.contains(&"--tools"));
+        let removed = arguments
             .iter()
-            .position(|item| *item == "--tools")
+            .position(|item| *item == "--disallowed-tools")
             .unwrap();
-        assert_eq!(arguments[tools + 1], "");
+        for tool in ["run_terminal_cmd", "write", "search_replace", "Delete", "use_tool", "CallMcpTool", "task"] {
+            assert!(arguments[removed + 1].split(',').any(|item| item == tool), "{tool} stays available");
+        }
+        let mode = arguments.iter().position(|item| *item == "--permission-mode").unwrap();
+        assert_eq!(arguments[mode + 1], "dontAsk");
         assert!(!arguments.contains(&"--model"));
         assert!(request_arguments("grok-4.6").ends_with(&["--model", "grok-4.6"]));
     }

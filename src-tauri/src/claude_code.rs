@@ -328,6 +328,8 @@ pub(crate) async fn generate_claude_code_response(
             "dontAsk",
             "--tools",
             "",
+            // No MCP servers from the user's own Claude configuration.
+            "--strict-mcp-config",
         ];
         if model_id != "claude-code-default" {
             arguments.extend(["--model", model_id.as_str()]);
