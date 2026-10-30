@@ -32,6 +32,25 @@ const REQUESTED_SECTIONS: Array<{ requested: RegExp; evidence: RegExp; label: st
     },
   ];
 
+/** Raw-disk, erase or bulk-delete commands; never "reversible" advice. */
+const DESTRUCTIVE_COMMAND = /\bdd\s+(?:[a-z]+=\S+\s+)*(?:if|of)=\/dev\/|\bdiskutil\s+(?:erase\w*|partition\w*|zero\w*|secureErase|reformat|apfs\s+delete\w*)|\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r|\bmkfs\b|\bnewfs\w*|\bgpt\s+(?:destroy|remove)|\bsrm\b/i;
+
+export function constrainsDestructiveActions(objective: string): boolean {
+  return /不删除|不格式化|不修改任何文件|破坏性|抹盘|read.only|non-?destructive/i.test(objective);
+}
+
+/** A contribution that tells the user to run a destructive disk command. */
+export function validateNonDestructiveContribution(objective: string, text: string): void {
+  if (!constrainsDestructiveActions(objective)) return;
+  const match = text.match(DESTRUCTIVE_COMMAND);
+  if (match) {
+    throw new Error(`Contribution proposes a destructive disk command (${match[0].trim()}) although the user forbade destructive or file-changing operations. Offer a reversible copy to separate storage instead.`);
+  }
+}
+
+/** "备份" means a copy on separate storage; the same disk is not a backup. */
+const SEPARATE_STORAGE = /外接|外置|外盘|移动硬盘|移动盘|U\s*盘|优盘|SSD|NAS|Time\s*Machine|时间机器|另一(?:台|块|个|部)|第二(?:块|台|个)|外部(?:存储|硬盘|设备|磁盘)|光盘|external|usb|thumb\s*drive|another\s+(?:disk|drive|device|mac)|second\s+(?:disk|drive|device)/i;
+
 export function answerRequirements(objective: string) {
   return {
     maxChars: count(objective.match(/不超过\s*(\d+)\s*(?:个)?(?:汉字|字|字符)/)?.[1]),
@@ -243,6 +262,16 @@ export function validateCouncilAnswer(objective: string, report: {
         return !/不|勿|禁止|无需|避免|不要|不得|never|avoid|without|do not|don't/i.test(clause);
       }))) {
     violations.push("Council backup plan changes originals despite the read-only/non-destructive constraint.");
+  }
+  if (constrainsDestructiveActions(objective)) {
+    const destructive = [report.summary, ...report.recommendedPlan].join("\n").match(DESTRUCTIVE_COMMAND);
+    if (destructive) violations.push(`Council recommendation includes a destructive disk command (${destructive[0].trim()}) despite the non-destructive constraint.`);
+  }
+  if (limits.plans && /备份|backup/i.test(objective)) {
+    const sameDiskOnly = report.recommendedPlan.filter((item) => !SEPARATE_STORAGE.test(item));
+    if (sameDiskOnly.length) {
+      violations.push("Council backup suggestion must copy to separate storage (external disk, USB drive, NAS, Time Machine disk or another device); a copy on the same Mac disk is not a backup.");
+    }
   }
   const prohibited = objective.match(/(?:不要|禁止|不得)推荐([^。！？]+)/)?.[1]?.split(/[、，,]|或(?:任何)?/).map(term => term.trim()).filter(Boolean) ?? [];
   for (const term of prohibited) {

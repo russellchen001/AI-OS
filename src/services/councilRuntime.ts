@@ -6,7 +6,7 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { formatCouncilContext, resolveCouncilContext } from "./councilMemberContext";
-import { councilResponseSchema, deliverablesNeedingEvidence, formatCouncilAnswer, requiresAnnualCostEstimate, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
+import { councilResponseSchema, deliverablesNeedingEvidence, formatCouncilAnswer, requiresAnnualCostEstimate, validateNonDestructiveContribution, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
 import type { CouncilMember, CouncilRole, CouncilStepResult } from "../types/council";
 import type {
   CouncilContextSource,
@@ -308,7 +308,7 @@ export class CouncilRuntime {
             { role: "assistant", content: output },
             {
               role: "user",
-              content: `Your answer was rejected: ${rejection instanceof Error ? rejection.message : String(rejection)} Return corrected complete JSON, fixing every listed violation together. Re-evaluate the original question, including qualifiers such as 'only' and 'should'; do not replace it with a weaker question. Ensure the conclusion agrees with the recommendations. Keep valid findings, remove unsupported claims and contradictions, and leave unrequested metadata arrays empty when brevity is required.`,
+              content: output.trim().startsWith("{") ? `Your answer was rejected: ${rejection instanceof Error ? rejection.message : String(rejection)} Return corrected complete JSON, fixing every listed violation together. Re-evaluate the original question, including qualifiers such as 'only' and 'should'; do not replace it with a weaker question. Ensure the conclusion agrees with the recommendations. Keep valid findings, remove unsupported claims and contradictions, and leave unrequested metadata arrays empty when brevity is required.` : `Your contribution was rejected: ${rejection instanceof Error ? rejection.message : String(rejection)} Rewrite your complete contribution in the same format without that content, keeping your valid analysis.`,
             },
           ]);
           this.activeStream = undefined;
@@ -437,7 +437,11 @@ export class CouncilRuntime {
           validateCouncilAnswer(prompt, report);
           validateCouncilParticipation([report.summary, ...report.disagreements, ...report.uncertainty].join("\n"),
             [...verifiedModels, choice.modelId, choice.label.split("·").at(-1)?.trim() ?? choice.label]);
-        } : undefined,
+        } : (output) => {
+          // Experts are shown to the user too: a raw-disk command must not
+          // stand as advice when the user forbade destructive operations.
+          validateNonDestructiveContribution(prompt, output);
+        },
         attempts,
         responseSchema,
       );

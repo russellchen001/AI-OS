@@ -4,7 +4,7 @@ import {
   CouncilRuntime,
 } from "../src/services/councilRuntime";
 import { loadCouncilMembers } from "../src/services/council";
-import { validateCouncilAnswer, validateCouncilParticipation, annualCostEstimateText, requestedDeliverables, formatCouncilAnswer, councilResponseSchema } from "../src/services/answerRequirements";
+import { validateCouncilAnswer, validateCouncilParticipation, validateNonDestructiveContribution, annualCostEstimateText, requestedDeliverables, formatCouncilAnswer, councilResponseSchema } from "../src/services/answerRequirements";
 import type { CouncilMember } from "../src/types/council";
 import type { AgencyAgentsCatalog } from "../src/types/councilIntegrations";
 import type { AiCenterResponse } from "../src/services/aiCenter";
@@ -50,7 +50,7 @@ for (const bad of [
 }
 
 // "汉字" limits count Han characters only; "字" limits count every character.
-const hanOnlyReport = { ...qualityReport, summary: "长".repeat(100) + "!".repeat(100), recommendedPlan: ["复制"], rationale: ["a", "b"] };
+const hanOnlyReport = { ...qualityReport, summary: "长".repeat(100) + "!".repeat(100), recommendedPlan: ["复制到外盘"], rationale: ["a", "b"] };
 let combinedViolations = "";
 try { validateCouncilAnswer(`${qualityObjective}不要推荐云服务、Disk Utility。`, { ...qualityReport, summary: "长".repeat(181), recommendedPlan: ["移动原件", "备份到iCloud"], rationale: ["只有一条"] }); } catch (error) { combinedViolations = String(error); }
 assert(["exceeds", "exactly 2 reasons", "exactly 1 backup", "changes originals", "prohibited option"].every(message => combinedViolations.includes(message)), "one correction did not receive all measurable violations");
@@ -160,6 +160,26 @@ for (const coverage of [undefined, travelReport.requirementCoverage.slice(1),
   try { validateCouncilAnswer(travelObjective, { ...travelReport, requirementCoverage: coverage }); } catch { rejected = true; }
   assert(rejected, "generic cross-domain coverage accepted missing, duplicated, or invented evidence");
 }
+
+// Real 4d76bce local180 run: the accepted answer "backed up" to the same Mac
+// disk, and an expert proposed a raw-disk dd command.
+const sameDiskReport = {
+  summary: "仅使用本机保存文件可以避免依赖其他设备，减少丢失风险。",
+  recommendedPlan: ["将两份笔记存入当前Mac的硬盘，以确保本地备份的存在性。"],
+  rationale: ["本地备份能减少文件丢失风险，尤其是在没有其他备份源的情况下。", "及时执行备份可以防止数据丢失，而无需依赖外部设备。"],
+  disagreements: [], risks: [], assumptions: [], uncertainty: [],
+};
+let sameDiskRejected = "";
+try { validateCouncilAnswer(qualityObjective, sameDiskReport); } catch (error) { sameDiskRejected = String(error); }
+assert(sameDiskRejected.includes("separate storage"), "a same-disk copy was accepted as a backup");
+validateCouncilAnswer(qualityObjective, { ...sameDiskReport, recommendedPlan: ["将两份笔记复制到外接硬盘，保留原件。"] });
+let ddRejected = "";
+try { validateNonDestructiveContribution(qualityObjective, "打开终端，运行\n```\ndd if=/dev/disk0sX bs=64K of=~/Desktop/笔记本备份.img conv=fdatasync\n```"); } catch (error) { ddRejected = String(error); }
+assert(ddRejected.includes("destructive disk command"), "an expert raw-disk dd command stood as advice");
+validateNonDestructiveContribution(qualityObjective, "复制到外接硬盘，不删除原件，也不运行 diskutil 或抹盘。");
+let planDdRejected = false;
+try { validateCouncilAnswer(qualityObjective, { ...sameDiskReport, recommendedPlan: ["运行 diskutil eraseDisk 后复制到外接硬盘。"] }); } catch { planDdRejected = true; }
+assert(planDdRejected, "a destructive disk command was accepted in the final plan");
 
 const catalog: AgencyAgentsCatalog = {
   commit: "agency-commit",
