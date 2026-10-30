@@ -65,7 +65,7 @@ export function resolveUserConstraintsForSeats(
     const unscoped = remaining.filter((entry) =>
       !entry.used && entry.constraint.mode !== "auto" && !entry.constraint.targetRole);
     const pick = unscoped[preferredSynthesizerIndex(unscoped.map((entry) =>
-      entry.constraint.mode === "auto" ? {} : { providerId: entry.constraint.providerId }))];
+      entry.constraint.mode === "auto" ? {} : { providerId: entry.constraint.providerId, modelId: entry.constraint.modelId, label: entry.constraint.label }))];
     if (pick && unscoped.length >= 2) {
       resolved[synthesizerSeat] = pick.constraint;
       pick.used = true;

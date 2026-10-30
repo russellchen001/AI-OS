@@ -4,6 +4,7 @@ import {
   CouncilRuntime,
 } from "../src/services/councilRuntime";
 import { loadCouncilMembers } from "../src/services/council";
+import { parameterBillions } from "../src/services/synthesizerChoice";
 import { validateCouncilAnswer, validateCouncilParticipation, validateNonDestructiveContribution, validateSynthesisAgreement, conclusionStance, validateArenaAnswer, annualCostEstimateText, requestedDeliverables, formatCouncilAnswer, councilResponseSchema } from "../src/services/answerRequirements";
 import type { CouncilMember } from "../src/types/council";
 import type { AgencyAgentsCatalog } from "../src/types/councilIntegrations";
@@ -213,6 +214,9 @@ for (const text of [
 let bare321Rejected = false;
 try { validateArenaAnswer("方案需要包括：备份结构以及与 3-2-1 原则的对应关系。", "建议遵循 3-2-1 原则。"); } catch { bare321Rejected = true; }
 assert(bare321Rejected, "naming 3-2-1 without any mapping was accepted");
+
+equal(["Qwen2.5-7B-Instruct-4bit", "Qwen3.5-9B-4bit", "Llama-3.3-70B-Instruct", "Qwen3-30B-A3B", "gpt-6.1-sol"].map((modelId) => parameterBillions({ modelId })),
+  [7, 9, 70, 30, undefined], "parameter sizes from model naming");
 
 const catalog: AgencyAgentsCatalog = {
   commit: "agency-commit",

@@ -231,6 +231,13 @@ const tests: TestCase[] = [
         .map((model) => ({ mode: "pinned", providerId: model.providerId, providerInstanceId: model.providerInstanceId, modelId: model.modelId, label: model.label }));
       const bound = resolveUserConstraintsForSeats(["participant", "participant", "synthesizer"], constraints);
       assert.equal(nonAuto(bound[2]).modelId, "nebula-r2");
+
+      // A large local model (30B+) counts like a cloud model; the last named wins.
+      const big = { ...local, modelId: "local-70B-Instruct", label: "Local 70B" };
+      const withBig: ArenaModelConstraint[] = [models[1], big, local]
+        .map((model) => ({ mode: "pinned", providerId: model.providerId, providerInstanceId: model.providerInstanceId, modelId: model.modelId, label: model.label }));
+      const boundBig = resolveUserConstraintsForSeats(["participant", "participant", "synthesizer"], withBig);
+      assert.equal(nonAuto(boundBig[2]).modelId, "local-70B-Instruct");
     },
   },
   {
