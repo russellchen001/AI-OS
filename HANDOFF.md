@@ -1,3 +1,197 @@
+<!-- BETA6_CLAUDE_FINAL_20261031 -->
+# START HERE — Beta 6 验收矩阵（2026-10-31，Claude；本节为唯一当前状态）
+
+- 分支 `beta6`，代码 HEAD `82fac89`（本节随后的 HANDOFF 提交除外）。均为本地提交，**未 Push/Tag/Release**；
+  正式 `/Applications/AI OS.app` 仍为 Beta5（主程序 SHA256 `91ff470b…253ce5`，每次构建后核对未变）。
+- **最终候选**：产物根 `/Users/russellchen/Documents/Codex/2026-10-26/referenced-chatgpt-conversation-this-is-an`
+  下 `work/beta6-final/candidate-82fac89/AI OS.app`（主程序 SHA256
+  `cc7ed08eb8a403ec7479b103cb1820061161c1ebcad324ed424ba9d5e48f2757`），DMG
+  `outputs/AI OS_1.0.1-beta.6_candidate-82fac89_aarch64.dmg` SHA256
+  `9aa3b897c967c00ce0dceb37e5dd38c74343e98484e40888c52e3364e6177f54`（ad-hoc 签名，未公证）。
+- 最终回归（82fac89）：Rust 1077/0/86 ignored；P16 6/0；P17 最终集成；Provider 稳定性；信息架构；Artifacts ZIP；
+  渲染安全；Agent 生命周期；CLI Provider；Council 导出（真实六模型导出文件）全部 PASS。日志
+  `work/beta6-final/claude-final-20261031/`。
+
+| # | 项目 | 结论 | 证据 |
+|---|---|---|---|
+| 1 | Council 真实质量 | **PASS（本机条件）**：local180 由 Qwen2.5 汇总被接受，结论/可逆独立存储备份/有据理由，小瑕疵“约需几分钟”；六模型复杂题内容高质量（c73b126）；本地被拒→“允许本次使用云端重跑”→ Grok 汇总 40 汉字合格答案 | `outputs/Beta6-82fac89-local180-council-20261031.json`、`Beta6-82fac89-local40-cloud-consent-council-20261031.json`、`Beta6-c73b126-six-model-council-20261030.{json,md}` |
+| 2 | Arena 完整性 | **PASS（degraded）**：五模型 completion=winner、5 分、优胜 Qwen3.5；降级因本地一次 token-limit；3-2-1 误拒已修 | 界面实测（82fac89） |
+| 3 | Chat 模型目录 | **PASS**：下拉仅列验证模型（Claude、Grok CLI、3 本地、Codex Auto Review、GPT-6.1-Sol）；Gemini 402 不显示；GPT 额度用尽仍列出（临时 429 如实报错） | 界面实测 |
+| 4 | 通用安全安装/更新 | PASS（自动回归）；实际第三方升级未执行 | CLI/Agent 回归 |
+| 5 | 通用 CLI Provider | PASS：Grok CLI 真实调用，工具/MCP 真正禁用（a3fb4fd），长交叉评审 2.5 分钟完整 | 运行日志 |
+| 6 | Agent 版本管理 | 查询 PASS（Codex 旧证据）；实际升级未执行（需用户授权） | — |
+| 7/8/10 | My AI 二级导航 / AI Lab / Skills 高级入口 | PASS（信息架构回归 + 本轮界面使用） | — |
+| 9 | Workspace/Artifacts | **PASS**：原生导入(Merge)/公式+Mermaid 渲染/三种原生导出逐字节一致/重启持久化 | `outputs/Beta6-Artifacts-native-*-20261030.*` |
+| 11 | Gemini/OAuth/Computer Use | **BLOCKED（外部）**：Gemini 402 额度、Google OAuth 审核、Peekaboo 签名；另 OpenAI 账号额度用尽(429) | — |
+| 12 | 正式签名/公证/干净用户 | **BLOCKED**：无 Developer ID；每次 ad-hoc 重建需重新允许钥匙串 | — |
+
+- 本轮修复提交：`4d76bce` `c73b126` `a3fb4fd` `b848942` `d9b1ce5` `0ffb8b7` `82fac89`（详见下方进展节与 git log）。
+- 用户决定：local first ≠ local only；题目限定本地时不自动上云，由用户逐次授权；不得假定本地模型一定弱
+  （≥30B 本地模型与云端同档选汇总）。验收只在 16GB/7–9B 本机完成，大模型环境未验证。
+- 未做/待用户：Agent/CLI 实际升级、更大本地模型下载（~8GB，需批准）、oMLX 常驻模型目前为最后测试加载的模型。
+
+<!-- BETA6_CLAUDE_PROGRESS_20261030 -->
+# START HERE — Beta 6 Claude 接手进展（2026-10-30 晚；本节优先）
+
+- 分支 `beta6`。本轮新增本地提交（未推送/未打 Tag/未发布）：
+  - `4d76bce` Council：本地 JSON schema 不再给字段加 grammar `maxLength`（原 40 字硬截断导致
+    “…如果不计划删除或移”半句）；可机械验证的交付项（结论/N条理由/N条建议/3-2-1/自动化/季度演练/
+    风险取舍/年度费用）不再要求模型逐字自证（曾拒收一个合格的 Qwen3.5 答案）。
+  - `c73b126` Council：备份建议必须指向独立存储（外接盘/U盘/NAS/Time Machine/另一设备）；在
+    非破坏约束下，最终方案与专家发言中的 `dd …/dev/`、`diskutil erase/partition`、`rm -rf`、
+    `mkfs`、`newfs` 等判违规（专家同模型改正一次，仍违规不采纳）。
+- 回归：Rust 1077/0/86 ignored；P16 PASS=6/0；P17 最终集成 PASS；Provider 稳定性、Artifacts ZIP、
+  渲染安全、信息架构 PASS。`verify_beta6_council_export.sh` 与 `verify_beta6_install_restore.sh`
+  需传入证据路径参数（单独运行会因缺参退出，非失败）。
+- 候选 `candidate-4d76bce`（产物根 `work/beta6-final/`，主程序 SHA256 `f3f3db48…2f28`，DMG
+  `outputs/AI OS_1.0.1-beta.6_candidate-4d76bce_aarch64.dmg` SHA256 `a72a4ed9…5a25`）。
+  `candidate-c73b126` 构建中。正式 Beta5 哈希 `91ff470b…253ce5` 未变。
+- **真实验收结果（4d76bce 安装版）：**
+  - **#9 Workspace/Artifacts：PASS。** 原生打开面板导入合成夹具（选择 Merge，不替换用户工作区）
+    → 1 项目 2 文件；Markdown 中文/emoji/行内与块公式、Mermaid 流程图实际渲染正常；原生保存面板
+    导出单文件、Workspace JSON、项目 ZIP，与夹具逐字节一致（`work/beta6-final/verify-native-artifacts-20261030.mjs`
+    PASS，文件 `outputs/Beta6-Artifacts-native-{note,workspace,project}-20261030.*`）；正常 Quit 后重启
+    项目与文件仍在。
+  - **#1 Council local180：FAIL（质量）。** 首次有最终答案被接受，但结论逻辑颠倒（称只存本机可减少
+    丢失风险）、备份建议是存回同一 Mac 硬盘；Risk Reviewer 发言给出 `dd if=/dev/disk0sX …` 原始磁盘
+    命令。已由 `c73b126` 将这两类可机械判定的问题改为拒收/纠正；结论逻辑类错误仍需人工质量判定。
+    该会话在 Council History 中，待屏幕解锁后用原生 Export JSON/Markdown 导出证据。
+  - 4d76bce 运行已原生导出：`outputs/Beta6-4d76bce-local180-council-20261030.{json,md}`；用 c73b126
+    校验器离线复核该真实报告：最终答案因“同盘备份”拒收、Risk Reviewer 因 `dd if=/dev/` 拒收（复核脚本
+    在 scratchpad，逻辑同 `verify/p16_dynamic_council.behavior.ts` 新增用例）。
+- 候选 `candidate-c73b126`：主程序 SHA256 `1c517099…f1ca2`，DMG
+  `outputs/AI OS_1.0.1-beta.6_candidate-c73b126_aarch64.dmg` SHA256
+  `199fc4aa2dd5903e45f1a0ade016fc9e9058d5813dc557f44297b64d3e414834`；两次钥匙串已由用户允许。
+  - **#1 Council local180（c73b126）：FAIL（理由质量），较前显著改善。** 最终答案被接受：结论“继续保存在
+    本机但需定期本地备份”；建议“立即创建 Time Machine 备份并复制到独立外部硬盘”（可逆、独立存储 PASS）；
+    无破坏性命令；字数/条数 PASS。但两条理由无依据（“本地存储空间足够”“文件关联和个人习惯”），且结论
+    “只保存在本机”与外部备份略矛盾。属 7B 本地模型推理质量上限，程序无法机械判定，如实记 FAIL。
+    该会话在 Council History（2026/10/30 23:4x），屏幕锁定中断了原生导出，待解锁后导出
+    `outputs/Beta6-c73b126-local180-council-20261030.{json,md}`。
+    证据已导出：`outputs/Beta6-c73b126-local180-council-20261030.{json,md}`（无破坏性命令）。另注意：
+    该轮实施/风险专家均“不建议只存本机”，汇总却结论“应继续只保存”且 disagreements 为空。
+  - **#1 Council 六模型复杂题（c73b126）：内容质量 PASS；参与 degraded。** 6 个点名模型全部入席，
+    汇总按 B+C 自动为 Claude。GPT 两阶段 HTTP 429（OpenAI 账号限流，外部）；Grok 交叉评审
+    “Grok CLI returned no text”。最终建议：关键集严格 3-2-1/大批量集本地两份的明确取舍、目录结构、
+    每周 rsync（不用 --delete）、四步季度演练含 SHA-256 与双人轮替、年度费用 405 CNY（标 assumed，
+    云 300 + NAS 电费 105），分歧如实保留，并主动排除把模型名当云存储和编造报价的贡献。
+    证据 `outputs/Beta6-c73b126-six-model-council-20261030.{json,md}`。
+- `a3fb4fd`（Grok 根因）：官方 headless 文档说明 `--tools ""` 不限制任何工具；直接回放同一 22KB 交叉
+  评审，Grok 试图执行 shell（`which claude openai ollama …`），headless 无法批准而 `cancelled`，只剩开场白
+  （与 Codex 记录的“46 字引言”同因）。现改为文档化 `--disallowed-tools` 全部内置工具 + `--permission-mode
+  dontAsk` + 环境变量关闭 Claude/Cursor 兼容 MCP（用户的 codebase-memory MCP 含 delete 工具）与 workflows +
+  `--reasoning-effort medium`（默认 381 s 超 300 s 上限；medium 167 s，3778 字完整审阅）。Claude Code
+  请求加 `--strict-mcp-config`。Rust 1077/0。
+- #3 Chat 模型目录：本机屏幕高度使输入框底部模型下拉被截，c73b126 未能打开；旧证据（1380a39 包同会话）
+  下拉仅列已验证模型。待新包复核。
+- 候选 `candidate-a3fb4fd`：DMG SHA256 `aa459eed8c13d58c1f13d8f2b46a5dafc5f14a78ad13a1728319ef5e5251cad3`，
+  主程序 `fafb9cdb…af93`；两次钥匙串已允许，正在运行。
+- `b848942`（未进候选包）：Council 拒收未给依据的设备现状断言（“空间足够/已加密/风险可控”等，须标为假设）；
+  是非题汇总若推翻多数专家结论且 disagreements 为空则拒收。离线复核：c73b126 local180 报告被拒（两条原因
+  都命中），六模型高质量报告仍接受。回归 P16 6/0、P17 PASS。
+- **#2 Arena 六模型（a3fb4fd）：degraded / max-rounds / 0 分。** Grok 两轮均成功（交叉评审 2.5 分钟，
+  a3fb4fd 修复生效）；GPT 两次 HTTP 429（外部限流）；Claude 综合被 `validateArenaAnswer` 以“缺少具体
+  3-2-1 对应”拒收——疑似 `validateRequestedSections` 的 3-2-1 证据正则（要求 3-2-1 与 副本/介质/异地 相距
+  ≤80 字）过严误拒，**下一步先取 Claude 原始 answer 核实**（界面 Round 3 synthesizer JSON 可见；AX 不暴露
+  文本，可选中复制或滚动截图）。Qwen2.5 仍把模型名当云存储（模型能力）。
+- 用户问 local180 能否解决：已答“可改善，受 7–9B 本地模型能力上限”；A+B 已实现（b848942）；C（下载
+  ~8GB 14B 本地模型）需用户批准，未执行。
+- 用户决定（2026-10-31）：AI-OS 是 local first 不是 local only；但题目明确“仅本地”时不得自动上云。
+  方案 A：本地答案全部被拒后显示“允许本次使用云端模型重跑”，由用户逐次决定。用户补充：别人的机器可能装了
+  更大的本地模型（首次运行有本机模型推荐），故不得假定本地一定弱。
+- 新提交：`d9b1ce5` 修复 Arena/Council 要求项证据正则不跨行（标题+下一行映射被误判“缺少 3-2-1”，已用三种
+  真实写法回归）；`0ffb8b7` 汇总者自动选择按模型命名中的参数规模，≥30B 本地模型与云端同档（不硬编码模型名）；
+  `82fac89` 本地限定题被拒后提供一次性云端重跑按钮（cloudAllowedByUser 只作用于本次；重跑题目前加授权说明）。
+  回归：Rust 1077/0、P16 6/0、P17 PASS、信息架构 PASS。候选 `candidate-82fac89` 构建中。
+- **候选 `candidate-82fac89`**（DMG SHA256 `9aa3b897c967c00ce0dceb37e5dd38c74343e98484e40888c52e3364e6177f54`，
+  主程序 `cc7ed08e…2757`；两次钥匙串已允许）实测：
+  - **#1 Council local180：PASS（质量可接受，有小瑕疵）。** DeepSeek 汇总两次被拒后换 Qwen2.5 被接受：结论“应继续
+    保存在本机并进行本地备份”、建议 Time Machine 备份“存放在物理隔离的设备中”、两条理由有据（符合不上传等约束；
+    本地最符合需求）；小瑕疵“约需几分钟”无依据。证据 `outputs/Beta6-82fac89-local180-council-20261031.json`，离线
+    复核 ACCEPTED。
+  - **云端重跑按钮：PASS（显示与授权部分）。** 同题收紧为“不超过 40 个汉字”后本地全部被拒，页面显示中文说明与
+    “允许本次使用云端模型重跑”，未自动上云；点击后同一题以 Claude/Grok/本地 Qwen3.5 专家 + GPT 汇总（429 后按非
+    固定席位回退到 Claude、再到 Grok）运行，Claude 专家原文写明“用户已明确授权本次使用云端模型”。运行于 22:20 UTC
+    结束，**结果未读取**（屏幕锁定）；40 汉字含结论+2理由+1建议对云端也极严，结果可能仍被拒，需如实记录。
+- 验收口径（local180）：本机 16GB/7–9B 下答案质量受模型能力限制；判定以“不合格答案被拒 + 用户可一键授权
+  云端重跑并得到合格答案”为准；更大本地模型环境未在本机验证，如实标注。
+- 旧剩余（部分已完成）：核实/修复 Arena 3-2-1 误拒 → 构建含 b848942 的候选 → 复测 local180、Arena；#3 Chat 模型下拉被本机
+  屏幕高度截断（可改小窗口或用 Window>Fill 后再试）；#4–8、#10 最终回归；#11/#12 外部阻塞；最终 12 项矩阵
+  与 HANDOFF 窄提交。
+
+<!-- BETA6_CLAUDE_HANDOFF_20261030 -->
+# START HERE — Beta 6 Claude 接手（2026-10-30）
+
+## CURRENT — 本节优先于所有历史交接
+
+- 工作目录：~/AI-OS/dashboard-beta6
+- 分支：beta6
+- 最新 HEAD：d3f807a
+- Work 因额度用尽中断，后续由 Claude 接手。
+- Beta 6 尚未通过发布验收；正式 Beta 5 不得覆盖。
+- 旧的 29fa0a1 等 CURRENT 状态属于历史记录。
+
+## 已完成与已验证
+
+- Council 结构、数量、长度、字段类型及显式需求校验已加强。
+- 本地 oMLX Schema、JSON 字段顺序、模型席位分配已修复。
+- Council 失败原文和全部尝试可导出；自动回归 PASS。
+- Arena 专项回归 PASS。
+- Artifacts ZIP 安全检查及内容往返 PASS。
+- Rust 最近一次报告：1077 passed、0 failed。
+- 五入口导航、通用 CLI Provider 与 Agent 管理已有实现和验收记录。
+- OpenClaw 自动及手动检查版本已有真实 PASS。
+- Claude 官方登录及调用已有真实 PASS。
+
+## 尚未完成的十二项验收
+
+1. Council 真实回答质量：FAIL，继续修复。
+2. Arena 实际安装版回答完整性：待复验。
+3. Chat 模型目录及 404 模型处理：待复验。
+4. 通用安全安装和更新服务：最终集成待确认。
+5. 通用 CLI Provider：Grok 安装及升级实测需要授权。
+6. 通用 Agent 版本管理：OpenClaw 查询 PASS，实际升级未执行。
+7. My AI 二级导航：已有通过证据，最终回归待完成。
+8. AI Lab 导航：已有通过证据，最终回归待完成。
+9. Workspace/Artifacts：原生保存、导入、重启持久化待验收。
+10. Skills 高级设置入口：已有通过证据，最终回归待完成。
+11. Gemini/OAuth/Computer Use：外部限制及 Peekaboo 签名阻塞。
+12. 最终 DMG、正式签名、公证、干净用户验收：未完成。
+
+## 目前最重要的问题
+
+Council 真实输出仍可能存在：
+- 证据与正文不一致。
+- 句子不完整。
+- 理由或建议数量错误。
+- 违反禁止云服务等用户限制。
+- 受到旧错误讨论内容污染。
+
+六次本地合成被拒收，不能将格式检查通过视为质量通过。
+
+## Claude 接手优先顺序
+
+1. 检查最新 Git 状态和中断时的构建结果。
+2. 完成 Artifacts 原生导入导出及持久化。
+3. 使用全新多模型讨论修复 Council 真实质量。
+4. 完成 Arena 与 Chat 实际可调用模型验收。
+5. 核实 CLI Provider、Agent Manager 和 UI。
+6. 执行完整回归，冻结源码并构建最终候选。
+7. 更新 HANDOFF，提交十二项 PASS/FAIL/BLOCKED 证据。
+
+## 技术决策及执行边界
+
+- CLI Provider 与 Agent 均采用通用可扩展 Adapter。
+- 共享安全安装及更新服务，用户确认后才安装或升级。
+- 保留五入口 Workspace/My AI/AI Lab/Person Profiles/Settings。
+- 保持 API、CLI、本地模型独立，不静默切换用户固定模型。
+- 保留全部原始失败证据和既有技术决策。
+- 不 Push、Tag、Release，不覆盖 Beta 5。
+- 不擅自安装或升级第三方软件，不改用户账号和凭据。
+- 只有 P0 真实通过后才能建议发布。
+
+---
+
 <!-- BETA41_HANDOFF_START -->
 
 # START HERE — Beta 6 最新交接（2026-10-29；以下 CURRENT 为唯一当前状态）
