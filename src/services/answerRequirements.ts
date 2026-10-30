@@ -9,6 +9,29 @@ function count(text: string | undefined): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
+const REQUESTED_SECTIONS: Array<{ requested: RegExp; evidence: RegExp; label: string }> = [
+    {
+      requested: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1.{0,12}(?:对应|原则)|(?:对应|原则).{0,12}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
+      evidence: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1.{0,80}(?:副本|介质|异地|离线|copy|media|offsite)|(?:副本|介质|异地|离线|copy|media|offsite).{0,80}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
+      label: "a concrete 3-2-1 mapping",
+    },
+    {
+      requested: /(?:自动化(?:方式)?|自动备份|automation)/i,
+      evidence: /(?:自动|定时|计划任务|同步|增量|schedule|automatic|incremental).{0,80}(?:备份|快照|复制|同步|backup|snapshot|copy|sync)/i,
+      label: "an automation method",
+    },
+    {
+      requested: /(?:每季度|季度).{0,12}(?:恢复|还原).{0,12}(?:演练|测试|步骤)|quarterly.{0,20}(?:restore|recovery).{0,20}(?:drill|test|steps?)/i,
+      evidence: /(?:每季度|季度|每三个月|quarterly).{0,100}(?:恢复|还原|抽样|校验|restore|recovery|sample|verify)/i,
+      label: "quarterly restore-drill steps",
+    },
+    {
+      requested: /(?:主要风险.{0,8}(?:取舍|权衡)|risks?.{0,12}trade[- ]?offs?)/i,
+      evidence: /(?:风险|故障|丢失|勒索|泄露|中断|risk|failure|loss|ransomware|breach).{0,100}(?:取舍|权衡|代价|但|相比|trade[- ]?off|cost|however|versus)/i,
+      label: "risks and trade-offs",
+    },
+  ];
+
 export function answerRequirements(objective: string) {
   return {
     maxChars: count(objective.match(/不超过\s*(\d+)\s*(?:个)?(?:汉字|字|字符)/)?.[1]),
@@ -49,6 +72,7 @@ export function councilResponseSchema(objective: string): Record<string, unknown
   const limits = answerRequirements(objective);
   if (!limits.maxChars || limits.maxChars > 2000 || requiresAnnualCostEstimate(objective)) return undefined;
   const required = requestedDeliverables(objective);
+  const needEvidence = deliverablesNeedingEvidence(objective);
   const counts: Record<string, number> = {
     recommendedPlan: limits.plans ?? limits.steps ?? (required.length ? required.length : 0), rationale: limits.reasons ?? 0,
     disagreements: required.some(item => /分歧|disagreement/i.test(item)) ? 1 : 0,
@@ -63,10 +87,14 @@ export function councilResponseSchema(objective: string): Record<string, unknown
   const overhead = limits.hanOnly ? overheadText.match(/\p{Script=Han}/gu)?.length ?? 0 : [...overheadText].length;
   const budget = Math.floor((limits.maxChars - overhead) / units);
   if (budget < 1) return undefined;
-  const properties: Record<string, unknown> = { summary: { type: "string", minLength: 1, maxLength: budget } };
-  for (const [key, count] of Object.entries(counts)) properties[key] = { type: "array", minItems: count, maxItems: count, items: { type: "string", minLength: 1, maxLength: budget } };
-  if (required.length) properties.requirementCoverage = { type: "array", minItems: required.length, maxItems: required.length, items: {
-    type: "object", properties: { requirement: { type: "string", enum: required }, evidence: { type: "string", minLength: 1, maxLength: limits.maxChars } },
+  // The budget is guidance, not a grammar cut: a maxLength makes the local
+  // engine stop mid-sentence ("…如果不计划删除或移"). Total length is checked
+  // after generation and corrected once with the measured count.
+  const guide = `One complete sentence of about ${budget} ${limits.hanOnly ? "Han characters" : "characters"}.`;
+  const properties: Record<string, unknown> = { summary: { type: "string", minLength: 1, description: guide } };
+  for (const [key, count] of Object.entries(counts)) properties[key] = { type: "array", minItems: count, maxItems: count, items: { type: "string", minLength: 1, description: guide } };
+  if (needEvidence.length) properties.requirementCoverage = { type: "array", minItems: needEvidence.length, maxItems: needEvidence.length, items: {
+    type: "object", properties: { requirement: { type: "string", enum: needEvidence }, evidence: { type: "string", minLength: 1 } },
     required: ["requirement", "evidence"], additionalProperties: false,
   } };
   return { type: "object", properties, required: Object.keys(properties), additionalProperties: false };
@@ -92,10 +120,31 @@ export function requestedDeliverables(objective: string): string[] {
   return [...new Set(items.map(value => value.replace(/^(?:\d+[.)、]|[-*•])\s*/, "").replace(/^and\s+/i, "").replace(/[.!?]$/, "").trim()).filter(Boolean))];
 }
 
+/**
+ * Requested deliverables the validator cannot check on its own. Labels such as
+ * "结论", "2条理由", "1条备份建议", 3-2-1 mapping, automation, quarterly drill,
+ * risks/trade-offs and annual cost are verified mechanically from the report,
+ * which is stronger than a model quoting itself; asking small local models to
+ * quote anyway rejected compliant answers for imprecise self-quotes.
+ */
+export function deliverablesNeedingEvidence(objective: string): string[] {
+  const limits = answerRequirements(objective);
+  return requestedDeliverables(objective).filter((label) => !(
+    /^(?:最终)?(?:结论|答案|建议结论)$|^(?:conclusion|summary|answer)$/i.test(label) ||
+    (limits.reasons !== undefined && /理由|reasons?/i.test(label)) ||
+    ((limits.plans !== undefined || limits.steps !== undefined) && /建议|步骤|plan|steps?/i.test(label)) ||
+    REQUESTED_SECTIONS.some((rule) => rule.requested.test(label)) ||
+    (requiresAnnualCostEstimate(objective) && /费用|成本|cost/i.test(label))
+  ));
+}
+
 function validateRequirementCoverage(objective: string, coverage: Array<{ requirement: string; evidence: string }> | undefined, text: string): void {
-  const required = requestedDeliverables(objective);
+  const required = deliverablesNeedingEvidence(objective);
   if (!required.length) return;
   const key = (value: string) => value.normalize("NFKC").replace(/\s+/g, "").toLowerCase();
+  // Entries for mechanically checked labels are allowed but not relied on.
+  const checked = new Set(requestedDeliverables(objective).filter((label) => !required.includes(label)).map(key));
+  if (Array.isArray(coverage)) coverage = coverage.filter((entry) => !(entry && typeof entry.requirement === "string" && checked.has(key(entry.requirement))));
   if (!Array.isArray(coverage) || coverage.length !== required.length ||
       required.some(requirement => coverage.filter(entry => entry && typeof entry.requirement === "string" && key(entry.requirement) === key(requirement)).length !== 1) ||
       coverage.some(entry => !entry || typeof entry.evidence !== "string" || !entry.evidence.trim() || !text.includes(entry.evidence))) {
@@ -153,28 +202,7 @@ function validateCostEstimate(objective: string, text: string): void {
 }
 
 function validateRequestedSections(objective: string, text: string): void {
-  const requirements: Array<{ requested: RegExp; evidence: RegExp; label: string }> = [
-    {
-      requested: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1.{0,12}(?:对应|原则)|(?:对应|原则).{0,12}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
-      evidence: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1.{0,80}(?:副本|介质|异地|离线|copy|media|offsite)|(?:副本|介质|异地|离线|copy|media|offsite).{0,80}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
-      label: "a concrete 3-2-1 mapping",
-    },
-    {
-      requested: /(?:自动化(?:方式)?|自动备份|automation)/i,
-      evidence: /(?:自动|定时|计划任务|同步|增量|schedule|automatic|incremental).{0,80}(?:备份|快照|复制|同步|backup|snapshot|copy|sync)/i,
-      label: "an automation method",
-    },
-    {
-      requested: /(?:每季度|季度).{0,12}(?:恢复|还原).{0,12}(?:演练|测试|步骤)|quarterly.{0,20}(?:restore|recovery).{0,20}(?:drill|test|steps?)/i,
-      evidence: /(?:每季度|季度|每三个月|quarterly).{0,100}(?:恢复|还原|抽样|校验|restore|recovery|sample|verify)/i,
-      label: "quarterly restore-drill steps",
-    },
-    {
-      requested: /(?:主要风险.{0,8}(?:取舍|权衡)|risks?.{0,12}trade[- ]?offs?)/i,
-      evidence: /(?:风险|故障|丢失|勒索|泄露|中断|risk|failure|loss|ransomware|breach).{0,100}(?:取舍|权衡|代价|但|相比|trade[- ]?off|cost|however|versus)/i,
-      label: "risks and trade-offs",
-    },
-  ];
+  const requirements = REQUESTED_SECTIONS;
 
   const missing = requirements.filter(requirement => requirement.requested.test(objective) && !requirement.evidence.test(text));
   if (missing.length) throw new Error(`Council answer is missing ${missing.map(requirement => requirement.label).join(", ")} explicitly requested by the user.`);

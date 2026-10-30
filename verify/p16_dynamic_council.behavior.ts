@@ -64,9 +64,15 @@ assert(allCharactersCounted, "a 字 limit must count every character and report 
 const briefSchema = councilResponseSchema(qualityObjective) as { properties: Record<string, { minItems?: number; maxItems?: number; maxLength?: number; items?: { maxLength: number } }> };
 assert(briefSchema.properties.rationale.minItems === 2 && briefSchema.properties.rationale.maxItems === 2 && briefSchema.properties.recommendedPlan.maxItems === 1, "bounded generation lost exact reason/suggestion counts");
 assert(briefSchema.properties.assumptions.maxItems === 0 && briefSchema.properties.uncertainty.maxItems === 0, "unrequested boilerplate remained in a brief constrained answer");
+// The per-field budget is guidance only: a grammar maxLength made the local
+// engine stop mid-sentence. Total length is validated after generation.
+assert(!JSON.stringify(briefSchema).includes("maxLength"), "the local schema must not cut fields mid-sentence");
+assert(/about \d+ Han characters/.test(JSON.stringify(briefSchema.properties.summary)), "the local schema lost its length guidance");
+// "结论 / 2条理由 / 1条…建议" are verified mechanically, so no self-quote is demanded.
+assert(!("requirementCoverage" in briefSchema.properties), "mechanically verified deliverables still demanded model self-quotes");
+validateCouncilAnswer(qualityObjective, { ...qualityReport, requirementCoverage: undefined });
 const characterSchema = councilResponseSchema(qualityObjective.replace("汉字", "字")) as typeof briefSchema;
-const worstCase = { ...qualityReport, summary: "x".repeat(characterSchema.properties.summary.maxLength!), rationale: ["x".repeat(characterSchema.properties.rationale.items!.maxLength), "x".repeat(characterSchema.properties.rationale.items!.maxLength)], recommendedPlan: ["x".repeat(characterSchema.properties.recommendedPlan.items!.maxLength)] };
-assert([...formatCouncilAnswer(worstCase)].length <= 180, "generation budget omitted actual visible headings/bullets/newlines");
+assert(/about \d+ characters/.test(JSON.stringify(characterSchema.properties.summary)), "character budget guidance missing");
 assert(councilResponseSchema("不超过1个字，给出10000000条理由。") === undefined, "impossible counts allocated an unbounded schema");
 
 const annualCostObjective = "最终建议需要包括：备份结构、自动化方式、年度费用估算、主要风险；预算每年不超过600元。";

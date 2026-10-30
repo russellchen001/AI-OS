@@ -6,7 +6,7 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { formatCouncilContext, resolveCouncilContext } from "./councilMemberContext";
-import { councilResponseSchema, formatCouncilAnswer, requestedDeliverables, requiresAnnualCostEstimate, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
+import { councilResponseSchema, deliverablesNeedingEvidence, formatCouncilAnswer, requiresAnnualCostEstimate, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
 import type { CouncilMember, CouncilRole, CouncilStepResult } from "../types/council";
 import type {
   CouncilContextSource,
@@ -265,7 +265,7 @@ export class CouncilRuntime {
         const invoke = async (request: AiCenterConversationMessage[]) => {
           let raw = "";
           const identifiedRequest = request.map((message, index) => index === 0 && message.role === "system"
-            ? { ...message, content: `${message.content}\nRuntime-selected model: ${choice.label} (${choice.modelId}). Your current answer is itself participation in this Council. Do not confuse missing independent analysis with absence from synthesis.${choice.providerId === "omlx" && responseSchema ? `\nThe local engine enforces this output schema: ${JSON.stringify(responseSchema)}\nPlan complete, concise sentences within each field's maxLength BEFORE writing them; never rely on a forced cutoff. summary must directly answer the exact original question, not restate the brief. rationale contains actual reasons; recommendedPlan contains only the requested allowed proposals. Evidence quotes must match your final concise values, not an earlier longer draft.` : ""}` }
+            ? { ...message, content: `${message.content}\nRuntime-selected model: ${choice.label} (${choice.modelId}). Your current answer is itself participation in this Council. Do not confuse missing independent analysis with absence from synthesis.${choice.providerId === "omlx" && responseSchema ? `\nThe local engine enforces this output schema: ${JSON.stringify(responseSchema)}\nPlan complete, concise sentences that fit each field's suggested length BEFORE writing them; the whole answer must stay within the user's limit. summary must directly answer the exact original question, not restate the brief. rationale contains actual reasons; recommendedPlan contains only the requested allowed proposals. Evidence quotes must match your final concise values, not an earlier longer draft.` : ""}` }
             : message);
           const stream = this.dependencies.stream(identifiedRequest, choice, (text) => {
             raw += text;
@@ -597,8 +597,8 @@ export class CouncilRuntime {
               '{"summary":"...","recommendedPlan":["..."],"rationale":["..."],"disagreements":["..."],"risks":["..."],"assumptions":["..."],"uncertainty":["..."]}',
             ]),
         "Keep unresolved disagreements and uncertainty explicit. Do not claim any task was executed.",
-        ...(requestedDeliverables(prompt).length ? [
-          `Also include requirementCoverage: [{"requirement":"exact requested label","evidence":"verbatim excerpt from your report text"}]. Cover each of these explicit deliverables exactly once: ${JSON.stringify(requestedDeliverables(prompt))}. Every excerpt must appear verbatim in one of your seven report text fields or rendered annual cost. Do not use a generic completion claim as a substitute for the requested content; this evidence is audited against the original request and actual answer.`,
+        ...(deliverablesNeedingEvidence(prompt).length ? [
+          `Also include requirementCoverage: [{"requirement":"exact requested label","evidence":"verbatim excerpt from your report text"}]. Cover each of these explicit deliverables exactly once: ${JSON.stringify(deliverablesNeedingEvidence(prompt))}. Every excerpt must appear verbatim in one of your seven report text fields or rendered annual cost. Do not use a generic completion claim as a substitute for the requested content; this evidence is audited against the original request and actual answer.`,
         ] : []),
         ...(requiresAnnualCostEstimate(prompt) ? [
           'Also include annualCostEstimate: {"currency":"CNY","scope":"what this annual estimate covers","pricing":"assumed or verified","items":[{"name":"expense","amount":0,"basis":"annual calculation or explicit price assumption"}],"total":0}. Use at least two distinct actual expense components. Amounts are annual numeric estimates, not spending caps. Sum items exactly; exclude reserves from expenses. If current quotes are unavailable use clearly labeled assumed prices and scope, never invent a verified quote. Rendered final answer includes this cost table.',
