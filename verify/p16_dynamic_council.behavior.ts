@@ -4,7 +4,7 @@ import {
   CouncilRuntime,
 } from "../src/services/councilRuntime";
 import { loadCouncilMembers } from "../src/services/council";
-import { validateCouncilAnswer, validateCouncilParticipation, validateNonDestructiveContribution, validateSynthesisAgreement, conclusionStance, annualCostEstimateText, requestedDeliverables, formatCouncilAnswer, councilResponseSchema } from "../src/services/answerRequirements";
+import { validateCouncilAnswer, validateCouncilParticipation, validateNonDestructiveContribution, validateSynthesisAgreement, conclusionStance, validateArenaAnswer, annualCostEstimateText, requestedDeliverables, formatCouncilAnswer, councilResponseSchema } from "../src/services/answerRequirements";
 import type { CouncilMember } from "../src/types/council";
 import type { AgencyAgentsCatalog } from "../src/types/councilIntegrations";
 import type { AiCenterResponse } from "../src/services/aiCenter";
@@ -203,6 +203,16 @@ let reversalRejected = "";
 try { validateSynthesisAgreement(qualityObjective.replace("1条可逆", "判断“两份个人笔记应继续只保存在这台 Mac 上吗？”1条可逆"), c73Report, c73Experts); } catch (error) { reversalRejected = String(error); }
 assert(reversalRejected.includes("2 of 3"), "a silent reversal of the expert majority was accepted");
 validateSynthesisAgreement("应继续只保存在这台 Mac 上吗？", { ...c73Report, disagreements: ["多数专家不建议只存本机；本结论因……而保留。"] }, c73Experts);
+
+// A heading and its mapping on following lines is still a concrete mapping
+// (a3fb4fd Arena: the Claude answer was rejected as "missing 3-2-1").
+for (const text of [
+  "## 备份结构与 3-2-1 对应\n\n- 第一份：MacBook\n- 第二份：外接盘（另一种介质）\n- 第三份：云端异地",
+  "**3-2-1 对应关系**\n1. 3 份数据：Mac、NAS、外接盘\n2. 2 种介质\n3. 1 份异地：云端",
+]) validateArenaAnswer("方案需要包括：备份结构以及与 3-2-1 原则的对应关系。", text);
+let bare321Rejected = false;
+try { validateArenaAnswer("方案需要包括：备份结构以及与 3-2-1 原则的对应关系。", "建议遵循 3-2-1 原则。"); } catch { bare321Rejected = true; }
+assert(bare321Rejected, "naming 3-2-1 without any mapping was accepted");
 
 const catalog: AgencyAgentsCatalog = {
   commit: "agency-commit",

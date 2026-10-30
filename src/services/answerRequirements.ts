@@ -12,22 +12,22 @@ function count(text: string | undefined): number | undefined {
 const REQUESTED_SECTIONS: Array<{ requested: RegExp; evidence: RegExp; label: string }> = [
     {
       requested: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1.{0,12}(?:对应|原则)|(?:对应|原则).{0,12}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
-      evidence: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1.{0,80}(?:副本|介质|异地|离线|copy|media|offsite)|(?:副本|介质|异地|离线|copy|media|offsite).{0,80}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
+      evidence: /3\s*[-‑–—]\s*2\s*[-‑–—]\s*1[\s\S]{0,200}(?:副本|份|介质|存储|异地|离线|家外|外地|云端|外接|NAS|copy|copies|media|offsite|off-site)|(?:副本|份|介质|存储|异地|离线|家外|外地|云端|外接|NAS|copy|copies|media|offsite|off-site)[\s\S]{0,200}3\s*[-‑–—]\s*2\s*[-‑–—]\s*1/i,
       label: "a concrete 3-2-1 mapping",
     },
     {
       requested: /(?:自动化(?:方式)?|自动备份|automation)/i,
-      evidence: /(?:自动|定时|计划任务|同步|增量|schedule|automatic|incremental).{0,80}(?:备份|快照|复制|同步|backup|snapshot|copy|sync)/i,
+      evidence: /(?:自动|定时|计划任务|同步|增量|schedule|automatic|incremental)[\s\S]{0,200}(?:备份|快照|复制|同步|backup|snapshot|copy|sync)/i,
       label: "an automation method",
     },
     {
       requested: /(?:每季度|季度).{0,12}(?:恢复|还原).{0,12}(?:演练|测试|步骤)|quarterly.{0,20}(?:restore|recovery).{0,20}(?:drill|test|steps?)/i,
-      evidence: /(?:每季度|季度|每三个月|quarterly).{0,100}(?:恢复|还原|抽样|校验|restore|recovery|sample|verify)/i,
+      evidence: /(?:每季度|季度|每三个月|quarterly)[\s\S]{0,200}(?:恢复|还原|抽样|校验|restore|recovery|sample|verify)/i,
       label: "quarterly restore-drill steps",
     },
     {
       requested: /(?:主要风险.{0,8}(?:取舍|权衡)|risks?.{0,12}trade[- ]?offs?)/i,
-      evidence: /(?:风险|故障|丢失|勒索|泄露|中断|risk|failure|loss|ransomware|breach).{0,100}(?:取舍|权衡|代价|但|相比|trade[- ]?off|cost|however|versus)/i,
+      evidence: /(?:风险|故障|丢失|勒索|泄露|中断|risk|failure|loss|ransomware|breach)[\s\S]{0,200}(?:取舍|权衡|代价|但|相比|trade[- ]?off|cost|however|versus)/i,
       label: "risks and trade-offs",
     },
   ];
