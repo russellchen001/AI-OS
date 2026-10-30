@@ -6,7 +6,7 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { formatCouncilContext, resolveCouncilContext } from "./councilMemberContext";
-import { councilResponseSchema, deliverablesNeedingEvidence, formatCouncilAnswer, requiresAnnualCostEstimate, validateNonDestructiveContribution, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
+import { councilResponseSchema, deliverablesNeedingEvidence, formatCouncilAnswer, requiresAnnualCostEstimate, validateNonDestructiveContribution, validateSynthesisAgreement, validateCouncilAnswer, validateCouncilParticipation } from "./answerRequirements";
 import type { CouncilMember, CouncilRole, CouncilStepResult } from "../types/council";
 import type {
   CouncilContextSource,
@@ -352,6 +352,7 @@ export class CouncilRuntime {
     callbacks: CouncilRunRequest["callbacks"],
     verifiedModels: string[] = [],
     responseSchema?: Record<string, unknown>,
+    expertConclusions: string[] = [],
   ): Promise<CouncilStepResult> {
     const stepId = `${seat.id}:${stage}`;
     const member: CouncilMember = {
@@ -435,6 +436,7 @@ export class CouncilRuntime {
         stage === "final-synthesis" ? (output, choice) => {
           const report = parseRecommendation(output, "validation", "validation", [], 0);
           validateCouncilAnswer(prompt, report);
+          validateSynthesisAgreement(prompt, report, expertConclusions);
           validateCouncilParticipation([report.summary, ...report.disagreements, ...report.uncertainty].join("\n"),
             [...verifiedModels, choice.modelId, choice.label.split("·").at(-1)?.trim() ?? choice.label]);
         } : (output) => {
@@ -621,6 +623,11 @@ export class CouncilRuntime {
         return [step.modelId ?? "", model?.label.split("·").at(-1)?.trim() ?? ""].filter(Boolean);
       }),
       plan.mode === "simulation" ? undefined : councilResponseSchema(prompt),
+      // Each expert's latest successful position (cross-review over analysis).
+      expertSeats.flatMap((seat) => {
+        const latest = completed.filter((step) => step.seatId === seat.id && step.status === "done").at(-1);
+        return latest?.output ? [latest.output] : [];
+      }),
     );
     completed.push(synthesis);
 

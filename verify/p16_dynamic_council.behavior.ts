@@ -4,7 +4,7 @@ import {
   CouncilRuntime,
 } from "../src/services/councilRuntime";
 import { loadCouncilMembers } from "../src/services/council";
-import { validateCouncilAnswer, validateCouncilParticipation, validateNonDestructiveContribution, annualCostEstimateText, requestedDeliverables, formatCouncilAnswer, councilResponseSchema } from "../src/services/answerRequirements";
+import { validateCouncilAnswer, validateCouncilParticipation, validateNonDestructiveContribution, validateSynthesisAgreement, conclusionStance, annualCostEstimateText, requestedDeliverables, formatCouncilAnswer, councilResponseSchema } from "../src/services/answerRequirements";
 import type { CouncilMember } from "../src/types/council";
 import type { AgencyAgentsCatalog } from "../src/types/councilIntegrations";
 import type { AiCenterResponse } from "../src/services/aiCenter";
@@ -180,6 +180,29 @@ validateNonDestructiveContribution(qualityObjective, "复制到外接硬盘，�
 let planDdRejected = false;
 try { validateCouncilAnswer(qualityObjective, { ...sameDiskReport, recommendedPlan: ["运行 diskutil eraseDisk 后复制到外接硬盘。"] }); } catch { planDdRejected = true; }
 assert(planDdRejected, "a destructive disk command was accepted in the final plan");
+
+// Real c73b126 local180 run: invented device facts as reasons, and a
+// synthesis that reversed two of three expert conclusions silently.
+const c73Report = {
+  summary: "两份个人笔记应继续只保存在这台 Mac 上，但需采取定期检查备份和本地备份策略以避免数据丢失。",
+  recommendedPlan: ["立即创建一次Time Machine备份，并将备份文件复制到独立外部硬盘中"],
+  rationale: ["现有本地存储空间足够，无需迁移。", "文件关联和个人习惯适应本地保存。"],
+  disagreements: [], risks: [], assumptions: [], uncertainty: [],
+};
+let inventedRejected = "";
+try { validateCouncilAnswer(qualityObjective, c73Report); } catch (error) { inventedRejected = String(error); }
+assert(inventedRejected.includes("现有本地存储空间足够"), "an invented device fact was accepted as a reason");
+validateCouncilAnswer(qualityObjective, { ...c73Report, rationale: ["若本地存储空间足够，可暂不迁移。", "单机仍有丢失风险，需要外部副本。"] });
+const c73Experts = [
+  "结论：应继续保存。\n理由1：现有本地存储空间足够。",
+  "最终结论：不建议将两份个人笔记继续仅保存在本机。",
+  "结论修正为：不建议将两份个人笔记继续仅保存在这台 Mac 上。",
+];
+equal(c73Experts.map(conclusionStance), ["yes", "no", "no"], "expert conclusion stances");
+let reversalRejected = "";
+try { validateSynthesisAgreement(qualityObjective.replace("1条可逆", "判断“两份个人笔记应继续只保存在这台 Mac 上吗？”1条可逆"), c73Report, c73Experts); } catch (error) { reversalRejected = String(error); }
+assert(reversalRejected.includes("2 of 3"), "a silent reversal of the expert majority was accepted");
+validateSynthesisAgreement("应继续只保存在这台 Mac 上吗？", { ...c73Report, disagreements: ["多数专家不建议只存本机；本结论因……而保留。"] }, c73Experts);
 
 const catalog: AgencyAgentsCatalog = {
   commit: "agency-commit",

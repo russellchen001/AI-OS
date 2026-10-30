@@ -51,6 +51,56 @@ export function validateNonDestructiveContribution(objective: string, text: stri
 /** "备份" means a copy on separate storage; the same disk is not a backup. */
 const SEPARATE_STORAGE = /外接|外置|外盘|移动硬盘|移动盘|U\s*盘|优盘|SSD|NAS|Time\s*Machine|时间机器|另一(?:台|块|个|部)|第二(?:块|台|个)|外部(?:存储|硬盘|设备|磁盘)|光盘|external|usb|thumb\s*drive|another\s+(?:disk|drive|device|mac)|second\s+(?:disk|drive|device)/i;
 
+/**
+ * Claims about the user's current devices or data that the objective does not
+ * give ("本地存储空间足够", "已加密", "风险可控"). They must be stated as
+ * assumptions; real local180 reasons invented them as facts.
+ */
+const UNVERIFIED_STATE = /(?:空间|容量)[^。；;，,]{0,6}(?:足够|充足|充裕|够用)|已(?:经)?(?:开启|启用|加密|做了?备份|配置好|设置好)|(?:数据|文件|笔记)[^。；;，,]{0,8}(?:安全无虞|已经安全|得到保障|不会丢失)|风险可控|(?:不含|没有)(?:任何)?敏感(?:信息|内容)/;
+const HEDGED = /假设|如果|若|假如|未知|尚不清楚|需(?:要)?(?:确认|核实)|待确认|可能|或许|也许|assum|\bif\b|unless|unknown/i;
+
+function validateGroundedClaims(objective: string, report: { summary: string; recommendedPlan: string[]; rationale: string[] }): string | undefined {
+  const sentences = [report.summary, ...report.rationale, ...report.recommendedPlan]
+    .flatMap((text) => text.split(/[。；;！？!?\n]/))
+    .filter(Boolean);
+  const claims = sentences.flatMap((sentence) => {
+    const match = sentence.match(UNVERIFIED_STATE);
+    return match && !HEDGED.test(sentence) && !objective.includes(match[0]) ? [sentence.trim()] : [];
+  });
+  return claims.length
+    ? `Council answer states facts about the user's devices or data that the objective does not give: ${JSON.stringify(claims)}. Remove them or state them explicitly as assumptions.`
+    : undefined;
+}
+
+type Stance = "yes" | "no";
+
+/** The yes/no stance of a conclusion line, if one is clear. */
+export function conclusionStance(text: string): Stance | undefined {
+  const line = (text.match(/(?:最终)?结论(?:修正为)?\s*[：:]\s*([^\n]+)/)?.[1] ?? text.split(/[。\n]/)[0] ?? "").slice(0, 160);
+  if (/不建议|不应|不宜|不推荐|不应该|不能只|不可(?:以)?继续|^\s*否/.test(line)) return "no";
+  if (/^\s*是|应(?:该)?继续|建议继续|可以继续|宜继续|应(?:该)?(?:保留|保存)|继续(?:仅|只)?(?:保存|保留)/.test(line)) return "yes";
+  return undefined;
+}
+
+/**
+ * On a yes/no question, a synthesis that reverses the majority of the expert
+ * conclusions must say so in disagreements. In a real local180 run two of
+ * three experts said "不建议只存本机" and the synthesis said the opposite
+ * with an empty disagreements list.
+ */
+export function validateSynthesisAgreement(objective: string, report: { summary: string; disagreements: string[] }, expertOutputs: string[]): void {
+  if (!/吗\s*[？?]|是否|\bshould\b[^?]*\?/i.test(objective) || report.disagreements.length) return;
+  const stances = expertOutputs.map(conclusionStance).filter((stance): stance is Stance => Boolean(stance));
+  const no = stances.filter((stance) => stance === "no").length;
+  const yes = stances.length - no;
+  if (stances.length < 2 || yes === no) return;
+  const majority: Stance = no > yes ? "no" : "yes";
+  const synthesis = conclusionStance(report.summary);
+  if (synthesis && synthesis !== majority) {
+    throw new Error(`Council synthesis concludes "${synthesis}" while ${Math.max(yes, no)} of ${stances.length} expert conclusions said "${majority}", and no disagreement is recorded. Either follow the stronger evidence or record the disagreement and why it was overruled.`);
+  }
+}
+
 export function answerRequirements(objective: string) {
   return {
     maxChars: count(objective.match(/不超过\s*(\d+)\s*(?:个)?(?:汉字|字|字符)/)?.[1]),
@@ -273,6 +323,8 @@ export function validateCouncilAnswer(objective: string, report: {
       violations.push("Council backup suggestion must copy to separate storage (external disk, USB drive, NAS, Time Machine disk or another device); a copy on the same Mac disk is not a backup.");
     }
   }
+  const ungrounded = validateGroundedClaims(objective, report);
+  if (ungrounded) violations.push(ungrounded);
   const prohibited = objective.match(/(?:不要|禁止|不得)推荐([^。！？]+)/)?.[1]?.split(/[、，,]|或(?:任何)?/).map(term => term.trim()).filter(Boolean) ?? [];
   for (const term of prohibited) {
     const forbidden = /云服务|云端|云存储|cloud/i.test(term) ? /云(?:端|服务|存储|盘)|icloud|onedrive|dropbox|google drive|cloud/i : undefined;
