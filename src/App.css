@@ -5129,6 +5129,25 @@ select:focus-visible {
   justify-content: flex-end;
 }
 
+.council-cloud-consent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  border-radius: 12px;
+}
+
+.council-cloud-consent p {
+  flex: 1 1 320px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .council-compose-actions > span {
   margin-right: auto;
   color: #94a3b8;

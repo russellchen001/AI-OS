@@ -51,7 +51,16 @@ export type ChiefOfStaffDependencies = {
 export type CouncilAssemblyRequest = {
   objective: string;
   maxSeats?: number;
+  /**
+   * Set only by an explicit user action after local models failed: this one
+   * run may use cloud models although the objective asks for local only.
+   */
+  cloudAllowedByUser?: boolean;
 };
+
+/** The note prepended to an objective rerun with the user's cloud consent. */
+export const CLOUD_CONSENT_NOTE =
+  "【用户授权】本地模型未能给出合格答案后，用户已明确允许本次使用云端模型推理；题目中的其他约束保持不变。";
 
 function slugify(value: string, fallback: string): string {
   const slug = value
@@ -234,6 +243,7 @@ function assignModels(
   models: AiCenterModelChoice[],
   objective: string,
   named: AiCenterModelChoice[] = [],
+  cloudAllowedByUser = false,
 ): CouncilModelAssignment[] {
   if (!models.length) throw new Error("No generation-verified model is available. Verify a model in My AI.");
   if (named.length) {
@@ -248,7 +258,7 @@ function assignModels(
         ? synthesizerModel
         : experts[expertIndex++];
       if (!pinned) {
-        return assignModels([requirement], models, objective)[0];
+        return assignModels([requirement], models, objective, [], cloudAllowedByUser)[0];
       }
       return {
         ...pinned,
@@ -257,7 +267,7 @@ function assignModels(
       };
     });
   }
-  const localFirstObjective = /private|privacy|confidential|local|隐私|机密|本地/.test(
+  const localFirstObjective = !cloudAllowedByUser && /private|privacy|confidential|local|隐私|机密|本地/.test(
     objective.toLowerCase(),
   );
   const providerRepresentatives = [
@@ -265,7 +275,7 @@ function assignModels(
   ];
 
   return requirements.map((requirement, index) => {
-    const localOnly = requirement.localFirst || localFirstObjective;
+    const localOnly = (requirement.localFirst && !cloudAllowedByUser) || localFirstObjective;
     const eligibleModels = localOnly
       ? models.filter((model) => model.providerId === "omlx")
       : models;
@@ -399,7 +409,7 @@ export class CouncilChiefOfStaff {
     // Model names identify participants; they are not task-domain evidence.
     const taskText = withoutModelMentions(objective, models);
     const named = seatOrder(namedParticipantModels(objective, models));
-    const localFirst = /private|privacy|confidential|local|隐私|机密|本地/.test(
+    const localFirst = !request.cloudAllowedByUser && /private|privacy|confidential|local|隐私|机密|本地/.test(
       taskText.toLowerCase(),
     );
     const namedCloud = named.filter((model) => model.providerId !== "omlx");
@@ -464,7 +474,7 @@ export class CouncilChiefOfStaff {
       id: `${slugify(requirement.id || requirement.title, `seat-${index + 1}`)}-${index + 1}`,
       synthesizer: index === synthesizerIndex,
     }));
-    const assignments = assignModels(requirements, models, taskText, named);
+    const assignments = assignModels(requirements, models, taskText, named, request.cloudAllowedByUser);
     const usedPaths = new Set<string>();
     const seats: CouncilSeat[] = [];
 

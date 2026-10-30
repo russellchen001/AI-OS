@@ -362,6 +362,15 @@ try {
   namedCloudRejected = String(error).includes("gpt-business") || String(error).includes("ChatGPT Business");
 }
 assert(namedCloudRejected, "a local-only Council silently dropped a named cloud model");
+// Cloud is used for a local-only objective only after the user's explicit
+// one-time consent (the "允许本次使用云端模型重跑" button).
+const localOnlyObjective = "仅使用本机本地模型，判断两份个人笔记是否应继续只保存在这台 Mac 上？";
+const withoutConsent = await namedChief.assemble({ objective: localOnlyObjective });
+assert(withoutConsent.seats.every((seat) => seat.assignedModel.providerId === "omlx"), "a local-only Council used cloud without consent");
+const withConsent = await namedChief.assemble({ objective: localOnlyObjective, cloudAllowedByUser: true });
+assert(withConsent.seats.some((seat) => seat.assignedModel.providerId !== "omlx"), "explicit cloud consent did not allow cloud models");
+const consentSynth = withConsent.seats.find((seat) => seat.id === withConsent.synthesizerSeatId)!.assignedModel;
+assert(consentSynth.providerId !== "omlx", "with consent the synthesizer should be the strongest available model");
 
 const localPlan = await new CouncilChiefOfStaff({
   paperclip: {

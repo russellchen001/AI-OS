@@ -34,6 +34,7 @@ import {
   createCouncilRuntime,
 } from "../services/councilRuntime";
 import {
+  CLOUD_CONSENT_NOTE,
   createCouncilChiefOfStaff,
 } from "../services/councilChiefOfStaff";
 import {
@@ -148,6 +149,10 @@ function AiCouncilPage({
     setIsAssembling,
   ] = useState(false);
 
+  // The local-only objective whose local answer was rejected; offering a
+  // one-time cloud rerun is the user's decision, never a silent fallback.
+  const [cloudRerunFor, setCloudRerunFor] = useState<string | null>(null);
+
   const [
     isRunning,
     setIsRunning,
@@ -231,9 +236,13 @@ function AiCouncilPage({
       );
     };
 
-  const runCouncil = async () => {
+  const runCouncil = async (options: { cloudAllowedByUser?: boolean } = {}) => {
     const userPrompt = prompt.trim();
     if (!userPrompt || isRunning) return;
+    const cloudAllowedByUser = options.cloudAllowedByUser === true;
+    const runPrompt = cloudAllowedByUser ? `${CLOUD_CONSENT_NOTE}\n${userPrompt}` : userPrompt;
+    const localOnlyObjective = /private|privacy|confidential|local|隐私|机密|本地/i.test(userPrompt);
+    setCloudRerunFor(null);
 
     const startedAt = Date.now();
     let evidenceSession: CouncilSession | undefined;
@@ -259,10 +268,11 @@ function AiCouncilPage({
       try {
         nextAssemblyPlan = await chiefOfStaffRef.current.assemble({
           objective: userPrompt,
+          cloudAllowedByUser,
         });
         setAssemblyPlan(nextAssemblyPlan);
       } catch (error) {
-        if (/private|privacy|confidential|local|隐私|机密|本地/i.test(userPrompt)) {
+        if (localOnlyObjective && !cloudAllowedByUser) {
           throw error;
         }
         onMessage(
@@ -275,7 +285,7 @@ function AiCouncilPage({
       }
 
       const result = await councilRuntimeRef.current.run({
-        prompt: userPrompt,
+        prompt: runPrompt,
         members,
         assemblyPlan: nextAssemblyPlan,
         callbacks: {
@@ -410,6 +420,7 @@ function AiCouncilPage({
           ),
         );
         onMessage(`AI Council failed: ${message}`);
+        if (localOnlyObjective && !cloudAllowedByUser) setCloudRerunFor(userPrompt);
       }
     } finally {
       setIsAssembling(false);
@@ -1063,6 +1074,24 @@ function AiCouncilPage({
                 }
               }}
             />
+
+            {cloudRerunFor && cloudRerunFor === prompt.trim() && !isRunning && (
+              <div className="council-cloud-consent" role="alert">
+                <p>
+                  本地模型未能给出合格答案（原因见下方各步骤）。这道题要求仅使用本地模型，AI-OS 不会自动改用云端。
+                  如果你愿意，可以只为这一次运行允许云端模型推理；题目内容会发送给已连接的云端模型，其他约束保持不变。
+                </p>
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={() => {
+                    void runCouncil({ cloudAllowedByUser: true });
+                  }}
+                >
+                  允许本次使用云端模型重跑
+                </button>
+              </div>
+            )}
 
             <div className="council-compose-actions">
               <span>
