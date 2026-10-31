@@ -162,6 +162,8 @@
     只带被批准的 capability+input 执行；`p16_remote_ai_os` 中要求复用原 Task 的断言与运行时矛盾，改为校验新 Task 携带
     精确批准与输入（6/0）。确认文案带目标（parent/name/path）。「列出桌面文件」的 Plan runtime request is invalid 来自
     旧版（scan 只认英文 Desktop），943332a 起已支持中文。Rust 1117/0。
+    候选 `aea54c4`：DMG SHA256 `38c9692b8bcbe5710e95c0d2fb72aa589c3cf0d988bd937a45f64fe30daf97db`，主程序
+    `f2a9cb15855a80da5af82e816897b78483befae9e240a299dd3c1394dccd861d`；已启动（替换 943332a）；Beta5 未变；~/Desktop/test 仍不存在。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
