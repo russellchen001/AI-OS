@@ -45,6 +45,9 @@
     已有 OAuth/Gemini CLI 连接保留；Gemini CLI 返回 IneligibleTierError 时提示改用自己的 API key（真实复测通过）。
     Rust 1092/0/88；CLI Provider、Provider 稳定性、信息架构、Provider blocking、P16、P17 PASS。
     待用户：自己在 App 中粘贴自己的 Gemini API key 完成真实验证（助手不得代填密钥）。
+    候选 `4ec02af` 已构建（未启动）：DMG `outputs/AI OS_1.0.1-beta.6_candidate-4ec02af_aarch64.dmg` SHA256
+    `3f3ba911bc1056905e84695c072276523006373b7e9c503d02c950bfb6254203`，主程序 `22544f8936847e84b0b1a06571eee4a61af7a104602e43ac6dc56d8edf7925d8`；
+    Beta5 主程序 `91ff470b…253ce5` 未变。
   - **发布前须由用户决策的条款风险（同类问题）**：Anthropic Agent SDK 文档写明未经批准第三方产品不得提供
     Claude.ai 登录/订阅额度（官方建议 API key）；AI-OS 的 Claude Code 账号路线（用户订阅）、OpenAI Codex OAuth
     路线、Grok CLI 账号路线可能落在同类限制内，需逐家核对现行条款后决定是否保留/改为 API key。未改代码。
