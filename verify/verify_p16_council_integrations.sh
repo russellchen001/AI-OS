@@ -51,9 +51,9 @@ check \
     src/services/integrations/agencyAgentsAdapter.ts
 
 check \
-  "Linco Bridge source pinned" \
+  "Linco connector source pinned" \
   grep -q \
-    '3a7375858eb17de3db45cd9896578d371c6df9be' \
+    '536a257dbce75de2e7000ff3b8bb01b010fb2dfe' \
     src/services/integrations/lincoBridgeAdapter.ts
 
 check \
@@ -81,16 +81,15 @@ check \
     src/services/integrations/agencyAgentsAdapter.ts
 
 check \
-  "Linco Bridge uses real demo-config endpoint" \
+  "Linco probe reads the built-in connector" \
   grep -q \
-    '/api/demo-config' \
+    'getLincoConnectorStatus' \
     src/services/integrations/lincoBridgeAdapter.ts
 
 check \
-  "Linco Bridge exposes OpenClaw status" \
-  grep -q \
-    '/api/agent-bridges/openclaw/status' \
-    src/services/integrations/lincoBridgeAdapter.ts
+  "No separate Linco server dependency" \
+  bash -c \
+    '! rg -n "127\.0\.0\.1:3300" src'
 
 check \
   "No user NAS fixture leaked into integrations" \

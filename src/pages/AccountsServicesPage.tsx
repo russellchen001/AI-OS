@@ -1,4 +1,5 @@
 import ConnectionsCenter from "../components/ConnectionsCenter";
+import LincoPhoneAccess from "../components/LincoPhoneAccess";
 import SectionTabs from "../components/SectionTabs";
 import type { PageName } from "../types/index";
 
@@ -27,6 +28,7 @@ export default function AccountsServicesPage({ onPageChange }: AccountsServicesP
         ]}
       />
       <ConnectionsCenter />
+      <LincoPhoneAccess />
     </section>
   );
 }

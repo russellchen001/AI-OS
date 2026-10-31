@@ -40,9 +40,6 @@ if [[ "$BUILD_RC" -eq 0 ]]; then
   node "$TMP_DIR/live-integrations.mjs" paperclip
   record_result "Paperclip live endpoints and adapter" "$?"
 
-  node "$TMP_DIR/live-integrations.mjs" linco-bridge
-  record_result "Linco Bridge live endpoints, visitor session and adapter" "$?"
-
   node "$TMP_DIR/live-integrations.mjs" dynamic-assembly
   record_result "Chief of Staff live Paperclip and Agency assembly" "$?"
 fi

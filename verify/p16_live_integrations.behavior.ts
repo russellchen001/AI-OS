@@ -1,5 +1,4 @@
 import { AgencyAgentsAdapter } from "../src/services/integrations/agencyAgentsAdapter";
-import { LincoBridgeAdapter } from "../src/services/integrations/lincoBridgeAdapter";
 import { PaperclipAdapter } from "../src/services/integrations/paperclipAdapter";
 import { CouncilChiefOfStaff } from "../src/services/councilChiefOfStaff";
 
@@ -83,36 +82,13 @@ async function verifyPaperclip(): Promise<void> {
   );
 }
 
-async function verifyLincoBridge(): Promise<void> {
-  const adapter = new LincoBridgeAdapter("http://127.0.0.1:3300");
-  const probe = await adapter.probe();
-  if (probe.status !== "available") {
-    throw new Error(`Linco Bridge unavailable: ${probe.detail}`);
-  }
-  const sessions = await adapter.listSessions();
-  assert(
-    sessions.every((session) => session.id.length > 0),
-    "Linco Bridge session normalization produced an invalid session.",
-  );
-  const status = await adapter.getOpenClawBridgeStatus();
-  assert(
-    typeof status === "object" && status !== null && "connected" in status,
-    "Linco Bridge OpenClaw status response is invalid.",
-  );
-  console.log(
-    `PASS: Linco Bridge live adapter reachable=true sessions=${sessions.length} openClawConnected=${String((status as { connected: unknown }).connected)}`,
-  );
-}
-
 const mode = process.argv[2];
 const run =
   mode === "agency-agents"
     ? verifyAgencyAgents
     : mode === "paperclip"
       ? verifyPaperclip
-      : mode === "linco-bridge"
-        ? verifyLincoBridge
-        : mode === "dynamic-assembly"
+      : mode === "dynamic-assembly"
           ? verifyDynamicAssembly
         : undefined;
 

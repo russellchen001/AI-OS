@@ -203,24 +203,51 @@ async fn handle_connection(mut stream: TcpStream, app: AppHandle, state: RemoteL
         let _ = write_response(&mut stream, "400 Bad Request", json!({ "ok": false, "error": message })).await;
         return;
     }
+    match dispatch_inbound(&app, &state, envelope, Duration::from_secs(120)).await {
+        Ok(events) => {
+            let _ = write_response(&mut stream, "200 OK", json!({ "ok": true, "events": events })).await;
+        }
+        Err(DispatchError::Unavailable) => {
+            let _ = write_response(&mut stream, "503 Service Unavailable", json!({ "ok": false, "error": "desktop event bridge unavailable" })).await;
+        }
+        Err(DispatchError::Rejected(message)) => {
+            let _ = write_response(&mut stream, "422 Unprocessable Entity", json!({ "ok": false, "error": message })).await;
+        }
+        Err(DispatchError::TimedOut) => {
+            let _ = write_response(&mut stream, "504 Gateway Timeout", json!({ "ok": false, "error": "desktop response timeout" })).await;
+        }
+    }
+}
+
+pub(crate) enum DispatchError {
+    Unavailable,
+    Rejected(String),
+    TimedOut,
+}
+
+/// Hand a validated remote envelope to the desktop's Remote AI-OS gateway and
+/// wait for its normalized events. Shared by the loopback endpoint and the
+/// built-in Linco connector.
+pub(crate) async fn dispatch_inbound(
+    app: &AppHandle,
+    state: &RemoteLincoBridgeState,
+    envelope: Value,
+    timeout: Duration,
+) -> Result<Value, DispatchError> {
+    validate_envelope(&envelope).map_err(DispatchError::Rejected)?;
     let request_id = Uuid::new_v4().to_string();
     let (sender, receiver) = oneshot::channel();
     state.pending.lock().await.insert(request_id.clone(), sender);
     if app.emit("remote-linco://inbound", DesktopInboundEvent { request_id: request_id.clone(), envelope }).is_err() {
         state.pending.lock().await.remove(&request_id);
-        let _ = write_response(&mut stream, "503 Service Unavailable", json!({ "ok": false, "error": "desktop event bridge unavailable" })).await;
-        return;
+        return Err(DispatchError::Unavailable);
     }
-    match tokio::time::timeout(Duration::from_secs(120), receiver).await {
-        Ok(Ok(Ok(events))) => {
-            let _ = write_response(&mut stream, "200 OK", json!({ "ok": true, "events": events })).await;
-        }
-        Ok(Ok(Err(message))) => {
-            let _ = write_response(&mut stream, "422 Unprocessable Entity", json!({ "ok": false, "error": message })).await;
-        }
+    match tokio::time::timeout(timeout, receiver).await {
+        Ok(Ok(Ok(events))) => Ok(events),
+        Ok(Ok(Err(message))) => Err(DispatchError::Rejected(message)),
         _ => {
             state.pending.lock().await.remove(&request_id);
-            let _ = write_response(&mut stream, "504 Gateway Timeout", json!({ "ok": false, "error": "desktop response timeout" })).await;
+            Err(DispatchError::TimedOut)
         }
     }
 }

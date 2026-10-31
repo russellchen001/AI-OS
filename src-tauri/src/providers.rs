@@ -640,7 +640,7 @@ pub(crate) struct ProviderInstance {
     pub last_tested_at: Option<String>,
 }
 
-fn provider_config_directory() -> Result<std::path::PathBuf, String> {
+pub(crate) fn provider_config_directory() -> Result<std::path::PathBuf, String> {
     let base = dirs::config_dir()
         .ok_or_else(|| "Unable to determine the AI-OS configuration directory".to_owned())?;
 
@@ -2742,7 +2742,7 @@ fn validate_instance_id(value: &str) -> Result<&str, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn store_secret(account: &str, secret: &[u8], caller: &str) -> Result<(), String> {
+pub(crate) fn store_secret(account: &str, secret: &[u8], caller: &str) -> Result<(), String> {
     crate::keychain_trace::record("WRITE_UPSERT", caller, KEYCHAIN_SERVICE, account, "UPDATE");
     security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, account, secret)
         .map_err(|_| "macOS Keychain could not store the Provider credential".to_owned())?;
@@ -2750,7 +2750,7 @@ fn store_secret(account: &str, secret: &[u8], caller: &str) -> Result<(), String
 }
 
 #[cfg(not(target_os = "macos"))]
-fn store_secret(_account: &str, _secret: &[u8], _caller: &str) -> Result<(), String> {
+pub(crate) fn store_secret(_account: &str, _secret: &[u8], _caller: &str) -> Result<(), String> {
     Err("secure Provider credentials are not supported on this platform".to_owned())
 }
 
@@ -2771,7 +2771,7 @@ fn secret_exists(account: &str, caller: &str) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn read_secret(account: &str, caller: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_secret(account: &str, caller: &str) -> Result<Vec<u8>, String> {
     provider_credential_cache()
         .load(
             account,
@@ -2787,7 +2787,7 @@ fn read_secret(account: &str, caller: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_secret(_account: &str, _caller: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_secret(_account: &str, _caller: &str) -> Result<Vec<u8>, String> {
     Err("secure Provider credentials are not supported on this platform".to_owned())
 }
 
@@ -3244,7 +3244,7 @@ fn secret_exists(_account: &str, _caller: &str) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn remove_secret(account: &str, caller: &str) -> Result<(), String> {
+pub(crate) fn remove_secret(account: &str, caller: &str) -> Result<(), String> {
     crate::keychain_trace::record("DELETE", caller, KEYCHAIN_SERVICE, account, "INVALIDATE");
     match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, account) {
         Ok(()) => provider_credential_cache().remove(account),
@@ -3256,7 +3256,7 @@ fn remove_secret(account: &str, caller: &str) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn remove_secret(_account: &str, _caller: &str) -> Result<(), String> {
+pub(crate) fn remove_secret(_account: &str, _caller: &str) -> Result<(), String> {
     Err("secure Provider credentials are not supported on this platform".to_owned())
 }
 

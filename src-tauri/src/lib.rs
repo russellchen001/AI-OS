@@ -53,6 +53,7 @@ mod openclaw;
 pub mod planner;
 mod provider_selection;
 mod providers;
+mod linco_connector;
 mod remote_linco;
 mod runtime;
 mod software_installation;
@@ -159,6 +160,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(runtime_state)
         .manage(remote_linco::RemoteLincoBridgeState::default())
+        .manage(linco_connector::LincoConnectorState::default())
         .setup(move |app| {
             let emitter = std::sync::Arc::new(runtime::executor::TauriEventEmitter::new(
                 app.handle().clone(),
@@ -175,6 +177,7 @@ pub fn run() {
             connections::refresh_browser_site_registry(&app.handle().clone());
             connections::begin_authenticated_browser_recovery(app.handle().clone());
             remote_linco::start(app.handle().clone())?;
+            linco_connector::start(app.handle().clone());
             Ok(())
         })
         .plugin(tauri_plugin_fs::init())
@@ -387,17 +390,21 @@ pub fn run() {
             knowledge::search_knowledge,
             remote_linco::get_remote_linco_bridge_status,
             remote_linco::complete_remote_linco_request,
+            linco_connector::get_linco_connector_status,
+            linco_connector::pair_linco_connector,
+            linco_connector::unpair_linco_connector,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Tauri application");
 
-    app.run(|_app_handle, event| match event {
+    app.run(|app_handle, event| match event {
         // Both paths are wired on purpose. ExitRequested fires while the event
         // loop can still run work; Exit fires on the way out and covers exits
         // that never raise a request. close_all_managed_browsers drains its
         // registry, so running on both is safe rather than double work.
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
             let _ = browser::authenticated_runtime::close_all_managed_browsers();
+            linco_connector::shutdown(app_handle);
         }
         _ => {}
     });
