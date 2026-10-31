@@ -94,25 +94,24 @@ const PROVIDER_OAUTH_CONFIGURATION_REGISTRY: Record<string, string> = {
   "microsoft-graph": "MICROSOFT",
 };
 
-const OPENAI_CODEX_OAUTH_CONFIGURATION = {
-  clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
-  authorizationUrl: "https://auth.openai.com/oauth/authorize",
-  tokenUrl: "https://auth.openai.com/oauth/token",
+// OpenAI's official Sign in with ChatGPT for open-source, locally run apps.
+// The native layer owns the protocol (registered client, host id, nonce,
+// resource) and always uses these endpoints; the first sign-in registers
+// AI-OS and later ones reuse the client OpenAI issued.
+const OPENAI_SIGN_IN_WITH_CHATGPT_CONFIGURATION = {
+  clientId: "dynamic_agent_client",
+  authorizationUrl: "https://auth.openai.com/api/accounts/authorize",
+  tokenUrl: "https://auth.openai.com/api/accounts/oauth/token",
   scopes: [
     "openid",
     "profile",
     "email",
     "offline_access",
-    "api.connectors.read",
-    "api.connectors.invoke",
+    "resource.invoke",
+    "chatgpt.tokens.use.direct",
   ],
   callbackPort: 1455,
   callbackPath: "/auth/callback",
-  authorizationParams: {
-    id_token_add_organizations: "true",
-    codex_cli_simplified_flow: "true",
-    originator: "ai-os",
-  },
 } satisfies Omit<OAuthProviderConfiguration, "providerId" | "providerInstanceId">;
 
 const OPENROUTER_OAUTH_CONFIGURATION = {
@@ -189,7 +188,7 @@ export function getProviderOAuthConfiguration(
     return {
       providerId,
       providerInstanceId,
-      ...OPENAI_CODEX_OAUTH_CONFIGURATION,
+      ...OPENAI_SIGN_IN_WITH_CHATGPT_CONFIGURATION,
     };
   }
 

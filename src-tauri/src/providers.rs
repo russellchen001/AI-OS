@@ -1111,6 +1111,8 @@ struct OAuthSession {
     route_kind: Option<String>,
     redirect_uri: String,
     verifier: String,
+    /// OpenID nonce, checked against the ID token (Sign in with ChatGPT).
+    nonce: Option<String>,
     created_at: u64,
     expires_at: u64,
 }
@@ -2821,6 +2823,9 @@ async fn refresh_oauth_token(account: &str, token: &Value) -> Result<Value, Stri
         ("refresh_token", refresh_token),
         ("client_id", client_id),
     ];
+    if let Some(resource) = metadata.get("resource").and_then(Value::as_str) {
+        form.push(("resource", resource));
+    }
     if let Some(secret) = client_secret.as_deref() {
         form.push(("client_secret", secret));
     }
@@ -3332,6 +3337,12 @@ async fn read_current_credential(
             })
             .map_err(|_| "Provider credential in Keychain is invalid".to_owned());
     };
+    if token.pointer("/_aios/routeKind").and_then(Value::as_str)
+        == Some(crate::openai_siwc::RETIRED_ROUTE_KIND)
+    {
+        update_provider_oauth_runtime_state(account, ProviderConnectionState::RefreshRequired, None);
+        return Err(crate::openai_siwc::RECONNECT_MESSAGE.to_owned());
+    }
     let should_refresh = token
         .pointer("/_aios/expiresAt")
         .and_then(Value::as_str)
@@ -3395,17 +3406,9 @@ fn authenticate_provider_request(
 ) -> reqwest::RequestBuilder {
     match auth {
         AuthStyle::Bearer => {
+            // Sign in with ChatGPT: the bearer token alone, on the public API.
             let request = request.bearer_auth(credential.value);
-            if credential.route_kind.as_deref() == Some("openai-codex") {
-                let request = request
-                    .header("OpenAI-Beta", "codex-1")
-                    .header("originator", "ai-os");
-                if let Some(account_id) = credential.account_id {
-                    request.header("ChatGPT-Account-ID", account_id)
-                } else {
-                    request
-                }
-            } else if credential.route_kind.as_deref() == Some("grok-oauth") {
+            if credential.route_kind.as_deref() == Some("grok-oauth") {
                 let request = request
                     .header("X-XAI-Token-Auth", "xai-grok-cli")
                     .header("x-grok-client-version", env!("CARGO_PKG_VERSION"))
@@ -3541,6 +3544,14 @@ fn parse_models(provider_id: &str, body: Value) -> Result<Vec<DiscoveredProvider
     let mut models: Vec<DiscoveredProviderModel> = items
         .iter()
         .filter_map(|item| {
+            // Sign in with ChatGPT lists hidden models too; show "list" ones.
+            if item
+                .get("visibility")
+                .and_then(Value::as_str)
+                .is_some_and(|visibility| visibility != "list")
+            {
+                return None;
+            }
             if provider_id == "google"
                 && !item
                     .get("supportedGenerationMethods")
@@ -3598,7 +3609,7 @@ async fn discover_models(
         .and_then(|credential| credential.route_kind.as_deref())
         .unwrap_or_default();
     let models_url = match route_kind {
-        "openai-codex" => "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+        crate::openai_siwc::ROUTE_KIND => crate::openai_siwc::MODELS_URL,
         "grok-oauth" => "https://cli-chat-proxy.grok.com/v1/models",
         _ => spec.models_url,
     };
@@ -3723,7 +3734,15 @@ async fn read_oauth_loopback_request(stream: &mut TcpStream) -> Result<String, S
     String::from_utf8(request).map_err(|_| "OAuth callback request is invalid".to_owned())
 }
 
-fn parse_oauth_loopback_request(request: &str, expected_state: &str) -> Result<String, String> {
+/// The authorization code and, for a Sign in with ChatGPT registration, the
+/// client ID OpenAI issued.
+#[derive(Debug, PartialEq)]
+struct OAuthCallback {
+    code: String,
+    client_id: Option<String>,
+}
+
+fn parse_oauth_loopback_request(request: &str, expected_state: &str) -> Result<OAuthCallback, String> {
     let request_line = request
         .lines()
         .next()
@@ -3760,6 +3779,7 @@ fn parse_oauth_loopback_request(request: &str, expected_state: &str) -> Result<S
 
     let mut callback_state: Option<String> = None;
     let mut code: Option<String> = None;
+    let mut client_id: Option<String> = None;
     let mut oauth_error: Option<String> = None;
 
     for (key, value) in callback_url.query_pairs() {
@@ -3769,6 +3789,9 @@ fn parse_oauth_loopback_request(request: &str, expected_state: &str) -> Result<S
             }
             "code" if code.is_none() => {
                 code = Some(value.into_owned());
+            }
+            "client_id" if client_id.is_none() => {
+                client_id = Some(value.into_owned());
             }
             "error" if oauth_error.is_none() => {
                 oauth_error = Some(value.into_owned());
@@ -3798,13 +3821,14 @@ fn parse_oauth_loopback_request(request: &str, expected_state: &str) -> Result<S
         return Err("OAuth authorization code is invalid".to_owned());
     }
 
-    Ok(code)
+    Ok(OAuthCallback { code, client_id })
 }
 
 async fn complete_oauth_exchange(
     provider_id: &str,
     state: &str,
     code: &str,
+    callback_client_id: Option<&str>,
 ) -> Result<CompleteOAuthResult, String> {
     adapter_spec(provider_id)?;
 
@@ -3812,7 +3836,12 @@ async fn complete_oauth_exchange(
         return Err("OAuth callback is incomplete".to_owned());
     }
 
-    let session = consume_oauth_session(provider_id, state)?;
+    let mut session = consume_oauth_session(provider_id, state)?;
+    let uses_siwc = session.route_kind.as_deref() == Some(crate::openai_siwc::ROUTE_KIND);
+    if uses_siwc {
+        session.client_id =
+            crate::openai_siwc::exchange_client(&session.client_id, callback_client_id)?;
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
@@ -3838,6 +3867,9 @@ async fn complete_oauth_exchange(
         ];
         if let Some(secret) = session.client_secret.as_deref() {
             form.push(("client_secret", secret));
+        }
+        if uses_siwc {
+            form.push(("resource", crate::openai_siwc::RESOURCE));
         }
         client.post(&session.token_url).form(&form).send().await
     }
@@ -3887,8 +3919,25 @@ async fn complete_oauth_exchange(
         .and_then(Value::as_str)
         .and_then(chatgpt_account_id_from_jwt);
 
-    if session.route_kind.as_deref() == Some("openai-codex") && account_id.is_none() {
-        return Err("OpenAI Codex sign-in did not identify a ChatGPT account".to_owned());
+    if uses_siwc {
+        let id_token = token
+            .get("id_token")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "OpenAI sign-in returned no identity token".to_owned())?;
+        crate::openai_siwc::validate_id_token(
+            id_token,
+            &session.client_id,
+            session.nonce.as_deref().unwrap_or_default(),
+            chrono::Utc::now().timestamp(),
+        )?;
+        if !crate::openai_siwc::grants_plan_usage(&token) {
+            return Err("ChatGPT plan use was not granted. Enable it for AI-OS when signing in, then try again.".to_owned());
+        }
+        crate::openai_siwc::remember_client(
+            &provider_config_directory()?,
+            &session.provider_instance_id,
+            &session.client_id,
+        )?;
     }
 
     token
@@ -3904,6 +3953,7 @@ async fn complete_oauth_exchange(
                 "resourceProjectId": session.resource_project_id,
                 "routeKind": session.route_kind,
                 "accountId": account_id,
+                "resource": uses_siwc.then_some(crate::openai_siwc::RESOURCE),
             }),
         );
 
@@ -4029,8 +4079,8 @@ async fn run_oauth_loopback_listener(
                 }
             };
 
-            let code = match parse_oauth_loopback_request(&request, &expected_state) {
-                Ok(code) => code,
+            let callback = match parse_oauth_loopback_request(&request, &expected_state) {
+                Ok(callback) => callback,
                 Err(message) => {
                     let _ = write_oauth_loopback_response(
                         &mut stream,
@@ -4044,7 +4094,14 @@ async fn run_oauth_loopback_listener(
                 }
             };
 
-            match complete_oauth_exchange(&provider_id, &expected_state, &code).await {
+            match complete_oauth_exchange(
+                &provider_id,
+                &expected_state,
+                &callback.code,
+                callback.client_id.as_deref(),
+            )
+            .await
+            {
                 Ok(result) => {
                     let _ = write_oauth_loopback_response(
                         &mut stream,
@@ -4134,10 +4191,20 @@ pub(crate) async fn begin_provider_oauth(
         return Err("OAuth client ID is not configured".to_owned());
     }
 
+    // OpenAI: the official Sign in with ChatGPT endpoints, whatever the
+    // interface passed.
+    let (authorization_url_input, token_url_input) = if provider_id == "openai" {
+        (
+            crate::openai_siwc::AUTHORIZATION_URL.to_owned(),
+            crate::openai_siwc::TOKEN_URL.to_owned(),
+        )
+    } else {
+        (input.authorization_url.clone(), input.token_url.clone())
+    };
     let mut authorization_url =
-        validate_https_url(&input.authorization_url, "OAuth authorization URL")?;
+        validate_https_url(&authorization_url_input, "OAuth authorization URL")?;
 
-    validate_https_url(&input.token_url, "OAuth token URL")?;
+    validate_https_url(&token_url_input, "OAuth token URL")?;
 
     let callback_port = input.callback_port.unwrap_or(0);
     let callback_path = if provider_id == "google-workspace" {
@@ -4165,7 +4232,8 @@ pub(crate) async fn begin_provider_oauth(
         .local_addr()
         .map_err(|_| "AI-OS could not determine the OAuth callback address".to_owned())?;
 
-    let callback_host = if matches!(provider_id, "openai" | "microsoft-graph") {
+    // Sign in with ChatGPT requires 127.0.0.1, never localhost.
+    let callback_host = if provider_id == "microsoft-graph" {
         "localhost"
     } else {
         "127.0.0.1"
@@ -4186,20 +4254,33 @@ pub(crate) async fn begin_provider_oauth(
         .checked_add(OAUTH_SESSION_TTL_SECONDS)
         .ok_or_else(|| "OAuth session expiry is invalid".to_owned())?;
 
+    let (client_id, siwc_parameters) = if provider_id == "openai" {
+        let directory = provider_config_directory()?;
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let (client_id, parameters) = crate::openai_siwc::authorization(
+            crate::openai_siwc::registered_client(&directory, instance_id).as_deref(),
+            &crate::openai_siwc::host_id(&directory)?,
+            &nonce,
+        );
+        (client_id, Some((parameters, nonce)))
+    } else {
+        (input.client_id.trim().to_owned(), None)
+    };
     let session = OAuthSession {
         provider_id: provider_id.to_owned(),
         provider_instance_id: instance_id.to_owned(),
-        client_id: input.client_id.trim().to_owned(),
+        client_id,
         client_secret: read_oauth_client_secret(provider_id)?,
-        token_url: input.token_url,
+        token_url: token_url_input,
         resource_project_id: input.resource_project_id,
         route_kind: match provider_id {
-            "openai" => Some("openai-codex".to_owned()),
+            "openai" => Some(crate::openai_siwc::ROUTE_KIND.to_owned()),
             "openrouter" => Some("openrouter-oauth".to_owned()),
             _ => None,
         },
         redirect_uri: redirect_uri.clone(),
         verifier,
+        nonce: siwc_parameters.as_ref().map(|(_, nonce)| nonce.clone()),
         created_at,
         expires_at,
     };
@@ -4231,12 +4312,29 @@ pub(crate) async fn begin_provider_oauth(
             .append_pair("response_type", "code")
             .append_pair("client_id", &session.client_id)
             .append_pair("redirect_uri", &session.redirect_uri)
-            .append_pair("scope", &input.scopes.join(" "))
+            .append_pair(
+                "scope",
+                &if provider_id == "openai" {
+                    crate::openai_siwc::SCOPES.to_owned()
+                } else {
+                    input.scopes.join(" ")
+                },
+            )
             .append_pair("state", &state)
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256");
     }
-    if let Some(parameters) = input.authorization_params {
+    if let Some((parameters, _)) = &siwc_parameters {
+        for (key, value) in parameters {
+            authorization_url.query_pairs_mut().append_pair(key, value);
+        }
+    }
+    let authorization_params = if provider_id == "openai" {
+        None
+    } else {
+        input.authorization_params
+    };
+    if let Some(parameters) = authorization_params {
         for (key, value) in parameters {
             if !matches!(
                 key.as_str(),
@@ -4293,6 +4391,7 @@ pub(crate) async fn complete_provider_oauth(
         input.provider_id.trim(),
         input.state.trim(),
         input.code.trim(),
+        None,
     )
     .await
 }
@@ -4377,10 +4476,10 @@ pub(crate) async fn generate_provider_response(
     } else {
         Some(read_current_credential(instance_id, "ai_center_generate").await?)
     };
-    let uses_openai_codex = secret
+    let uses_chatgpt_plan = secret
         .as_ref()
         .and_then(|credential| credential.route_kind.as_deref())
-        == Some("openai-codex");
+        == Some(crate::openai_siwc::ROUTE_KIND);
     let uses_grok_oauth = secret
         .as_ref()
         .and_then(|credential| credential.route_kind.as_deref())
@@ -4388,18 +4487,12 @@ pub(crate) async fn generate_provider_response(
 
     let (mut request, body) = match provider_id {
         "openai" => (
-            client.post(if uses_openai_codex {
-                "https://chatgpt.com/backend-api/codex/responses"
-            } else {
-                "https://api.openai.com/v1/responses"
-            }),
-            if uses_openai_codex {
-                serde_json::json!({
-                    "model": model_id,
-                    "input": [{"role": "user", "content": prompt}],
-                    "store": false,
-                    "stream": true
-                })
+            client.post(crate::openai_siwc::RESPONSES_URL),
+            if uses_chatgpt_plan {
+                crate::openai_siwc::responses_body(
+                    model_id,
+                    &[("user".to_owned(), prompt.to_owned())],
+                )
             } else {
                 serde_json::json!({
                     "model": model_id,
@@ -4511,7 +4604,7 @@ pub(crate) async fn generate_provider_response(
                 .unwrap_or_default()
         ));
     }
-    if provider_id == "openai" && uses_openai_codex {
+    if provider_id == "openai" && uses_chatgpt_plan {
         let stream_body = response.text().await.map_err(|_| {
             "The selected Provider returned an unreadable streaming response".to_owned()
         })?;
@@ -4530,6 +4623,9 @@ pub(crate) async fn generate_provider_response(
             }
 
             if let Ok(value) = serde_json::from_str::<Value>(data) {
+                if let Some(failure) = crate::openai_siwc::stream_failure(&value) {
+                    return Err(failure);
+                }
                 if let Some(delta) = stream_text("openai", true, &value) {
                     streamed_text.push_str(&delta);
                 }
@@ -4537,7 +4633,7 @@ pub(crate) async fn generate_provider_response(
         }
 
         if streamed_text.trim().is_empty() {
-            return Err("Codex streaming response contained no text".to_owned());
+            return Err("OpenAI streaming response contained no text".to_owned());
         }
 
         return Ok(GenerateProviderResponseResult {
@@ -5698,27 +5794,33 @@ pub(crate) async fn start_provider_response_stream(
     } else {
         Some(read_current_credential(instance_id, "ai_center_provider_stream").await?)
     };
-    let uses_openai_codex = secret
+    let uses_chatgpt_plan = secret
         .as_ref()
         .and_then(|credential| credential.route_kind.as_deref())
-        == Some("openai-codex");
+        == Some(crate::openai_siwc::ROUTE_KIND);
     let uses_grok_oauth = secret
         .as_ref()
         .and_then(|credential| credential.route_kind.as_deref())
         == Some("grok-oauth");
     let (mut request, body) = match provider_id {
         "openai" => (
-            client.post(if uses_openai_codex {
-                "https://chatgpt.com/backend-api/codex/responses"
+            client.post(crate::openai_siwc::RESPONSES_URL),
+            if uses_chatgpt_plan {
+                crate::openai_siwc::responses_body(
+                    model_id,
+                    &messages
+                        .iter()
+                        .map(|message| (message.role.clone(), message.content.clone()))
+                        .collect::<Vec<_>>(),
+                )
             } else {
-                "https://api.openai.com/v1/responses"
-            }),
-            serde_json::json!({
-                "model": model_id,
-                "input": messages,
-                "stream": true,
-                "store": !uses_openai_codex
-            }),
+                serde_json::json!({
+                    "model": model_id,
+                    "input": messages,
+                    "stream": true,
+                    "store": true
+                })
+            },
         ),
         "anthropic" => (
             client.post("https://api.anthropic.com/v1/messages"),
@@ -5868,6 +5970,7 @@ pub(crate) async fn start_provider_response_stream(
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut cancelled = false;
+    let mut plan_failed = false;
     loop {
         let next = tokio::select! {
             _ = token.cancelled() => {
@@ -5903,8 +6006,19 @@ pub(crate) async fn start_provider_response_stream(
                 continue;
             }
             if let Ok(value) = serde_json::from_str::<Value>(data) {
+                if let Some(failure) = crate::openai_siwc::stream_failure(&value) {
+                    let _ = app.emit(
+                        "ai-center://error",
+                        AiCenterErrorEvent {
+                            operation_id: operation_id.clone(),
+                            message: failure,
+                        },
+                    );
+                    plan_failed = true;
+                    break;
+                }
                 if let Some(text) =
-                    stream_text(provider_id, uses_openai_codex || uses_grok_oauth, &value)
+                    stream_text(provider_id, uses_chatgpt_plan || uses_grok_oauth, &value)
                 {
                     let _ = app.emit(
                         "ai-center://chunk",
@@ -5915,6 +6029,9 @@ pub(crate) async fn start_provider_response_stream(
                     );
                 }
             }
+        }
+        if plan_failed {
+            break;
         }
     }
     ai_center_requests()
@@ -6505,25 +6622,35 @@ mod tests {
     }
 
     #[test]
-    fn openai_codex_authentication_is_account_scoped() {
+    fn chatgpt_plan_requests_carry_only_the_bearer_token() {
+        // Sign in with ChatGPT calls the public API; no Codex client headers.
         let request = authenticate_provider_request(
-            reqwest::Client::new().get("https://chatgpt.com/backend-api/codex/models"),
+            reqwest::Client::new().get(crate::openai_siwc::MODELS_URL),
             AuthStyle::Bearer,
             CurrentProviderCredential {
-                value: "codex-access".to_owned(),
+                value: "plan-access".to_owned(),
                 oauth: true,
                 resource_project_id: None,
-                route_kind: Some("openai-codex".to_owned()),
+                route_kind: Some(crate::openai_siwc::ROUTE_KIND.to_owned()),
                 account_id: Some("account-123".to_owned()),
             },
         )
         .build()
         .unwrap();
 
-        assert_eq!(request.headers()["authorization"], "Bearer codex-access");
-        assert_eq!(request.headers()["ChatGPT-Account-ID"], "account-123");
-        assert_eq!(request.headers()["OpenAI-Beta"], "codex-1");
-        assert_eq!(request.headers()["originator"], "ai-os");
+        assert_eq!(request.headers()["authorization"], "Bearer plan-access");
+        for header in ["ChatGPT-Account-ID", "OpenAI-Beta", "originator"] {
+            assert!(!request.headers().contains_key(header), "{header}");
+        }
+    }
+
+    #[test]
+    fn oauth_loopback_parser_returns_an_issued_client_id() {
+        let request = "GET /auth/callback?code=c1&state=expected&client_id=oaiapp_9 HTTP/1.1\r\n\r\n";
+        assert_eq!(
+            parse_oauth_loopback_request(request, "expected").unwrap(),
+            OAuthCallback { code: "c1".to_owned(), client_id: Some("oaiapp_9".to_owned()) }
+        );
     }
 
     #[test]
@@ -7492,6 +7619,7 @@ mod tests {
             route_kind: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
+            nonce: None,
             created_at: now,
             expires_at: now + 60,
         };
@@ -7521,6 +7649,7 @@ mod tests {
             route_kind: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
+            nonce: None,
             created_at: now,
             expires_at: now + 60,
         };
@@ -7554,6 +7683,7 @@ mod tests {
             route_kind: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
+            nonce: None,
             created_at: now.saturating_sub(120),
             expires_at: now,
         };
@@ -7578,6 +7708,7 @@ mod tests {
             route_kind: None,
             redirect_uri: "http://127.0.0.1/callback".to_owned(),
             verifier: "verifier".to_owned(),
+            nonce: None,
             created_at: now,
             expires_at: now + 60,
         };
@@ -7646,7 +7777,7 @@ mod tests {
 Host: 127.0.0.1\r\n\r\n";
 
         assert_eq!(
-            parse_oauth_loopback_request(request, "expected").unwrap(),
+            parse_oauth_loopback_request(request, "expected").unwrap().code,
             "abc123"
         );
     }
@@ -7657,7 +7788,7 @@ Host: 127.0.0.1\r\n\r\n";
 Host: 127.0.0.1\r\n\r\n";
 
         assert_eq!(
-            parse_oauth_loopback_request(request, "expected").unwrap(),
+            parse_oauth_loopback_request(request, "expected").unwrap().code,
             "google-code"
         );
     }
@@ -7707,7 +7838,7 @@ Host: 127.0.0.1\r\n\r\n";
 
         assert_eq!(
             parse_oauth_loopback_request(request, "expected"),
-            Err("OAuth authorization was denied by the Provider".to_owned())
+            Err::<OAuthCallback, _>("OAuth authorization was denied by the Provider".to_owned())
         );
     }
 

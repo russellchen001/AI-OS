@@ -116,7 +116,7 @@ export const cloudProviders: CloudProviderCard[] = [
     name: "OpenAI",
     description: "GPT and Codex models",
     models: ["GPT‑5.6", "GPT‑5.6 Codex"],
-    accountLabel: "Sign in with OpenAI",
+    accountLabel: "Continue with ChatGPT",
   },
   {
     id: "anthropic",
@@ -1690,6 +1690,12 @@ function MyAiPage({
                           ? "AI‑OS uses Kimi Code's official device flow. Tokens stay in macOS Keychain and requests use the managed coding API."
                         : "AI‑OS uses PKCE and a one-time local callback. The authorization code and tokens stay in the native security layer."}</small></p>
                   </div>
+                  {setup.providerId === "openai" && (
+                    <div className="provider-security-note">
+                      <span>→</span>
+                      <p><strong>Using your ChatGPT plan</strong><small>AI‑OS uses OpenAI's official Sign in with ChatGPT. Eligible usage in AI‑OS uses your own ChatGPT plan, and you can see or limit it in ChatGPT settings (chatgpt.com/settings/usage). Approve “ChatGPT plan use” when OpenAI asks.</small></p>
+                    </div>
+                  )}
                   {setup.providerId === "google" && !setupCli && (
                     <div className="provider-security-note">
                       <span>!</span>

@@ -5,6 +5,7 @@ mod claude_code;
 mod cli_provider_manager;
 mod cli_process;
 mod gemini_cli;
+mod openai_siwc;
 mod grok_cli;
 pub mod cloud_drive_core;
 pub mod cloud_drive_baidu;
