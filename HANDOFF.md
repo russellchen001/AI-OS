@@ -127,6 +127,11 @@
     并新增本地诊断日志 `~/Library/Application Support/AI OS/linco-connector.log`（仅帧类型/命令名/连接事件）。
     候选 `f37619f`：DMG SHA256 `5fb2cc3277e0db60a77fcb551bc94b9cb51726869f966285cd330604fc388cdf`，主程序
     `3bcdefc325f2f1e04d725b6ecdc5bdba611142cee960e4cce0b3dea444c73e64`；已启动（替换 bfc45e6）；Beta5 未变。
+    **真机往返 PASS**：手机 Linco App →「OpenClaw · AI-OS / Mac.modem · 在线」发「你好」→ AI-OS Remote ASK 回复到手机；
+    日志：connected slot=openclaw、inbound /agent、inbound 消息。问题：回复先分段又整段重复（网关 assistant_chunk 片段
+    + completed 全文都被渲染）。`c6eacea` 修复：片段拼接、completed 全文替换；新增测试。Rust 1111/0。
+    候选 `c6eacea`：DMG SHA256 `b26937183b0d8535e97910491d8ab08a86553f73db6b069893e80539f6ad8b74`，主程序 `f5603cddbd6ea6059be5fe9ba8c2ee73beabbb207b9d2bcec9954e03a28c25fc`；已启动（替换 f37619f）；Beta5 未变。
+    待验：回复只显示一次；改动类请求的 /approve 确认流程。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
