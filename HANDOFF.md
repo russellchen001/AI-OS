@@ -146,7 +146,14 @@
     `189f989f22d46cbb4f78cd65cfeded31467227b161563cf1a95408a3c6e811fe`；已启动（替换 c6eacea）；Beta5 未变。
     真机复测（0562059）：「在桌面新建 test 文件夹」数秒内返回（不再超时），Agent 选 `filesystem.write`；但 AI-OS 没有
     建文件夹能力（filesystem.write 只写 ≤4KB 文本文件且无输入契约），报「invalid Skill transport request」。
-    `513d4a8` 改为说明性错误、不执行；新增单测；Rust 1113/0。未重建（仅文案）。是否新增 mkdir 能力待用户决定。
+    `513d4a8` 改为说明性错误、不执行；新增单测；Rust 1113/0。
+  - **新增「新建文件夹」能力 `filesystem.mkdir`（`943332a`，用户批准）**：Rust 本地执行（同 filesystem.scan 路径），
+    用户确认后才执行；只在家目录内、父文件夹必须已存在、只建一层、同名已存在则不改动；名称拒绝 . / .. / 斜杠 /
+    控制字符。输入契约 {parent,name}，grounding：name 必须出现在原话中；parent 取原话里的绝对路径，否则识别
+    Desktop/桌面、Downloads/下载、Documents/文档（filesystem.scan 同步支持中文）。登记：skills registry、
+    CONFIRMABLE_CAPABILITIES、TS SkillCapability。新增 4 个单测（含「在桌面新建 test」端到端：选择→输入→
+    PermissionRequired、未调用后端）。Rust 1117/0；council_execution、remote_ai_os、desktop_linco、linco_connector、
+    信息架构 PASS。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
