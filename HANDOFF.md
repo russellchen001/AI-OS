@@ -37,6 +37,17 @@
   公开资料：2026-06-18 起 Gemini CLI 停止服务个人账号（免费/AI Pro/Ultra），替代品为 Antigravity CLI（`agy`）；
   企业 Code Assist 授权与付费 API key 仍可用。用户自有额度的现成路径：Google 卡片「Use API key」（用户自己的 key）。
   待用户决定：是否把 Antigravity CLI 作为新的通用 CLI 条目接入（需先确认其无头/禁用工具能力，安装需用户批准）。
+- **用户决定两路都做（2026-10-31）后的结论**：
+  - 路线 2（Antigravity CLI）**不实施、未安装**：官方 FAQ（antigravity.google/docs/faq）写明 consumer 计划下
+    “Wrapping agy inside third-party coding agents or applications … is not supported”，用第三方软件访问 Antigravity
+    违反 ToS、可致账号停用；官方建议第三方应用用 Google AI Studio API key。
+  - 路线 1 已实现 `4ec02af`：Google 新连接只提供「Use API key」（用户自己的 AI Studio key，自有额度，含引导文案）；
+    已有 OAuth/Gemini CLI 连接保留；Gemini CLI 返回 IneligibleTierError 时提示改用自己的 API key（真实复测通过）。
+    Rust 1092/0/88；CLI Provider、Provider 稳定性、信息架构、Provider blocking、P16、P17 PASS。
+    待用户：自己在 App 中粘贴自己的 Gemini API key 完成真实验证（助手不得代填密钥）。
+  - **发布前须由用户决策的条款风险（同类问题）**：Anthropic Agent SDK 文档写明未经批准第三方产品不得提供
+    Claude.ai 登录/订阅额度（官方建议 API key）；AI-OS 的 Claude Code 账号路线（用户订阅）、OpenAI Codex OAuth
+    路线、Grok CLI 账号路线可能落在同类限制内，需逐家核对现行条款后决定是否保留/改为 API key。未改代码。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
