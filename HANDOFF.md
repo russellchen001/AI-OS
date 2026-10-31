@@ -99,7 +99,21 @@
   - Linco：`AI_OS_REMOTE_LINCO_TOKEN` 不是 Linco/OpenAI 账号令牌，而是 AI-OS 本机 Desktop 端点
     (127.0.0.1:39817) 与调用方共享的 ≥32 字符随机密钥，目前只从环境变量读、且 `AI_OS_REMOTE_LINCO_ENABLED`
     默认关。Linco Bridge 为 MIT（lincotalk/linco-bridge），本机副本已不存在（原在 /private/tmp）。
-    用户要求 AI-OS 启动后自动运行、零操作；待用户确认一次性下载安装后实现托管组件（见对话）。
+    核对后发现：GPT 当时并未把 Linco 内置，只写了调用外部「参考服务器」(127.0.0.1:3300，Linco 的服务端
+    参考实现) 的客户端，以及一个默认关闭、要手填环境变量令牌的本机入口 (39817)。
+  - **Linco 内置（`57b1d17`，用户决定：内置 linco-connect、用官方 App）**：AI-OS 自己扮演 linco-connect
+    （按 linco-bridge-connect `536a257` 协议，MIT，保留版权说明）。`src-tauri/src/linco_connector.rs`：
+    粘贴 Linco App「Bridge」页生成的命令完成一次性配对（只解析 --token/--agent/--ws-url，不执行任何命令），
+    令牌存 Keychain（account `linco-connector`），设置 `linco-connector.json`(0600) 仅存 Agent 槽位与设备 id；
+    AI-OS 启动 3s 后自动以 wss 连官方频道 `wss://app.lincotalk.com/socket/ai/<agent>`，30s 心跳、presence、
+    1–30s 退避重连，退出时发 offline。client 名如实为 `ai-os`。inbound_message 经新抽出的
+    `remote_linco::dispatch_inbound` 进入现有 Remote AI-OS 网关（10 分钟上限），结果渲染为 stream_chunk+turn_end；
+    需确认的操作以「/approve /reject」回复（也接受 danger_confirm/permission_response）；按 messageId 去重。
+    界面：My AI → Accounts & Services →「Phone access (Linco)」。Council 的 Linco 探针改读连接器状态；
+    不再依赖 3300 服务器——删除 `p16_desktop_linco_live`、`p16_remote_linco_live` 及 live_integrations 的 linco 模式，
+    新增 `verify/verify_linco_connector.sh`（10/0）。Rust 1108/0；council_integrations、remote_ai_os、
+    desktop_linco、Provider 稳定性/blocking、信息架构、CLI Provider PASS；live_integrations PASS=4 SKIP=2 FAIL=0。
+    39817 本机入口保留（默认关闭，连接器不需要它）。未做：与官方频道的真机往返（需用户配对后从手机发消息）。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
