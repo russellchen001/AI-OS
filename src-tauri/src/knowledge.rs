@@ -78,11 +78,7 @@ pub(crate) fn save_knowledge_project(project: Value) -> Result<(), String> {
     Ok(())
 }
 
-
-
-pub(crate) fn knowledge_project_exists(
-    project_id: &str,
-) -> Result<bool, String> {
+pub(crate) fn knowledge_project_exists(project_id: &str) -> Result<bool, String> {
     if !valid_id(project_id) {
         return Ok(false);
     }
@@ -97,9 +93,7 @@ pub(crate) fn knowledge_project_exists(
 }
 
 #[tauri::command]
-pub(crate) fn delete_knowledge_project(
-    project_id: String,
-) -> Result<(), String> {
+pub(crate) fn delete_knowledge_project(project_id: String) -> Result<(), String> {
     if !valid_id(&project_id) {
         return Err("Knowledge project identifier is invalid".to_owned());
     }

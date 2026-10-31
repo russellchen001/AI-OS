@@ -44,7 +44,7 @@ cargo test \
     fail "structured reader contract"
   }
 
-grep -q "running 19 tests" "$LOG" || {
+grep -q "running 20 tests" "$LOG" || {
   tail -20 "$LOG"
   fail "structured reader test count changed"
 }

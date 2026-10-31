@@ -280,13 +280,25 @@ pub(crate) async fn execute_chat_work_task(
 }
 
 #[tauri::command]
-pub(crate) fn cancel_computer_use_task(state: State<'_, TaskExecutionState>, task_id: String) -> bool {
-    let Ok(id) = resolve_chat_task_id(&state, task_id.trim()) else { return false };
-    let Ok(Some(task)) = state.tasks.get(&id) else { return false };
-    if task.task_type != TaskType::Do || !matches!(
-        task.status,
-        TaskStatus::Planning | TaskStatus::Ready | TaskStatus::Executing | TaskStatus::Verifying
-    ) {
+pub(crate) fn cancel_computer_use_task(
+    state: State<'_, TaskExecutionState>,
+    task_id: String,
+) -> bool {
+    let Ok(id) = resolve_chat_task_id(&state, task_id.trim()) else {
+        return false;
+    };
+    let Ok(Some(task)) = state.tasks.get(&id) else {
+        return false;
+    };
+    if task.task_type != TaskType::Do
+        || !matches!(
+            task.status,
+            TaskStatus::Planning
+                | TaskStatus::Ready
+                | TaskStatus::Executing
+                | TaskStatus::Verifying
+        )
+    {
         return false;
     }
     crate::computer_use::cancel_active_task(id.as_str())
@@ -734,7 +746,10 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(approval_error.contains("[PermissionRequired]"), "{approval_error}");
+        assert!(
+            approval_error.contains("[PermissionRequired]"),
+            "{approval_error}"
+        );
         let approval_json = approval_error
             .split("AI_OS_APPROVAL_REQUIRED_BEGIN")
             .nth(1)

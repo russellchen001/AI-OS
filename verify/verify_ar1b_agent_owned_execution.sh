@@ -151,7 +151,7 @@ fi
 echo
 echo "=== formatting ==="
 
-if rustfmt --check \
+if rustfmt --check --edition 2021 \
   src-tauri/src/planner/domain.rs \
   src-tauri/src/task_execution.rs \
   src-tauri/src/task_plan_orchestration.rs \

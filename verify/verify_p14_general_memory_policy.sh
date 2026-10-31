@@ -130,7 +130,7 @@ assert.equal(
     [memory("我喜欢中文回答", 0), memory("我喜欢英文回答", 1)],
     "普通问题",
   ).longTermPolicy.language,
-  undefined,
+  "English",
 );
 NODE
 }

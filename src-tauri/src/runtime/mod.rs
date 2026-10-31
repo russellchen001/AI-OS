@@ -17,10 +17,10 @@ pub(crate) mod recovery;
 mod registry;
 pub(crate) mod scheduler;
 pub(crate) mod skill_invocation;
-pub(crate) mod speech;
-pub(crate) mod web_search;
 pub(crate) mod skills;
+pub(crate) mod speech;
 pub(crate) mod trusted_automation;
+pub(crate) mod web_search;
 
 use models::{RuntimeDefinition, RuntimeStatus};
 
@@ -51,12 +51,8 @@ mod tests {
             .map(|runtime| runtime.id)
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            ids,
-            vec!["openclaw", "cherry-studio"]
-        );
+        assert_eq!(ids, vec!["openclaw", "cherry-studio"]);
     }
-
 
     #[test]
     fn serialization_uses_typescript_friendly_names() {

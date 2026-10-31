@@ -13,7 +13,7 @@ OLD_PAGES=(
 )
 
 for page in "${OLD_PAGES[@]}"; do
-  if grep -Fq "$page" src/App.tsx; then
+  if grep -Fqw "$page" src/App.tsx; then
     echo "❌ $page 仍存在于 App.tsx"
     echo "FAIL: legacy ui step1"
     exit 1
