@@ -216,33 +216,121 @@ fn valid_credential_part(value: &str) -> bool {
             .all(|character| character.is_ascii_graphic() && character != ':')
 }
 
-/// Accepts the commands the Linco App generates
-/// (`linco-connect init --token "<app-id>:<app-secret>" --agent codex ...`).
-fn parse_pairing(text: &str) -> Result<Pairing, String> {
+fn normalized_key(key: &str) -> String {
+    key.chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn clean_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .trim_matches(|character| character == '"' || character == '\'' || character == '`')
+        .trim()
+        .to_owned()
+}
+
+/// Fields from JSON or "Key: value" lines, keyed by `normalized_key`.
+fn labelled_fields(text: &str) -> HashMap<String, String> {
+    fn walk(value: &Value, fields: &mut HashMap<String, String>) {
+        match value {
+            Value::Object(object) => {
+                for (key, value) in object {
+                    if let Some(text) = value.as_str() {
+                        fields
+                            .entry(normalized_key(key))
+                            .or_insert_with(|| text.trim().to_owned());
+                    } else {
+                        walk(value, fields);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(item, fields)),
+            _ => {}
+        }
+    }
+    let mut fields = HashMap::new();
+    if let Ok(value) = serde_json::from_str::<Value>(text.trim()) {
+        walk(&value, &mut fields);
+    }
+    for line in text.lines() {
+        let Some(index) = line.find([':', '\u{ff1a}', '=']) else {
+            continue;
+        };
+        let (key, rest) = line.split_at(index);
+        let separator = rest.chars().next().map(char::len_utf8).unwrap_or(1);
+        let value = clean_value(&rest[separator..]);
+        let key = normalized_key(key);
+        if !key.is_empty() && !value.is_empty() {
+            fields.entry(key).or_insert(value);
+        }
+    }
+    fields
+}
+
+/// Accepts what the Linco App hands out: the generated
+/// `linco-connect init --token "<app-id>:<app-secret>" --agent codex` commands,
+/// or the App ID / App Secret pair (as copied, JSON or "App ID: ..." lines).
+/// `fallback_agent` is the slot chosen in AI-OS when the text names none.
+fn parse_pairing(text: &str, fallback_agent: Option<&str>) -> Result<Pairing, String> {
     let words = shell_words(text);
-    let token = option_value(&words, "token").ok_or_else(|| {
-        "Paste the commands from the Linco App's Bridge page; they include --token.".to_owned()
-    })?;
-    let (app_id, app_secret) = token
-        .split_once(':')
-        .map(|(id, secret)| (id.trim().to_owned(), secret.trim().to_owned()))
-        .ok_or_else(|| "The Linco token must look like <app-id>:<app-secret>.".to_owned())?;
-    let app_id = option_value(&words, "app-id").unwrap_or(app_id);
-    let app_secret = option_value(&words, "app-secret").unwrap_or(app_secret);
+    let fields = labelled_fields(text);
+    // Exact labels first, then prefixed ones such as LINCO_APP_ID.
+    let field = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|name| fields.get(*name).cloned())
+            .or_else(|| {
+                names.iter().find_map(|name| {
+                    fields
+                        .iter()
+                        .find(|(key, _)| key.len() <= name.len() + 16 && key.ends_with(name))
+                        .map(|(_, value)| value.clone())
+                })
+            })
+    };
+    let token = option_value(&words, "token").or_else(|| field(&["token", "lincotoken"]));
+    let (token_id, token_secret) = token
+        .as_deref()
+        .and_then(|token| token.split_once(':'))
+        .map(|(id, secret)| (Some(id.trim().to_owned()), Some(secret.trim().to_owned())))
+        .unwrap_or((None, None));
+    let app_id = option_value(&words, "app-id")
+        .or(token_id)
+        .or_else(|| field(&["appid", "clientid"]))
+        .map(|value| clean_value(&value));
+    let app_secret = option_value(&words, "app-secret")
+        .or(token_secret)
+        .or_else(|| field(&["appsecret", "clientsecret", "secret"]))
+        .map(|value| clean_value(&value));
+    let (Some(app_id), Some(app_secret)) = (app_id, app_secret) else {
+        return Err(
+            "Paste the App ID and App Secret (or the generated commands) from the Linco App."
+                .to_owned(),
+        );
+    };
     if !valid_credential_part(&app_id) || !valid_credential_part(&app_secret) {
-        return Err("The Linco token must look like <app-id>:<app-secret>.".to_owned());
+        return Err(
+            "The Linco App ID or App Secret looks incomplete. Copy it again from the Linco App."
+                .to_owned(),
+        );
     }
     let agent_type = option_value(&words, "agent")
+        .or_else(|| field(&["agent", "agenttype"]))
+        .or_else(|| fallback_agent.map(str::to_owned))
         .map(|value| value.trim().to_ascii_lowercase())
-        .ok_or_else(|| {
-            "The commands must include --agent, chosen on the Linco App's Bridge page.".to_owned()
-        })?;
+        .ok_or_else(|| "Choose which Linco Agent slot AI-OS should use.".to_owned())?;
     if !AGENT_TYPES.contains(&agent_type.as_str()) {
         return Err(format!(
             "Linco does not offer an Agent slot named {agent_type}."
         ));
     }
-    let ws_url = option_value(&words, "ws-url").map(|value| value.trim().to_owned());
+    let ws_url = option_value(&words, "ws-url")
+        .or_else(|| field(&["wsurl", "websocketurl"]))
+        .map(|value| value.trim().to_owned());
     if let Some(url) = &ws_url {
         validate_ws_url(url)?;
     }
@@ -994,8 +1082,9 @@ pub(crate) fn pair_linco_connector(
     app: AppHandle,
     state: tauri::State<'_, LincoConnectorState>,
     commands: String,
+    agent_type: Option<String>,
 ) -> Result<LincoConnectorStatus, String> {
-    let pairing = parse_pairing(&commands)?;
+    let pairing = parse_pairing(&commands, agent_type.as_deref())?;
     let settings = Settings {
         agent_type: pairing.agent_type,
         ws_url: pairing.ws_url,
@@ -1036,7 +1125,7 @@ mod tests {
 
     #[test]
     fn pairing_reads_the_linco_app_commands() {
-        let pairing = parse_pairing(APP_COMMANDS).unwrap();
+        let pairing = parse_pairing(APP_COMMANDS, None).unwrap();
         assert_eq!(
             pairing,
             Pairing {
@@ -1046,7 +1135,7 @@ mod tests {
                 ws_url: None,
             }
         );
-        let continued = parse_pairing("linco-connect init \\\n  --token 'a:b' \\\n  --agent=openclaw --ws-url wss://example.test/socket/ai/openclaw").unwrap();
+        let continued = parse_pairing("linco-connect init \\\n  --token 'a:b' \\\n  --agent=openclaw --ws-url wss://example.test/socket/ai/openclaw", None).unwrap();
         assert_eq!(continued.agent_type, "openclaw");
         assert_eq!(
             continued.ws_url.as_deref(),
@@ -1056,14 +1145,34 @@ mod tests {
 
     #[test]
     fn pairing_rejects_incomplete_or_unsafe_input() {
-        assert!(parse_pairing("app-123:sec").is_err());
-        assert!(parse_pairing("linco-connect init --token app-123 --agent codex").is_err());
-        assert!(parse_pairing("linco-connect init --token a:b").is_err());
-        assert!(parse_pairing("linco-connect init --token a:b --agent ai-os").is_err());
+        assert!(parse_pairing("app-123:sec", Some("openclaw")).is_err());
+        assert!(parse_pairing("linco-connect init --token app-123 --agent codex", None).is_err());
+        assert!(parse_pairing("linco-connect init --token a:b", None).is_err());
+        assert!(parse_pairing("linco-connect init --token a:b --agent ai-os", None).is_err());
         assert!(parse_pairing(
-            "linco-connect init --token a:b --agent codex --ws-url ws://insecure"
+            "linco-connect init --token a:b --agent codex --ws-url ws://insecure",
+            None
         )
         .is_err());
+        assert!(parse_pairing("App ID: b1b09c7788fb", Some("openclaw")).is_err());
+    }
+
+    #[test]
+    fn pairing_reads_the_app_id_and_secret_the_openclaw_page_copies() {
+        let expected = Pairing {
+            app_id: "b1b09c7788fb".into(),
+            app_secret: "s3cr3t-Value".into(),
+            agent_type: "openclaw".into(),
+            ws_url: None,
+        };
+        let lines = "App ID: b1b09c7788fb\nApp Secret\u{ff1a} s3cr3t-Value";
+        assert_eq!(parse_pairing(lines, Some("openclaw")).unwrap(), expected);
+        let json =
+            r#"{"channels": {"linco": {"appId": "b1b09c7788fb", "appSecret": "s3cr3t-Value"}}}"#;
+        assert_eq!(parse_pairing(json, Some("openclaw")).unwrap(), expected);
+        let env = "LINCO_APP_ID=b1b09c7788fb\nLINCO_APP_SECRET=\"s3cr3t-Value\"";
+        assert_eq!(parse_pairing(env, Some("openclaw")).unwrap(), expected);
+        assert!(parse_pairing(lines, None).is_err());
     }
 
     #[test]

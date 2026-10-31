@@ -7080,10 +7080,35 @@ select:focus-visible {
   border-radius: 11px;
 }
 
+.linco-pairing p,
 .linco-pairing label {
+  margin: 0;
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.linco-pairing label {
+  display: grid;
+  gap: 4px;
+}
+
+.linco-pairing-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.linco-pairing input,
+.linco-pairing select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
 }
 
 .linco-pairing textarea {

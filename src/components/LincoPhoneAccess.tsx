@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   getLincoConnectorStatus,
+  LINCO_AGENT_SLOTS,
   LINCO_STATE_LABELS,
   pairLincoConnector,
   unpairLincoConnector,
@@ -12,6 +13,9 @@ const POLL_MS = 3000;
 export default function LincoPhoneAccess() {
   const [status, setStatus] = useState<LincoConnectorStatus>();
   const [commands, setCommands] = useState("");
+  const [agentType, setAgentType] = useState<string>("openclaw");
+  const [appId, setAppId] = useState("");
+  const [appSecret, setAppSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -33,8 +37,13 @@ export default function LincoPhoneAccess() {
     setBusy(true);
     setError("");
     try {
-      setStatus(await pairLincoConnector(commands));
+      const pairing = appId.trim() && appSecret.trim()
+        ? `App ID: ${appId.trim()}\nApp Secret: ${appSecret.trim()}`
+        : commands;
+      setStatus(await pairLincoConnector(pairing, agentType));
       setCommands("");
+      setAppId("");
+      setAppSecret("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -88,21 +97,42 @@ export default function LincoPhoneAccess() {
       </article>
       {!paired && (
         <div className="linco-pairing">
-          <label htmlFor="linco-commands">
-            In the Linco App open <strong>Bridge</strong>, choose an Agent, copy the generated commands and paste them here.
-            AI‑OS reads only the pairing token and Agent slot; nothing is installed or run.
+          <p>
+            In the Linco App: <strong>消息 → + → 创建机器人</strong>, choose the same Agent below
+            (OpenClaw recommended), then copy its App ID and App Secret here. AI‑OS stores them in
+            Keychain; nothing is installed or run.
+          </p>
+          <label>
+            Linco Agent
+            <select value={agentType} disabled={busy} onChange={(event) => setAgentType(event.target.value)}>
+              {LINCO_AGENT_SLOTS.map((slot) => <option key={slot.id} value={slot.id}>{slot.label}</option>)}
+            </select>
           </label>
+          <div className="linco-pairing-fields">
+            <label>
+              App ID
+              <input type="text" autoComplete="off" spellCheck={false} value={appId}
+                onChange={(event) => setAppId(event.target.value)} />
+            </label>
+            <label>
+              App Secret
+              <input type="password" autoComplete="off" spellCheck={false} value={appSecret}
+                onChange={(event) => setAppSecret(event.target.value)} />
+            </label>
+          </div>
+          <label htmlFor="linco-commands">Or paste what “一键复制配置信息” copied</label>
           <textarea
             id="linco-commands"
-            rows={4}
+            rows={3}
             spellCheck={false}
             autoComplete="off"
             value={commands}
-            placeholder={'linco-connect init --token "<app-id>:<app-secret>" --agent codex'}
             onChange={(event) => setCommands(event.target.value)}
           />
           <div className="provider-actions">
-            <button type="button" className="provider-primary" disabled={busy || !commands.trim()} onClick={() => void pair()}>
+            <button type="button" className="provider-primary"
+              disabled={busy || !((appId.trim() && appSecret.trim()) || commands.trim())}
+              onClick={() => void pair()}>
               {busy ? "Pairing…" : "Pair"}
             </button>
           </div>

@@ -15,9 +15,21 @@ export function getLincoConnectorStatus(): Promise<LincoConnectorStatus> {
   return invoke<LincoConnectorStatus>("get_linco_connector_status");
 }
 
-/** `commands` is the text copied from the Linco App's Bridge page. */
-export function pairLincoConnector(commands: string): Promise<LincoConnectorStatus> {
-  return invoke<LincoConnectorStatus>("pair_linco_connector", { commands });
+export const LINCO_AGENT_SLOTS = [
+  { id: "openclaw", label: "OpenClaw" },
+  { id: "codex", label: "Codex" },
+  { id: "claude", label: "Claude Code" },
+  { id: "deepseek", label: "DeepSeek Harness" },
+  { id: "hermes", label: "Hermes" },
+] as const;
+
+/**
+ * `pairing` is what the Linco App hands out: the copied configuration, the
+ * App ID / App Secret pair, or generated commands. `agentType` is the slot
+ * chosen in "创建机器人" when the text does not name one.
+ */
+export function pairLincoConnector(pairing: string, agentType: string): Promise<LincoConnectorStatus> {
+  return invoke<LincoConnectorStatus>("pair_linco_connector", { commands: pairing, agentType });
 }
 
 export function unpairLincoConnector(): Promise<LincoConnectorStatus> {
