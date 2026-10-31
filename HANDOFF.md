@@ -61,6 +61,9 @@
   界面按官方 UI 指南：「Continue with ChatGPT」、套餐用量说明与 chatgpt.com/settings/usage。
   Rust 1100/0/88；CLI Provider、Provider 稳定性、信息架构、Provider blocking、P16、P17 PASS。
   待用户：在新候选中点 OpenAI「Continue with ChatGPT」完成浏览器登录并同意 ChatGPT plan use（账号授权，需本人）。
+  候选 `27bc31c`：DMG `outputs/AI OS_1.0.1-beta.6_candidate-27bc31c_aarch64.dmg` SHA256
+  `0bd81ca6998e4749159403832baebfb84a7a6782f3910eb932034c63288e5ace`，主程序 `5dd9d533aefbd44dbf6c098724fb79c5441a12c28aca56c0bef5e9adad204968`；
+  已启动（替换 4632886）；Beta5 主程序 `91ff470b…253ce5` 未变。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
