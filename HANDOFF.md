@@ -131,7 +131,17 @@
     日志：connected slot=openclaw、inbound /agent、inbound 消息。问题：回复先分段又整段重复（网关 assistant_chunk 片段
     + completed 全文都被渲染）。`c6eacea` 修复：片段拼接、completed 全文替换；新增测试。Rust 1111/0。
     候选 `c6eacea`：DMG SHA256 `b26937183b0d8535e97910491d8ab08a86553f73db6b069893e80539f6ad8b74`，主程序 `f5603cddbd6ea6059be5fe9ba8c2ee73beabbb207b9d2bcec9954e03a28c25fc`；已启动（替换 f37619f）；Beta5 未变。
-    待验：回复只显示一次；改动类请求的 /approve 确认流程。
+    真机复测：回复只显示一次 ✓。「在桌面新建 test 文件夹」→ OpenClaw 120s 超时（同 p16_council_execution 根因）。
+  - **本地模型方案 2 已执行（用户先前同意「方案 1 不行就方案 2」）**：`~/.openclaw/openclaw.json` 仅
+    `agents.entries.ai-os-files.model.primary` 改为 `omlx/Qwen2.5-7B-Instruct-4bit`（Qwen2.5 已常驻，避免与 Qwen3.5
+    互相逐出+冷预填），并把它加入 omlx provider models、defaults.models、modelPolicy.allow；其余 agent 仍 Qwen3.5。
+    备份 `~/.openclaw/openclaw.json.before-ai-os-files-qwen25-20261101`（0600），`openclaw config validate` 通过。
+    效果：Agent 选择 ~4s 正确返回 `{"type":"capability.select",...}`。随后暴露真正的代码缺陷：
+  - **`0562059`**：OpenClaw 2026.8 把模型运行的回复放在 `agent.wait` 的 `terminalReply.text`，不再写入会话记录，
+    `chat.history` 恒为空 → 「OpenClaw Agent did not return a Skill request」。`run_agent` 现在返回本轮回复
+    （优先 terminalReply，缺失时回退 chat.history 兼容旧版）。新增单测；Rust 1112/0；
+    **`verify_p16_council_execution` 7/0（真实 OpenClaw 测试 18.8s 通过）**。至此「4 个失败」全部处理：
+    council_execution 修复通过；desktop/remote_linco_live 随 Linco 内置被新验证器取代；live_integrations 0 失败。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
