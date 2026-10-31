@@ -336,6 +336,8 @@ pub fn run() {
             providers::list_provider_adapters,
             providers::get_provider_adapter,
             providers::set_provider_credential,
+            providers::get_cloud_fallback_setting,
+            providers::set_cloud_fallback_setting,
             providers::get_provider_credential_status,
             providers::delete_provider_credential,
             providers::discover_provider_models,

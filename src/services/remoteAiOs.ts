@@ -5,6 +5,7 @@ import {
 import { classifyAutomaticIntent } from "./intentRouting";
 import {
   completeChatTaskExecution,
+  describeCloudFallback,
   executeChatWorkTask,
   failChatTaskExecution,
   parseWorkTaskApproval,
@@ -393,7 +394,10 @@ export class RemoteAiOsGateway {
       confirmation: {
         action: approval.capability,
         targetSummary: safeTargetSummary(approval.input),
-        reason: "AI-OS Runtime requires confirmation for this exact Agent-selected action.",
+        reason: [
+          "AI-OS Runtime requires confirmation for this exact Agent-selected action.",
+          describeCloudFallback(approval.cloudFallback),
+        ].filter(Boolean).join(" "),
         options: ["approve", "reject"],
       },
     });
@@ -696,9 +700,16 @@ export class RemoteAiOsGateway {
       session.mapping.taskId = taskId;
       this.persist(session);
       const result = await this.dependencies.executeTask(taskId, "openclaw", exact);
+      const output = result.output;
+      // The approved Task replays the exact request without an Agent turn, so
+      // a cloud stand-in during selection is carried over to stay visible.
+      const withNotice = pending.approval.cloudFallback
+        && output && typeof output === "object" && !Array.isArray(output)
+        ? { ...(output as Record<string, unknown>), cloudFallback: pending.approval.cloudFallback }
+        : output;
       return [this.event(session, "completed", {
         taskId: result.taskId,
-        result: result.output,
+        result: withNotice,
       })];
     } catch (error) {
       return [this.event(session, "failed", {

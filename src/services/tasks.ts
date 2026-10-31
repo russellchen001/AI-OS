@@ -69,10 +69,30 @@ export type ExecuteWorkTaskOptions = {
   userConfirmed?: boolean;
 };
 
+/** Set when the user's cloud model stood in for a failed local model. */
+export type CloudFallbackNote = {
+  model: string;
+  reason: string;
+};
+
 export type WorkTaskApproval = {
   capability: string;
   input: Record<string, unknown>;
+  cloudFallback?: CloudFallbackNote;
 };
+
+export function parseCloudFallback(value: unknown): CloudFallbackNote | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { model, reason } = value as { model?: unknown; reason?: unknown };
+  return typeof model === "string" && model.trim()
+    ? { model: model.trim(), reason: typeof reason === "string" ? reason.trim() : "" }
+    : undefined;
+}
+
+export function describeCloudFallback(note: CloudFallbackNote | undefined): string | undefined {
+  if (!note) return undefined;
+  return `The local model could not complete this step${note.reason ? ` (${note.reason})` : ""}, so your cloud model ${note.model} was used. You can turn cloud fallback off in Settings.`;
+}
 
 export function parseWorkTaskApproval(
   error: unknown,
@@ -94,6 +114,7 @@ export function parseWorkTaskApproval(
     const value = JSON.parse(match[1]) as {
       capability?: unknown;
       input?: unknown;
+      cloudFallback?: unknown;
     };
 
     if (
@@ -106,9 +127,11 @@ export function parseWorkTaskApproval(
       return undefined;
     }
 
+    const cloudFallback = parseCloudFallback(value.cloudFallback);
     return {
       capability: value.capability.trim(),
       input: value.input as Record<string, unknown>,
+      ...(cloudFallback ? { cloudFallback } : {}),
     };
   } catch {
     return undefined;

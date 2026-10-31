@@ -19,6 +19,8 @@ import {
   describeDownloadResult,
   parseDownloadRequestText,
   parseWorkTaskApproval,
+  parseCloudFallback,
+  describeCloudFallback,
   type ChatTaskType,
 } from "../services/tasks";
 import {
@@ -116,6 +118,20 @@ async function presentWorkOutput(
     }
   }
   return { content: formatWorkExecutionOutput(output) };
+}
+
+/** Adds the visible cloud-fallback notice when a cloud model stood in. */
+function withCloudFallbackNotice(
+  presented: Pick<ChatMessage, "content" | "invocation">,
+  note: string | undefined,
+): Pick<ChatMessage, "content" | "invocation"> {
+  return note ? { ...presented, content: `${presented.content}\n\n_${note}_` } : presented;
+}
+
+function outputCloudFallback(output: unknown): string | undefined {
+  return output && typeof output === "object"
+    ? describeCloudFallback(parseCloudFallback((output as { cloudFallback?: unknown }).cloudFallback))
+    : undefined;
 }
 
 function invocationCost(message: ChatMessage): string {
@@ -1416,7 +1432,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         id: crypto.randomUUID(),
         role: "assistant",
         ...(execution.output
-          ? await presentWorkOutput(execution.output, content, selectedModel)
+          ? withCloudFallbackNotice(
+              await presentWorkOutput(execution.output, content, selectedModel),
+              outputCloudFallback(execution.output),
+            )
           : { content: `AI-OS completed plan ${execution.planId}.` }),
         createdAt: new Date().toISOString(),
       };
@@ -1468,6 +1487,9 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
                 "",
                 approval.capability,
                 "",
+                ...(approval.cloudFallback
+                  ? [describeCloudFallback(approval.cloudFallback) ?? "", ""]
+                  : []),
                 "Input:",
                 boundedPreview,
                 "",
@@ -1536,7 +1558,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
             id: crypto.randomUUID(),
             role: "assistant",
             ...(execution.output
-              ? await presentWorkOutput(execution.output, content, selectedModel)
+              ? withCloudFallbackNotice(
+                  await presentWorkOutput(execution.output, content, selectedModel),
+                  describeCloudFallback(approval.cloudFallback),
+                )
               : { content: `AI-OS completed plan ${execution.planId}.` }),
             createdAt: new Date().toISOString(),
           };

@@ -40,6 +40,28 @@ function SettingsPage({
     useState<boolean | null>(null);
   const [webSearchSaving, setWebSearchSaving] = useState(false);
   const [webSearchError, setWebSearchError] = useState("");
+  const [cloudFallback, setCloudFallback] = useState<boolean | null>(null);
+  const [cloudFallbackError, setCloudFallbackError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void invoke<{ enabled: boolean }>("get_cloud_fallback_setting")
+      .then((setting) => active && setCloudFallback(setting.enabled))
+      .catch(() => active && setCloudFallbackError("Unable to load the cloud fallback setting."));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function updateCloudFallback(enabled: boolean) {
+    setCloudFallbackError("");
+    try {
+      const saved = await invoke<{ enabled: boolean }>("set_cloud_fallback_setting", { enabled });
+      setCloudFallback(saved.enabled);
+    } catch {
+      setCloudFallbackError("Unable to save the cloud fallback setting.");
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -370,6 +392,40 @@ function SettingsPage({
           {webSearchError && (
             <p role="alert">{webSearchError}</p>
           )}
+        </div>
+
+        <div className="settings-card" style={cardStyle}>
+          <div className="settings-group-header">
+            <div>
+              <h3>Local first, cloud fallback</h3>
+              <p>
+                What AI-OS does when a local model cannot finish a step.
+              </p>
+            </div>
+            <span aria-hidden="true">☁️</span>
+          </div>
+
+          <label className="setting-field">
+            <span>Use my cloud models when a local model fails</span>
+            <small>
+              AI-OS always tries your local model first. If it times out
+              or answers unusably, the same step goes to your own
+              connected cloud accounts, and the reply says which model was
+              used. Actions still ask for your approval.
+            </small>
+            <select
+              aria-label="Cloud fallback"
+              value={cloudFallback === null ? "unknown" : cloudFallback ? "on" : "off"}
+              disabled={cloudFallback === null}
+              onChange={(event) => void updateCloudFallback(event.target.value === "on")}
+            >
+              {cloudFallback === null && <option value="unknown">Setting unavailable</option>}
+              <option value="on">On — fall back to my cloud models</option>
+              <option value="off">Off — local models only</option>
+            </select>
+          </label>
+
+          {cloudFallbackError && <p role="alert">{cloudFallbackError}</p>}
         </div>
 
         <div

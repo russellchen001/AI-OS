@@ -698,6 +698,17 @@ fn describe_result(result: &Value) -> Option<String> {
         .or_else(|| find(result, "path", 3).map(|path| format!("Done: {path}")))
 }
 
+/// The visible notice for a step a cloud model did instead of the local one.
+fn cloud_fallback_notice(note: &Value) -> Option<String> {
+    let model = string_field(note, "model")?;
+    Some(match string_field(note, "reason") {
+        Some(reason) => format!(
+            "Note: the local model could not complete this step ({reason}), so your cloud model {model} was used."
+        ),
+        None => format!("Note: your cloud model {model} was used instead of the local model."),
+    })
+}
+
 /// Renders Remote AI-OS gateway events as one Linco answer, and the decision
 /// (if any) the next "/approve" or "/reject" refers to.
 fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
@@ -707,6 +718,7 @@ fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
     // The streamed answer: chunks are fragments of one text, and the closing
     // "completed" event repeats that text in full, so it replaces them.
     let mut answer: Option<(usize, String)> = None;
+    let mut notices: Vec<String> = Vec::new();
     for event in events {
         let kind = event
             .get("type")
@@ -779,6 +791,14 @@ fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
                 let described = (kind == "completed")
                     .then(|| event.get("result").and_then(describe_result))
                     .flatten();
+                if kind == "completed" {
+                    if let Some(note) = event
+                        .pointer("/result/cloudFallback")
+                        .and_then(cloud_fallback_notice)
+                    {
+                        notices.push(note);
+                    }
+                }
                 let Some(text) = event
                     .get("message")
                     .and_then(Value::as_str)
@@ -808,6 +828,7 @@ fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
             lines.insert(position.min(lines.len()), text.to_owned());
         }
     }
+    lines.extend(notices);
     if decision.is_some() {
         lines.push("Reply /approve to continue or /reject to decline.".to_owned());
     }
@@ -1526,6 +1547,18 @@ mod tests {
         assert_eq!(render_events(&[created]).0, "Done: /Users/me/Desktop/test");
         let summarized = json!({"type": "completed", "result": {"summary": "3 files moved"}});
         assert_eq!(render_events(&[summarized]).0, "3 files moved");
+    }
+
+    #[test]
+    fn cloud_fallback_is_announced_with_the_result() {
+        let done = json!({"type": "completed", "result": {
+            "skillInvocation": {"output": {"path": "/Users/me/Desktop/test"}},
+            "cloudFallback": {"model": "anthropic/claude", "reason": "local model timed out"}
+        }});
+        let (text, _, _) = render_events(&[done]);
+        assert!(text.starts_with("Done: /Users/me/Desktop/test"));
+        assert!(text.contains("your cloud model anthropic/claude was used"));
+        assert!(text.contains("local model timed out"));
     }
 
     #[test]

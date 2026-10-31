@@ -4822,6 +4822,94 @@ async fn read_omlx_runtime_credential(caller: &str) -> Result<CurrentProviderCre
     read_current_credential("omlx-local", caller).await
 }
 
+const CLOUD_FALLBACK_SETTINGS_FILE: &str = "cloud-fallback.json";
+const CLOUD_FALLBACK_MAX_CANDIDATES: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloudFallbackSetting {
+    pub enabled: bool,
+}
+
+/// Whether a failed local model may hand its turn to the user's own cloud
+/// accounts. On unless the user turned it off; every use is reported.
+pub(crate) fn cloud_fallback_enabled() -> bool {
+    provider_config_directory()
+        .ok()
+        .and_then(|directory| std::fs::read(directory.join(CLOUD_FALLBACK_SETTINGS_FILE)).ok())
+        .and_then(|bytes| serde_json::from_slice::<CloudFallbackSetting>(&bytes).ok())
+        .map(|setting| setting.enabled)
+        .unwrap_or(true)
+}
+
+#[tauri::command]
+pub(crate) fn get_cloud_fallback_setting() -> CloudFallbackSetting {
+    CloudFallbackSetting {
+        enabled: cloud_fallback_enabled(),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn set_cloud_fallback_setting(enabled: bool) -> Result<CloudFallbackSetting, String> {
+    let directory = provider_config_directory()?;
+    std::fs::create_dir_all(&directory)
+        .map_err(|_| "AI-OS could not save the cloud fallback setting".to_owned())?;
+    let setting = CloudFallbackSetting { enabled };
+    std::fs::write(
+        directory.join(CLOUD_FALLBACK_SETTINGS_FILE),
+        serde_json::to_vec_pretty(&setting)
+            .map_err(|_| "AI-OS could not save the cloud fallback setting".to_owned())?,
+    )
+    .map_err(|_| "AI-OS could not save the cloud fallback setting".to_owned())?;
+    Ok(setting)
+}
+
+/// A cloud model's answer, with the "provider/model" that gave it.
+pub(crate) struct CloudFallbackReply {
+    pub text: String,
+    pub model: String,
+}
+
+fn cloud_fallback_candidates(
+    candidates: Vec<AiCenterRouteCandidate>,
+) -> Vec<AiCenterRouteCandidate> {
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.provider_id != "omlx")
+        .take(CLOUD_FALLBACK_MAX_CANDIDATES)
+        .collect()
+}
+
+/// Answers `prompt` with the user's own connected, generation-verified cloud
+/// models in Auto order (never a local model).
+pub(crate) async fn generate_with_cloud_fallback(
+    prompt: &str,
+) -> Result<CloudFallbackReply, String> {
+    let (instances, candidates) = route_candidates(false, true)?;
+    let candidates = cloud_fallback_candidates(candidates);
+    if candidates.is_empty() {
+        return Err("no connected cloud model is available".to_owned());
+    }
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        let label = format!("{}/{}", candidate.provider_id, candidate.model_id);
+        match execute_candidate(&candidate, prompt, &instances, None, None).await {
+            Ok(result) if !result.text.trim().is_empty() => {
+                return Ok(CloudFallbackReply {
+                    text: result.text,
+                    model: label,
+                });
+            }
+            Ok(_) => failures.push(format!("{label}: empty reply")),
+            Err(error) => failures.push(format!(
+                "{label}: {}",
+                error.chars().take(160).collect::<String>()
+            )),
+        }
+    }
+    Err(failures.join("; "))
+}
+
 pub(crate) async fn computer_use_local_model_candidates() -> Result<Vec<String>, String> {
     let instances = read_provider_instances()?;
     let mut models = connected_provider_model_ids(&instances, "omlx");
@@ -6120,6 +6208,30 @@ mod tests {
         )]);
         rank_computer_use_models(&mut models, Some(&status), &evidence, 16_000_000_000.0);
         assert_eq!(models, vec!["tool-a", "tool-b"]);
+    }
+
+    #[test]
+    fn cloud_fallback_never_uses_a_local_model_and_is_bounded() {
+        let candidate = |provider: &str, model: &str| AiCenterRouteCandidate {
+            provider_id: provider.to_owned(),
+            provider_instance_id: format!("{provider}-default"),
+            model_id: model.to_owned(),
+        };
+        let picked = cloud_fallback_candidates(vec![
+            candidate("omlx", "local-a"),
+            candidate("anthropic", "claude"),
+            candidate("omlx", "local-b"),
+            candidate("grok", "grok"),
+            candidate("openai", "gpt"),
+            candidate("google", "gemini"),
+        ]);
+        assert_eq!(
+            picked
+                .iter()
+                .map(|c| c.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["anthropic", "grok", "openai"]
+        );
     }
 
     #[test]
