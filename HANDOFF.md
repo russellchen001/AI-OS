@@ -154,6 +154,9 @@
     CONFIRMABLE_CAPABILITIES、TS SkillCapability。新增 4 个单测（含「在桌面新建 test」端到端：选择→输入→
     PermissionRequired、未调用后端）。Rust 1117/0；council_execution、remote_ai_os、desktop_linco、linco_connector、
     信息架构 PASS。
+    候选 `943332a`：DMG SHA256 `a4978e0c199888a555c6300a9d7f6b57d7e1348b7a03a7cd00ac48dcbb5d0ae8`，主程序
+    `e125b3caa2b9349a3b00cd12d0ea004f041ce3a684ea8f871d440318fae873e2`；已启动（替换 0562059）；Beta5 未变。
+    构建时 ~/Desktop/test 不存在（实测前基线）。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
