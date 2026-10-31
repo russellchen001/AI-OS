@@ -25,6 +25,7 @@ import PersonProfilesPage from "./pages/PersonProfilesPage";
 import AiArenaPage from "./pages/AiArenaPage";
 import AgentsPage from "./pages/AgentsPage";
 import AccountsServicesPage from "./pages/AccountsServicesPage";
+import { availableUpdates, checkSoftwareUpdatesIfDue } from "./services/softwareUpdateMonitor";
 import {
   CONVERSATIONS_CHANGED_EVENT,
   createConversation,
@@ -491,6 +492,20 @@ function App() {
       onMessage:
         handleMessage,
     });
+
+  // Daily, read-only update check of managed CLIs and agents, after launch
+  // settles; installing always needs the user's approval in My AI / Agents.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void checkSoftwareUpdatesIfDue().then((snapshot) => {
+        const updates = snapshot ? availableUpdates(snapshot) : [];
+        if (updates.length) {
+          handleMessage(`Updates available: ${updates.join(", ")}. Review them in My AI or Agents.`, "info");
+        }
+      });
+    }, 15_000);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     void refreshMetrics();

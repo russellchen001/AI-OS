@@ -13,6 +13,12 @@ import {
   getAgentLifecycleAdapter,
   type AgentVersionPlan,
 } from "../services/agentLifecycleManager";
+import {
+  SOFTWARE_UPDATES_EVENT,
+  isUpdateCheckDue,
+  loadSoftwareUpdates,
+  type SoftwareUpdateSnapshot,
+} from "../services/softwareUpdateMonitor";
 
 const VERSION_CHECK_KEY = "ai-os.agent-version-check.openclaw";
 const VERSION_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -70,9 +76,25 @@ function AgentsPage({ onMessage, onPageChange }: AgentsPageProps) {
     }
   }
 
+  // The launch-time daily check already knows the versions; check here only
+  // when neither it nor this page checked within a day.
   useEffect(() => {
+    const showPlans = (snapshot?: SoftwareUpdateSnapshot) => {
+      if (!snapshot) return;
+      setVersionPlans((current) => ({
+        ...current,
+        ...Object.fromEntries(snapshot.agents.map((plan) => [plan.agentId, plan])),
+      }));
+    };
+    const snapshot = loadSoftwareUpdates();
+    showPlans(snapshot);
     const lastCheck = Number(localStorage.getItem(VERSION_CHECK_KEY) ?? "0");
-    if (Date.now() - lastCheck >= VERSION_CHECK_INTERVAL_MS) void checkVersion("openclaw", false);
+    if (isUpdateCheckDue(snapshot) && Date.now() - lastCheck >= VERSION_CHECK_INTERVAL_MS) {
+      void checkVersion("openclaw", false);
+    }
+    const onUpdates = (event: Event) => showPlans((event as CustomEvent<SoftwareUpdateSnapshot>).detail);
+    window.addEventListener(SOFTWARE_UPDATES_EVENT, onUpdates);
+    return () => window.removeEventListener(SOFTWARE_UPDATES_EVENT, onUpdates);
   }, []);
 
   function deleteAgent(agent: AgentRecord) {

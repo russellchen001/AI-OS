@@ -2500,6 +2500,7 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             &[
                 ProviderCredentialKind::OAuth,
                 ProviderCredentialKind::ApiKey,
+                ProviderCredentialKind::Local,
             ],
             &["chat", "reasoning", "vision", "tool-use"],
             true,
@@ -2655,6 +2656,28 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
             )
         });
         grok.descriptor
+            .authentication_methods
+            .insert(0, ProviderAuthenticationMethod::CliAccount);
+    }
+
+    if let Some(google) = registrations
+        .iter_mut()
+        .find(|registration| registration.descriptor.provider_id == "google")
+    {
+        // Account sign-in goes through the official Gemini CLI with the
+        // user's own Google account and quota. The generic OAuth route billed
+        // the AI-OS Cloud project, so it is no longer offered for new
+        // connections; existing OAuth connections keep working.
+        google.descriptor.authentication_methods.retain(|method| {
+            !matches!(
+                method,
+                ProviderAuthenticationMethod::OAuthPkce
+                    | ProviderAuthenticationMethod::OAuthLoopback
+                    | ProviderAuthenticationMethod::Local
+            )
+        });
+        google
+            .descriptor
             .authentication_methods
             .insert(0, ProviderAuthenticationMethod::CliAccount);
     }
@@ -4612,6 +4635,25 @@ async fn execute_candidate(
             && instance.provider_id == "grok"
             && instance.credential.kind == ProviderCredentialKind::Local
     });
+    let uses_gemini_cli = instances.iter().any(|instance| {
+        instance.id == candidate.provider_instance_id
+            && instance.provider_id == "google"
+            && instance.credential.kind == ProviderCredentialKind::Local
+    });
+    if uses_gemini_cli {
+        let response =
+            crate::gemini_cli::generate_gemini_cli_response(crate::gemini_cli::GeminiCliRequest {
+                operation_id,
+                model_id: candidate.model_id.clone(),
+                prompt: prompt.to_owned(),
+            })
+            .await?;
+        return Ok(GenerateProviderResponseResult {
+            provider_id: "google".to_owned(),
+            model_id: response.model_id,
+            text: response.text,
+        });
+    }
     if uses_grok_cli {
         let response =
             crate::grok_cli::generate_grok_cli_response(crate::grok_cli::GrokCliRequest {
@@ -5488,7 +5530,8 @@ pub(crate) async fn execute_ai_center_stream(
             tokio::select! {
                 _ = token.cancelled() => {
                     let _ = crate::claude_code::cancel_claude_code_request(attempt_operation_id.clone());
-                    let _ = crate::grok_cli::cancel_grok_cli_request(attempt_operation_id);
+                    let _ = crate::grok_cli::cancel_grok_cli_request(attempt_operation_id.clone());
+                    let _ = crate::gemini_cli::cancel_gemini_cli_request(attempt_operation_id);
                     Err("cancelled".to_owned())
                 }
                 result = execution => result
@@ -7429,15 +7472,18 @@ mod tests {
             ]
         );
 
+        // Google account sign-in uses the user's own quota via Gemini CLI,
+        // never the AI-OS OAuth client's Cloud project.
         let google = get_provider_adapter("google".to_owned()).unwrap();
         assert_eq!(
             google.authentication_methods,
             vec![
-                ProviderAuthenticationMethod::OAuthPkce,
-                ProviderAuthenticationMethod::OAuthLoopback,
+                ProviderAuthenticationMethod::CliAccount,
                 ProviderAuthenticationMethod::ApiKey,
             ]
         );
+        assert!(google.credential_kinds.contains(&ProviderCredentialKind::Local));
+        assert!(google.credential_kinds.contains(&ProviderCredentialKind::OAuth));
         assert!(google.supports_token_refresh);
     }
 

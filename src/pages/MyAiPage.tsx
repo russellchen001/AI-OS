@@ -44,6 +44,15 @@ import {
   type ProviderOAuthErrorEvent,
 } from "../services/providers";
 import {
+  SOFTWARE_UPDATES_EVENT,
+  checkSoftwareUpdates,
+  loadSoftwareUpdates,
+  type SoftwareUpdateSnapshot,
+} from "../services/softwareUpdateMonitor";
+import {
+  CLI_ACCOUNT_PROVIDER_IDS,
+  describeCliInstallPlan,
+  type CliVersionReport,
   getCliProviderAdapter,
   installCliProvider,
   prepareCliProviderInstall,
@@ -51,8 +60,7 @@ import {
 
 const OAUTH_FRONTEND_TIMEOUT_MS = 5 * 60 * 1000;
 type ClaudeCodeStatus = { installed: boolean; authenticated: boolean; message: string };
-/** Providers whose account sign-in is owned by their official local CLI. */
-const CLI_ACCOUNT_PROVIDERS = new Set(["anthropic", "grok"]);
+const CLI_ACCOUNT_PROVIDERS = CLI_ACCOUNT_PROVIDER_IDS;
 type OmlxRuntimeStatus = { supported: boolean; installed: boolean; running: boolean };
 type DeviceAuth = {
   state: string;
@@ -216,6 +224,10 @@ function MyAiPage({
     ProviderAdapterDescriptor[]
   >([]);
   const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
+  const [cliVersions, setCliVersions] = useState<CliVersionReport[]>(() => loadSoftwareUpdates()?.cli ?? []);
+  const [cliVersionsCheckedAt, setCliVersionsCheckedAt] = useState(() => loadSoftwareUpdates()?.checkedAt);
+  const [cliUpdateBusy, setCliUpdateBusy] = useState<string>();
+  const [cliUpdateMessage, setCliUpdateMessage] = useState("");
   const [omlxRuntime, setOmlxRuntime] = useState<OmlxRuntimeStatus | null>(null);
   const [omlxAdminModels, setOmlxAdminModels] = useState<OmlxAdminModel[]>([]);
   const [omlxLoading, setOmlxLoading] = useState(false);
@@ -636,8 +648,9 @@ function MyAiPage({
         ? getCliProviderAdapter(setup.providerId)
         : undefined;
       const verification = cliAdapter
-        ? await cliAdapter.probe().then((status) => {
+        ? await cliAdapter.probe().then(async (status) => {
             if (!status.authenticated) throw new Error(status.message);
+            await cliAdapter.verify?.();
             return {
               ok: true, level: "live", checkedAt: new Date().toISOString(),
               message: status.message, discoveredModels: cliAdapter.models(instanceId, status),
@@ -709,7 +722,7 @@ function MyAiPage({
             const plan = await prepareCliProviderInstall(cliAdapter.id);
             const approved = await dialog.confirm({
               title: `Install ${cliAdapter.displayName}?`,
-              message: `AI-OS will install ${plan.packageName} ${plan.version} from the official npm registry after rechecking its published SHA-512 integrity. Existing versions are retained for rollback.`,
+              message: describeCliInstallPlan(plan),
               confirmLabel: "Install verified package",
               cancelLabel: "Not now",
               tone: "default",
@@ -725,6 +738,7 @@ function MyAiPage({
           }
           const models = cliAdapter.models(instanceId, status);
           if (!models.length) throw new Error(`${cliAdapter.displayName} reported no available models.`);
+          await cliAdapter.verify?.();
           setSetup({
             ...setup,
             phase: "models",
@@ -1080,8 +1094,58 @@ function MyAiPage({
     }
   }
 
+  useEffect(() => {
+    const show = (event: Event) => {
+      const snapshot = (event as CustomEvent<SoftwareUpdateSnapshot>).detail;
+      setCliVersions(snapshot.cli);
+      setCliVersionsCheckedAt(snapshot.checkedAt);
+    };
+    window.addEventListener(SOFTWARE_UPDATES_EVENT, show);
+    return () => window.removeEventListener(SOFTWARE_UPDATES_EVENT, show);
+  }, []);
+
+  async function checkCliUpdates() {
+    setCliUpdateBusy("check");
+    setCliUpdateMessage("");
+    try {
+      const snapshot = await checkSoftwareUpdates();
+      const updates = snapshot.cli.filter((report) => report.updateAvailable).length;
+      setCliUpdateMessage(updates ? `${updates} update${updates === 1 ? "" : "s"} available.` : "All installed CLI tools are up to date.");
+    } catch (error) {
+      setCliUpdateMessage(error instanceof Error ? error.message : "The update check failed.");
+    } finally {
+      setCliUpdateBusy(undefined);
+    }
+  }
+
+  async function updateCli(report: CliVersionReport) {
+    setCliUpdateBusy(report.providerId);
+    setCliUpdateMessage("");
+    try {
+      const plan = await prepareCliProviderInstall(report.providerId);
+      const approved = await dialog.confirm({
+        title: `Update ${plan.displayName} to ${plan.version}?`,
+        message: describeCliInstallPlan(plan),
+        confirmLabel: "Update and verify",
+        cancelLabel: "Not now",
+        tone: "default",
+      });
+      if (!approved) return;
+      const result = await installCliProvider(plan);
+      setCliUpdateMessage(result.message);
+      await checkSoftwareUpdates();
+    } catch (error) {
+      setCliUpdateMessage(error instanceof Error ? error.message : `${report.displayName} could not be updated.`);
+    } finally {
+      setCliUpdateBusy(undefined);
+    }
+  }
+
+  const installedCliTools = cliVersions.filter((report) => report.installed);
+
   return (
     <section className="my-ai-page">
+
       <header className="my-ai-header">
         <div>
           <p className="settings-kicker">Intelligence</p>
@@ -1338,6 +1402,51 @@ function MyAiPage({
         </article>
       )}
 
+      <div className="provider-section-heading cli-tools-heading">
+        <h2>Command-line tools</h2>
+        <span>Official CLIs that connect your own accounts · checked daily</span>
+      </div>
+
+      <div className="cli-tools-list" aria-label="Command-line tool versions">
+        {installedCliTools.map((report) => (
+          <div className="cli-tool-row" key={report.providerId}>
+            <div>
+              <strong>{report.displayName}</strong>
+              <small>
+                {report.installedVersion ?? "Version unknown"}
+                {report.sourceLabel && ` · ${report.sourceLabel}`}
+                {report.latestVersion && !report.updateAvailable && " · up to date"}
+              </small>
+            </div>
+            {report.updateAvailable && report.canUpdate ? (
+              <button
+                type="button"
+                disabled={cliUpdateBusy !== undefined}
+                onClick={() => void updateCli(report)}
+              >
+                {cliUpdateBusy === report.providerId ? "Updating…" : `Update to ${report.latestVersion}`}
+              </button>
+            ) : report.updateAvailable ? (
+              <small>{report.message}</small>
+            ) : null}
+          </div>
+        ))}
+        {!installedCliTools.length && (
+          <p className="cli-tools-empty">
+            {cliVersionsCheckedAt ? "No supported CLI is installed." : "Not checked yet."}
+          </p>
+        )}
+        <footer>
+          <small>
+            {cliVersionsCheckedAt ? `Last checked ${new Date(cliVersionsCheckedAt).toLocaleString()}` : ""}
+            {cliUpdateMessage && ` · ${cliUpdateMessage}`}
+          </small>
+          <button type="button" disabled={cliUpdateBusy !== undefined} onClick={() => void checkCliUpdates()}>
+            {cliUpdateBusy === "check" ? "Checking…" : "Check for updates"}
+          </button>
+        </footer>
+      </div>
+
       <div className="provider-section-heading catalog-heading">
         <h2>Add another Provider</h2>
         <span>Pick a service — AI‑OS will guide the setup</span>
@@ -1370,6 +1479,7 @@ function MyAiPage({
       </div>
 
       {setup && (() => {
+        const setupCli = getCliProviderAdapter(setup.providerId);
         const setupDescriptor = providerAdapters.find(
           (descriptor) =>
             descriptor.providerId === setup.providerId,
@@ -1511,7 +1621,7 @@ function MyAiPage({
                       disabled={
                         setup.providerId === "anthropic"
                           ? claudeCodeStatus?.authenticated !== true
-                          : setup.providerId === "grok"
+                          : CLI_ACCOUNT_PROVIDERS.has(setup.providerId)
                             ? false
                           : setupDescriptor?.authenticationMethods.includes(
                                 "device-code",
@@ -1537,7 +1647,7 @@ function MyAiPage({
                 <>
                   <h3>Choose the default model</h3>
                   <p>{CLI_ACCOUNT_PROVIDERS.has(setup.providerId) && setup.method === "account"
-                    ? `${setup.providerId === "grok" ? "The Grok CLI" : "Claude Code"} manages the account credential. AI‑OS stores only this connection and your model preference.`
+                    ? `${getCliProviderAdapter(setup.providerId)?.displayName ?? "The official CLI"} manages the account credential. AI‑OS stores only this connection and your model preference.`
                     : "The credential is safely stored. These models were returned by the Provider connection."}</p>
                   <div className="provider-model-choice">
                     {setup.models.map((model) => (
@@ -1564,27 +1674,23 @@ function MyAiPage({
                 </>
               ) : setup.method === "account" ? (
                 <>
-                  <h3>{setup.providerId === "anthropic" ? "Use Claude Code on this Mac" : setup.providerId === "grok" ? "Use the Grok CLI on this Mac" : "Sign in in your browser"}</h3>
-                  <p>{setup.providerId === "anthropic"
-                    ? claudeCodeStatus?.installed
-                      ? "AI‑OS uses the official Claude Code CLI and never reads or stores its subscription credential."
-                      : "Install the official Claude Code CLI, sign in there, then return here and verify the connection."
-                    : setup.providerId === "grok"
-                      ? "Install the official Grok CLI from x.ai/cli and run `grok login` in Terminal. AI‑OS never reads or stores its account credential."
+                  <h3>{setupCli?.setupTitle ?? "Sign in in your browser"}</h3>
+                  <p>{setup.providerId === "anthropic" && claudeCodeStatus?.installed
+                    ? "AI‑OS uses the official Claude Code CLI and never reads or stores its subscription credential."
+                    : setupCli
+                      ? setupCli.setupInstructions
                       : setup.providerId === "kimi"
                         ? "AI‑OS will open Kimi Code's official device authorization page for your coding account."
                       : `AI‑OS will open the official ${setup.provider} sign-in page. Your password is never entered into AI‑OS.`}</p>
                   <div className="provider-security-note">
                     <span>✓</span>
-                    <p><strong>Protected connection</strong><small>{setup.providerId === "anthropic"
-                      ? "Claude Code owns authentication. AI‑OS only checks its status and sends bounded requests through the local CLI."
-                      : setup.providerId === "grok"
-                        ? "The Grok CLI owns authentication and keeps it current. AI‑OS only checks its status and sends bounded requests with tools and web access turned off."
+                    <p><strong>Protected connection</strong><small>{setupCli
+                      ? setupCli.protectionNote
                         : setup.providerId === "kimi"
                           ? "AI‑OS uses Kimi Code's official device flow. Tokens stay in macOS Keychain and requests use the managed coding API."
                         : "AI‑OS uses PKCE and a one-time local callback. The authorization code and tokens stay in the native security layer."}</small></p>
                   </div>
-                  {setup.providerId === "google" && (
+                  {setup.providerId === "google" && !setupCli && (
                     <div className="provider-security-note">
                       <span>!</span>
                       <p><strong>Google approval may be required</strong><small>If Google shows 403 access_denied, AI‑OS cannot bypass it. The OAuth app owner must add this account as a test user or complete Google verification, then you can retry here.</small></p>
@@ -1637,19 +1743,15 @@ function MyAiPage({
                   ? setup.phase === "models"
                     ? "Saving Provider…"
                     : setup.method === "account"
-                      ? setup.providerId === "anthropic"
-                        ? "Checking Claude Code…"
-                        : setup.providerId === "grok"
-                          ? "Checking Grok CLI…"
+                      ? setupCli
+                        ? `Checking ${setupCli.displayName}…`
                         : "Waiting for sign-in…"
                       : "Saving…"
                   : setup.phase === "models"
                     ? "Save Provider"
                     : setup.method === "account"
-                      ? setup.providerId === "anthropic"
-                        ? "Verify Claude Code"
-                        : setup.providerId === "grok"
-                          ? "Verify Grok CLI"
+                      ? setupCli
+                        ? `Verify ${setupCli.displayName}`
                         : "Continue in browser"
                       : "Save and choose model"}
                 <span>→</span>

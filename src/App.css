@@ -2248,6 +2248,44 @@ a {
   font-weight: 650;
 }
 
+.cli-tools-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.cli-tool-row,
+.cli-tools-list footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cli-tool-row > div {
+  display: grid;
+  gap: 2px;
+}
+
+.cli-tool-row strong {
+  color: var(--text);
+}
+
+.cli-tools-list footer {
+  padding-top: 8px;
+  border-top: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+}
+
+.cli-tools-empty {
+  margin: 0;
+}
+
 .local-model-list {
   display: flex;
   flex-wrap: wrap;

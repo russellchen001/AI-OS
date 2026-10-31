@@ -3,6 +3,8 @@ mod browser;
 mod agent_lifecycle_manager;
 mod claude_code;
 mod cli_provider_manager;
+mod cli_process;
+mod gemini_cli;
 mod grok_cli;
 pub mod cloud_drive_core;
 pub mod cloud_drive_baidu;
@@ -300,6 +302,7 @@ pub fn run() {
             managed_openclaw_start::start_managed_openclaw,
             cli_provider_manager::prepare_cli_provider_install,
             cli_provider_manager::install_cli_provider,
+            cli_provider_manager::check_cli_provider_versions,
             agent_lifecycle_manager::check_agent_version,
             agent_lifecycle_manager::upgrade_agent,
             openclaw::export_openclaw_servers,
@@ -370,6 +373,10 @@ pub fn run() {
             grok_cli::get_grok_cli_status,
             grok_cli::generate_grok_cli_response,
             grok_cli::cancel_grok_cli_request,
+            gemini_cli::get_gemini_cli_status,
+            gemini_cli::verify_gemini_cli_account,
+            gemini_cli::generate_gemini_cli_response,
+            gemini_cli::cancel_gemini_cli_request,
             memory::save_memory,
             memory::list_memory,
             memory::delete_memory,

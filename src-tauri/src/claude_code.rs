@@ -24,6 +24,12 @@ fn active_requests() -> &'static Mutex<HashMap<String, CancellationToken>> {
     CLAUDE_CODE_REQUESTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn has_active_requests() -> bool {
+    active_requests()
+        .lock()
+        .is_ok_and(|requests| !requests.is_empty())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClaudeCodeStatus {
@@ -106,7 +112,7 @@ fn discover_binary_from(candidates: Vec<PathBuf>) -> Option<PathBuf> {
     })
 }
 
-fn discover_binary() -> Option<PathBuf> {
+pub(crate) fn discover_binary() -> Option<PathBuf> {
     discover_binary_from(candidate_paths())
 }
 
