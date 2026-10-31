@@ -436,7 +436,7 @@ fn invoke_distillation_turn(
     let session_key = format!("agent:{agent_id}:ai-os-{namespace}-{session_id}");
     let idempotency_key = format!("{session_id}:{namespace}");
 
-    run_agent(
+    let reply = run_agent(
         &invoker,
         agent_id,
         &session_key,
@@ -451,12 +451,7 @@ fn invoke_distillation_turn(
         )
     })?;
 
-    latest_assistant_text(&history(&invoker, &session_key).map_err(|error| {
-        format!(
-            "OpenClaw could not read the {purpose} transcript (session {session_key}): {}",
-            error.message
-        )
-    })?)
+    latest_assistant_text(&reply)
     .filter(|text| !text.trim().is_empty())
     .ok_or_else(|| {
         format!("The OpenClaw {purpose} turn (session {session_key}) returned no completion.")
@@ -648,7 +643,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             phase: "skill-request".to_owned(),
             message: "Waiting for the Agent to request an exposed Skill.".to_owned(),
         });
-        run_agent(
+        let mut decision_history = run_agent(
             self.invoker.as_ref(),
             OPENCLAW_EXECUTION_AGENT_ID,
             &session_key,
@@ -656,7 +651,6 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             &format!("{}:request", request.execution_id),
             SKILL_SELECTION_TIMEOUT_SECONDS,
         )?;
-        let mut decision_history = history(self.invoker.as_ref(), &session_key)?;
         let mut attempted_capabilities = Vec::new();
         let mut prior_failure: Option<AgentExecutionError> = None;
 
@@ -735,7 +729,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
                             "retryable": failure.retryable,
                         })
                     );
-                    run_agent(
+                    decision_history = run_agent(
                         self.invoker.as_ref(),
                         OPENCLAW_EXECUTION_AGENT_ID,
                         &session_key,
@@ -747,7 +741,6 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
                         ),
                         AGENT_RUN_TIMEOUT_SECONDS,
                     )?;
-                    decision_history = history(self.invoker.as_ref(), &session_key)?;
                 }
             }
         };
@@ -779,7 +772,7 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
                 "output": result.output,
             })
         );
-        run_agent(
+        let completion_history = run_agent(
             self.invoker.as_ref(),
             OPENCLAW_EXECUTION_AGENT_ID,
             &session_key,
@@ -787,7 +780,6 @@ impl AgentSkillTransportAdapter for OpenClawAgentSkillTransport {
             &format!("{}:result", request.execution_id),
             AGENT_RUN_TIMEOUT_SECONDS,
         )?;
-        let completion_history = history(self.invoker.as_ref(), &session_key)?;
         let completion = latest_assistant_text(&completion_history).ok_or_else(|| {
             AgentExecutionError::new(
                 AgentExecutionErrorKind::ExecutionFailed,
@@ -821,7 +813,7 @@ fn run_agent(
     message: &str,
     idempotency_key: &str,
     run_timeout_seconds: u64,
-) -> Result<(), AgentExecutionError> {
+) -> Result<Value, AgentExecutionError> {
     let params = json!({
         "message": message,
         "agentId": agent_id,
@@ -864,7 +856,7 @@ fn run_agent(
             )
             .map_err(map_gateway_failure)?;
         match terminal.get("status").and_then(Value::as_str) {
-            Some("ok") => return Ok(()),
+            Some("ok") => return turn_reply(invoker, session_key, &terminal),
             Some("timeout") => continue,
             Some("error") => {
                 // OpenClaw's run-level error field is frequently a single
@@ -904,6 +896,24 @@ fn run_agent(
     ))
 }
 
+/// The finished turn's reply in chat.history's shape. Current OpenClaw returns
+/// it on the terminal record (`terminalReply`) and does not keep model runs in
+/// the session transcript; older releases only have the transcript.
+fn turn_reply(
+    invoker: &dyn OpenClawAgentMethodInvoker,
+    session_key: &str,
+    terminal: &Value,
+) -> Result<Value, AgentExecutionError> {
+    let reply = terminal
+        .pointer("/terminalReply/text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty());
+    match reply {
+        Some(text) => Ok(json!({ "messages": [{ "role": "assistant", "content": text }] })),
+        None => history(invoker, session_key),
+    }
+}
+
 fn history(
     invoker: &dyn OpenClawAgentMethodInvoker,
     session_key: &str,
@@ -932,7 +942,7 @@ fn request_contracted_input(
         json!(capability),
         contract.input_schema
     );
-    run_agent(
+    let input_history = run_agent(
         invoker,
         OPENCLAW_EXECUTION_AGENT_ID,
         session_key,
@@ -940,7 +950,6 @@ fn request_contracted_input(
         &format!("{execution_id}:input:{attempt}"),
         AGENT_RUN_TIMEOUT_SECONDS,
     )?;
-    let input_history = history(invoker, session_key)?;
     let input_text = latest_assistant_text(&input_history).ok_or_else(invalid_skill_protocol)?;
     let input = skills::contracts::ground_capability_input(
         capability,
@@ -1815,6 +1824,42 @@ mod tests {
         assert!(exposure.contains("Installed local AI models use models capabilities"));
         assert!(!exposure.contains("userConfirmed"));
         assert!(!exposure.contains("permissionDecision"));
+    }
+
+    #[test]
+    fn current_openclaw_terminal_reply_is_used_without_the_transcript() {
+        let reply = |text: &str| {
+            Ok(json!({"status": "ok", "terminalReply": {"disposition": "visible", "text": text}}))
+        };
+        let invoker = Arc::new(ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "request-run"})),
+                reply("{\"type\":\"capability.select\",\"capability\":\"filesystem.scan\"}"),
+                Ok(json!({"runId": "input-run"})),
+                reply("{\"path\":\"/safe/fixture\"}"),
+                Ok(json!({"runId": "result-run"})),
+                reply("{\"type\":\"complete\",\"summary\":\"fixture inspected\"}"),
+            ])),
+        });
+        let backend = Arc::new(RecordingBackend {
+            calls: Mutex::new(Vec::new()),
+        });
+        let gateway = RuntimeSkillInvocationGateway::with_backend(Vec::new(), backend.clone());
+        let transport = OpenClawAgentSkillTransport::with_invoker(invoker.clone());
+
+        let result = transport
+            .execute(&execution_request(), &context(true), &gateway, &mut |_| {})
+            .unwrap();
+
+        assert_eq!(result.output["skillInvocation"]["capability"], "filesystem.scan");
+        assert_eq!(backend.calls.lock().unwrap().len(), 1);
+        assert!(invoker
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|call| call.0 != "chat.history"));
     }
 
     #[test]
