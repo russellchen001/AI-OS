@@ -117,6 +117,10 @@
     候选 `57b1d17`：DMG `outputs/AI OS_1.0.1-beta.6_candidate-57b1d17_aarch64.dmg` SHA256
     `cf232532022756777b3d3e889cccae7563d645616768e823b4a580b117743f54`，主程序
     `1df5c4841078b68eb8886501991d6c149903a0c6e230e6c1ac0ab32c2f39d6cc`；已启动（替换 27bc31c）；Beta5 主程序未变。
+    `bfc45e6`：Linco App 的「创建机器人 → 从 OpenClaw 导入」页给的是 App ID / App Secret（非命令），配对改为
+    也接受这两项（独立输入框，或粘贴「一键复制配置信息」的内容：标签行/JSON/KEY=value），Agent 槽位在 AI-OS 选
+    （默认 openclaw）。候选 `bfc45e6`：DMG SHA256 `eae90957657e2270d80537b1334154e28ec3141b63a0e8681107964d7f4b2604`，
+    主程序 `b32a2df6baa579783cdbd821b353503f9631bc9ab4a1d459a12037df9a69f9e6`；已启动（替换 57b1d17）；Beta5 未变。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
