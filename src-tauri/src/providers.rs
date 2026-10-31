@@ -5075,11 +5075,25 @@ pub(crate) async fn computer_use_local_route(
     goal: &str,
     capabilities: &[String],
 ) -> Result<Value, String> {
-    let model = computer_use_local_model_candidates()
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| "No usable local Computer Use model is connected".to_owned())?;
+    let models = computer_use_local_model_candidates().await?;
+    if models.is_empty() {
+        return Err("No usable local Computer Use model is connected".to_owned());
+    }
+    let mut last_error = String::new();
+    for model in models {
+        match computer_use_local_route_with(&model, goal, capabilities).await {
+            Ok(choice) => return Ok(choice),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+async fn computer_use_local_route_with(
+    model: &str,
+    goal: &str,
+    capabilities: &[String],
+) -> Result<Value, String> {
     let credential = read_omlx_runtime_credential("computer_use_local_route").await?;
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -5125,7 +5139,18 @@ pub(crate) async fn computer_use_local_route(
         .and_then(Value::as_str)
         != Some("choose_skill")
     {
-        return Err("The local Skill router did not select a capability".to_owned());
+        let finish = body
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        let answered_in_text = body
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty());
+        return Err(format!(
+            "The local Skill router did not select a capability (model {model}, finish {finish}{})",
+            if answered_in_text { ", answered in text" } else { "" }
+        ));
     }
     let arguments = body
         .pointer("/choices/0/message/tool_calls/0/function/arguments")
@@ -5133,6 +5158,25 @@ pub(crate) async fn computer_use_local_route(
         .ok_or_else(|| "The local Skill router returned no arguments".to_owned())?;
     serde_json::from_str(arguments)
         .map_err(|_| "The local Skill router returned invalid arguments".to_owned())
+}
+
+/// Whether a local model's own chat template can render tool definitions.
+/// `None` when the template cannot be read, so unknown models stay eligible.
+fn chat_template_supports_tools(model_path: &str) -> Option<bool> {
+    let directory = std::path::Path::new(model_path);
+    let template = std::fs::read_to_string(directory.join("chat_template.jinja"))
+        .ok()
+        .or_else(|| {
+            let config: Value = serde_json::from_str(
+                &std::fs::read_to_string(directory.join("tokenizer_config.json")).ok()?,
+            )
+            .ok()?;
+            match config.get("chat_template")? {
+                Value::String(text) => Some(text.clone()),
+                other => Some(other.to_string()),
+            }
+        })?;
+    Some(template.contains("tools"))
 }
 
 fn rank_computer_use_models(
@@ -5159,6 +5203,14 @@ fn rank_computer_use_models(
         }
         let item = find_status(model);
         if statuses.is_some() && item.is_none() {
+            return false;
+        }
+        let template_lacks_tools = item
+            .and_then(|value| value.get("model_path"))
+            .and_then(Value::as_str)
+            .and_then(chat_template_supports_tools)
+            == Some(false);
+        if template_lacks_tools {
             return false;
         }
         let size = item
@@ -6300,6 +6352,36 @@ mod tests {
         )]);
         rank_computer_use_models(&mut models, Some(&status), &evidence, 16_000_000_000.0);
         assert_eq!(models, vec!["tool-a", "tool-b"]);
+    }
+
+    #[test]
+    fn computer_use_candidates_skip_models_whose_template_has_no_tools() {
+        let root = std::env::temp_dir().join(format!("aios-template-{}", uuid::Uuid::new_v4()));
+        let with_tools = root.join("with-tools");
+        let without_tools = root.join("without-tools");
+        let unknown = root.join("unknown");
+        for directory in [&with_tools, &without_tools, &unknown] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(
+            with_tools.join("chat_template.jinja"),
+            "{% if tools %}{{ tools | tojson }}{% endif %}",
+        )
+        .unwrap();
+        std::fs::write(
+            without_tools.join("tokenizer_config.json"),
+            r#"{"chat_template": "{% for message in messages %}{{ message.content }}{% endfor %}"}"#,
+        )
+        .unwrap();
+        let mut models = vec!["reasoning-only".into(), "tool-capable".into(), "unread".into()];
+        let status = serde_json::json!({"models": [
+            {"id":"reasoning-only", "loaded":true, "model_path": without_tools},
+            {"id":"tool-capable", "loaded":false, "model_path": with_tools},
+            {"id":"unread", "loaded":false, "model_path": unknown}
+        ]});
+        rank_computer_use_models(&mut models, Some(&status), &HashMap::new(), 0.0);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(models, vec!["tool-capable", "unread"]);
     }
 
     #[test]

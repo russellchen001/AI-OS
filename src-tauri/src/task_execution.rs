@@ -734,7 +734,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(approval_error.contains("[PermissionRequired]"));
+        assert!(approval_error.contains("[PermissionRequired]"), "{approval_error}");
         let approval_json = approval_error
             .split("AI_OS_APPROVAL_REQUIRED_BEGIN")
             .nth(1)
