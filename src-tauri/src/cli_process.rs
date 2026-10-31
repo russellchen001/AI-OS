@@ -100,10 +100,23 @@ impl CliProcess<'_> {
     pub(crate) fn sanitized_error(&self, stderr: &[u8]) -> String {
         let value = String::from_utf8_lossy(stderr);
         let fallback = format!("{} could not complete the request", self.label);
-        let line = value
+        let lines: Vec<&str> = value
             .lines()
             .map(str::trim)
-            .find(|line| !line.is_empty())
+            .filter(|line| !line.is_empty())
+            .collect();
+        // The line naming the error, not a leading warning or log line
+        // (Gemini CLI prints a terminal-colour warning first).
+        let line = lines
+            .iter()
+            .find(|line| line.to_lowercase().contains("error"))
+            .or_else(|| {
+                lines
+                    .iter()
+                    .find(|line| !line.to_lowercase().starts_with("warning"))
+            })
+            .or(lines.first())
+            .copied()
             .unwrap_or(&fallback);
         let safe: String = line
             .chars()
@@ -418,6 +431,11 @@ mod tests {
             "Test CLI returned a credential-related error"
         );
         assert_eq!(SHELL.sanitized_error(b"rate limited\nmore"), "rate limited");
+        assert_eq!(
+            SHELL.sanitized_error(b"Warning: 256-color support not detected.\nError authenticating: IneligibleTierError: client unsupported\n    at frame"),
+            "Error authenticating: IneligibleTierError: client unsupported"
+        );
+        assert_eq!(SHELL.sanitized_error(b"Warning: slow terminal\nquota exhausted"), "quota exhausted");
     }
 
     #[test]
