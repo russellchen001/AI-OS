@@ -257,14 +257,26 @@ fn run_request(
         env_set: &[("GEMINI_CLI_SYSTEM_SETTINGS_PATH", settings.as_str())],
         ..PROCESS
     };
-    let output = process.run(
-        &binary,
-        &request_arguments(model_id, &policy),
-        Some(prompt),
-        timeout,
-        cancellation,
-    )?;
-    parse_response(&output)
+    let output = process
+        .run(
+            &binary,
+            &request_arguments(model_id, &policy),
+            Some(prompt),
+            timeout,
+            cancellation,
+        )
+        .map_err(|error| explain_tier_error(&error))?;
+    parse_response(&output).map_err(|error| explain_tier_error(&error))
+}
+
+/// Google stopped serving personal accounts (free, AI Pro, Ultra) through
+/// Gemini CLI on 2026-06-18; say what still works instead of only quoting it.
+fn explain_tier_error(error: &str) -> String {
+    if error.contains("IneligibleTierError") || error.contains("no longer supported for Gemini Code Assist") {
+        "Google no longer serves personal Google accounts through Gemini CLI. Connect Google with your own Gemini API key from Google AI Studio instead.".to_owned()
+    } else {
+        error.to_owned()
+    }
 }
 
 /// One tiny real request, so "verified" means the account can answer.
@@ -389,6 +401,13 @@ mod tests {
         std::fs::write(directory.path().join("org.toml"), "[[rule]]").unwrap();
         assert!(has_system_admin_policies(directory.path()));
         assert!(!has_system_admin_policies(Path::new("/nonexistent/gemini/policies")));
+    }
+
+    #[test]
+    fn retired_personal_tier_points_to_the_users_own_api_key() {
+        let explained = explain_tier_error("Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals.");
+        assert!(explained.contains("own Gemini API key"));
+        assert_eq!(explain_tier_error("Quota exceeded"), "Quota exceeded");
     }
 
     #[test]

@@ -1721,6 +1721,12 @@ function MyAiPage({
                       placeholder="Paste your API key"
                     />
                   </label>
+                  {setup.providerId === "google" && (
+                    <div className="provider-security-note">
+                      <span>→</span>
+                      <p><strong>Use your own Gemini API key</strong><small>Create a key with your Google account at aistudio.google.com/apikey. Requests use that key's own quota (Google AI Studio has a free tier); no one else's account or project is billed. Google no longer serves personal accounts through Gemini CLI and recommends an API key for apps like AI‑OS.</small></p>
+                    </div>
+                  )}
                   <div className="provider-security-note">
                     <span>✓</span>
                     <p><strong>Stored in macOS Keychain</strong><small>AI‑OS can check whether a key exists, but the native layer never returns the secret to the interface.</small></p>

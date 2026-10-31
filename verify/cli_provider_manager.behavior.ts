@@ -34,7 +34,7 @@ assert(grokModels.length === 2 && grokModels[1].isDefault, "Grok live model conf
 const gemini = adapters.find((adapter) => adapter.id === "google")!;
 assert(gemini.officialPackage === "@google/gemini-cli", "Gemini is not routed to Google's official CLI package");
 assert(gemini.verify, "Gemini sign-in is not confirmed with a real request");
-assert(/own Google account/.test(gemini.setupInstructions) && /quota/.test(gemini.setupInstructions), "Gemini setup does not explain the user's own quota");
+assert(/own Google quota/.test(gemini.setupInstructions) && /Use API key/.test(gemini.setupInstructions), "Gemini setup does not explain the user's own quota and the API key route");
 const geminiModels = gemini.models("google-default", {
   installed: true, authenticated: true, message: "ready", models: ["gemini-cli-default"], defaultModel: "gemini-cli-default",
 });

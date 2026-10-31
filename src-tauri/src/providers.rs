@@ -2664,22 +2664,16 @@ fn provider_adapter_registry() -> Vec<ProviderAdapterRegistration> {
         .iter_mut()
         .find(|registration| registration.descriptor.provider_id == "google")
     {
-        // Account sign-in goes through the official Gemini CLI with the
-        // user's own Google account and quota. The generic OAuth route billed
-        // the AI-OS Cloud project, so it is no longer offered for new
-        // connections; existing OAuth connections keep working.
-        google.descriptor.authentication_methods.retain(|method| {
-            !matches!(
-                method,
-                ProviderAuthenticationMethod::OAuthPkce
-                    | ProviderAuthenticationMethod::OAuthLoopback
-                    | ProviderAuthenticationMethod::Local
-            )
-        });
+        // New Google connections use the user's own Gemini API key. The
+        // generic OAuth route billed the AI-OS Cloud project; Gemini CLI no
+        // longer serves personal accounts (Google points them to
+        // Antigravity, whose FAQ forbids wrapping it in other apps on
+        // consumer plans) and recommends an AI Studio key for apps instead.
+        // Existing OAuth or Gemini CLI connections keep working.
         google
             .descriptor
             .authentication_methods
-            .insert(0, ProviderAuthenticationMethod::CliAccount);
+            .retain(|method| *method == ProviderAuthenticationMethod::ApiKey);
     }
 
     if let Some(kimi) = registrations
@@ -7472,15 +7466,12 @@ mod tests {
             ]
         );
 
-        // Google account sign-in uses the user's own quota via Gemini CLI,
-        // never the AI-OS OAuth client's Cloud project.
+        // New Google connections use the user's own API key, never the
+        // AI-OS OAuth client's Cloud project.
         let google = get_provider_adapter("google".to_owned()).unwrap();
         assert_eq!(
             google.authentication_methods,
-            vec![
-                ProviderAuthenticationMethod::CliAccount,
-                ProviderAuthenticationMethod::ApiKey,
-            ]
+            vec![ProviderAuthenticationMethod::ApiKey]
         );
         assert!(google.credential_kinds.contains(&ProviderCredentialKind::Local));
         assert!(google.credential_kinds.contains(&ProviderCredentialKind::OAuth));

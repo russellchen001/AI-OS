@@ -122,7 +122,10 @@ const adapters: CliProviderAdapter[] = [
     officialPackage: "@google/gemini-cli",
     loginCommand: "gemini",
     setupTitle: "Use the Gemini CLI with your Google account",
-    setupInstructions: "Run `gemini` in Terminal once and choose “Sign in with Google”. Requests then use your own Google account and its quota, not anyone else's. AI‑OS never reads or stores the account credential.",
+    // Google stopped serving personal accounts through Gemini CLI on
+    // 2026-06-18; Code Assist Standard/Enterprise sign-ins and API keys
+    // configured in the CLI still work, so the route stays for them.
+    setupInstructions: "Run `gemini` in Terminal and sign in with a Gemini Code Assist Standard/Enterprise account or your own API key. Requests use your own Google quota, not anyone else's. Personal Google accounts are no longer served by Gemini CLI — use “Use API key” instead. AI‑OS never reads or stores the CLI credential.",
     protectionNote: "The Gemini CLI owns authentication. AI‑OS sends bounded headless requests with every tool, extension and MCP server turned off.",
     probe: () => invoke<CliProviderStatus>("get_gemini_cli_status"),
     verify: async () => {
