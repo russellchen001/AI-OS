@@ -121,6 +121,12 @@
     也接受这两项（独立输入框，或粘贴「一键复制配置信息」的内容：标签行/JSON/KEY=value），Agent 槽位在 AI-OS 选
     （默认 openclaw）。候选 `bfc45e6`：DMG SHA256 `eae90957657e2270d80537b1334154e28ec3141b63a0e8681107964d7f4b2604`，
     主程序 `b32a2df6baa579783cdbd821b353503f9631bc9ab4a1d459a12037df9a69f9e6`；已启动（替换 57b1d17）；Beta5 未变。
+    真机：配对成功，AI-OS 显示 Connected（官方频道接受内置连接器）。App「获取连接状态」报
+    「context list request timeout」：导入 OpenClaw 时 App 发 `/agent` 列可绑定上下文并等 slash_command_result。
+    `f37619f` 修复：/agent、/profile 以 AI-OS 为唯一上下文回复（--bind/--cancel 确认），/history 返回空 rounds，
+    并新增本地诊断日志 `~/Library/Application Support/AI OS/linco-connector.log`（仅帧类型/命令名/连接事件）。
+    候选 `f37619f`：DMG SHA256 `5fb2cc3277e0db60a77fcb551bc94b9cb51726869f966285cd330604fc388cdf`，主程序
+    `3bcdefc325f2f1e04d725b6ecdc5bdba611142cee960e4cce0b3dea444c73e64`；已启动（替换 bfc45e6）；Beta5 未变。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
