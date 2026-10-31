@@ -143,10 +143,12 @@ fn run_bounded(
     accept_stdout_on_failure: bool,
     cancellation: Option<&CancellationToken>,
 ) -> Result<Vec<u8>, String> {
+    // The binary runs as published, with every sign-in method it supports,
+    // including the user's own ANTHROPIC_API_KEY (Anthropic's conditions for
+    // products that run Claude Code).
     let mut command = Command::new(binary);
     command
         .args(arguments)
-        .env_remove("ANTHROPIC_API_KEY")
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
@@ -241,7 +243,7 @@ fn status_for_binary(binary: &Path) -> Result<ClaudeCodeStatus, String> {
         version,
         auth_method,
         message: if authenticated {
-            "Claude Code subscription is connected.".to_owned()
+            "Claude Code is signed in with your own Claude account or API key.".to_owned()
         } else {
             "Sign in with the official Claude Code CLI to use your subscription.".to_owned()
         },
