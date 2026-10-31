@@ -28,7 +28,16 @@
   全 PASS（`verify_p15_gm_2a2b3a_backend_lifecycle` 失败为既有：需运行中的 ComfyUI 实例，与本改动无关）。
   本机只读实测：Claude Code 2.1.220→2.1.314 可更新（官方安装器）；Grok CLI 1.0.70 最新；Gemini CLI 0.46.0→0.66.0
   可更新（Homebrew）。真实 Gemini 路径（未登录）返回 CLI 自身的「Please set an Auth method…」，无请求外发。
-- 待用户（账号授权/第三方升级）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
+- **候选 `4632886` 实测（2026-10-31）**：启动 15 秒后每日检查弹出「Updates available: Claude Code 2.1.314, Gemini CLI 0.66.0,
+  openclaw 2026.10.9」；My AI「Command-line tools」用按钮真实升级（用户已批准）：Gemini CLI 0.46.0→0.66.0（Homebrew）、
+  Claude Code 2.1.220→2.1.314（`claude update`），均“installed and health-checked”，列表刷新为 up to date。PASS。
+  DMG `outputs/AI OS_1.0.1-beta.6_candidate-4632886_aarch64.dmg` SHA256 `eae61777d2bd3b7c4ed4f30ace2728ddae1e1f44ae8ce82377f4f1eb6d8abf83`。
+- **Gemini CLI 个人账号路线被 Google 关闭（外部阻塞）**：用户已登录，0.46/0.66 均返回
+  `IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals … migrate to Antigravity`。
+  公开资料：2026-06-18 起 Gemini CLI 停止服务个人账号（免费/AI Pro/Ultra），替代品为 Antigravity CLI（`agy`）；
+  企业 Code Assist 授权与付费 API key 仍可用。用户自有额度的现成路径：Google 卡片「Use API key」（用户自己的 key）。
+  待用户决定：是否把 Antigravity CLI 作为新的通用 CLI 条目接入（需先确认其无头/禁用工具能力，安装需用户批准）。
+- 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
 
