@@ -206,8 +206,16 @@ const council = new CouncilChiefOfStaff({
 const councilPlan = await council.assemble({ objective: "Plan a bounded market launch." });
 
 await check("Agency Agents mapping remains downstream of LLM assembly", () => {
-  assert(councilPlan.seats.every((seat) => seat.kind === "agency-agent"), "Agency roles were not mapped");
-  assert(councilPlan.seats.every((seat) => seat.memberContext.startsWith("Professional profile")), "Agency profiles missing");
+  // Only a seat whose specialist shares a term with the task loads a profile (c2727a6).
+  const market = councilPlan.seats.find((seat) => seat.title === "Market Strategist");
+  assert(market?.kind === "agency-agent", "Agency roles were not mapped");
+  assert(market.memberContext.startsWith("Professional profile: market-strategist"), "Agency profiles missing");
+  assert(
+    councilPlan.seats
+      .filter((seat) => seat !== market)
+      .every((seat) => seat.kind === "builtin" && !seat.memberContext.startsWith("Professional profile")),
+    "a profile without task evidence was loaded",
+  );
 });
 
 await check("Paperclip governance remains bounded Chief-of-Staff input and provenance", () => {
