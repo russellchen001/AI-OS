@@ -64,6 +64,16 @@
   候选 `27bc31c`：DMG `outputs/AI OS_1.0.1-beta.6_candidate-27bc31c_aarch64.dmg` SHA256
   `0bd81ca6998e4749159403832baebfb84a7a6782f3910eb932034c63288e5ace`，主程序 `5dd9d533aefbd44dbf6c098724fb79c5441a12c28aca56c0bef5e9adad204968`；
   已启动（替换 4632886）；Beta5 主程序 `91ff470b…253ce5` 未变。
+  **实测（用户已在 27bc31c 完成 ChatGPT 登录并同意 plan use）**：My AI → OpenAI 显示 Connected；
+  「Refresh model catalog」在线取回 `/v1/models`（默认 GPT-6.1-Sol）——登录、签发 client、令牌、目录全链路通。
+  「Verify selected model (real request)」真实打到 `/v1/responses`，OpenAI 返回 `response.failed`
+  `subscription_sharing_usage_limit_exceeded`，界面显示官方额度文案（未标记为可用、未回退云端）。
+  即：链路已通，生成受用户 ChatGPT 套餐/本应用额度限制；待额度恢复或在 chatgpt.com/settings/usage 调整后重验。
+  顺带修复（未重建）：管理弹窗把同一错误渲染两次（正文通用 + manage 区各一次），删除正文通用那份，
+  非 manage 阶段仍由 footer 显示。
+  回归：tsc、Provider 稳定性、CLI Provider、P15 添加 Provider、信息架构、P16 非 live 脚本、P17 全部 PASS；
+  `p16_council_execution`（ignored 真实 OpenClaw 测试）、`p16_desktop_linco_live`、`p16_live_integrations`、
+  `p16_remote_linco_live` FAIL——均需真实外部服务，与本次改动无关，未据此宣布通过。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。

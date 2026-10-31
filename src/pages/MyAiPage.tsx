@@ -1739,7 +1739,6 @@ function MyAiPage({
                   </div>
                 </>
               )}
-              {setupError && <p className="provider-setup-error" role="alert">{setupError}</p>}
             </div>
 
             {setup.phase !== "manage" && <footer>
