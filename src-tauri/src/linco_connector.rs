@@ -683,6 +683,9 @@ fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
     let mut lines: Vec<String> = Vec::new();
     let mut failed = false;
     let mut decision = None;
+    // The streamed answer: chunks are fragments of one text, and the closing
+    // "completed" event repeats that text in full, so it replaces them.
+    let mut answer: Option<(usize, String)> = None;
     for event in events {
         let kind = event
             .get("type")
@@ -748,11 +751,28 @@ fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
                 }
             }
             "session_ready" | "turn_start" | "turn_end" => {}
+            "assistant_chunk" | "completed" | "cancelled" => {
+                let Some(text) = event.get("message").and_then(Value::as_str) else {
+                    continue;
+                };
+                let (_, streamed) = answer.get_or_insert_with(|| (lines.len(), String::new()));
+                if kind == "assistant_chunk" {
+                    streamed.push_str(text);
+                } else if !text.trim().is_empty() {
+                    *streamed = text.to_owned();
+                }
+            }
             _ => {
                 if let Some(message) = string_field(event, "message") {
                     lines.push(message.to_owned());
                 }
             }
+        }
+    }
+    if let Some((position, text)) = answer {
+        let text = text.trim();
+        if !text.is_empty() {
+            lines.insert(position.min(lines.len()), text.to_owned());
         }
     }
     if decision.is_some() {
@@ -1440,6 +1460,25 @@ mod tests {
         assert_eq!(history[0]["data"], json!({"rounds": []}));
         assert!(bridge_command("/approve", &turn, "openclaw").is_none());
         assert!(bridge_command("hello", &turn, "openclaw").is_none());
+    }
+
+    #[test]
+    fn streamed_chunks_and_the_completed_text_render_once() {
+        let events = vec![
+            json!({"type": "assistant_chunk", "message": "你好！有什么问题"}),
+            json!({"type": "assistant_chunk", "message": "或者需要帮助的"}),
+            json!({"type": "assistant_chunk", "message": "吗？"}),
+            json!({"type": "completed", "message": "你好！有什么问题或者需要帮助的吗？"}),
+        ];
+        let (text, failed, _) = render_events(&events);
+        assert_eq!(text, "你好！有什么问题或者需要帮助的吗？");
+        assert!(!failed);
+        let chunks_only = vec![
+            json!({"type": "assistant_chunk", "message": "Part one, "}),
+            json!({"type": "assistant_chunk", "message": "part two."}),
+            json!({"type": "completed"}),
+        ];
+        assert_eq!(render_events(&chunks_only).0, "Part one, part two.");
     }
 
     #[test]
