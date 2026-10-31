@@ -169,6 +169,11 @@
     OpenClaw 选择→输入 grounding→确认→新 Task 精确执行→Rust mkdir 全链路通过。
     之后 `git log` 中「say what a finished Linco task did」：完成回复改为结果摘要或路径（如 Done: /…/test）；
     Rust 1118/0；未重建（下次构建带上）。
+  - **本地模型（用户重启 Mac 后复测，2026-11-01）**：swap 9.8G→0、磁盘可用 50G。ai-os-files=Qwen2.5：真实
+    OpenClaw 测试 12.6s 通过（重启前 18.8s）。临时切回 Qwen3.5 对照：即使重启后仍 3.6 tok/s，两次均 120s 超时
+    （126s/133s 失败）——方案 2 必要，已恢复 Qwen2.5 并复测 21.5s 通过（含从 Qwen3.5 换回的加载）。
+    用户原则：本地跑不通则切云端（local first）。现状本地已通，未启用云端；现有代码无 OpenClaw 选择的云端回退，
+    且约束为「不许悄悄云端回退」——若实现须为可见、可关闭的回退（待用户确认）。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
