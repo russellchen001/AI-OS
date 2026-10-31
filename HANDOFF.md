@@ -142,6 +142,8 @@
     （优先 terminalReply，缺失时回退 chat.history 兼容旧版）。新增单测；Rust 1112/0；
     **`verify_p16_council_execution` 7/0（真实 OpenClaw 测试 18.8s 通过）**。至此「4 个失败」全部处理：
     council_execution 修复通过；desktop/remote_linco_live 随 Linco 内置被新验证器取代；live_integrations 0 失败。
+    候选 `0562059`：DMG SHA256 `90e1d2d477a690f1bbcfc2045a024b67f4b264dc18cc66a2250d4f01575d8931`，主程序
+    `189f989f22d46cbb4f78cd65cfeded31467227b161563cf1a95408a3c6e811fe`；已启动（替换 c6eacea）；Beta5 未变。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
