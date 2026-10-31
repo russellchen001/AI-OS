@@ -4881,7 +4881,9 @@ fn cloud_fallback_candidates(
 }
 
 /// Answers `prompt` with the user's own connected, generation-verified cloud
-/// models in Auto order (never a local model).
+/// model that Auto would use (never a local model). Auto deliberately picks at
+/// most one cloud Provider per request, by its fixed priority, so a fallback
+/// does not roam across accounts or trigger repeated Keychain prompts.
 pub(crate) async fn generate_with_cloud_fallback(
     prompt: &str,
 ) -> Result<CloudFallbackReply, String> {
@@ -6208,6 +6210,59 @@ mod tests {
         )]);
         rank_computer_use_models(&mut models, Some(&status), &evidence, 16_000_000_000.0);
         assert_eq!(models, vec!["tool-a", "tool-b"]);
+    }
+
+    #[test]
+    #[ignore = "spends one real request on the user's Grok account"]
+    fn live_verify_grok_for_cloud_fallback() {
+        let instance =
+            std::env::var("AIOS_LIVE_VERIFY_INSTANCE").unwrap_or_else(|_| "grok-default".into());
+        let model = std::env::var("AIOS_LIVE_VERIFY_MODEL").unwrap_or_else(|_| "grok-4.7".into());
+        let outcome =
+            tauri::async_runtime::block_on(verify_provider_model(instance.clone(), model.clone()));
+        eprintln!(
+            "LIVE_VERIFY {instance}/{model} => {}",
+            match outcome {
+                Ok(()) => "verified".to_owned(),
+                Err(error) => error.chars().take(300).collect(),
+            }
+        );
+    }
+
+    #[test]
+    #[ignore = "spends one real request per connected cloud account"]
+    fn live_each_cloud_fallback_candidate_answers() {
+        let (instances, candidates) = route_candidates(false, true).unwrap();
+        let candidates = cloud_fallback_candidates(candidates);
+        eprintln!(
+            "LIVE_CLOUD_ORDER {}",
+            candidates
+                .iter()
+                .map(|candidate| format!("{}/{}", candidate.provider_id, candidate.model_id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for candidate in candidates {
+            let outcome = tauri::async_runtime::block_on(execute_candidate(
+                &candidate,
+                "Reply with exactly OK.",
+                &instances,
+                None,
+                None,
+            ));
+            eprintln!(
+                "LIVE_CLOUD {}/{} => {}",
+                candidate.provider_id,
+                candidate.model_id,
+                match outcome {
+                    Ok(result) => format!(
+                        "ok: {}",
+                        result.text.trim().chars().take(40).collect::<String>()
+                    ),
+                    Err(error) => format!("error: {}", error.chars().take(200).collect::<String>()),
+                }
+            );
+        }
     }
 
     #[test]
