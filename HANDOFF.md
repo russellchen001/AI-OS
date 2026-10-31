@@ -1,3 +1,33 @@
+<!-- BETA6_CLAUDE_CLI_REGISTRY_20261031 -->
+# START HERE — 通用 CLI Provider + Gemini 用户自有账号（2026-10-31，Claude；优先于下方矩阵）
+
+- 代码提交 `4bf13ea`（本地，未 Push/Tag/Release）。**尚未重建候选**：下方矩阵的 82fac89 DMG 不含本节改动。
+- 用户决定：Gemini 必须像 GPT 一样由每个用户用自己的账号/额度；CLI 支持必须通用，不能逐个 CLI 硬编码。
+- 实现：
+  - `src-tauri/src/cli_process.rs`：所有官方账号 CLI 共用的发现/有界可取消执行/JSON 错误提取与凭证脱敏/
+    操作登记（修复：重复 operation id 会覆盖并遗失正在运行请求的取消句柄）。Grok CLI 已迁入。
+  - `src-tauri/src/gemini_cli.rs`：Google「账号登录」改走官方 Gemini CLI（用户在终端 `gemini` →
+    Sign in with Google，凭证由 CLI 自管，额度归该用户）。无头请求：`--admin-policy` 拒绝全部工具（`*`）、
+    `--allowed-mcp-server-names ai-os-none`、`-e none`、系统设置层关闭 hooks/skills（不改用户 settings.json）、
+    空工作目录 `--skip-trust`；若 `/Library/Application Support/GeminiCli/policies` 存在 *.toml（会使 admin
+    policy 被忽略）则拒绝执行。状态只读 `security.auth.selectedType`；「Verify」发一次极小真实请求确认。
+  - `providers.rs`：google 的新连接不再提供 OAuth PKCE/Loopback（那条路计费在 AI-OS 的 Cloud 项目）；
+    改为 `cli-account` + API key；已存在的 OAuth 连接仍可用。`execute_candidate`/取消已接 Gemini CLI。
+  - `cli_provider_manager.rs`：`CLI_PROVIDERS` 注册表（Claude Code / Grok CLI / Gemini CLI）。按解析后的可执行
+    路径判断安装来源：Homebrew（`brew info`/`brew upgrade`）、npm 全局、厂商安装器（`claude update`、
+    `grok update --version`）、AI-OS 托管 npm 前缀（SHA-512 复核、可回滚）；未知来源只提示不自动更新。
+    执行前重新生成计划并比对版本/完整性/方式；忙时拒绝；更新后做版本健康检查。新增 `check_cli_provider_versions`。
+  - 前端：`CLI_ACCOUNT_PROVIDER_IDS` 由适配器注册表派生；设置页文案来自适配器；`softwareUpdateMonitor.ts` 启动 15 秒后
+    每日一次只读检查全部 CLI 与 OpenClaw（不再只在打开 Agents 页时）；My AI 新增「Command-line tools」区块
+    （版本/来源/检查更新/更新到 X，需确认）。新增 CLI 只需：一条 Rust spec + 请求模块 + 一个 TS 适配器。
+- 验证：Rust 1091/0/88 ignored；CLI Provider、P16、P17、Provider 稳定性、信息架构、Agent 生命周期、Provider blocking
+  全 PASS（`verify_p15_gm_2a2b3a_backend_lifecycle` 失败为既有：需运行中的 ComfyUI 实例，与本改动无关）。
+  本机只读实测：Claude Code 2.1.220→2.1.314 可更新（官方安装器）；Grok CLI 1.0.70 最新；Gemini CLI 0.46.0→0.66.0
+  可更新（Homebrew）。真实 Gemini 路径（未登录）返回 CLI 自身的「Please set an Auth method…」，无请求外发。
+- 待用户（账号授权/第三方升级）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
+  Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
+  参与、更新按钮真实执行、重建 DMG 并重跑回归。
+
 <!-- BETA6_CLAUDE_FINAL_20261031 -->
 # START HERE — Beta 6 验收矩阵（2026-10-31，Claude；本节为唯一当前状态）
 
