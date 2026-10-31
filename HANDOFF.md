@@ -92,6 +92,14 @@
     ② 仍失败：OpenClaw `ai-os-files` agent（omlx/Qwen3.5-9B）120s 内未完成——冷启动时 oMLX 先逐出
     Qwen2.5 再加载 3.5、长提示预填约 57s；热态复跑仍超时。机器 M4 16GB，swap 8.9/9.2GB 几乎满、
     Spotlight mds 151% CPU，本地仅 4–7 tok/s。属运行环境问题，未延长超时。
+    方案 1（不关用户应用）：清 `src-tauri/target/debug/incremental`（6.1G 可再生缓存，磁盘 15→20G 可用），
+    `target/.metadata_never_index`；复跑仍超时，Qwen3.5 仍 4.0 tok/s（10-30 同模型 19.6 tok/s），swap 9.8G。
+    方案 2（ai-os-files 换 Qwen2.5-7B）经日志评估无效：Qwen2.5 本机历史 9.9 tok/s、现 7.2，慢于正常态 Qwen3.5，
+    未改 OpenClaw 配置。根治需用户重启 Mac 或退出占内存应用（uptime 13 天）。
+  - Linco：`AI_OS_REMOTE_LINCO_TOKEN` 不是 Linco/OpenAI 账号令牌，而是 AI-OS 本机 Desktop 端点
+    (127.0.0.1:39817) 与调用方共享的 ≥32 字符随机密钥，目前只从环境变量读、且 `AI_OS_REMOTE_LINCO_ENABLED`
+    默认关。Linco Bridge 为 MIT（lincotalk/linco-bridge），本机副本已不存在（原在 /private/tmp）。
+    用户要求 AI-OS 启动后自动运行、零操作；待用户确认一次性下载安装后实现托管组件（见对话）。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
