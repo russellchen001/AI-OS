@@ -1,7 +1,11 @@
 <!-- BETA6_CLAUDE_CLI_REGISTRY_20261031 -->
 # START HERE — 通用 CLI Provider + Gemini 用户自有账号（2026-10-31，Claude；优先于下方矩阵）
 
-- 代码提交 `4bf13ea`（本地，未 Push/Tag/Release）。**尚未重建候选**：下方矩阵的 82fac89 DMG 不含本节改动。
+- 代码提交 `4bf13ea`（本地，未 Push/Tag/Release）。**新候选**：`work/beta6-final/candidate-4bf13ea/AI OS.app`
+  （主程序 SHA256 `5e1f8998718547d7b8334767231afe149068f9664dbc87eeb8724db11dca2192`），DMG
+  `outputs/AI OS_1.0.1-beta.6_candidate-4bf13ea_aarch64.dmg` SHA256
+  `44861b0b7a9d2c7afceda69ce8192fb3dec38b646598ab734c3b718387edc1ab`（ad-hoc，未公证；构建日志 `work/beta6-final/build-4bf13ea.log`）。
+  正式 Beta5 主程序仍为 `91ff470b…253ce5`，未被覆盖。新候选尚未做界面实测。
 - 用户决定：Gemini 必须像 GPT 一样由每个用户用自己的账号/额度；CLI 支持必须通用，不能逐个 CLI 硬编码。
 - 实现：
   - `src-tauri/src/cli_process.rs`：所有官方账号 CLI 共用的发现/有界可取消执行/JSON 错误提取与凭证脱敏/
