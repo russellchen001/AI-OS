@@ -174,6 +174,17 @@
     （126s/133s 失败）——方案 2 必要，已恢复 Qwen2.5 并复测 21.5s 通过（含从 Qwen3.5 换回的加载）。
     用户原则：本地跑不通则切云端（local first）。现状本地已通，未启用云端；现有代码无 OpenClaw 选择的云端回退，
     且约束为「不许悄悄云端回退」——若实现须为可见、可关闭的回退（待用户确认）。
+  - **可见、可关闭的云端兜底（用户批准，默认开；`f4adfc8`、`896ee8d`）**：OpenClaw 每个 Agent 回合（选技能、补参数、
+    技能失败后重选、完成）先跑本地；本地报错/超时/输出不合协议且开关为开时，同一提示交给用户自己已连接且通过生成验证的
+    云端模型（沿用 Auto「每请求最多一个云服务商、固定优先级」规则，绝不用本地模型）。审批 JSON 与结果带
+    `cloudFallback{model,reason}`；Chat 确认框/结果、远程确认文案、Linco 回复都写明「本地失败（原因），已用云端 X」。
+    关闭时报错注明「Cloud fallback is turned off」；云端也失败时两边原因都报。网关与审批不变。设置页新增
+    「Local first, cloud fallback」开关（`cloud-fallback.json`，默认 on）。新增单测 6 个；Rust 1124/0。
+    **真实验证（用户授权的账号）**：强制本地两回合失败 → 用户 Claude Code 选出 filesystem.mkdir、parent=Desktop、
+    name=test 并停在审批（2 次请求）；兜底顺序当前仅 anthropic/claude-code-default（OK）；Grok grok-4.7 真实生成
+    验证通过（已记为 verified，排在 Claude Code 之后）；OpenAI 额度用尽未用。本地路径（兜底开启）真实测试 19.6s 通过。
+    回归：council_execution、remote_ai_os、linco_connector、desktop_linco、信息架构、Provider 稳定性/blocking、
+    CLI Provider、GM-4 全 PASS。注意：OpenAI 额度恢复并验证后，按 Auto 优先级兜底会优先用 ChatGPT 套餐。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
