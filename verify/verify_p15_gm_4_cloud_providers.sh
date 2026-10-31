@@ -36,8 +36,8 @@ if not path.exists():
 
 instances = json.loads(path.read_text())
 
+# Grok's account sign-in (impersonating Grok CLI) is retired; Grok media uses an API key.
 required = {
-    "grok": None,
     "openai": None,
 }
 
@@ -150,19 +150,6 @@ git diff --check
 
 pass "git diff --check"
 
-echo
-echo "=== 9. Optional real connected-account E2E ==="
-
-if [ "${AI_OS_GM4_LIVE:-0}" = "1" ]; then
-  cargo test \
-    --manifest-path src-tauri/Cargo.toml \
-    live_connected_grok_oauth_text_to_image \
-    -- --ignored --nocapture
-
-  pass "real connected Grok OAuth media E2E"
-else
-  echo "SKIP real cloud generation E2E — set AI_OS_GM4_LIVE=1 for explicit opt-in"
-fi
 
 echo
 echo "=== 10. Expected change set ==="

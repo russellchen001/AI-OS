@@ -757,33 +757,31 @@ function MyAiPage({
       }
 
       if (setup.providerId === "kimi") {
-        const isKimi = setup.providerId === "kimi";
-        const commandPrefix = isKimi ? "kimi" : "grok";
         let auth: DeviceAuth | undefined;
         let cancelled = false;
         try {
-          auth = await invoke<DeviceAuth>(`begin_${commandPrefix}_device_auth`, {
+          auth = await invoke<DeviceAuth>("begin_kimi_device_auth", {
             query: { providerInstanceId: instanceId },
           });
           setSetup((current) =>
             current
               ? {
                   ...current,
-                  verificationMessage: `${isKimi ? "Kimi Code" : "Grok"} verification code: ${auth?.userCode}`,
+                  verificationMessage: `Kimi Code verification code: ${auth?.userCode}`,
                 }
               : current,
           );
           cancelOAuthRef.current = () => {
             cancelled = true;
             if (auth) {
-              void invoke(`cancel_${commandPrefix}_device_auth`, { state: auth.state });
+              void invoke("cancel_kimi_device_auth", { state: auth.state });
             }
           };
           await openUrl(auth.verificationUriComplete ?? auth.verificationUri);
           const completed = await invoke<{
             expiresAt: string | null;
             refreshable: boolean;
-          }>(`complete_${commandPrefix}_device_auth`, { state: auth.state });
+          }>("complete_kimi_device_auth", { state: auth.state });
           if (cancelled) return;
           const adapter = await getProviderAdapter(setup.providerId);
           const verification = await adapter.testConnection(instanceId);
@@ -805,7 +803,7 @@ function MyAiPage({
                 ? error
                 : error instanceof Error
                   ? error.message
-                  : `${isKimi ? "Kimi Code" : "Grok"} account sign-in could not be completed.`,
+                  : "Kimi Code account sign-in could not be completed.",
             );
           }
         } finally {
@@ -1706,7 +1704,7 @@ function MyAiPage({
                     <div className="provider-security-note">
                       <span>→</span>
                       <p>
-                        <strong>Confirm the code shown by {setup.providerId === "kimi" ? "Kimi Code" : "xAI"}</strong>
+                        <strong>Confirm the code shown by Kimi Code</strong>
                         <small>{setup.verificationMessage}</small>
                       </p>
                     </div>

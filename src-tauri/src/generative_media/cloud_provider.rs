@@ -1247,47 +1247,4 @@ mod tests {
         assert!(!openai.metadata().recommended_cloud);
         assert!(xai.metadata().priority > openai.metadata().priority);
     }
-
-    #[test]
-    #[ignore = "requires explicit opt-in and a real connected cloud entitlement"]
-    fn live_connected_grok_oauth_text_to_image() {
-        let instance = crate::providers::list_provider_instances()
-            .unwrap()
-            .into_iter()
-            .find(|instance| {
-                instance.provider_id == XAI_PROVIDER_ID
-                    && instance.connection_state == ProviderConnectionState::Connected
-                    && instance.credential.kind == ProviderCredentialKind::OAuth
-            })
-            .expect("connected Grok OAuth Provider Instance required");
-
-        let provider = CloudMediaProvider::from_provider_instance(&instance)
-            .expect("connected Grok OAuth instance should become a Cloud Media provider");
-
-        let result = provider
-            .execute(
-                &request(
-                    MediaCapability::TextToImage,
-                    MediaKind::Image,
-                    XAI_PROVIDER_ID,
-                    &instance.id,
-                ),
-                &mut |progress| {
-                    eprintln!("LIVE_GM4_PROGRESS {} {}", progress.phase, progress.message)
-                },
-            )
-            .expect("connected Grok OAuth media execution should succeed");
-
-        let output = result.outputs.first().expect("image output required");
-
-        eprintln!(
-            "LIVE_GM4 provider={} instance={} mime={} handle={}",
-            result.provider_id,
-            result.provider_instance_id.as_deref().unwrap_or_default(),
-            output.mime_type,
-            output.handle
-        );
-
-        assert!(output.handle.starts_with("asset://generative-media/"));
-    }
 }
