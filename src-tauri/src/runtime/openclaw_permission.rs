@@ -23,6 +23,7 @@ pub(crate) const CONFIRMABLE_CAPABILITIES: &[&str] = &[
     "filesystem.read",
     "filesystem.write",
     "filesystem.move",
+    "filesystem.mkdir",
     "download.start",
     "document.read",
     "document.create",

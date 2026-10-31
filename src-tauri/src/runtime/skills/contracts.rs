@@ -114,6 +114,50 @@ fn filesystem_scan_schema() -> Value {
     })
 }
 
+fn filesystem_mkdir_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "parent": {
+                "type": "string",
+                "minLength": 1
+            },
+            "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+            }
+        },
+        "required": ["parent", "name"],
+        "additionalProperties": false
+    })
+}
+
+/// A well-known folder the goal names in English or Chinese.
+fn named_location(goal: &str) -> Option<std::path::PathBuf> {
+    let lower = goal.to_lowercase();
+    if lower.contains("downloads") || goal.contains("下载") {
+        dirs::download_dir()
+    } else if lower.contains("desktop") || goal.contains("桌面") {
+        dirs::desktop_dir()
+    } else if lower.contains("documents") || goal.contains("文档") {
+        dirs::document_dir()
+    } else {
+        None
+    }
+}
+
+/// An absolute path the Agent proposed that also appears verbatim in the goal.
+fn goal_absolute_path(goal: &str, proposed: Option<&Value>) -> Option<std::path::PathBuf> {
+    proposed
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| {
+            !path.is_empty() && goal.contains(path) && std::path::Path::new(path).is_absolute()
+        })
+        .map(Into::into)
+}
+
 fn computer_use_schema() -> Value {
     json!({
         "type": "object",
@@ -141,6 +185,7 @@ pub(crate) fn input_contract_for_capability(capability: &str) -> Option<Capabili
         "speech.synthesize" => speech_synthesize_schema(),
         "browser.search" => web_search_schema(),
         "filesystem.scan" => filesystem_scan_schema(),
+        "filesystem.mkdir" => filesystem_mkdir_schema(),
         "computer.use.execute" => computer_use_schema(),
 
         "models.list" => empty_object_schema(),
@@ -217,24 +262,8 @@ pub(crate) fn ground_capability_input(capability: &str, goal: &str, mut input: V
         let Some(object) = input.as_object_mut() else {
             return input;
         };
-        let grounded_path = if goal.contains("Downloads") {
-            dirs::download_dir()
-        } else if goal.contains("Desktop") {
-            dirs::desktop_dir()
-        } else if goal.contains("Documents") {
-            dirs::document_dir()
-        } else {
-            object
-                .get("path")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|path| {
-                    !path.is_empty()
-                        && goal.contains(path)
-                        && std::path::Path::new(path).is_absolute()
-                })
-                .map(Into::into)
-        };
+        let grounded_path =
+            named_location(goal).or_else(|| goal_absolute_path(goal, object.get("path")));
         match grounded_path {
             Some(path) => {
                 object.insert(
@@ -244,6 +273,40 @@ pub(crate) fn ground_capability_input(capability: &str, goal: &str, mut input: V
             }
             None => {
                 object.remove("path");
+            }
+        }
+        return input;
+    }
+
+    if capability == "filesystem.mkdir" {
+        let Some(object) = input.as_object_mut() else {
+            return input;
+        };
+        // An explicit absolute path in the goal wins over a named folder.
+        let parent = goal_absolute_path(goal, object.get("parent")).or_else(|| named_location(goal));
+        match parent {
+            Some(path) => {
+                object.insert(
+                    "parent".to_owned(),
+                    Value::String(path.to_string_lossy().into_owned()),
+                );
+            }
+            None => {
+                object.remove("parent");
+            }
+        }
+        let name_in_goal = object
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && goal.contains(name))
+            .map(str::to_owned);
+        match name_in_goal {
+            Some(name) => {
+                object.insert("name".to_owned(), Value::String(name));
+            }
+            None => {
+                object.remove("name");
             }
         }
         return input;
@@ -271,6 +334,42 @@ pub(crate) fn ground_capability_input(capability: &str, goal: &str, mut input: V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mkdir_input_is_grounded_to_the_goal_in_chinese_or_english() {
+        let desktop = dirs::desktop_dir().unwrap().to_string_lossy().into_owned();
+        for goal in ["在桌面新建一个叫 test 的文件夹", "Create a folder named test on my Desktop"] {
+            let input = ground_capability_input(
+                "filesystem.mkdir",
+                goal,
+                json!({"parent": "~/Desktop", "name": "test"}),
+            );
+            assert_eq!(input, json!({"parent": desktop, "name": "test"}));
+            assert!(validate_capability_input("filesystem.mkdir", &input).is_ok());
+        }
+        let invented = ground_capability_input(
+            "filesystem.mkdir",
+            "在桌面新建一个文件夹",
+            json!({"parent": "/tmp", "name": "invented"}),
+        );
+        assert!(invented.get("name").is_none());
+        assert!(validate_capability_input("filesystem.mkdir", &invented).is_err());
+        let explicit = ground_capability_input(
+            "filesystem.mkdir",
+            "Create folder reports in /Users/someone/Work",
+            json!({"parent": "/Users/someone/Work", "name": "reports"}),
+        );
+        assert_eq!(explicit["parent"], "/Users/someone/Work");
+    }
+
+    #[test]
+    fn scan_understands_chinese_folder_names() {
+        let input = ground_capability_input("filesystem.scan", "列出我桌面上的文件", json!({}));
+        assert_eq!(
+            input["path"],
+            dirs::desktop_dir().unwrap().to_string_lossy().into_owned()
+        );
+    }
 
     #[test]
     fn computer_use_input_is_grounded_to_goal_and_bounded() {

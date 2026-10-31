@@ -12,6 +12,7 @@ export type SkillCapability =
   | "filesystem.write"
   | "filesystem.scan"
   | "filesystem.move"
+  | "filesystem.mkdir"
   | "sessions.create"
   | "ai.openclaw.gateway"
   | "browser.search"

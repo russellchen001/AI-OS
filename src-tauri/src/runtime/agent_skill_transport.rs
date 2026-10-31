@@ -219,6 +219,9 @@ impl SkillBackend for RuntimeSkillBackend {
         if request.capability == "filesystem.scan" {
             return execute_local_filesystem_scan(request);
         }
+        if request.capability == "filesystem.mkdir" {
+            return execute_local_mkdir(request, dirs::home_dir().as_deref());
+        }
         if request.capability == "browser.search" {
             return super::web_search::search(request);
         }
@@ -368,6 +371,73 @@ fn execute_local_filesystem_scan(
             "path": path,
             "entries": entries,
             "truncated": truncated,
+        }),
+    })
+}
+
+/// Creates exactly one new folder inside an existing folder in the user's home.
+/// Never creates intermediate folders and never touches an existing item.
+fn execute_local_mkdir(
+    request: &SkillInvocationRequest,
+    home: Option<&Path>,
+) -> Result<SkillInvocationResult, SkillInvocationError> {
+    let invalid = |message: &str| {
+        SkillInvocationError::new(SkillInvocationErrorKind::InvalidRequest, message, false)
+    };
+    let field = |key: &str| {
+        request
+            .input
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let parent = field("parent").ok_or_else(|| invalid("filesystem.mkdir requires parent"))?;
+    let name = field("name").ok_or_else(|| invalid("filesystem.mkdir requires name"))?;
+    if name == "."
+        || name == ".."
+        || name.len() > 255
+        || name.contains(['/', '\0', ':'])
+        || name.chars().any(char::is_control)
+    {
+        return Err(invalid("filesystem.mkdir requires a single folder name"));
+    }
+    let parent_path = Path::new(parent);
+    if !parent_path.is_absolute() {
+        return Err(invalid("filesystem.mkdir requires an absolute parent folder"));
+    }
+    let parent_path = fs::canonicalize(parent_path)
+        .ok()
+        .filter(|path| path.is_dir())
+        .ok_or_else(|| invalid("The parent folder does not exist."))?;
+    let home = home
+        .and_then(|home| fs::canonicalize(home).ok())
+        .ok_or_else(|| invalid("AI-OS could not determine your home folder."))?;
+    if !parent_path.starts_with(&home) {
+        return Err(invalid("AI-OS only creates folders inside your home folder."));
+    }
+    let target = parent_path.join(name);
+    match fs::create_dir(&target) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(invalid("An item with that name already exists; nothing was changed."));
+        }
+        Err(_) => {
+            return Err(SkillInvocationError::new(
+                SkillInvocationErrorKind::ExecutionFailed,
+                "AI-OS could not create the folder.",
+                false,
+            ));
+        }
+    }
+    Ok(SkillInvocationResult {
+        invocation_id: request.invocation_id.clone(),
+        capability: request.capability.clone(),
+        backend: "local".to_owned(),
+        provider: Some("rust-filesystem".to_owned()),
+        output: json!({
+            "path": target.to_string_lossy(),
+            "created": true,
         }),
     })
 }
@@ -1583,6 +1653,36 @@ mod tests {
     }
 
     #[test]
+    fn local_mkdir_creates_one_folder_inside_home_and_never_overwrites() {
+        let home = tempfile::tempdir().unwrap();
+        let desktop = home.path().join("Desktop");
+        fs::create_dir(&desktop).unwrap();
+        let mkdir = |parent: &Path, name: &str| {
+            let request = SkillInvocationRequest::new(
+                "mkdir-1",
+                "filesystem.mkdir",
+                json!({"parent": parent.to_string_lossy(), "name": name}),
+            )
+            .unwrap();
+            execute_local_mkdir(&request, Some(home.path()))
+        };
+
+        let created = mkdir(&desktop, "test").unwrap();
+        assert_eq!(created.output["created"], true);
+        assert!(desktop.join("test").is_dir());
+
+        let again = mkdir(&desktop, "test").unwrap_err();
+        assert!(again.message.contains("already exists"));
+        for name in ["..", "a/b", "."] {
+            assert!(mkdir(&desktop, name).is_err(), "{name}");
+        }
+        assert!(mkdir(&desktop.join("missing"), "x").is_err());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(mkdir(outside.path(), "x").is_err());
+        assert!(!outside.path().join("x").exists());
+    }
+
+    #[test]
     fn local_filesystem_scan_rejects_relative_paths() {
         let request =
             SkillInvocationRequest::new("scan-1", "filesystem.scan", json!({"path": "Downloads"}))
@@ -2346,6 +2446,56 @@ mod tests {
         assert!(input_prompt.contains("Report NAS capacity"));
         assert!(input_prompt.contains("Never invent placeholder or example"));
         assert!(input_prompt.contains("return {} when no property"));
+    }
+
+    #[test]
+    fn create_folder_request_asks_for_approval_with_grounded_input() {
+        let reply = |text: &str| Ok(json!({"status": "ok", "terminalReply": {"text": text}}));
+        let invoker = Arc::new(ScriptedInvoker {
+            calls: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(VecDeque::from(vec![
+                Ok(json!({"runId": "selection-run"})),
+                reply("{\"type\":\"capability.select\",\"capability\":\"filesystem.mkdir\"}"),
+                Ok(json!({"runId": "input-run"})),
+                reply("{\"parent\":\"Desktop\",\"name\":\"test\"}"),
+            ])),
+        });
+        let backend = Arc::new(RecordingBackend {
+            calls: Mutex::new(Vec::new()),
+        });
+        let gateway = RuntimeSkillInvocationGateway::with_backend(Vec::new(), backend.clone());
+        let context = SkillInvocationContext::new(
+            "task-1",
+            "plan-1",
+            "execution-1",
+            "openclaw",
+            vec!["filesystem.mkdir".to_owned()],
+            false,
+        )
+        .unwrap();
+        let request = AgentExecutionRequest::new(
+            "execution-1",
+            "task-1",
+            "plan-1",
+            "step-1",
+            super::super::agent_execution::AgentId::new("openclaw").unwrap(),
+            "在桌面新建一个叫 test 的文件夹",
+            vec!["filesystem.mkdir".to_owned()],
+            json!({}),
+            context.clone(),
+        )
+        .unwrap();
+
+        let error = OpenClawAgentSkillTransport::with_invoker(invoker)
+            .execute(&request, &context, &gateway, &mut |_| {})
+            .unwrap_err();
+
+        assert_eq!(error.kind, AgentExecutionErrorKind::PermissionRequired);
+        let desktop = dirs::desktop_dir().unwrap().to_string_lossy().into_owned();
+        assert!(error.message.contains(r#""capability":"filesystem.mkdir""#));
+        assert!(error.message.contains(&format!(r#""parent":"{desktop}""#)));
+        assert!(error.message.contains(r#""name":"test""#));
+        assert!(backend.calls.lock().unwrap().is_empty());
     }
 
     #[test]
