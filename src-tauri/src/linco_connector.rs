@@ -677,6 +677,27 @@ fn string_field<'a>(event: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+/// A one-line account of a finished task's result: its summary, or the path
+/// it acted on, looked up a few levels deep (results nest Skill output).
+fn describe_result(result: &Value) -> Option<String> {
+    fn find(value: &Value, key: &str, depth: usize) -> Option<String> {
+        let object = value.as_object()?;
+        if let Some(text) = object.get(key).and_then(Value::as_str).map(str::trim) {
+            if !text.is_empty() {
+                return Some(text.chars().take(500).collect());
+            }
+        }
+        if depth == 0 {
+            return None;
+        }
+        object
+            .values()
+            .find_map(|child| find(child, key, depth - 1))
+    }
+    find(result, "summary", 3)
+        .or_else(|| find(result, "path", 3).map(|path| format!("Done: {path}")))
+}
+
 /// Renders Remote AI-OS gateway events as one Linco answer, and the decision
 /// (if any) the next "/approve" or "/reject" refers to.
 fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
@@ -755,9 +776,18 @@ fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
             }
             "session_ready" | "turn_start" | "turn_end" => {}
             "assistant_chunk" | "completed" | "cancelled" => {
-                let Some(text) = event.get("message").and_then(Value::as_str) else {
+                let described = (kind == "completed")
+                    .then(|| event.get("result").and_then(describe_result))
+                    .flatten();
+                let Some(text) = event
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or(described)
+                else {
                     continue;
                 };
+                let text = text.as_str();
                 let (_, streamed) = answer.get_or_insert_with(|| (lines.len(), String::new()));
                 if kind == "assistant_chunk" {
                     streamed.push_str(text);
@@ -1485,6 +1515,17 @@ mod tests {
             json!({"type": "completed"}),
         ];
         assert_eq!(render_events(&chunks_only).0, "Part one, part two.");
+    }
+
+    #[test]
+    fn completed_results_say_what_was_done() {
+        let created = json!({"type": "completed", "result": {"skillInvocation": {
+            "capability": "filesystem.mkdir",
+            "output": {"path": "/Users/me/Desktop/test", "created": true}
+        }}});
+        assert_eq!(render_events(&[created]).0, "Done: /Users/me/Desktop/test");
+        let summarized = json!({"type": "completed", "result": {"summary": "3 files moved"}});
+        assert_eq!(render_events(&[summarized]).0, "3 files moved");
     }
 
     #[test]
