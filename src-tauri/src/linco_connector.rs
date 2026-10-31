@@ -575,6 +575,16 @@ impl Turn {
         frame
     }
 
+    fn command_result(&self, agent_type: &str, command: &str, data: Value) -> Value {
+        let mut payload = Map::new();
+        payload.insert("type".to_owned(), json!("slash_command_result"));
+        payload.insert("command".to_owned(), json!(command));
+        payload.insert("version".to_owned(), json!(1));
+        payload.insert("data".to_owned(), data);
+        payload.insert("requestId".to_owned(), json!(self.message_id));
+        self.frame(agent_type, payload)
+    }
+
     fn end(&self, agent_type: &str, reason: &str) -> Value {
         let mut payload = Map::new();
         payload.insert("type".to_owned(), json!("turn_end"));
@@ -582,6 +592,74 @@ impl Turn {
         payload.insert("requestId".to_owned(), json!(self.message_id));
         self.frame(agent_type, payload)
     }
+}
+
+/// AI-OS is the single context the Linco App can bind this slot to.
+const AI_OS_CONTEXT_ID: &str = "ai-os";
+
+fn context_picker() -> Value {
+    let bind = format!("/agent --bind {AI_OS_CONTEXT_ID}");
+    json!({
+        "version": 1,
+        "current": AI_OS_CONTEXT_ID,
+        "defaultId": AI_OS_CONTEXT_ID,
+        "defaultProfile": AI_OS_CONTEXT_ID,
+        "account": "",
+        "listError": "",
+        "items": [{
+            "index": 1,
+            "id": AI_OS_CONTEXT_ID,
+            "name": "AI-OS",
+            "model": "AI-OS orchestration",
+            "workspace": "",
+            "agentDir": "",
+            "isCurrent": true,
+            "isDefault": true,
+            "account": "",
+            "command": bind,
+            "bindCommand": bind,
+        }],
+        "actions": [{
+            "label": "✓ AI-OS",
+            "text": bind,
+            "command": bind,
+            "type": "command",
+            "action": "bind",
+            "agentId": AI_OS_CONTEXT_ID,
+            "account": "",
+            "bindCommand": bind,
+        }],
+    })
+}
+
+/// Bridge control commands the Linco App sends while importing or opening a
+/// chat (linco-connect's /agent, /profile and /history). They are answered
+/// here; everything else, including /approve and /reject, goes to AI-OS.
+fn bridge_command(text: &str, turn: &Turn, agent_type: &str) -> Option<Vec<Value>> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let mut words = trimmed.split_whitespace();
+    let command = words.next()?.to_ascii_lowercase();
+    let argument = words.next().unwrap_or_default();
+    let reply = match command.as_str() {
+        "/agent" | "/profile" => match argument {
+            "--bind" => turn.notice(agent_type, "This Linco Agent is connected to AI-OS.", false),
+            "--cancel" => turn.notice(agent_type, "Cancelled.", false),
+            _ => turn.command_result(agent_type, command.trim_start_matches('/'), context_picker()),
+        },
+        "/history" | "/history-reload" | "/sync-history" => {
+            turn.command_result(agent_type, "history", json!({ "rounds": [] }))
+        }
+        "/help" | "/status" => turn.notice(
+            agent_type,
+            "Connected to AI-OS. Send any request; actions that change something ask for /approve or /reject.",
+            false,
+        ),
+        _ => return None,
+    };
+    Some(vec![reply, turn.end(agent_type, "completed")])
 }
 
 fn routed_to(message: &Value, agent_type: &str) -> bool {
@@ -810,6 +888,48 @@ enum Outbound {
     Frame(Value),
 }
 
+const LOG_FILE: &str = "linco-connector.log";
+const LOG_MAX_BYTES: u64 = 256 * 1024;
+
+/// Local diagnostics only: frame types, slash-command names and connection
+/// events. Never message text, tokens or user identifiers.
+fn log_event(line: &str) {
+    let Ok(directory) = crate::providers::provider_config_directory() else {
+        return;
+    };
+    let path = directory.join(LOG_FILE);
+    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_MAX_BYTES) {
+        let _ = std::fs::rename(&path, directory.join(format!("{LOG_FILE}.1")));
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{} {line}", chrono::Utc::now().to_rfc3339());
+    }
+}
+
+fn describe_inbound(message: &Value) -> String {
+    let kind = message.get("type").and_then(Value::as_str).unwrap_or("?");
+    let to = message.get("to").and_then(Value::as_str).unwrap_or("-");
+    let command = message
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| text.starts_with('/'))
+        .and_then(|text| text.split_whitespace().next())
+        .filter(|word| {
+            word.len() <= 32
+                && word[1..]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+        .unwrap_or("");
+    format!("inbound type={kind} to={to} command={command}")
+}
+
 fn handle_message(
     app: &AppHandle,
     state: &LincoConnectorState,
@@ -822,6 +942,9 @@ fn handle_message(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if !matches!(kind, "ping" | "pong") {
+        log_event(&describe_inbound(&message));
+    }
     match kind {
         "ping" => return Some(heartbeat(settings, "pong")),
         "pong" => return None,
@@ -855,6 +978,18 @@ fn handle_message(
                 crate::remote_linco::dispatch_inbound(&app, &remote, envelope, TURN_TIMEOUT).await;
         });
         return Some(turn.end(&agent_type, "cancelled"));
+    }
+    if kind == "inbound_message" {
+        let text = message
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let Some(frames) = bridge_command(text, &turn, &agent_type) {
+            for frame in frames {
+                let _ = outbound.send(Outbound::Frame(frame));
+            }
+            return None;
+        }
     }
     let envelope = match envelope_for(&message, &turn, state.pending(&turn.session_key)) {
         Ok(envelope) => envelope,
@@ -1000,6 +1135,7 @@ fn run(
         let reason = match ended {
             Ok(mut socket) => {
                 attempts = 0;
+                log_event(&format!("connected slot={agent}"));
                 state.set_status(ConnectionState::Connected, Some(&agent), None);
                 serve(
                     &app,
@@ -1019,6 +1155,7 @@ fn run(
             .saturating_mul(2u32.saturating_pow(attempts.min(5)))
             .min(RECONNECT_MAX);
         attempts = attempts.saturating_add(1);
+        log_event(&format!("disconnected: {reason}"));
         state.set_status(ConnectionState::Reconnecting, Some(&agent), Some(reason));
         sleep_unless_stopped(&stop, delay);
     }
@@ -1279,6 +1416,30 @@ mod tests {
         );
         let (_, failed, _) = render_events(&[json!({"type": "failed", "message": "No model"})]);
         assert!(failed);
+    }
+
+    #[test]
+    fn bridge_commands_list_ai_os_as_the_only_context() {
+        let turn = Turn::from_inbound(&json!({
+            "sessionKey": "s-1", "messageId": "r-1", "streamId": "linco-cmd-r-1"
+        }))
+        .unwrap();
+        let frames = bridge_command("/agent", &turn, "openclaw").unwrap();
+        assert_eq!(frames[0]["type"], "slash_command_result");
+        assert_eq!(frames[0]["command"], "agent");
+        assert_eq!(frames[0]["streamId"], "linco-cmd-r-1");
+        assert_eq!(frames[0]["data"]["items"][0]["id"], "ai-os");
+        assert_eq!(
+            frames[0]["data"]["items"][0]["bindCommand"],
+            "/agent --bind ai-os"
+        );
+        assert_eq!(frames[1]["type"], "turn_end");
+        let bound = bridge_command("/agent --bind ai-os", &turn, "openclaw").unwrap();
+        assert_eq!(bound[0]["type"], "outbound_message");
+        let history = bridge_command("/history 20", &turn, "openclaw").unwrap();
+        assert_eq!(history[0]["data"], json!({"rounds": []}));
+        assert!(bridge_command("/approve", &turn, "openclaw").is_none());
+        assert!(bridge_command("hello", &turn, "openclaw").is_none());
     }
 
     #[test]
