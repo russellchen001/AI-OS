@@ -185,6 +185,16 @@
     验证通过（已记为 verified，排在 Claude Code 之后）；OpenAI 额度用尽未用。本地路径（兜底开启）真实测试 19.6s 通过。
     回归：council_execution、remote_ai_os、linco_connector、desktop_linco、信息架构、Provider 稳定性/blocking、
     CLI Provider、GM-4 全 PASS。注意：OpenAI 额度恢复并验证后，按 Auto 优先级兜底会优先用 ChatGPT 套餐。
+  - **全量回归（2026-11-01，候选 896ee8d 的代码；`082e683`）**：verify/*.sh 共 232 个，178 PASS / 40 FAIL /
+    11 TIMEOUT / 3 SKIP。代码与验证器问题已修（均为接手前遗留）：knowledge.rs、runtime/mod.rs、task_execution.rs
+    逐文件 rustfmt；AR-1B rustfmt 补 `--edition 2021`；verify_beta6_artifacts_archive.sh 恢复可执行位；结构化
+    Office 读取测试数 19→20（10-28 安全修复新增）；legacy UI 改整词匹配（AccountsServicesPage ≠ ServicesPage）；
+    P14 语言偏好断言按已验收 Beta 4.1「最新一条为准」更新。重跑：AR-1A/AR-1B/Beta4/GM-5/GM-6/MP-0/
+    computer_control gate/结构化 Office/可执行位/legacy UI/P14 全 PASS。
+    **剩余失败全部为环境**：Microsoft Excel 进程在但 AppleEvent 超时（重启后可能有弹窗）→ Excel A–H、spreadsheet
+    read/create、probe_excel_*、office 转换、gate_p15_office 等；ComfyUI 未运行 → GM-2A/2B/2C/3 实时检测；Peekaboo
+    bridge 宿主未运行、权限显示未授予 → peekaboo live probe；本机无 ../agency-agents、../paperclip 参考仓库 →
+    external references、shared chief of staff；council export / install restore 需要传入导出文件或 DMG 参数。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
