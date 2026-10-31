@@ -74,6 +74,24 @@
   回归：tsc、Provider 稳定性、CLI Provider、P15 添加 Provider、信息架构、P16 非 live 脚本、P17 全部 PASS；
   `p16_council_execution`（ignored 真实 OpenClaw 测试）、`p16_desktop_linco_live`、`p16_live_integrations`、
   `p16_remote_linco_live` FAIL——均需真实外部服务，与本次改动无关，未据此宣布通过。
+- **用户 2026-10-31 决定与后续处理（未重建候选，代码 HEAD 见 git log）**：
+  - Anthropic：用户同意 Commercial Terms（接受动作须用户本人在 Anthropic Console 账号完成）。代码侧合规
+    `ea1c40f`：不再剥离 `ANTHROPIC_API_KEY`（条款禁止限制 Claude Code 任何内置登录方式），状态文案中性化；
+    Claude Code 原样调用、每个用户自有账号/Key、界面仅以纯文本称 Claude Code。
+  - xAI：删除冒充 Grok CLI 的 grok-oauth（`bbfb9f7`）：device-code 命令、Grok CLI client id/scope/头、
+    cli-chat-proxy 端点、live 媒体测试全部移除；已存 grok-oauth 凭证提示改用官方 Grok CLI 或自有 API key。
+    Kimi 设备码流程保留（共享类型改名为 DeviceAuthSession 等）。GM-4 验证去掉 Grok OAuth 前置条件；
+    providers.rs 本会话引入的格式漂移已用单文件 rustfmt 消除（GM-4 targeted rustfmt PASS）。
+  - 「4 个失败」复核：此前批量循环把退出码 2（SKIP）当 FAIL，且用 bash 跑了 zsh 脚本。真实结果：
+    `p16_desktop_linco_live` SKIP（需 `AI_OS_REMOTE_LINCO_TOKEN`）；`p16_remote_linco_live` SKIP（需本地 Linco
+    127.0.0.1:3300）；`p16_live_integrations` PASS=4 SKIP=3 FAIL=0（需 paperclip、linco-bridge、dynamic-assembly
+    服务）；只有 `p16_council_execution` 的 ignored 真实 OpenClaw 测试是真失败：
+    ① 已修 `241c795`：本地 Skill 路由取排名第一的 oMLX 模型，选中了 chat template 不支持 tools 的
+    DeepSeek-R1-Distill（192 token 全在思考，finish=length）。现按模型自身 template 排除无 tools 支持者，
+    并依序尝试候选；错误带模型与 finish 原因。新增单测。
+    ② 仍失败：OpenClaw `ai-os-files` agent（omlx/Qwen3.5-9B）120s 内未完成——冷启动时 oMLX 先逐出
+    Qwen2.5 再加载 3.5、长提示预填约 57s；热态复跑仍超时。机器 M4 16GB，swap 8.9/9.2GB 几乎满、
+    Spotlight mds 151% CPU，本地仅 4–7 tok/s。属运行环境问题，未延长超时。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
