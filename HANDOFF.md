@@ -164,6 +164,11 @@
     旧版（scan 只认英文 Desktop），943332a 起已支持中文。Rust 1117/0。
     候选 `aea54c4`：DMG SHA256 `38c9692b8bcbe5710e95c0d2fb72aa589c3cf0d988bd937a45f64fe30daf97db`，主程序
     `f2a9cb15855a80da5af82e816897b78483befae9e240a299dd3c1394dccd861d`；已启动（替换 943332a）；Beta5 未变；~/Desktop/test 仍不存在。
+    **真机 PASS（aea54c4）**：手机「在桌面新建 test」→ 确认显示 parent=/Users/russellchen/Desktop、name=test →
+    /approve →「Done.」；`~/Desktop/test` 于 01:58:36 创建（空目录，用户请求所建，保留）。手机→Linco→AI-OS→
+    OpenClaw 选择→输入 grounding→确认→新 Task 精确执行→Rust mkdir 全链路通过。
+    之后 `git log` 中「say what a finished Linco task did」：完成回复改为结果摘要或路径（如 Done: /…/test）；
+    Rust 1118/0；未重建（下次构建带上）。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
