@@ -354,7 +354,18 @@ const ordinaryDone = await gateway.receive({
 });
 event(ordinaryDone, "completed");
 assert(exactExecutionOptions?.capability === "nas.status", "ordinary DO bypassed exact confirmation");
-assert(exactExecutionTaskId === ordinaryPendingTaskId, "ordinary confirmation created a second Task");
+// The paused Task has left planning (the Runtime only sends planning Tasks to
+// an Agent), so approval runs as a new Task bound to the exact approval, as
+// Chat does — never as a blanket confirmation of the original Task.
+assert(
+  exactExecutionTaskId !== ordinaryPendingTaskId,
+  "ordinary confirmation re-ran the paused Task instead of an approved Task",
+);
+assert(exactExecutionOptions?.userConfirmed === true, "approved Task ran without the exact confirmation");
+assert(
+  JSON.stringify(exactExecutionOptions?.input) === JSON.stringify({ protocol: "smb" }),
+  "approved Task did not keep the exact approved input",
+);
 
 const blockerGateway = new RemoteAiOsGateway(dependencies());
 councilExecutionMode = "blocker";

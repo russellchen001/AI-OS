@@ -726,8 +726,11 @@ fn render_events(events: &[Value]) -> (String, bool, Option<PendingDecision>) {
                 if let Some(confirmation) = event.get("confirmation") {
                     let action = string_field(confirmation, "action").unwrap_or("this action");
                     let reason = string_field(confirmation, "reason").unwrap_or_default();
+                    let target = string_field(confirmation, "targetSummary")
+                        .map(|target| format!(" ({target})"))
+                        .unwrap_or_default();
                     lines.push(
-                        format!("Confirmation needed: {action}. {reason}")
+                        format!("Confirmation needed: {action}{target}. {reason}")
                             .trim()
                             .to_owned(),
                     );
@@ -1420,12 +1423,15 @@ mod tests {
             json!({"type": "turn_start", "message": "ignored"}),
             json!({"type": "assistant_chunk", "message": "Here is the plan."}),
             json!({"type": "execution_confirmation_required", "taskId": "t", "confirmationId": "c",
-                   "confirmation": {"action": "Move 3 files", "reason": "It changes your disk."}}),
+                   "confirmation": {"action": "Move 3 files", "targetSummary": "path: /Users/me/Desktop",
+                                    "reason": "It changes your disk."}}),
         ];
         let (text, failed, decision) = render_events(&events);
         assert!(!failed);
         assert!(text.starts_with("Here is the plan."));
-        assert!(text.contains("Confirmation needed: Move 3 files. It changes your disk."));
+        assert!(text.contains(
+            "Confirmation needed: Move 3 files (path: /Users/me/Desktop). It changes your disk."
+        ));
         assert!(text.ends_with("Reply /approve to continue or /reject to decline."));
         assert_eq!(
             decision,

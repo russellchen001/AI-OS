@@ -265,7 +265,7 @@ function errorDetail(error: unknown): string {
 }
 
 function safeTargetSummary(input: Record<string, unknown>): string | undefined {
-  const allowed = ["path", "source", "destination", "model", "protocol"];
+  const allowed = ["path", "parent", "name", "source", "destination", "model", "protocol"];
   const parts = allowed.flatMap((key) => {
     const value = input[key];
     if (typeof value !== "string" || !value.trim()) return [];
@@ -683,15 +683,26 @@ export class RemoteAiOsGateway {
       this.persist(session);
       return this.executionTerminalEvents(session, pending.councilSession, execution);
     }
+    // Same as Chat: the paused Task has left planning, so the approval runs as a
+    // new DO Task bound to exactly the Agent-selected capability and input.
+    let taskId = pending.taskId;
     try {
-      const result = await this.dependencies.executeTask(pending.taskId, "openclaw", exact);
+      const approvedTask = await this.dependencies.submitTask(pending.prompt, "DO", {
+        source: "linco-remote",
+        remoteConversationId: session.mapping.conversationId,
+        approvedFromTaskId: pending.taskId,
+      });
+      taskId = approvedTask.taskId;
+      session.mapping.taskId = taskId;
+      this.persist(session);
+      const result = await this.dependencies.executeTask(taskId, "openclaw", exact);
       return [this.event(session, "completed", {
         taskId: result.taskId,
         result: result.output,
       })];
     } catch (error) {
       return [this.event(session, "failed", {
-        taskId: pending.taskId,
+        taskId,
         message: errorDetail(error),
       })];
     }
