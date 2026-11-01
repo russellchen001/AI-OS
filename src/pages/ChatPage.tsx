@@ -85,6 +85,7 @@ import {
   resolveMemoryPolicy,
   type MemoryPolicy,
 } from "../services/memoryPolicy";
+import { deviceContextMessage } from "../services/deviceContext";
 
 type ChatMessage = ConversationMessage;
 
@@ -1244,6 +1245,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         : undefined;
 
     const systemContexts = [
+      deviceContextMessage(),
       memoryContext,
       conversationRetrievalContext,
       knowledgeContext,

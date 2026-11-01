@@ -3,6 +3,7 @@ import {
   type AiCenterStream,
 } from "./aiCenter";
 import { classifyAutomaticIntent } from "./intentRouting";
+import { deviceContextMessage } from "./deviceContext";
 import {
   completeChatTaskExecution,
   describeCloudFallback,
@@ -157,9 +158,13 @@ function defaultAsk(
     taskId = task.taskId;
     await startChatTaskExecution(task.taskId);
     const conversation = getConversation(conversationId);
-    const messages = conversation
-      ? buildConversationContext(conversation).messages
-      : [{ role: "user" as const, content: text }];
+    const device = deviceContextMessage();
+    const messages = [
+      ...(device ? [device] : []),
+      ...(conversation
+        ? buildConversationContext(conversation).messages
+        : [{ role: "user" as const, content: text }]),
+    ];
     stream = streamThroughAiCenter(messages, undefined, onChunk);
     const outcome = await Promise.race([
       stream.result.then((answer) => ({ type: "answer" as const, answer })),

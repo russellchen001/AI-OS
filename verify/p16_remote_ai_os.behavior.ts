@@ -5,6 +5,7 @@ import type { CouncilSession } from "../src/types/council";
 import type { CouncilExecutionState } from "../src/types/councilExecution";
 import type { CouncilRunResult } from "../src/types/councilRuntime";
 import type { RemoteAiOsEvent, RemoteSessionMapping } from "../src/types/remoteInteraction";
+import { deviceContextMessage } from "../src/services/deviceContext";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -456,5 +457,10 @@ const filteredContext = await resolveCouncilContext(
   },
 );
 assert(filteredContext.length === 0, "Linco transport metadata entered Council reasoning");
+
+// Remote chat answers must give Mac steps on a Mac, not Windows steps.
+const macContext = deviceContextMessage("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
+assert(macContext?.role === "system" && macContext.content.includes("macOS"), "Mac device context missing");
+assert(deviceContextMessage("Mozilla/5.0 (Windows NT 10.0; Win64; x64)") === undefined, "non-Mac host was told it is a Mac");
 
 console.log("PASS P16 Remote AI-OS / Linco behavior");
