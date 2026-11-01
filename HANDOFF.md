@@ -204,7 +204,13 @@
     全 PASS。ComfyUI：原实例 .venv 与 Comfy 基础 Python 均丢失（「未找到 Python 环境」），原地更新被拒；
     「复制并更新」生成 `ComfyUI (1)` 但同样缺 Python；新建 `ComfyUI (2)`（v0.43.2 稳定版、Apple Silicon）后共享
     ~/ComfyUI-Shared/models（SD1.5 checkpoint 与 profile 清单 sha 一致）→ GM-2A/2A2b2/2A2b3a/2A2b3b/2A2c1/2B/2C/3
-    与 generative media closure 全 PASS。旧 `ComfyUI`、`ComfyUI (1)` 各约 4 GB 仍保留，删除需用户决定。
+    与 generative media closure 全 PASS。用户随后要求删除旧 `ComfyUI`、`ComfyUI (1)`：删除前 Qwen3-VL-2B（4 GB）
+    已移入 ~/ComfyUI-Shared/models/LLavacheckpoints/modern-vlm，受管 AIOS_ComfyUI_VLM_nodes（含 .ai-os-managed.json）
+    已复制到 `ComfyUI (2)`；两者经 Comfy Desktop「卸载」移除（确认框路径逐一核对）。
+  - **Beta 6 候选安装（2026-11-01，用户明确同意且不还原 Beta 5）**：/Applications/AI OS.app 由 Beta 5
+    （dashboard 91ff470b…253ce5）完整备份到 work/beta6-final/beta5-backup-20261101 后，从 DMG 5be5c243…bb48dd
+    安装 1.0.1-beta.6（dashboard bf16c15d…e12fe3，codesign strict OK）并启动；Linco 连接器 connected。
+    verify_beta6_install_restore 校验「恢复为 Beta 5」，按用户决定不适用。仍未 Push/Tag/发布。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
