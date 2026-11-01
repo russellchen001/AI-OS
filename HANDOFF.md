@@ -28,6 +28,7 @@
 | 12 | 正式签名/公证/干净用户 | **BLOCKED**：无 Developer ID；ad-hoc 重建需重新允许钥匙串 | — |
 
 - 不适用：`verify_beta6_install_restore`（校验还原 Beta 5，用户决定不还原）。
+- **用户决定（2026-11-01）**：Apple Developer Program/公证、ChatGPT 额度、Gemini key 不作为 Beta 6 阻塞；#11/#12 其余项视为接受。
 - 本轮（11-01）提交：`082e683` `988a216` `7d1bfa0` `e6f87b7` 及 HANDOFF 记录提交。
 
 <!-- BETA6_CLAUDE_CLI_REGISTRY_20261031 -->
