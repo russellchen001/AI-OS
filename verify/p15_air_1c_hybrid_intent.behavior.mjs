@@ -53,6 +53,14 @@ expectIntent("打开刚才提到的文件", "DO");
 expectIntent("把刚才的内容保存为文档", "DO");
 expectIntent("把这个文件移动到下载目录", "DO");
 expectIntent("将报告导出为 PDF", "DO");
+// Direct commands led by a location (phone remote requests, 2026-11-01).
+expectIntent("在桌面新建一个叫 test2 的文件夹", "DO");
+expectIntent("在桌面新建一个叫test的文件夹", "DO");
+expectIntent("列出我桌面上的文件", "DO");
+expectIntent("在下载里列出所有文件", "DO");
+expectIntent("新建一个文件夹 notes", "DO");
+expectUnresolved("在桌面上放什么文件比较好？");
+expectIntent("在桌面新建文件夹有什么建议？", "ASK");
 expectUnresolved("帮我写一首诗");
 
 console.log("PASS: AIR-1C canonical semantic intent behavior");
