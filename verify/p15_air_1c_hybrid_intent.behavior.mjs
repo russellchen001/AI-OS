@@ -41,6 +41,12 @@ if (publicProductRoutingIntent(guiRequest) !== undefined) {
   throw new Error("GUI execution was misclassified as a product mention");
 }
 console.log("PASS DO: GUI execution bypasses product-fact ASK rule");
+for (const fileRequest of ["在桌面新建一个叫 test2 的文件夹", "把 report2 移动到下载目录", "列出 Q3 文件夹里的文件"]) {
+  if (publicProductRoutingIntent(fileRequest) !== undefined) {
+    throw new Error(`File request was misclassified as a product mention: ${fileRequest}`);
+  }
+}
+console.log("PASS DO: file requests with model-like names bypass product-fact ASK rule");
 
 expectIntent("你好", "ASK");
 
