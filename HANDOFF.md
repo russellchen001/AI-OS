@@ -31,7 +31,7 @@
   `AI-OS_1.0.1-beta.6_aarch64.dmg`，SHA256 1de23867…3cbb12）；`npm run tauri:build` 结束时自动复制候选到
   `~/AI-OS/releases/candidates/AI-OS_<版本>_<commit>[-dirty]_aarch64.dmg`；验收后用
   `scripts/promote_release_dmg.sh <commit>` 晋升为正式名（已存在则拒绝）。不要再使用 Documents/Codex/*/outputs。
-  旧 Beta 6 候选 DMG 35 个已移入废纸篓 `AI-OS-old-dmgs-20261101`；Beta 4.1、Beta 5 的 DMG 未动。
+  其余所有 AI-OS DMG（35 个 Beta 6 候选及 Beta 4.1、Beta 5、构建目录副本）已按用户要求移入废纸篓 `AI-OS-old-dmgs-20261101`，只保留正式 Beta 6。
 - 不适用：`verify_beta6_install_restore`（校验还原 Beta 5，用户决定不还原）。
 - **用户决定（2026-11-01）**：Apple Developer Program/公证、ChatGPT 额度、Gemini key 不作为 Beta 6 阻塞；#11/#12 其余项视为接受。
 - 本轮（11-01）提交：`082e683` `988a216` `7d1bfa0` `e6f87b7` 及 HANDOFF 记录提交。
