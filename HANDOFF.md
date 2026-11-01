@@ -1,10 +1,13 @@
 <!-- BETA6_FINAL_ACCEPTANCE_20261101 -->
 # START HERE — Beta 6 最终验收（2026-11-01，Claude；优先于下方所有章节）
 
-- 代码 HEAD 见 git log（最后功能提交 `e6f87b7`），均为本地提交，**未 Push/Tag/Release**。
+- **已发布（2026-11-01，用户批准）**：分支 `beta6` 已 Push；Tag `ai-os-v1.0.1-beta.6`（指向 `ccc3e5d`）；GitHub Release
+  「AI-OS 1.0.1 Beta 6」（prerelease）https://github.com/russellchen001/AI-OS/releases/tag/ai-os-v1.0.1-beta.6 ，
+  附件 `AI.OS_1.0.1-beta.6_aarch64.dmg`，digest 与本地 SHA256 一致。最后功能提交 `cba1f5d`；之后只有构建脚本与文档提交。
+  再次 Push/Tag/Release 仍需用户明确批准。
 - **最终候选 = 发布版**（用户 2026-11-01 同意装入 /Applications、不还原 Beta 5，并批准 Push/Tag/GitHub Release）：
   构建提交 `cba1f5d`，`/Applications/AI OS.app` 主程序 SHA256 `49f70543189f24a48bfcabea6abeb81a5c4bfd0d9f2f16083a9f5937a88d16f4`；
-  DMG `outputs/AI OS_1.0.1-beta.6_candidate-cba1f5d_aarch64.dmg` SHA256
+  DMG `~/AI-OS/releases/AI-OS_1.0.1-beta.6_aarch64.dmg`（原 outputs 候选已移除）SHA256
   `1de23867783130dbf480702ef03079bcd897ed14f406e3e53c64f714bf3cbb12`（ad-hoc，未公证）。Rust 1124/0/90 ignored。
   手机 mkdir 验收在 e6f87b7 完成；其后：`111b5f5` 聊天告知模型用户在 macOS；`92eb203` 「怎么/如何/方法/how to」判 ASK；
   `69c08f2` 被拒请求以中文说明缺少的信息（RejectedInput 保留 Skill 原因）；`cba1f5d` 不向用户显示契约术语。手机实测
@@ -34,6 +37,9 @@
   其余所有 AI-OS DMG（35 个 Beta 6 候选及 Beta 4.1、Beta 5、构建目录副本）已按用户要求移入废纸篓 `AI-OS-old-dmgs-20261101`，只保留正式 Beta 6。
 - 不适用：`verify_beta6_install_restore`（校验还原 Beta 5，用户决定不还原）。
 - **用户决定（2026-11-01）**：Apple Developer Program/公证、ChatGPT 额度、Gemini key 不作为 Beta 6 阻塞；#11/#12 其余项视为接受。
+- **本机环境变化（2026-11-01，用户要求清理磁盘）**：旧 Comfy 实例 `ComfyUI`、`ComfyUI (1)` 已删除，现用 `ComfyUI (2)`
+  （v0.43.2，VLM 模型须放实例自身 models 目录）；`src-tauri/target` 等构建产物、`~/.cache/uv`、`~/.omlx/cache`、旧候选 App
+  已清理（用户已清空废纸篓），**下次构建为全量编译**；Draw Things 的 FLUX.1 模型/LoRA/ControlNet 已移除（与 AI-OS 无关）。
 - 本轮（11-01）提交：`082e683` `988a216` `7d1bfa0` `e6f87b7` 及 HANDOFF 记录提交。
 
 <!-- BETA6_CLAUDE_CLI_REGISTRY_20261031 -->
