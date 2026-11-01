@@ -2,10 +2,11 @@
 # START HERE — Beta 6 最终验收（2026-11-01，Claude；优先于下方所有章节）
 
 - 代码 HEAD 见 git log（最后功能提交 `e6f87b7`），均为本地提交，**未 Push/Tag/Release**。
-- **已安装候选**（用户 2026-11-01 明确同意装入 /Applications 且不还原 Beta 5）：`/Applications/AI OS.app` = e6f87b7，
-  主程序 SHA256 `85a6304d8e9b084428860f8d69bea27091ac3013ab7590851aeeb8d15ad07621`；DMG
-  `outputs/AI OS_1.0.1-beta.6_candidate-e6f87b7_aarch64.dmg` SHA256
-  `62ed705f9d98c19b9ca83634f4ee66b06b0ecb31c0c34ee41fb0b66be62b7181`（ad-hoc，未公证）。
+- **已安装候选**（用户 2026-11-01 明确同意装入 /Applications 且不还原 Beta 5）：`/Applications/AI OS.app` = 111b5f5
+  （e6f87b7 + 聊天告知模型用户在 macOS），主程序 SHA256 `52bf9796435cea4ec6563c790c238589b6d804e27317e75cd65c64a039159a01`；
+  DMG `outputs/AI OS_1.0.1-beta.6_candidate-111b5f5_aarch64.dmg` SHA256
+  `ac448822d5fec711daac00233b50ef4e0ba6819b88a1cff81c3dc2997702bf1b`（ad-hoc，未公证）。手机验收在 e6f87b7 上完成；
+  111b5f5 仅增加 deviceContext 系统消息（remote_ai_os、linco_connector、AIR-1C、P14 memory 回归 PASS），Linco connected。
   备份：`work/beta6-final/beta5-backup-20261101`（Beta 5，91ff470b…253ce5）、`installed-896ee8d-backup`。
 - 回归：全量 verify/*.sh（896ee8d 代码）后，代码/验证器缺陷均已修复，环境项修复后重跑全 PASS（Office 17、GM 9、
   GM-5 live 19/0、Peekaboo live、external references、chief of staff）；e6f87b7 的改动另跑 AIR-1C、automatic intent
