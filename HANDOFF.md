@@ -219,6 +219,12 @@
   - **Reference VLM（GM-5 live）**：AIOS_ComfyUI_VLM_nodes 只在实例自身 models_dir 找 Qwen3-VL，故模型放回
     `ComfyUI (2)/ComfyUI/models/LLavacheckpoints/modern-vlm`（不是共享目录）；AI_OS_GM5_LIVE=1 下 Setup/Repair
     安装依赖并完成真实冒烟 → GM-5 19/0。
+  - **第二处根因与最终手机验收（`e6f87b7`，2026-11-01 22:42）**：7d1bfa0 上手机仍判为聊天——产品事实规则先于语义规则，
+    把文件夹名 test2 当型号 → ASK。文件系统动作（新建/创建/列出/移动/复制/重命名/保存/文件夹）现排除产品路由；
+    AIR-1C、beta41 public fact grounding、remote_ai_os、automatic intent routing 全 PASS。候选 e6f87b7：
+    DMG 62ed705f…2b7181，dashboard 85a6304d…d07621，已装入 /Applications。**手机实测通过**：Linco 发「在桌面新建一个叫
+    test2 的文件夹」→ 确认 filesystem.mkdir（parent=/Users/russellchen/Desktop，name=test2）→ /approve →
+    「Done: /Users/russellchen/Desktop/test2」，文件夹真实存在。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
