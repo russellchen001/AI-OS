@@ -196,6 +196,31 @@ export function describeDownloadResult(output: unknown): string {
   return `Download completed with ${result.tool}.\n\n${files}`;
 }
 
+const RUNTIME_FAILURE_PREFIXES = /^(?:Task execution failed: |Runtime rejected PlanStep: )+/;
+
+/*
+ * A refused request names what is missing in words the user can act on, not
+ * Runtime internals ("Plan runtime request is invalid").
+ */
+export function describeRejectedRequest(detail: string): string | undefined {
+  const reason = detail.replace(RUNTIME_FAILURE_PREFIXES, "").trim();
+  const missing = reason.match(/^The request is missing details: (.+)$/s);
+  if (missing) {
+    return `AI-OS 没能执行：请求缺少必要信息（${missing[1].trim()}）。请把要做的事说具体一些，例如文件夹的名字和位置。`;
+  }
+  if (reason === "Plan runtime request is invalid") {
+    return "AI-OS 没能执行：无法确定要做的具体操作。请把要做的事说具体一些后再试。";
+  }
+  return undefined;
+}
+
+/** Failure text for remote replies: humanized when known, otherwise the reason without Runtime prefixes. */
+export function describeTaskFailure(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return describeRejectedRequest(detail)
+    ?? `AI-OS 没能执行：${detail.replace(RUNTIME_FAILURE_PREFIXES, "").trim()}`;
+}
+
 export function describeWorkTaskError(
   error: unknown,
   operation = "folder scan",
@@ -210,6 +235,9 @@ export function describeWorkTaskError(
   if (operation === "task" && detail.toLowerCase().includes("computer use was cancelled")) {
     return "Computer Use 已取消，未继续操作。";
   }
+
+  const rejected = describeRejectedRequest(detail);
+  if (rejected) return rejected;
 
   const detectedKind = extractErrorKind(detail);
   if (detectedKind) {

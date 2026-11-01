@@ -7,6 +7,7 @@ import { deviceContextMessage } from "./deviceContext";
 import {
   completeChatTaskExecution,
   describeCloudFallback,
+  describeTaskFailure,
   executeChatWorkTask,
   failChatTaskExecution,
   parseWorkTaskApproval,
@@ -266,10 +267,6 @@ function defaultDependencies(): RemoteAiOsDependencies {
   };
 }
 
-function errorDetail(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function safeTargetSummary(input: Record<string, unknown>): string | undefined {
   const allowed = ["path", "parent", "name", "source", "destination", "model", "protocol"];
   const parts = allowed.flatMap((key) => {
@@ -440,7 +437,7 @@ export class RemoteAiOsGateway {
       } else {
         events.push(this.event(session, "failed", {
           taskId: task.taskId,
-          message: errorDetail(error),
+          message: describeTaskFailure(error),
         }));
       }
     }
@@ -719,7 +716,7 @@ export class RemoteAiOsGateway {
     } catch (error) {
       return [this.event(session, "failed", {
         taskId,
-        message: errorDetail(error),
+        message: describeTaskFailure(error),
       })];
     }
   }

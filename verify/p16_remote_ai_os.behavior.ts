@@ -6,6 +6,7 @@ import type { CouncilExecutionState } from "../src/types/councilExecution";
 import type { CouncilRunResult } from "../src/types/councilRuntime";
 import type { RemoteAiOsEvent, RemoteSessionMapping } from "../src/types/remoteInteraction";
 import { deviceContextMessage } from "../src/services/deviceContext";
+import { describeTaskFailure, describeWorkTaskError } from "../src/services/tasks";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -462,5 +463,16 @@ assert(filteredContext.length === 0, "Linco transport metadata entered Council r
 const macContext = deviceContextMessage("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
 assert(macContext?.role === "system" && macContext.content.includes("macOS"), "Mac device context missing");
 assert(deviceContextMessage("Mozilla/5.0 (Windows NT 10.0; Win64; x64)") === undefined, "non-Mac host was told it is a Mac");
+
+// A refused request is explained in plain words, never as Runtime internals.
+const missingName = describeTaskFailure(new Error(
+  "Task execution failed: Runtime rejected PlanStep: The request is missing details: filesystem.mkdir requires name",
+));
+assert(missingName.includes("缺少必要信息") && missingName.includes("filesystem.mkdir requires name"), "missing detail not explained");
+assert(!missingName.includes("PlanStep") && !missingName.includes("Task execution failed"), "Runtime prefixes leaked");
+const unclear = describeTaskFailure("Task execution failed: Runtime rejected PlanStep: Plan runtime request is invalid");
+assert(unclear.includes("无法确定要做的具体操作") && !unclear.includes("Plan runtime"), "invalid request not humanized");
+assert(describeTaskFailure("Task execution failed: OpenClaw is offline") === "AI-OS 没能执行：OpenClaw is offline", "other reasons lost");
+assert(describeWorkTaskError("Plan runtime request is invalid", "task").includes("无法确定"), "desktop Chat not humanized");
 
 console.log("PASS P16 Remote AI-OS / Linco behavior");

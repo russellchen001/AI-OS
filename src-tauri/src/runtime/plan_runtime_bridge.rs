@@ -53,6 +53,11 @@ pub struct PlanRuntimeExecutionResult {
 pub enum PlanRuntimeExecutionError {
     Configuration,
     InvalidRequest,
+    /// The Agent's request was refused with a reason the user can act on
+    /// (for example a missing folder name).
+    RejectedInput {
+        message: String,
+    },
     SkillNotFound {
         capability: String,
     },
@@ -79,6 +84,9 @@ impl fmt::Display for PlanRuntimeExecutionError {
         match self {
             Self::Configuration => formatter.write_str("Runtime configuration is unavailable"),
             Self::InvalidRequest => formatter.write_str("Plan runtime request is invalid"),
+            Self::RejectedInput { message } => {
+                write!(formatter, "The request is missing details: {message}")
+            }
             Self::SkillNotFound { capability } => {
                 write!(
                     formatter,
@@ -468,7 +476,9 @@ fn operation_identity(plan_id: &PlanId, step_id: &PlanStepId, attempt_id: &str) 
 
 fn agent_error(error: AgentExecutionError) -> PlanRuntimeExecutionError {
     match error.kind {
-        AgentExecutionErrorKind::InvalidRequest => PlanRuntimeExecutionError::InvalidRequest,
+        AgentExecutionErrorKind::InvalidRequest => PlanRuntimeExecutionError::RejectedInput {
+            message: error.message,
+        },
         AgentExecutionErrorKind::PermissionRequired => PlanRuntimeExecutionError::Admission {
             message: error.message,
             retryable: false,
@@ -581,9 +591,12 @@ mod mano_fallback_error_contract_tests {
             PlanRuntimeExecutionError::PermissionDenied
         );
 
+        // The Skill's reason (e.g. a missing folder name) reaches the user.
         assert_eq!(
             agent_error_of(AgentExecutionErrorKind::InvalidRequest),
-            PlanRuntimeExecutionError::InvalidRequest
+            PlanRuntimeExecutionError::RejectedInput {
+                message: "test failure".to_owned()
+            }
         );
     }
 }
