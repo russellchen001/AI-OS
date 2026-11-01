@@ -2,13 +2,13 @@
 # START HERE — Beta 6 最终验收（2026-11-01，Claude；优先于下方所有章节）
 
 - 代码 HEAD 见 git log（最后功能提交 `e6f87b7`），均为本地提交，**未 Push/Tag/Release**。
-- **已安装候选**（用户 2026-11-01 明确同意装入 /Applications 且不还原 Beta 5）：`/Applications/AI OS.app` = 69c08f2，
-  主程序 SHA256 `a51e10fbf58e5ae5da9b678b6bc4e66f0989ea21e458961d7f74d6c7ad5c0ff0`；DMG
-  `outputs/AI OS_1.0.1-beta.6_candidate-69c08f2_aarch64.dmg` SHA256
-  `9ea2ff3ceac37a8ee3cd850b5626cdb1b496e30ef358dcd20074c0665f1434a7`（ad-hoc，未公证）。手机 mkdir 验收在 e6f87b7 完成；
-  其后：`111b5f5` 聊天告知模型用户在 macOS；`92eb203` 「怎么/如何/方法/how to」提问判 ASK；`69c08f2` 被拒请求以中文说明
-  缺少的信息（Agent InvalidRequest 保留 Skill 原因为 RejectedInput），去掉 Runtime 前缀。remote_ai_os、linco_connector、
-  AIR-1C、AR-1B、beta41、automatic intent routing、P14 memory 回归 PASS；Linco connected。
+- **最终候选 = 发布版**（用户 2026-11-01 同意装入 /Applications、不还原 Beta 5，并批准 Push/Tag/GitHub Release）：
+  构建提交 `cba1f5d`，`/Applications/AI OS.app` 主程序 SHA256 `49f70543189f24a48bfcabea6abeb81a5c4bfd0d9f2f16083a9f5937a88d16f4`；
+  DMG `outputs/AI OS_1.0.1-beta.6_candidate-cba1f5d_aarch64.dmg` SHA256
+  `1de23867783130dbf480702ef03079bcd897ed14f406e3e53c64f714bf3cbb12`（ad-hoc，未公证）。Rust 1124/0/90 ignored。
+  手机 mkdir 验收在 e6f87b7 完成；其后：`111b5f5` 聊天告知模型用户在 macOS；`92eb203` 「怎么/如何/方法/how to」判 ASK；
+  `69c08f2` 被拒请求以中文说明缺少的信息（RejectedInput 保留 Skill 原因）；`cba1f5d` 不向用户显示契约术语。手机实测
+  23:26：how-to 问题按 macOS 回答；「新建一个文件夹」得到中文缺信息提示。Linco connected。
   备份：`work/beta6-final/beta5-backup-20261101`（Beta 5，91ff470b…253ce5）、`installed-896ee8d-backup`。
 - 回归：全量 verify/*.sh（896ee8d 代码）后，代码/验证器缺陷均已修复，环境项修复后重跑全 PASS（Office 17、GM 9、
   GM-5 live 19/0、Peekaboo live、external references、chief of staff）；e6f87b7 的改动另跑 AIR-1C、automatic intent
