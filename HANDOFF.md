@@ -27,6 +27,11 @@
 | 11 | Gemini/OAuth/Computer Use | **部分 PASS**：Computer Use（Peekaboo）live 全 PASS；Linco 手机远程 + filesystem.mkdir + 云端兜底手机实测 PASS（e6f87b7）。**BLOCKED（外部/待用户）**：OpenAI ChatGPT 套餐额度用尽（链路已通）；Gemini 只能用用户自己的 API key（待用户粘贴）。Anthropic Commercial Terms 由每个使用者对自己的账号/Key 接受，不是 AI-OS 阻塞（用户 2026-11-01 确认）；订阅账号登录路线（Claude Code、OpenAI ChatGPT、Grok CLI）**用户 2026-11-01 决定保留**，条款风险已告知并由用户承担（见下方 CLI 节） | 手机截图 2026-11-01 22:42 |
 | 12 | 正式签名/公证/干净用户 | **BLOCKED**：无 Developer ID；ad-hoc 重建需重新允许钥匙串 | — |
 
+- **DMG 固定位置（用户 2026-11-01 决定）**：正式版 `~/AI-OS/releases/AI-OS_<版本>_aarch64.dmg`（Beta 6 =
+  `AI-OS_1.0.1-beta.6_aarch64.dmg`，SHA256 1de23867…3cbb12）；`npm run tauri:build` 结束时自动复制候选到
+  `~/AI-OS/releases/candidates/AI-OS_<版本>_<commit>[-dirty]_aarch64.dmg`；验收后用
+  `scripts/promote_release_dmg.sh <commit>` 晋升为正式名（已存在则拒绝）。不要再使用 Documents/Codex/*/outputs。
+  旧 Beta 6 候选 DMG 35 个已移入废纸篓 `AI-OS-old-dmgs-20261101`；Beta 4.1、Beta 5 的 DMG 未动。
 - 不适用：`verify_beta6_install_restore`（校验还原 Beta 5，用户决定不还原）。
 - **用户决定（2026-11-01）**：Apple Developer Program/公证、ChatGPT 额度、Gemini key 不作为 Beta 6 阻塞；#11/#12 其余项视为接受。
 - 本轮（11-01）提交：`082e683` `988a216` `7d1bfa0` `e6f87b7` 及 HANDOFF 记录提交。

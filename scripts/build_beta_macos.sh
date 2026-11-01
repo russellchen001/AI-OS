@@ -89,6 +89,20 @@ echo "===== Verify final artifacts ====="
 verify/verify_beta_macos_bundle_signature.sh
 verify/verify_beta_package_hygiene.sh
 
+# Every build lands in one fixed place, named by commit, so candidates never
+# overwrite each other. Promote the accepted one with
+# scripts/promote_release_dmg.sh <commit>.
+releases_directory="${AI_OS_RELEASES_DIR:-$HOME/AI-OS/releases}"
+commit=$(git rev-parse --short HEAD)
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  commit="${commit}-dirty"
+fi
+candidate="$releases_directory/candidates/AI-OS_${version}_${commit}_aarch64.dmg"
+mkdir -p "$releases_directory/candidates"
+ditto "$dmg" "$candidate"
+
 echo "PASS Beta macOS signed release build"
 echo "App: $app"
 echo "DMG: $dmg"
+echo "Candidate: $candidate"
+echo "SHA-256: $(shasum -a 256 "$candidate" | cut -d' ' -f1)"
