@@ -195,6 +195,16 @@
     read/create、probe_excel_*、office 转换、gate_p15_office 等；ComfyUI 未运行 → GM-2A/2B/2C/3 实时检测；Peekaboo
     bridge 宿主未运行、权限显示未授予 → peekaboo live probe；本机无 ../agency-agents、../paperclip 参考仓库 →
     external references、shared chief of staff；council export / install restore 需要传入导出文件或 DMG 参数。
+  - **环境修复后重跑（2026-11-01，用户授权）**：候选 896ee8d 已启动（aea54c4 已停）。Peekaboo.app 启动后
+    bridge=remote、三项权限 granted → verify_computer_use_peekaboo 全 PASS（TextEdit/两步/计算器各 3 次）。
+    ../agency-agents@ebe9c99、../paperclip@f0e6c0f54 已克隆（仅参考，不入源码树）→ external references PASS。
+    shared chief of staff 失败与仓库无关：c2727a6 起仅有任务证据的席位加载专家档案，行为测试已更新（`988a216`）
+    → 16/0。Excel 残留的测试工作簿由用户关闭后，Office 全组 17 项（Excel A–H、spreadsheet、provider selection、
+    real-world alignment、office conversion、Google Workspace、structured interop、Word 保存格式、gate_p15_office）
+    全 PASS。ComfyUI：原实例 .venv 与 Comfy 基础 Python 均丢失（「未找到 Python 环境」），原地更新被拒；
+    「复制并更新」生成 `ComfyUI (1)` 但同样缺 Python；新建 `ComfyUI (2)`（v0.43.2 稳定版、Apple Silicon）后共享
+    ~/ComfyUI-Shared/models（SD1.5 checkpoint 与 profile 清单 sha 一致）→ GM-2A/2A2b2/2A2b3a/2A2b3b/2A2c1/2B/2C/3
+    与 generative media closure 全 PASS。旧 `ComfyUI`、`ComfyUI (1)` 各约 4 GB 仍保留，删除需用户决定。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
