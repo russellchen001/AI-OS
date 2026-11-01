@@ -211,6 +211,14 @@
     （dashboard 91ff470b…253ce5）完整备份到 work/beta6-final/beta5-backup-20261101 后，从 DMG 5be5c243…bb48dd
     安装 1.0.1-beta.6（dashboard bf16c15d…e12fe3，codesign strict OK）并启动；Linco 连接器 connected。
     verify_beta6_install_restore 校验「恢复为 Beta 5」，按用户决定不适用。仍未 Push/Tag/发布。
+  - **手机实测缺陷与修复（`7d1bfa0`）**：手机发「在桌面新建一个叫 test2 的文件夹」被当成聊天（本地模型还复述了
+    会话里旧消息）。根因：语义规则动词缺 新建/建立/列出，且不允许「在<地点>」开头 → 落到模型分类器 → ASK。规则补齐后
+    此类直接命令确定性判 DO；问建议仍为 ASK/未定。AIR-1C（含新增 7 例）、automatic intent routing、remote_ai_os、
+    linco_connector 全 PASS。候选 7d1bfa0：DMG f049d090…71604b，dashboard 1c54f3ef…88b6e4；已装入 /Applications
+    （先备份 896ee8d 到 work/beta6-final/installed-896ee8d-backup），Linco connected。
+  - **Reference VLM（GM-5 live）**：AIOS_ComfyUI_VLM_nodes 只在实例自身 models_dir 找 Qwen3-VL，故模型放回
+    `ComfyUI (2)/ComfyUI/models/LLavacheckpoints/modern-vlm`（不是共享目录）；AI_OS_GM5_LIVE=1 下 Setup/Repair
+    安装依赖并完成真实冒烟 → GM-5 19/0。
 - 历史待办（已处理部分见上）：① 终端运行 `gemini` 选择 Sign in with Google；② 是否批准把 Gemini CLI 升到 0.66.0、
   Claude Code 升到 2.1.314（用于真实验证更新流程）；③ 重建候选后的钥匙串「始终允许」。之后做：Gemini 真实 Chat/Council
   参与、更新按钮真实执行、重建 DMG 并重跑回归。
