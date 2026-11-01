@@ -468,7 +468,11 @@ assert(deviceContextMessage("Mozilla/5.0 (Windows NT 10.0; Win64; x64)") === und
 const missingName = describeTaskFailure(new Error(
   "Task execution failed: Runtime rejected PlanStep: The request is missing details: filesystem.mkdir requires name",
 ));
-assert(missingName.includes("缺少必要信息") && missingName.includes("filesystem.mkdir requires name"), "missing detail not explained");
+assert(missingName.includes("缺少必要信息（名字）") && !missingName.includes("filesystem.mkdir"), "missing detail not explained");
+const contractJargon = describeTaskFailure(
+  "Task execution failed: Runtime rejected PlanStep: The request is missing details: Skill input does not match the capability contract.",
+);
+assert(contractJargon.includes("缺少必要信息") && !contractJargon.includes("capability contract"), "contract jargon leaked");
 assert(!missingName.includes("PlanStep") && !missingName.includes("Task execution failed"), "Runtime prefixes leaked");
 const unclear = describeTaskFailure("Task execution failed: Runtime rejected PlanStep: Plan runtime request is invalid");
 assert(unclear.includes("无法确定要做的具体操作") && !unclear.includes("Plan runtime"), "invalid request not humanized");

@@ -206,7 +206,12 @@ export function describeRejectedRequest(detail: string): string | undefined {
   const reason = detail.replace(RUNTIME_FAILURE_PREFIXES, "").trim();
   const missing = reason.match(/^The request is missing details: (.+)$/s);
   if (missing) {
-    return `AI-OS 没能执行：请求缺少必要信息（${missing[1].trim()}）。请把要做的事说具体一些，例如文件夹的名字和位置。`;
+    // Skill reasons are contract jargon; only a known missing field is named.
+    const field = missing[1].match(/requires (?:an? )?(?:absolute )?(name|path|parent|destination|source|url)\b/i)?.[1];
+    const named = field
+      ? ({ name: "名字", path: "位置", parent: "位置", destination: "目标位置", source: "来源", url: "网址" } as Record<string, string>)[field.toLowerCase()]
+      : undefined;
+    return `AI-OS 没能执行：请求缺少必要信息${named ? `（${named}）` : ""}。请把要做的事说具体一些，例如文件夹的名字和位置。`;
   }
   if (reason === "Plan runtime request is invalid") {
     return "AI-OS 没能执行：无法确定要做的具体操作。请把要做的事说具体一些后再试。";
