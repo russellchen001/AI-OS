@@ -21,7 +21,7 @@
 | 6 | Agent 版本管理 | **PASS**：每日只读检查 + My AI 内确认后真实升级 | 同 #4 |
 | 7/8/10 | My AI 二级导航 / AI Lab / Skills 高级入口 | PASS | 信息架构回归 |
 | 9 | Workspace/Artifacts | PASS | `outputs/Beta6-Artifacts-native-*` |
-| 11 | Gemini/OAuth/Computer Use | **部分 PASS**：Computer Use（Peekaboo）live 全 PASS；Linco 手机远程 + filesystem.mkdir + 云端兜底手机实测 PASS（e6f87b7）。**BLOCKED（外部/待用户）**：OpenAI ChatGPT 套餐额度用尽（链路已通）；Gemini 只能用用户自己的 API key（待用户粘贴）；Anthropic Commercial Terms 需用户在 Console 接受 | 手机截图 2026-11-01 22:42 |
+| 11 | Gemini/OAuth/Computer Use | **部分 PASS**：Computer Use（Peekaboo）live 全 PASS；Linco 手机远程 + filesystem.mkdir + 云端兜底手机实测 PASS（e6f87b7）。**BLOCKED（外部/待用户）**：OpenAI ChatGPT 套餐额度用尽（链路已通）；Gemini 只能用用户自己的 API key（待用户粘贴）。Anthropic Commercial Terms 由每个使用者对自己的账号/Key 接受，不是 AI-OS 阻塞（用户 2026-11-01 确认）；发布前仍需决定：第三方产品使用 Claude 订阅登录的条款风险（见下方 CLI 节） | 手机截图 2026-11-01 22:42 |
 | 12 | 正式签名/公证/干净用户 | **BLOCKED**：无 Developer ID；ad-hoc 重建需重新允许钥匙串 | — |
 
 - 不适用：`verify_beta6_install_restore`（校验还原 Beta 5，用户决定不还原）。
