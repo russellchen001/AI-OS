@@ -85,7 +85,11 @@ export function classifySemanticIntent(
     /(你觉得|你认为|你怎么看|怎么看待|有什么看法)/u,
     /(建议我|给我建议|有什么建议|怎么规划|如何规划|怎么分类比较好|应该怎么)/u,
     /(分析一下|帮我分析|比较一下|对比一下)/u,
+    // How-to questions ask for instructions, not for AI-OS to act.
+    /^(?:请问|请教(?:一下)?)?\s*(?:怎么|怎样|如何|教我|教教我)/u,
+    /(?:的方法|方法是什么|有什么方法|步骤是什么|怎么做|如何做|怎么弄|怎么操作|如何操作)[？?。.!！]*$/u,
     /\b(what is|why is|explain|compare|comparison|pros and cons|advise|advice|recommendation)\b/i,
+    /^(?:how do i|how can i|how to)\b/i,
   ];
 
   const explicitExecutionPatterns: RegExp[] = [

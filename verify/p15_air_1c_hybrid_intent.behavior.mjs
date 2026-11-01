@@ -67,6 +67,13 @@ expectIntent("在下载里列出所有文件", "DO");
 expectIntent("新建一个文件夹 notes", "DO");
 expectUnresolved("在桌面上放什么文件比较好？");
 expectIntent("在桌面新建文件夹有什么建议？", "ASK");
+// How-to questions are instructions to explain, not commands (phone, 2026-11-01 23:05).
+expectIntent("怎么在电脑上新建文件夹？", "ASK");
+expectIntent("如何在桌面新建文件夹", "ASK");
+expectIntent("在桌面新建文件夹的方法是什么？", "ASK");
+expectIntent("请问怎么删除文件", "ASK");
+expectIntent("How do I create a folder on my Mac?", "ASK");
+expectIntent("在桌面新建一个叫 test3 的文件夹", "DO");
 expectUnresolved("帮我写一首诗");
 
 console.log("PASS: AIR-1C canonical semantic intent behavior");
