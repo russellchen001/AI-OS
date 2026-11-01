@@ -1,3 +1,32 @@
+<!-- BETA6_FINAL_ACCEPTANCE_20261101 -->
+# START HERE — Beta 6 最终验收（2026-11-01，Claude；优先于下方所有章节）
+
+- 代码 HEAD 见 git log（最后功能提交 `e6f87b7`），均为本地提交，**未 Push/Tag/Release**。
+- **已安装候选**（用户 2026-11-01 明确同意装入 /Applications 且不还原 Beta 5）：`/Applications/AI OS.app` = e6f87b7，
+  主程序 SHA256 `85a6304d8e9b084428860f8d69bea27091ac3013ab7590851aeeb8d15ad07621`；DMG
+  `outputs/AI OS_1.0.1-beta.6_candidate-e6f87b7_aarch64.dmg` SHA256
+  `62ed705f9d98c19b9ca83634f4ee66b06b0ecb31c0c34ee41fb0b66be62b7181`（ad-hoc，未公证）。
+  备份：`work/beta6-final/beta5-backup-20261101`（Beta 5，91ff470b…253ce5）、`installed-896ee8d-backup`。
+- 回归：全量 verify/*.sh（896ee8d 代码）后，代码/验证器缺陷均已修复，环境项修复后重跑全 PASS（Office 17、GM 9、
+  GM-5 live 19/0、Peekaboo live、external references、chief of staff）；e6f87b7 的改动另跑 AIR-1C、automatic intent
+  routing、beta41 public fact grounding、remote_ai_os、linco_connector 全 PASS。Council 导出用真实导出文件 PASS。
+
+| # | 项目 | 结论 | 证据 |
+|---|---|---|---|
+| 1 | Council 真实质量 | PASS（本机条件，82fac89 实测；后续未改 Council 逻辑） | 下方矩阵节 outputs |
+| 2 | Arena 完整性 | PASS（degraded，82fac89 实测） | 下方矩阵节 |
+| 3 | Chat 模型目录 | PASS | 界面实测 |
+| 4 | 通用安全安装/更新 | **PASS**：4632886 真实升级 Gemini CLI 0.46→0.66、Claude Code 2.1.220→2.1.314 并健康检查 | 本文件 CLI 节 |
+| 5 | 通用 CLI Provider | PASS | 运行日志 |
+| 6 | Agent 版本管理 | **PASS**：每日只读检查 + My AI 内确认后真实升级 | 同 #4 |
+| 7/8/10 | My AI 二级导航 / AI Lab / Skills 高级入口 | PASS | 信息架构回归 |
+| 9 | Workspace/Artifacts | PASS | `outputs/Beta6-Artifacts-native-*` |
+| 11 | Gemini/OAuth/Computer Use | **部分 PASS**：Computer Use（Peekaboo）live 全 PASS；Linco 手机远程 + filesystem.mkdir + 云端兜底手机实测 PASS（e6f87b7）。**BLOCKED（外部/待用户）**：OpenAI ChatGPT 套餐额度用尽（链路已通）；Gemini 只能用用户自己的 API key（待用户粘贴）；Anthropic Commercial Terms 需用户在 Console 接受 | 手机截图 2026-11-01 22:42 |
+| 12 | 正式签名/公证/干净用户 | **BLOCKED**：无 Developer ID；ad-hoc 重建需重新允许钥匙串 | — |
+
+- 不适用：`verify_beta6_install_restore`（校验还原 Beta 5，用户决定不还原）。
+- 本轮（11-01）提交：`082e683` `988a216` `7d1bfa0` `e6f87b7` 及 HANDOFF 记录提交。
+
 <!-- BETA6_CLAUDE_CLI_REGISTRY_20261031 -->
 # START HERE — 通用 CLI Provider + Gemini 用户自有账号（2026-10-31，Claude；优先于下方矩阵）
 
