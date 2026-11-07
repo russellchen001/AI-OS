@@ -1,5 +1,21 @@
 use serde::{Deserialize, Serialize};
 
+#[tauri::command]
+pub(crate) fn list_macos_permission_statuses() -> Result<serde_json::Value, String> {
+    crate::system::permissions::list_permissions(&serde_json::json!({}))
+        .map_err(|error| error.message)
+}
+
+#[tauri::command]
+pub(crate) fn open_macos_permission_settings(
+    permission: String,
+) -> Result<serde_json::Value, String> {
+    crate::system::permissions::open_permission_settings(
+        &serde_json::json!({ "permission": permission }),
+    )
+    .map_err(|error| error.message)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum MacosAuthorizationState {

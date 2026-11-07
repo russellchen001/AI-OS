@@ -171,6 +171,14 @@ function SettingsPage({
         ))}
       </div>
 
+      <button
+        type="button"
+        className="secondary-button"
+        onClick={() => window.dispatchEvent(new Event("ai-os:open-setup-diagnostics"))}
+      >
+        Run setup diagnostics
+      </button>
+
       <div className="settings-layout">
         <div
           className="settings-card"

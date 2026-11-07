@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     cmp::Ordering,
     ffi::OsString,
@@ -378,6 +379,9 @@ pub(crate) struct CliInstallResult {
 
 fn install_plan(spec: &CliProviderSpec) -> Result<CliInstallPlan, String> {
     let binary = (spec.discover)();
+    if spec.provider_id == "anthropic" && binary.is_none() {
+        return claude_native_plan();
+    }
     let installed_version = binary.as_deref().and_then(installed_version_of);
     let source = match &binary {
         Some(binary) => {
@@ -422,6 +426,145 @@ fn install_plan(spec: &CliProviderSpec) -> Result<CliInstallPlan, String> {
         source_label: source.label().to_string(),
         requires_approval: true,
     })
+}
+
+const CLAUDE_RELEASES: &str = "https://downloads.claude.ai/claude-code-releases";
+
+fn claude_download_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|_| "Could not prepare a secure Claude Code download.".to_string())
+}
+
+fn claude_download(path: &str, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let response = claude_download_client()?.get(format!("{CLAUDE_RELEASES}/{path}"))
+        .send().and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|_| "Could not reach Claude Code's official download service. Check your connection, or open the official setup help.".to_string())?;
+    let mut bytes = Vec::new();
+    response
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Claude Code download was interrupted. Retry the installation.".to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err("Claude Code download exceeded the size limit.".into());
+    }
+    Ok(bytes)
+}
+
+fn claude_platform() -> Result<&'static str, String> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("darwin-arm64"),
+        ("macos", "x86_64") => Ok("darwin-x64"),
+        _ => Err(
+            "This Claude Code setup supports macOS. Open the official setup help for your system."
+                .into(),
+        ),
+    }
+}
+
+fn claude_manifest_checksum(manifest: &[u8], platform: &str) -> Result<String, String> {
+    let manifest: Value = serde_json::from_slice(manifest)
+        .map_err(|_| "Claude Code's download manifest is unreadable.".to_string())?;
+    manifest
+        .get("platforms")
+        .and_then(|p| p.get(platform))
+        .and_then(|p| p.get("checksum"))
+        .and_then(Value::as_str)
+        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|s| s.to_ascii_lowercase())
+        .ok_or_else(|| "Claude Code did not publish a valid checksum for this Mac.".into())
+}
+
+fn claude_native_plan() -> Result<CliInstallPlan, String> {
+    let version = String::from_utf8(claude_download("stable", 100)?)
+        .map_err(|_| "Claude Code's release version is unreadable.".to_string())?
+        .trim()
+        .to_string();
+    if !is_version(&version) {
+        return Err("Claude Code's release version could not be verified.".into());
+    }
+    let checksum = claude_manifest_checksum(
+        &claude_download(&format!("{version}/manifest.json"), 1_000_000)?,
+        claude_platform()?,
+    )?;
+    Ok(CliInstallPlan {
+        provider_id: "anthropic".into(),
+        display_name: "Claude Code".into(),
+        package_name: "Claude Code native binary".into(),
+        version,
+        integrity: format!("sha256-{checksum}"),
+        installed_version: None,
+        action: "install".into(),
+        method: "native-download".into(),
+        source_label: "Anthropic official download (Apple-signed)".into(),
+        requires_approval: true,
+    })
+}
+
+fn install_claude_native(plan: &CliInstallPlan, home: &Path) -> Result<(), String> {
+    // A missing executable must never justify replacing a user's existing file.
+    if crate::claude_code::discover_binary().is_some()
+        || home.join(".local/bin/claude").symlink_metadata().is_ok()
+    {
+        return Err("A Claude Code installation now exists. Check the connection again instead of replacing it.".into());
+    }
+    let bytes = claude_download(
+        &format!("{}/{}/claude", plan.version, claude_platform()?),
+        512_000_000,
+    )?;
+    let checksum = format!("sha256-{:x}", Sha256::digest(&bytes));
+    if checksum != plan.integrity {
+        return Err("Claude Code download failed its checksum check. Nothing was installed. Retry or open official setup help.".into());
+    }
+    let work = tempfile::tempdir()
+        .map_err(|_| "Not enough writable temporary space for Claude Code.".to_string())?;
+    let binary = work.path().join("claude");
+    fs::write(&binary, bytes).map_err(|_| {
+        "Could not save the Claude Code download. Check free disk space.".to_string()
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "Could not prepare the Claude Code installer.".to_string())?;
+    }
+    let verified = Command::new("/usr/bin/codesign")
+        .args([
+            "--verify",
+            "--strict",
+            "-R",
+            "=anchor apple generic and certificate leaf[subject.OU] = \"Q6L2SF6YDW\"",
+        ])
+        .arg(&binary)
+        .output()
+        .map_err(|_| "Could not check Claude Code's developer signature.".to_string())?;
+    if !verified.status.success() {
+        return Err("Claude Code's Anthropic developer signature could not be verified. Nothing was installed.".into());
+    }
+    let mut child = Command::new(&binary)
+        .args(["install", &plan.version])
+        .current_dir(work.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| {
+            "Claude Code's official installer could not start. Open official setup help."
+                .to_string()
+        })?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => return Err("Claude Code installation failed. Check free disk space and your home folder permissions, then retry or open official setup help.".into()),
+            Ok(None) if started.elapsed() < std::time::Duration::from_secs(180) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            _ => { let _ = child.kill(); let _ = child.wait(); return Err("Claude Code installation did not finish in time. Retry the connection check before installing again.".into()); }
+        }
+    }
 }
 
 #[tauri::command]
@@ -516,6 +659,7 @@ fn install_cli_provider_blocking(request: CliInstallRequest) -> Result<String, S
         .as_ref()
         .and_then(|link| fs::read_link(link).ok());
     let outcome = match plan.method.as_str() {
+        "native-download" => install_claude_native(&plan, &home),
         "homebrew" => {
             let mut command = Command::new(tool_binary("brew")?);
             command
@@ -607,6 +751,32 @@ fn install_cli_provider_blocking(request: CliInstallRequest) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_setup_rejects_install_without_consent_before_network_or_execution() {
+        let result = install_cli_provider_blocking(CliInstallRequest {
+            provider_id: "anthropic".into(),
+            version: "2.1.311".into(),
+            integrity: "untrusted".into(),
+            method: Some("native-download".into()),
+            user_approved: false,
+        });
+        assert!(result.unwrap_err().contains("explicit approved plan"));
+    }
+
+    #[test]
+    fn claude_setup_manifest_rejects_missing_platform_and_invalid_checksum() {
+        let manifest = br#"{"platforms":{"darwin-arm64":{"checksum":"abcd"}}}"#;
+        assert!(claude_manifest_checksum(manifest, "darwin-arm64").is_err());
+        assert!(claude_manifest_checksum(manifest, "darwin-x64").is_err());
+        assert!(claude_manifest_checksum(b"<html>unavailable</html>", "darwin-arm64").is_err());
+        let checksum = "ab".repeat(32);
+        let valid = serde_json::json!({"platforms":{"darwin-arm64":{"checksum":checksum}}});
+        assert_eq!(
+            claude_manifest_checksum(&serde_json::to_vec(&valid).unwrap(), "darwin-arm64").unwrap(),
+            checksum
+        );
+    }
 
     fn spec(provider_id: &str) -> &'static CliProviderSpec {
         spec_for(provider_id).unwrap()

@@ -1787,3 +1787,46 @@ delegated.
 AR-1 is therefore limited to restoring the correct generic execution boundary.
 
 <!-- AI_OS_MINIMAL_KERNEL_DEFINITION_END -->
+
+---
+
+# Beta 7 — Out-of-Box Experience
+
+## Product Goal
+
+Beta 7 is the final planned feature-development milestone of AI-OS v1.0.
+
+An ordinary macOS user must be able to install AI-OS, complete graphical setup,
+connect a usable AI provider or local model, and complete a real task without
+using a terminal or understanding the underlying architecture.
+
+## Approved Scope
+
+- B7-01: First-launch graphical onboarding with resumable progress.
+- B7-02: Dependency detection, consent-based installation and verification.
+- B7-03: First usable AI conversation with actionable connection guidance.
+- B7-04: Contextual macOS permission guidance and graceful denial handling.
+- B7-05: One-click diagnostics, supported repairs and health rechecks.
+- B7-06: Real clean-user installation and end-to-end acceptance.
+- B7-07: Chat jump-to-top and jump-to-bottom controls, with correct streaming scroll behaviour.
+- B7-08: Eliminate unnecessary repeated password and Keychain prompts during installation and first launch.
+
+## Product Boundaries
+
+Reuse existing Beta 6 provider, agent, installation and update infrastructure.
+Do not redesign Council, Arena, Runtime, or the multi-agent architecture.
+Do not silently install dependencies, change credentials, or bypass macOS permissions.
+Optional components must not block basic chat.
+A usable AI path requires a user-authorized account, API key, or downloaded local model.
+Independent macOS security authorizations cannot be promised as one password prompt.
+
+## Release Gate
+
+Beta 7 must pass real clean-environment onboarding, chat, authorized agent execution,
+upgrade/data preservation, password-prompt regression, and core regression tests.
+
+Developer ID signing and notarization are required for the intended public
+out-of-box release. If credentials are unavailable, record the release gate as BLOCKED.
+
+After Beta 7, proceed to v1.0 release-candidate validation without adding features.
+Only the project owner may authorize installation replacement, push, tag, or release.

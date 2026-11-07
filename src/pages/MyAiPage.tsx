@@ -51,6 +51,7 @@ import {
 } from "../services/softwareUpdateMonitor";
 import {
   CLI_ACCOUNT_PROVIDER_IDS,
+  connectCliProvider,
   describeCliInstallPlan,
   type CliVersionReport,
   getCliProviderAdapter,
@@ -716,29 +717,22 @@ function MyAiPage({
 
       const cliAdapter = getCliProviderAdapter(setup.providerId);
       if (cliAdapter) {
+        const controller = new AbortController();
+        cancelOAuthRef.current = () => controller.abort();
         try {
-          let status = await cliAdapter.probe();
-          if (!status.installed && cliAdapter.officialPackage) {
-            const plan = await prepareCliProviderInstall(cliAdapter.id);
-            const approved = await dialog.confirm({
+          const status = await connectCliProvider(cliAdapter, (plan) => dialog.confirm({
               title: `Install ${cliAdapter.displayName}?`,
               message: describeCliInstallPlan(plan),
               confirmLabel: "Install verified package",
               cancelLabel: "Not now",
               tone: "default",
-            });
-            if (!approved) throw new Error(`${cliAdapter.displayName} installation was cancelled.`);
-            const installed = await installCliProvider(plan);
-            if (!installed.success) throw new Error(installed.message);
-            status = await cliAdapter.probe();
-          }
+            }), (message) => {
+              if (!controller.signal.aborted) setSetup((current) => current ? { ...current, verificationMessage: message } : current);
+            }, controller.signal);
+          if (controller.signal.aborted) return;
           if (setup.providerId === "anthropic") setClaudeCodeStatus(status);
-          if (!status.installed || !status.authenticated) {
-            throw new Error(`${status.message} Sign in with \`${cliAdapter.loginCommand}\`, then retry.`);
-          }
           const models = cliAdapter.models(instanceId, status);
           if (!models.length) throw new Error(`${cliAdapter.displayName} reported no available models.`);
-          await cliAdapter.verify?.();
           setSetup({
             ...setup,
             phase: "models",
@@ -749,9 +743,9 @@ function MyAiPage({
             credentialRefreshable: false,
           });
         } catch (error) {
-          setSetupError(error instanceof Error ? error.message : `${cliAdapter.displayName} could not be verified.`);
+          if (!controller.signal.aborted) setSetupError(error instanceof Error ? error.message : `${cliAdapter.displayName} could not be verified.`);
         } finally {
-          setIsConnecting(false);
+          if (!controller.signal.aborted) { cancelOAuthRef.current = null; setIsConnecting(false); }
         }
         return;
       }
@@ -1694,6 +1688,11 @@ function MyAiPage({
                       <p><strong>Using your ChatGPT plan</strong><small>AI‑OS uses OpenAI's official Sign in with ChatGPT. Eligible usage in AI‑OS uses your own ChatGPT plan, and you can see or limit it in ChatGPT settings (chatgpt.com/settings/usage). Approve “ChatGPT plan use” when OpenAI asks.</small></p>
                     </div>
                   )}
+                  {setup.providerId === "anthropic" && <>
+                    <p role="status">{setup.verificationMessage || (claudeCodeStatus === null ? "Setup will check whether Claude Code is installed." : claudeCodeStatus.installed ? claudeCodeStatus.authenticated ? "Claude Code is installed and signed in." : "Claude Code is installed. Sign in to connect your account." : "Claude Code is not installed yet. Review installation before anything is downloaded.")}</p>
+                    <button type="button" className="secondary-button" onClick={() => void openUrl("https://code.claude.com/docs/en/troubleshooting")}>Open official setup help</button>
+                    <button type="button" className="secondary-button" disabled={isConnecting} onClick={() => { setSetup({ ...setup, method: "api-key", verificationMessage: "" }); setSetupError(""); }}>Use an API key instead</button>
+                  </>}
                   {setup.providerId === "google" && !setupCli && (
                     <div className="provider-security-note">
                       <span>!</span>
@@ -1760,7 +1759,7 @@ function MyAiPage({
                     ? "Save Provider"
                     : setup.method === "account"
                       ? setupCli
-                        ? `Verify ${setupCli.displayName}`
+                        ? setup.providerId === "anthropic" ? "Connect Claude Code" : `Verify ${setupCli.displayName}`
                         : "Continue in browser"
                       : "Save and choose model"}
                 <span>→</span>

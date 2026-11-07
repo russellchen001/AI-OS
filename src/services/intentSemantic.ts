@@ -66,6 +66,13 @@ export function classifySemanticIntent(
     };
   }
 
+  // An explicit transaction remains execution even when it refers back to a
+  // recommendation. Asking how/when to buy is still advisory, not approval.
+  const transactionQuestion = /(?:什么|哪些|怎么|如何|是否|能否|建议|吗[？?\s]*$)/u.test(text);
+  if (!transactionQuestion && (/^(?:(?:请|请你|帮我|替我|现在|立即|那就|那么|就)\s*)*(?:购买|买下|买|下单|订购|付款|支付|buy|purchase|order|pay)(?=\s|[\u4e00-\u9fff]|$)/iu.test(text) || /^(?:(?:请|帮我|现在|那就)\s*)*(?:按|按照|照着).{1,60}(?:下单|购买|订购)[。！!\s]*$/u.test(text))) {
+    return { taskType: "DO", reason: "The user explicitly requests a transaction; Runtime must still obtain the required approval." };
+  }
+
   // Chinese 把/将 constructions with concrete external actions.
   // Pure questions about the conversation are deliberately excluded.
   const objectActionPatterns: RegExp[] = [
@@ -80,6 +87,11 @@ export function classifySemanticIntent(
   }
 
   const conceptualAskPatterns: RegExp[] = [
+    // A proposed hardware configuration is advice, even when it mentions
+    // local deployment. It does not request installation on this machine.
+    /(?:配|搭配|选配|推荐)(?:一台|一套|个|一部)?[^，,。！？?]{0,24}(?:主机|电脑|工作站|服务器|硬件)/u,
+    /(?:主机|电脑|工作站|服务器|硬件)[^，,。！？?]{0,24}(?:配置单|配置建议|配置方案|选购建议|怎么选|如何选)/u,
+    /\b(?:recommend|suggest|design|plan)\b[^.!?]{0,80}\b(?:pc|workstation|computer|hardware|server)\b/i,
     /^(什么是|什么叫|何为|介绍一下|解释一下|解释|为什么|为何|怎么理解)/u,
     /(有什么区别|有何区别|区别是什么|优缺点|利弊|区别在哪)/u,
     /(你觉得|你认为|你怎么看|怎么看待|有什么看法)/u,

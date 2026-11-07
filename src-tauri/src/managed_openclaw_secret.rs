@@ -5,9 +5,8 @@ pub(crate) const MANAGED_TOKEN_REF: &str = "keychain://com.ai-os.openclaw-gatewa
 
 #[cfg(target_os = "macos")]
 pub(crate) fn store_managed_gateway_token(token: &str) -> Result<(), String> {
-    security_framework::passwords::set_generic_password(
-        KEYCHAIN_SERVICE,
-        MANAGED_ACCOUNT,
+    crate::credential_vault::CredentialVault::update_keychain_entry(
+        "openclaw/managed-local",
         token.as_bytes(),
     )
     .map_err(|_| "AI-OS could not store the OpenClaw token in Keychain.".to_string())
@@ -15,9 +14,13 @@ pub(crate) fn store_managed_gateway_token(token: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn read_managed_gateway_token() -> Result<String, String> {
-    let value =
-        security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, MANAGED_ACCOUNT)
-            .map_err(|_| "AI-OS could not read the OpenClaw token from Keychain.".to_string())?;
+    let value = crate::credential_vault::CredentialVault::read_or_migrate_keychain_entry(
+        "openclaw/managed-local",
+        KEYCHAIN_SERVICE,
+        MANAGED_ACCOUNT,
+    )
+    .map_err(|_| "AI-OS could not read the OpenClaw token from Keychain.".to_string())?
+    .ok_or_else(|| "AI-OS could not read the OpenClaw token from Keychain.".to_string())?;
 
     String::from_utf8(value).map_err(|_| "The OpenClaw Keychain token is invalid.".to_string())
 }

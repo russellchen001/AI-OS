@@ -71,16 +71,13 @@ fn managed_credential_exists() -> Result<bool, String> {
         THUNDER_KEYCHAIN_ACCOUNT,
         "MISS",
     );
-    match security_framework::passwords::get_generic_password(
+    crate::credential_vault::CredentialVault::read_or_migrate_keychain_entry(
+        "download/thunder-managed",
         THUNDER_KEYCHAIN_SERVICE,
         THUNDER_KEYCHAIN_ACCOUNT,
-    ) {
-        Ok(secret) => Ok(!secret.is_empty()),
-
-        Err(error) if error.code() == -25300 => Ok(false),
-
-        Err(_) => Err("Thunder managed credential status is unavailable.".to_string()),
-    }
+    )
+    .map(|secret| secret.is_some_and(|secret| !secret.is_empty()))
+    .map_err(|_| "Thunder managed credential status is unavailable.".to_string())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -97,9 +94,8 @@ fn store_managed_credential(secret: &str) -> Result<(), String> {
         THUNDER_KEYCHAIN_ACCOUNT,
         "UPDATE",
     );
-    security_framework::passwords::set_generic_password(
-        THUNDER_KEYCHAIN_SERVICE,
-        THUNDER_KEYCHAIN_ACCOUNT,
+    crate::credential_vault::CredentialVault::update_keychain_entry(
+        "download/thunder-managed",
         secret.as_bytes(),
     )
     .map_err(|_| "macOS Keychain could not store the Thunder credential.".to_string())
@@ -123,12 +119,15 @@ fn remove_managed_credential() -> Result<(), String> {
         THUNDER_KEYCHAIN_SERVICE,
         THUNDER_KEYCHAIN_ACCOUNT,
     ) {
-        Ok(()) => Ok(()),
+        Ok(()) => {}
 
-        Err(error) if error.code() == -25300 => Ok(()),
+        Err(error) if error.code() == -25300 => {}
 
-        Err(_) => Err("macOS Keychain could not remove the Thunder credential.".to_string()),
+        Err(_) => return Err("macOS Keychain could not remove the Thunder credential.".to_string()),
     }
+
+    crate::credential_vault::CredentialVault::remove_keychain_entry("download/thunder-managed")
+        .map_err(|_| "macOS Keychain could not remove the Thunder credential.".to_string())
 }
 
 #[cfg(not(target_os = "macos"))]

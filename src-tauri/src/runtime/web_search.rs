@@ -379,6 +379,26 @@ pub(super) fn search(
     })
 }
 
+/// Answer verification may reuse public search only with the same persisted
+/// browser.search consent used by Runtime. This never grants consent itself.
+pub(crate) fn search_for_answer(query: &str) -> Result<Value, String> {
+    let allowed = super::trusted_automation::load_trusted_automation_settings()
+        .map_err(|_| "Public search permission could not be read".to_owned())?
+        .allowed_capabilities();
+    if !allowed.contains("browser.search") {
+        return Err("Public search has not been authorized in Settings".to_owned());
+    }
+    let request = SkillInvocationRequest::new(
+        "answer-verification",
+        "browser.search",
+        json!({"query": query, "maxResults": 5}),
+    )
+    .map_err(|_| "Invalid verification query".to_owned())?;
+    search(&request)
+        .map(|result| result.output)
+        .map_err(|_| "Public search unavailable".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,6 +11,7 @@ import "./App.css";
 import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import CommandPalette from "./components/CommandPalette";
+import FirstLaunchOnboarding from "./components/FirstLaunchOnboarding";
 import ManagedOpenClawOnboarding from "./components/ManagedOpenClawOnboarding";
 import SectionTabs from "./components/SectionTabs";
 
@@ -579,7 +580,16 @@ function App() {
 
   return (
     <div style={appStyle}>
-      <ManagedOpenClawOnboarding />
+      <FirstLaunchOnboarding
+        workspaceActive={activePage === "Chat" || activePage === "Artifacts"}
+        onOpenMyAi={() => setActivePage("My AI")}
+        onOpenAgents={() => setActivePage("Agents")}
+        onStartChat={() => {
+          setActivePage("Chat");
+          handleMessage("三步设置已完成，可以开始聊天。", "success");
+        }}
+      />
+      {activePage === "Agents" && <ManagedOpenClawOnboarding />}
       <Sidebar
         activePage={
           activePage

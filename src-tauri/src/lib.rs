@@ -21,6 +21,7 @@ mod computer_control_acceptance;
 mod computer_use;
 mod connections;
 mod conversations;
+mod credential_vault;
 mod document;
 mod download;
 mod email_calendar;
@@ -233,6 +234,8 @@ pub fn run() {
             backup::delete_backup,
             logs::get_logs,
             logs::clear_logs,
+            macos_permissions::list_macos_permission_statuses,
+            macos_permissions::open_macos_permission_settings,
             macos_permissions::check_macos_mail_calendar_permissions,
             connections::rescan_local_application_availability,
             connections::connect_apple_iwork,
@@ -371,6 +374,8 @@ pub fn run() {
             providers::start_provider_response_stream,
             providers::cancel_provider_response_stream,
             claude_code::get_claude_code_status,
+            credential_vault::get_credential_vault_diagnostics,
+            claude_code::sign_in_claude_code,
             claude_code::generate_claude_code_response,
             claude_code::cancel_claude_code_request,
             grok_cli::get_grok_cli_status,

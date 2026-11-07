@@ -37,19 +37,19 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTINGS_NOTIFICATIONS: &str =
     "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
 const SETTINGS_ACCESSIBILITY: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility";
 const SETTINGS_SCREEN_RECORDING: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture";
 const SETTINGS_CAMERA: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera";
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Camera";
 const SETTINGS_MICROPHONE: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone";
 const SETTINGS_AUTOMATION: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation";
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Automation";
 const SETTINGS_CALENDAR: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars";
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Calendars";
 const SETTINGS_FULL_DISK_ACCESS: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

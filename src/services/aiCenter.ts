@@ -12,6 +12,7 @@ type AiCenterProviderResponse = {
   providerId: string;
   modelId: string;
   text: string;
+  requiresReview?: boolean;
 };
 
 export type AiCenterResponse = {
@@ -19,6 +20,7 @@ export type AiCenterResponse = {
   modelId: string;
   text: string;
   metadata: AiCenterInvocationMetadata;
+  requiresReview?: boolean;
 };
 
 export type AiCenterModelChoice = {

@@ -293,6 +293,42 @@ fn response_text(value: &Value) -> Result<&str, String> {
 }
 
 #[tauri::command]
+pub(crate) async fn sign_in_claude_code(
+    operation_id: String,
+    user_approved: bool,
+) -> Result<(), String> {
+    if !user_approved {
+        return Err(
+            "Choose Connect Claude Code to approve opening its official sign-in page.".into(),
+        );
+    }
+    let operation_id = validate_operation_id(&operation_id)?.to_string();
+    let binary = discover_binary().ok_or_else(|| {
+        "Claude Code is not installed. Retry setup to review its installation.".to_string()
+    })?;
+    let cancellation = CancellationToken::new();
+    {
+        let mut requests = active_requests()
+            .lock()
+            .map_err(|_| "Claude Code sign-in is unavailable.".to_string())?;
+        if requests.contains_key(&operation_id) {
+            return Err("Claude Code sign-in is already open. Complete it in your browser.".into());
+        }
+        requests.insert(operation_id.clone(), cancellation.clone());
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        run_bounded(&binary, &["auth", "login"], None, Duration::from_secs(180), false, Some(&cancellation))
+            // Login output can contain one-time authorization links. Never expose it to the interface or logs.
+            .map(|_| ())
+            .map_err(|_| "Claude Code sign-in did not finish. Check the official browser page and your account access, then retry or open official setup help. You can also use an API key instead.".to_string())
+    }).await.map_err(|_| "Claude Code sign-in was interrupted. Retry the connection.".to_string());
+    if let Ok(mut requests) = active_requests().lock() {
+        requests.remove(&operation_id);
+    }
+    result?
+}
+
+#[tauri::command]
 pub(crate) async fn generate_claude_code_response(
     input: ClaudeCodeRequest,
 ) -> Result<ClaudeCodeResponse, String> {

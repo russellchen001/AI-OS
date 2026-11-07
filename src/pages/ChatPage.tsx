@@ -461,6 +461,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     setSelectedModelState(choice);
   }
   const [availableModels, setAvailableModels] = useState(() => listAiCenterModels());
+  const [connectionGuidance, setConnectionGuidance] = useState("");
   const selectedModelUnavailable = selectedModel && !availableModels.some((model) =>
     model.providerInstanceId === selectedModel.providerInstanceId && model.modelId === selectedModel.modelId);
   const [knowledgeProjects, setKnowledgeProjects] = useState<KnowledgeProject[]>([]);
@@ -509,6 +510,8 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
 
   function openAttachmentPicker() {
     const input = fileInputRef.current;
@@ -548,6 +551,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
 
   useEffect(() => {
     const conversation = getConversation(conversationId);
+    followLatestRef.current = true;
     setMessages(conversation?.messages ?? []);
     setEditingMessageId(undefined);
     setDraft("");
@@ -573,6 +577,33 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         setKnowledgeSources([]);
       });
   }, [conversationId]);
+
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (!thread || !messages.length || !followLatestRef.current) return;
+
+    const frame = requestAnimationFrame(() => {
+      thread.scrollTo({ top: thread.scrollHeight, behavior: "auto" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [messages]);
+
+  function trackThreadScroll() {
+    const thread = threadRef.current;
+    if (!thread) return;
+    followLatestRef.current =
+      thread.scrollHeight - thread.scrollTop - thread.clientHeight <= 48;
+  }
+
+  function jumpToThreadEdge(edge: "top" | "bottom") {
+    const thread = threadRef.current;
+    if (!thread) return;
+    followLatestRef.current = edge === "bottom";
+    thread.scrollTo({
+      top: edge === "top" ? 0 : thread.scrollHeight,
+      behavior: "smooth",
+    });
+  }
 
   useEffect(() => {
     if (!knowledgeMenuOpen) return;
@@ -874,6 +905,7 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     const refreshModels = () => {
       const models = listAiCenterModels();
       setAvailableModels(models);
+      if (models.length) setConnectionGuidance("");
     };
     window.addEventListener(PROVIDERS_CHANGED_EVENT, refreshModels);
     window.addEventListener("storage", refreshModels);
@@ -887,6 +919,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
     event.preventDefault();
     const content = draft.trim();
     if (!content || isSubmitting || selectedModelUnavailable) return;
+    if (!availableModels.length) {
+      setConnectionGuidance("Connect an AI account, add an API key, or download a local model before sending your first message.");
+      return;
+    }
     const linkSwiftShareLink = supportedCloudDriveShareLink(content);
 
     /*
@@ -927,7 +963,10 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         content,
       ).catch(() => undefined);
       const subject = publicProductMentionSubject(content);
-      if (probe && !isUncertainProductAnswer(probe.text)) {
+      if (probe?.requiresReview) {
+        // A confident probe is not publishable evidence for consequential
+        // advice. Keep ASK and use the backend's buffered verification path.
+      } else if (probe && !isUncertainProductAnswer(probe.text)) {
         presetAnswer = probe;
       } else if (probe && subject) {
         routedTaskType = "DO";
@@ -2133,7 +2172,11 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         </div>
       )}
 
-      <div className={messages.length ? "chat-thread" : "chat-empty"}>
+      <div
+        ref={threadRef}
+        className={messages.length ? "chat-thread" : "chat-empty"}
+        onScroll={trackThreadScroll}
+      >
         {messages.length ? messages.map((message) => (
           <article key={message.id} className={`chat-message chat-message-${message.role}`}>
             <div className="message-heading">
@@ -2201,7 +2244,21 @@ function ChatPage({ conversationId, onOpenMyAi, onAddAgent }: ChatPageProps) {
         )}
       </div>
 
+      {messages.length > 0 && (
+        <nav className="chat-jump-controls" aria-label="Conversation position">
+          <button type="button" onClick={() => jumpToThreadEdge("top")} aria-label="Jump to first message">↑</button>
+          <button type="button" onClick={() => jumpToThreadEdge("bottom")} aria-label="Jump to latest message">↓</button>
+        </nav>
+      )}
+
       <div className="composer-dock">
+      {connectionGuidance && (
+        <div className="chat-connection-guidance" role="alert">
+          <span>{connectionGuidance}</span>
+          <button type="button" onClick={onOpenMyAi}>Open My AI</button>
+        </div>
+      )}
+
         <form ref={formRef} className="chat-composer" onSubmit={submit}>
           <textarea
             ref={composerRef}

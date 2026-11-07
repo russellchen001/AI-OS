@@ -16,6 +16,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[path = "answer_reliability.rs"]
+mod answer_reliability;
+
 const KEYCHAIN_SERVICE: &str = "com.ai-os.provider";
 const OAUTH_CLIENT_KEYCHAIN_SERVICE: &str = "com.ai-os.oauth-client";
 const OMLX_HEALTH_URL: &str = "http://127.0.0.1:8000/health";
@@ -1163,18 +1166,15 @@ fn read_oauth_client_secret(provider_id: &str) -> Result<Option<String>, String>
         "MISS",
     );
 
-    let result = match security_framework::passwords::get_generic_password(
+    let key = format!("oauth/{provider_id}");
+    let result = crate::credential_vault::CredentialVault::read_or_migrate_keychain_entry(
+        &key,
         OAUTH_CLIENT_KEYCHAIN_SERVICE,
         provider_id,
-    ) {
-        Ok(secret) => String::from_utf8(secret)
-            .map(Some)
-            .map_err(|_| "OAuth client credential in Keychain is invalid".to_owned()),
-
-        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
-
-        Err(_) => Err("AI-OS could not read the OAuth client credential".to_owned()),
-    };
+    )?
+    .map(String::from_utf8)
+    .transpose()
+    .map_err(|_| "OAuth client credential in Keychain is invalid".to_owned());
 
     oauth_client_secret_cache()
         .lock()
@@ -1428,6 +1428,7 @@ pub(crate) struct ExecuteAiCenterResult {
     model_id: String,
     text: String,
     metadata: AiCenterCanonicalInvocationMetadata,
+    requires_review: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1922,6 +1923,19 @@ fn rank_auto_route_candidates_for_prompt(
     candidates: Vec<AiCenterRouteCandidate>,
     prompt: &str,
 ) -> Vec<AiCenterRouteCandidate> {
+    if answer_reliability::needs_review(prompt) {
+        let mut ranked = candidates;
+        ranked.sort_by_key(|candidate| {
+            if candidate.provider_id != "omlx" {
+                0
+            } else if answer_reliability::reviewer_capable(candidate) {
+                1
+            } else {
+                2
+            }
+        });
+        return ranked;
+    }
     if !auto_prompt_needs_stronger_model(prompt) {
         return candidates;
     }
@@ -2744,7 +2758,8 @@ fn validate_instance_id(value: &str) -> Result<&str, String> {
 #[cfg(target_os = "macos")]
 pub(crate) fn store_secret(account: &str, secret: &[u8], caller: &str) -> Result<(), String> {
     crate::keychain_trace::record("WRITE_UPSERT", caller, KEYCHAIN_SERVICE, account, "UPDATE");
-    security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, account, secret)
+    let key = format!("provider/{account}");
+    crate::credential_vault::CredentialVault::update_keychain_entry(&key, secret)
         .map_err(|_| "macOS Keychain could not store the Provider credential".to_owned())?;
     provider_credential_cache().store(account, secret)
 }
@@ -2756,33 +2771,31 @@ pub(crate) fn store_secret(_account: &str, _secret: &[u8], _caller: &str) -> Res
 
 #[cfg(target_os = "macos")]
 fn secret_exists(account: &str, caller: &str) -> Result<bool, String> {
+    let key = format!("provider/{account}");
     provider_credential_cache()
-        .load(
-            account,
-            caller,
-            || match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account)
-            {
-                Ok(secret) => Ok(Some(secret)),
-                Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
-                Err(_) => Err("macOS Keychain credential status is unavailable".to_owned()),
-            },
-        )
+        .load(account, caller, || {
+            crate::credential_vault::CredentialVault::read_or_migrate_keychain_entry(
+                &key,
+                KEYCHAIN_SERVICE,
+                account,
+            )
+            .map_err(|_| "macOS Keychain credential status is unavailable".to_owned())
+        })
         .map(|secret| secret.is_some_and(|secret| !secret.is_empty()))
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn read_secret(account: &str, caller: &str) -> Result<Vec<u8>, String> {
+    let key = format!("provider/{account}");
     provider_credential_cache()
-        .load(
-            account,
-            caller,
-            || match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account)
-            {
-                Ok(secret) => Ok(Some(secret)),
-                Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
-                Err(_) => Err("Provider credential is missing from macOS Keychain".to_owned()),
-            },
-        )?
+        .load(account, caller, || {
+            crate::credential_vault::CredentialVault::read_or_migrate_keychain_entry(
+                &key,
+                KEYCHAIN_SERVICE,
+                account,
+            )
+            .map_err(|_| "Provider credential is missing from macOS Keychain".to_owned())
+        })?
         .ok_or_else(|| "Provider credential is missing from macOS Keychain".to_owned())
 }
 
@@ -3247,12 +3260,15 @@ fn secret_exists(_account: &str, _caller: &str) -> Result<bool, String> {
 pub(crate) fn remove_secret(account: &str, caller: &str) -> Result<(), String> {
     crate::keychain_trace::record("DELETE", caller, KEYCHAIN_SERVICE, account, "INVALIDATE");
     match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, account) {
-        Ok(()) => provider_credential_cache().remove(account),
-        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => {
-            provider_credential_cache().remove(account)
-        }
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(()),
         Err(_) => Err("macOS Keychain could not remove the Provider credential".to_owned()),
-    }
+    }?;
+
+    let key = format!("provider/{account}");
+    crate::credential_vault::CredentialVault::remove_keychain_entry(&key)
+        .map_err(|_| "macOS Keychain could not remove the Provider credential".to_owned())?;
+    provider_credential_cache().remove(account)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -4661,6 +4677,10 @@ pub(crate) async fn execute_ai_center(
                     model_id: response.model_id,
                     text: response.text,
                     metadata,
+                    requires_review: answer_reliability::needs_review(auto_routing_text(
+                        input.routing_prompt.as_deref(),
+                        &prompt,
+                    )),
                 });
             }
             Err(error) => {
@@ -5449,7 +5469,9 @@ pub(crate) async fn execute_ai_center_stream(
             candidate.provider_id,
             candidate.model_id
         ));
-        let response_streamed = candidate.provider_id == "omlx";
+        let reliability_review = input.response_schema.is_none()
+            && answer_reliability::chat_needs_review(&input.messages);
+        let response_streamed = candidate.provider_id == "omlx" && !reliability_review;
         let runtime_error = if response_streamed {
             start_omlx_runtime().await.err()
         } else {
@@ -5489,6 +5511,15 @@ pub(crate) async fn execute_ai_center_stream(
 
         let result = if let Some(error) = runtime_error {
             Err(error)
+        } else if reliability_review {
+            answer_reliability::answer(
+                input.route_mode,
+                &candidate,
+                &input.messages,
+                &instances,
+                &token,
+            )
+            .await
         } else if response_streamed {
             let request_started = Instant::now();
             match send_omlx_stream_request(
