@@ -18,9 +18,13 @@
 
 ## 安全验收入口
 
-本轮 checks 最终结果：29/29 PASS（5 个基础门槛及 24 个专项脚本）。完整 Rust 主组 1141 passed / 0 failed / 90 ignored，其他非空组 4/0、12/0、2/0。前端及 cargo check PASS。初次入口将两份 zsh 脚本误按 bash 调用，修正解释器后整套重新通过；不是删除失败项目过关。产物阶段将在源码提交固定后重建。
+本轮 checks 最终结果：29/29 PASS（5 个基础门槛及 24 个专项脚本）。完整 Rust 主组 1141 passed / 0 failed / 90 ignored，其他非空组 4/0、12/0、2/0。前端及 cargo check PASS。初次入口将两份 zsh 脚本误按 bash 调用，修正解释器后整套重新通过；不是删除失败项目过关。artifacts 最终 2/2 PASS，完成 App/helper/DMG 构建、资源签名/包内容与镜像完整性验证。
 
 本地功能代码提交：2d45072ebade928e90dc86762c49514fc6b6e2cb。RC 验收入口和文档独立提交；没有把备份、日志、dist/target 或 node_modules 纳入提交。
+
+固定构建源提交：39d545a4c264cc17356ae86e69736faf3c3149da（构建开始时工作区干净）。后续只补交产物及验收文档。交付文件 AI_OS_1.0.1-beta.7_RC1-local_aarch64.dmg，SHA-256 7e8f80b6df0733fbf19dbddb40c1ed45ec32c13b257142dc13807386d4c89a11。主程序 SHA-256 1c57641c5b4c9645df2147e40a377a27aaa13d21aaa4be512b4dd59cade34aa2。
+
+本轮最终候选仍为 ad-hoc：CDHash 1737d77a2206fcc8a8143352d0ece15602efa412，stapler validate 退出 65（无票据），Gatekeeper 退出 3（rejected）。这些是实际发布限制，不是 PASS；没有执行新签名首次授权、没有替换系统或原测试 App。
 
 ```sh
 bash verify_all.sh --beta7-rc-safe checks
