@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+if [ "${1:-}" = "--beta7-rc-safe" ]; then
+  shift
+  exec bash "$(dirname "$0")/verify/verify_beta7_rc_safe.sh" "$@"
+fi
+
 VERIFY_DIR="$(cd "$(dirname "$0")" && pwd)/verify"
 CORE_PASS=0
 CORE_SKIP=0

@@ -89,6 +89,6 @@ echo "===== Verify final artifacts ====="
 verify/verify_beta_macos_bundle_signature.sh
 verify/verify_beta_package_hygiene.sh
 
-echo "PASS Beta macOS signed release build"
+echo "PASS Beta macOS test bundle build (ad-hoc; not notarized)"
 echo "App: $app"
 echo "DMG: $dmg"

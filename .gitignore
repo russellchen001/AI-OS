@@ -29,6 +29,7 @@ openclaw.log
 
 # Local source backups
 *.bak
+*.bak-*
 *.prompt-library.bak
 *.before-*
 *.analytics-backup
