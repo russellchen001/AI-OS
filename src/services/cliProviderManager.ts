@@ -94,8 +94,9 @@ const adapters: CliProviderAdapter[] = [
     setupInstructions: "AI‑OS checks this Mac first. If Claude Code is missing, review and approve the official installation here. Then sign in on the official page opened by Claude Code. No terminal commands are needed.",
     protectionNote: "Claude Code owns authentication. AI‑OS only checks its status and sends bounded requests through the local CLI.",
     probe: async () => {
-      const status = await invoke<Omit<CliProviderStatus, "models">>("get_claude_code_status");
-      return { ...status, models: status.authenticated ? ["claude-code-default"] : [] };
+      const status = await invoke<Omit<CliProviderStatus, "models"> & { modelAliases?: string[] }>("get_claude_code_status");
+      // The account default plus the aliases the installed Claude Code documents for --model.
+      return { ...status, models: status.authenticated ? ["claude-code-default", ...(status.modelAliases ?? [])] : [] };
     },
     signIn: async (signal) => {
       signal?.throwIfAborted();
@@ -105,8 +106,9 @@ const adapters: CliProviderAdapter[] = [
       try { await invoke("sign_in_claude_code", { operationId, userApproved: true }); }
       finally { signal?.removeEventListener("abort", cancel); }
     },
-    models: (instanceId, status) => status.models.map((model) =>
-      modelEntry(instanceId, model, "Claude Code account default", true, ["chat", "reasoning", "vision", "tool-use"])),
+    models: (instanceId, status) => status.models.map((model) => model === "claude-code-default"
+      ? modelEntry(instanceId, model, "Claude Code account default", true, ["chat", "reasoning", "vision", "tool-use"])
+      : modelEntry(instanceId, model, `Claude ${model.charAt(0).toUpperCase()}${model.slice(1)} (latest)`, false, ["chat", "reasoning", "vision", "tool-use"])),
   },
   {
     id: "grok",

@@ -38,6 +38,8 @@ pub(crate) struct ClaudeCodeStatus {
     binary_path: Option<String>,
     version: Option<String>,
     auth_method: Option<String>,
+    /// Model aliases the installed CLI documents for `--model` (e.g. "opus").
+    model_aliases: Vec<String>,
     message: String,
 }
 
@@ -236,12 +238,16 @@ fn status_for_binary(binary: &Path) -> Result<ClaudeCodeStatus, String> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty() && *value != "none")
         .map(str::to_owned);
+    let model_aliases = run_bounded(binary, &["--help"], None, STATUS_TIMEOUT, false, None)
+        .map(|output| model_aliases_from_help(&String::from_utf8_lossy(&output)))
+        .unwrap_or_default();
     Ok(ClaudeCodeStatus {
         installed: true,
         authenticated,
         binary_path: Some(binary.display().to_string()),
         version,
         auth_method,
+        model_aliases,
         message: if authenticated {
             "Claude Code is signed in with your own Claude account or API key.".to_owned()
         } else {
@@ -259,6 +265,7 @@ pub(crate) fn get_claude_code_status() -> ClaudeCodeStatus {
             binary_path: None,
             version: None,
             auth_method: None,
+            model_aliases: Vec::new(),
             message: "Install the official Claude Code CLI to connect a Claude subscription."
                 .to_owned(),
         };
@@ -269,8 +276,42 @@ pub(crate) fn get_claude_code_status() -> ClaudeCodeStatus {
         binary_path: Some(binary.display().to_string()),
         version: None,
         auth_method: None,
+        model_aliases: Vec::new(),
         message,
     })
+}
+
+/// Quoted aliases in the `--model` entry of `claude --help`, so the choices
+/// follow the installed CLI instead of a list kept in AI-OS. Unrecognised
+/// help text yields no aliases; the account default stays available.
+fn model_aliases_from_help(help: &str) -> Vec<String> {
+    let mut lines = help
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with("--model "));
+    let Some(first) = lines.next() else {
+        return Vec::new();
+    };
+    let mut entry = first.to_owned();
+    for line in lines {
+        if line.trim_start().starts_with('-') {
+            break;
+        }
+        entry.push(' ');
+        entry.push_str(line.trim());
+    }
+    let mut aliases = Vec::new();
+    for (index, part) in entry.split('\'').enumerate() {
+        let valid = index % 2 == 1
+            && (2..=20).contains(&part.len())
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+        if valid && !aliases.iter().any(|alias| alias == part) {
+            aliases.push(part.to_owned());
+        }
+    }
+    aliases.truncate(8);
+    aliases
 }
 
 fn response_text(value: &Value) -> Result<&str, String> {
@@ -340,7 +381,12 @@ pub(crate) async fn generate_claude_code_response(
         .as_deref()
         .map(validate_operation_id)
         .transpose()?;
-    if model_id.is_empty() || model_id.len() > 200 {
+    // The ID is passed as `--model <id>`; an option-like value must not reach the CLI.
+    if model_id.is_empty()
+        || model_id.len() > 200
+        || model_id.starts_with('-')
+        || model_id.chars().any(char::is_whitespace)
+    {
         return Err("Claude Code model ID is invalid".to_owned());
     }
     if prompt.is_empty() || prompt.len() + system_prompt.as_ref().map_or(0, String::len) > 100_000 {
@@ -438,6 +484,29 @@ pub(crate) fn cancel_claude_code_request(operation_id: String) -> Result<bool, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_aliases_come_from_the_installed_cli_help() {
+        let help = "  --max-turns <n>   Limit\n  --model <model>                       Model for the current session. Provide\n                                        an alias for the latest model (e.g.\n                                        'fable', 'opus', or 'sonnet') or a\n                                        model's full name.\n  -n, --name <name>   Set a display name ('x-y')\n";
+        assert_eq!(model_aliases_from_help(help), ["fable", "opus", "sonnet"]);
+        assert!(model_aliases_from_help("Usage: claude [options]").is_empty());
+        assert!(model_aliases_from_help("  --model <m>  e.g. 'Opus 4', '--evil'").is_empty());
+    }
+
+    #[tokio::test]
+    async fn option_like_model_ids_are_rejected_before_any_cli_call() {
+        for model_id in ["--dangerously-skip-permissions", "opus --tools x", "-p"] {
+            let error = generate_claude_code_response(ClaudeCodeRequest {
+                operation_id: None,
+                model_id: model_id.to_owned(),
+                prompt: "hi".to_owned(),
+                system_prompt: None,
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(error, "Claude Code model ID is invalid");
+        }
+    }
 
     #[test]
     fn incomplete_or_error_cli_results_cannot_be_accepted_as_answers() {
