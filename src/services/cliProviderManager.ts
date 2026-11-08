@@ -201,7 +201,13 @@ export async function connectCliProvider(
     signal?.throwIfAborted();
     status = await adapter.probe();
   }
-  if (!status.authenticated) throw new Error(`${adapter.displayName} sign-in is not complete. Retry sign-in, open the official setup help, or use an API key instead.`);
+  if (!status.authenticated) {
+    // CLIs without an in-app sign-in (Grok, Gemini) are signed in by the user in
+    // Terminal; their status message names the official command.
+    throw new Error(adapter.signIn
+      ? `${adapter.displayName} sign-in is not complete. Retry sign-in, open the official setup help, or use an API key instead.`
+      : `${status.message} Then return here and retry, or choose API key above.`);
+  }
   await adapter.verify?.();
   return status;
 }
