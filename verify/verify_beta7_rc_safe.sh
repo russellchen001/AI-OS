@@ -24,7 +24,7 @@ run() {
 if [ "$mode" = artifacts ]; then
   # Builds/seals only the worktree bundle. No installation or app launch.
   run app-dmg-build bash scripts/build_beta_macos.sh
-  run dmg-integrity hdiutil verify 'src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.7_aarch64.dmg'
+  run dmg-integrity hdiutil verify 'src-tauri/target/release/bundle/dmg/AI OS_1.0.1-beta.7.1_aarch64.dmg'
 else
   run format-scope bash verify/verify_beta7_format_scope.sh
   run rust-full cargo test --manifest-path src-tauri/Cargo.toml
