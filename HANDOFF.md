@@ -1,14 +1,24 @@
-# AI-OS Beta 7.1 — 已发布 GitHub 预发布版（2026-11-09）
+# AI-OS Beta 7.1 — 已发布，交回 GPT（2026-11-09）
+
+## 交接（Claude → GPT，2026-11-09）
+- 先读 AGENTS.md，再读本文件；本文件是唯一当前状态来源。工作树干净，分支 `beta7` 与 origin 同步（以 git log 为准）。
+- **当前发布**：1.0.1-beta.7.1，GitHub prerelease https://github.com/russellchen001/AI-OS/releases/tag/ai-os-v1.0.1-beta.7.1 ，Tag `ai-os-v1.0.1-beta.7.1`，构建提交 236d279。本地唯一 DMG `~/AI-OS/releases/AI-OS_1.0.1-beta.7.1_aarch64.dmg`，SHA256 `a750622a3f8e50cd00b706ff8415589bff612e8696c835f4bca20a1a14605473`（ad-hoc、未公证）。上一版 Beta 7（76e6b19，DMG e01786cc…）仍在 GitHub。
+- **验收**：安全 checks 29/29（Rust 1143/0/90 ignored），artifacts 2/2；用户实测确认 Claude 模型切换、My AI 卡片真实型号、断开按钮文案正常。
+- **用户的下一步目标**：7.1 给朋友测试；若无问题，作为公开正式版 1.0.1 发布。
+- **正式版 1.0.1 还差（按顺序）**：
+  1. 本人加入 Apple Developer Program、创建 Developer ID Application 证书并配置公证授权（只能本人做，不要索取密码/私钥）。详见下方「正式发布条件」与 docs/BETA7_RC_RELEASE_READINESS.md。
+  2. 正式签名（Hardened Runtime、时间戳、主程序和 helper）→ 公证 Accepted → staple → Gatekeeper 通过。
+  3. 签名后复验：升级保留数据、Keychain 弹窗次数、首次设置。
+  4. 版本号 1.0.1-beta.7.1 → 1.0.1（package.json、package-lock.json 两处、src-tauri/Cargo.toml + Cargo.lock、tauri.conf.json、src/config/constants.ts、verify/verify_beta_version.sh EXPECTED、verify/verify_beta7_rc_safe.sh 的 DMG 路径），非 prerelease 发布。
+  5. 挑重点跑 live/外部账号用例（90 ignored 未执行）。
+- **非阻塞待验**：B7-01 原失败机器用 7.1 走一遍首次设置；未登录 Grok CLI 的机器看 `grok login` 提示。
+- **流程约定**：构建/验收用 `bash verify/verify_beta7_rc_safe.sh checks` 与 `... artifacts`（白名单，遵守脚本原解释器）；DMG 固定放 `~/AI-OS/releases/`，候选放 `candidates/`，用户要求只保留最新 DMG（旧的移入废纸篓，不永久删除）；Release 资产命名 `AI.OS_<版本>_aarch64.dmg`、标题「AI-OS <版本>」、prerelease。推送/Tag/Release 每次都需用户明确批准。回复用户用简体中文。
 
 ## 当前状态
-- **Beta 7.1 已发布（2026-11-09，用户批准）**：版本 1.0.1-beta.7.1，构建提交 236d279；Tag `ai-os-v1.0.1-beta.7.1`；Release「AI-OS 1.0.1 Beta 7.1」（prerelease）https://github.com/russellchen001/AI-OS/releases/tag/ai-os-v1.0.1-beta.7.1 ；DMG `~/AI-OS/releases/AI-OS_1.0.1-beta.7.1_aarch64.dmg` SHA256 `a750622a3f8e50cd00b706ff8415589bff612e8696c835f4bca20a1a14605473`（唯一保留 DMG，Beta 7 DMG 已移入废纸篓，GitHub 上仍有）。安全 checks 29/29（Rust 1143/0/90），artifacts 2/2；用户确认 Claude 模型选择实测正常。
-- 唯一当前状态来源为本文件；设计以 AI_OS_MASTER_GUIDE.md 为参考。
-- 分支 beta7，发布基线 ccc3e5d44a26c6ae2b6ed0dff779238a5053dae2；版本 1.0.1-beta.7。
-- 用户已明确确认最终人工验收完成。B7-01 至 B7-08 功能开发完成并冻结；本轮不新增功能。
-- **已发布（2026-11-09，用户批准推送/Tag/Release）**：分支 beta7 已推送；Tag `ai-os-v1.0.1-beta.7`；GitHub Release「AI-OS 1.0.1 Beta 7」（prerelease）https://github.com/russellchen001/AI-OS/releases/tag/ai-os-v1.0.1-beta.7 。构建提交 `76e6b19`（干净工作树）；DMG `~/AI-OS/releases/AI-OS_1.0.1-beta.7_aarch64.dmg` SHA256 `e01786ccb23124485e12ca61f0a155729e04c34cb77ba1e2307423a1bb95d0f0`，主程序 dashboard `01b30b28…e9db`。再次 Push/Tag/Release 仍需用户明确批准。
-- B7-01 底栏修复已提交（76e6b19），四种布局 + 真实完成点击回执在提交前重跑 PASS；原失败机器仍未用最终包确认。最终安全 checks 29/29 PASS（Rust 1141/0/90 ignored，其余组 4/0、12/0、2/0）；artifacts 2/2 PASS。
+- 设计以 AI_OS_MASTER_GUIDE.md 为参考；Beta 7 发布基线 ccc3e5d（Beta 6）。B7-01 至 B7-08 已完成并经用户验收（见「已完成」）。
 - 公开发布 BLOCKED：无 Developer ID 身份、Apple 公证及 Gatekeeper 通过证据；不能把临时签名当正式签名。
-- 严格全仓格式检查仍 FAIL；剩余 53 个历史文件已单列，不作无关批量格式化。
+- 严格全仓 `cargo fmt --check` 仍 FAIL（53 个历史文件，docs/BETA7_RC_FORMAT_DEBT.md）；用户决定保留，不做无关批量格式化。Beta 7 范围格式门槛 PASS，新代码须完全格式正确。
+- DeepSeek 只支持 API Key：官方无第三方账号授权；DeepSeek Harness（dsh）的账号登录仅供其自身使用、无无界面调用，且计费同为预充值余额。不要借用其登录。官方开放后再评估。
 
 ## Grok 账号登录回归诊断（2026-11-08，Claude）
 - 结论：Beta 7 **没有删除** Grok 账号登录。Beta 6 发布版 ccc3e5d 已含 bbfb9f7（移除冒充 Grok CLI 的 grok-oauth，违反 xAI AUP，不恢复）；Beta 6/7 的账号路径都是官方 Grok CLI（`grok login`，本机 1.0.70 仍支持浏览器/设备码登录）。4bf13ea 只把 Grok 接入通用 CLI 进程层，未改认证方式。
