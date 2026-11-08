@@ -140,7 +140,7 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "X",
     name: "xAI",
     description: "Grok models",
-    models: ["Grok 4.5"],
+    models: ["Grok 4.7"],
     accountLabel: "Sign in with Grok",
   },
   {
@@ -370,6 +370,7 @@ function MyAiPage({
   const [apiKey, setApiKey] = useState("");
   const [setupError, setSetupError] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
   const cancelOAuthRef = useRef<(() => void) | null>(null);
 
   function cancelOAuth() {
@@ -1069,6 +1070,7 @@ function MyAiPage({
   async function disconnectProvider() {
     if (!setup || isConnecting) return;
     setIsConnecting(true);
+    setIsDisconnecting(true);
     setSetupError("");
     const instanceId = providerInstanceId(setup.providerId);
     try {
@@ -1083,6 +1085,7 @@ function MyAiPage({
       setSetupError("AI‑OS could not remove this Provider credential from macOS Keychain.");
     } finally {
       setIsConnecting(false);
+      setIsDisconnecting(false);
     }
   }
 
@@ -1631,7 +1634,7 @@ function MyAiPage({
                     disabled={isConnecting}
                     onClick={() => void disconnectProvider()}
                   >
-                    {isConnecting ? "Disconnecting…" : "Disconnect Provider"}
+                    {isDisconnecting ? "Disconnecting…" : "Disconnect Provider"}
                   </button>
                   {setupError && <p className="provider-setup-error" role="alert">{setupError}</p>}
                 </>
