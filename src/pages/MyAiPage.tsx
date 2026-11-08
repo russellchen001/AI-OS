@@ -33,6 +33,7 @@ import {
   cancelProviderOAuth,
   deleteProviderCredential,
   listProviderInstances,
+  connectedModelLabels,
   initializeProviderInstances,
   verifyProviderModel,
   removeProviderInstance,
@@ -1187,6 +1188,8 @@ function MyAiPage({
           );
           const legacyConnected = configuredProviderIds.has(provider.id) && !instance;
           const apiKeyOnly = supportsApiKey && !supportsAccountSignIn;
+          const verifiedModels = connectedModelLabels(instance);
+          const cardModels = verifiedModels.length ? verifiedModels : provider.models;
 
           const statusLabel =
             instance?.connectionState === "connected"
@@ -1214,7 +1217,7 @@ function MyAiPage({
             </div>
 
             <div className="provider-models">
-              {provider.models.map((model) => <span key={model}>{model}</span>)}
+              {cardModels.map((model) => <span key={model}>{model}</span>)}
             </div>
 
             <div className="provider-actions">

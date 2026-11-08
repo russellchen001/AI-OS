@@ -395,6 +395,24 @@ export function withCurrentOAuthState(
     : { ...instance, connectionState };
 }
 
+/**
+ * Model names a My AI card shows for a saved connection: the models this
+ * connection has verified, default first. Empty when none are verified, so
+ * the card falls back to its generic examples instead of naming a model the
+ * account was never shown to serve.
+ */
+export function connectedModelLabels(
+  instance: ProviderInstance | undefined,
+  limit = 3,
+): string[] {
+  if (!instance) return [];
+  return instance.models
+    .filter((model) => model.enabled && model.availability === "verified")
+    .sort((left, right) => Number(right.isDefault) - Number(left.isDefault))
+    .slice(0, limit)
+    .map((model) => model.displayName);
+}
+
 export function listProviderInstances(): ProviderInstance[] {
   return providerInstanceCache.map((instance) => withCurrentOAuthState(instance));
 }
