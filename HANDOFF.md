@@ -1,6 +1,7 @@
-# AI-OS Beta 7 — 已发布 GitHub 预发布版（2026-11-09）
+# AI-OS Beta 7.1 — 已发布 GitHub 预发布版（2026-11-09）
 
 ## 当前状态
+- **Beta 7.1 已发布（2026-11-09，用户批准）**：版本 1.0.1-beta.7.1，构建提交 236d279；Tag `ai-os-v1.0.1-beta.7.1`；Release「AI-OS 1.0.1 Beta 7.1」（prerelease）https://github.com/russellchen001/AI-OS/releases/tag/ai-os-v1.0.1-beta.7.1 ；DMG `~/AI-OS/releases/AI-OS_1.0.1-beta.7.1_aarch64.dmg` SHA256 `a750622a3f8e50cd00b706ff8415589bff612e8696c835f4bca20a1a14605473`（唯一保留 DMG，Beta 7 DMG 已移入废纸篓，GitHub 上仍有）。安全 checks 29/29（Rust 1143/0/90），artifacts 2/2；用户确认 Claude 模型选择实测正常。
 - 唯一当前状态来源为本文件；设计以 AI_OS_MASTER_GUIDE.md 为参考。
 - 分支 beta7，发布基线 ccc3e5d44a26c6ae2b6ed0dff779238a5053dae2；版本 1.0.1-beta.7。
 - 用户已明确确认最终人工验收完成。B7-01 至 B7-08 功能开发完成并冻结；本轮不新增功能。
@@ -18,8 +19,9 @@
 - 型号标签去写死（3f2a510、46248f8，用户要求）：My AI 云端卡片不再带写死型号（原 OpenAI 显示 GPT-5.6，而账号实际验证默认为 GPT-6.1-Sol）；已连接卡片显示该连接 generation-verified 的模型（默认在前，最多 3 个），未连接不显示型号。前端备用目录只给无列表 API 的 Doubao、compatible 保留占位（须真实请求验证）；OpenAI/Anthropic/Google/xAI/DeepSeek/OpenRouter/Kimi/Meta 不再回退到臆造型号。src/config/modelPricing.ts 是计价表，按型号 ID 估算成本，未改。verify/verify_beta7_provider_card_models.sh PASS；grok_account、claude_setup、provider_stability、information_architecture、unified_credentials、cli_provider_manager、p15_gm_4 PASS；npm run build、git diff --check PASS。
 - RC2–RC4 均已被正式包取代并移入废纸篓。未完成（人工、非阻塞）：在未登录 Grok CLI 的机器上看 `grok login` 提示。用户 2026-11-09 确认 RC4 卡片型号与断开按钮正常。
 
-## 发布后开发（下一版，未发布）
-- 1f5d950（本地，未推送）：Claude Code 账号登录可在 AI-OS 内选模型。可选项 = 账号默认 + 本机 Claude Code `--help` 中 `--model` 列出的别名（当前 fable/opus/sonnet，随 CLI 更新），每个须真实 Verify 才进聊天；拒绝以 `-` 开头或含空白的模型 ID，防参数注入。verify/verify_beta7_claude_models.sh PASS；安全 checks 29/29（Rust 1143/0/90）。测试包 `~/AI-OS/releases/candidates/AI_OS_1.0.1-beta.7_TEST_CLAUDE_MODELS_1f5d950_UNSIGNED_NOT_NOTARIZED_aarch64.dmg` SHA256 `4280639312c4d7aadc1b83ec813fa3757a1d404d13e7b472fd5225636e2f1867`。待人工：Refresh model catalog 后逐个 Verify 并在聊天切换；Pro 等套餐可能无某些模型，应显示验证失败而非已连接。版本号仍为 1.0.1-beta.7，发布前需升版本。
+## Beta 7.1 内容
+- 1f5d950：Claude Code 账号登录可在 AI-OS 内选模型（账号默认 + 本机 Claude Code `--help` 列出的 `--model` 别名，当前 fable/opus/sonnet），每个须真实 Verify 才进聊天；拒绝选项样式的模型 ID。verify/verify_beta7_claude_models.sh。
+- 236d279：版本号升至 1.0.1-beta.7.1（package、lock、Cargo、tauri.conf、constants、verify_beta_version、RC 构建路径）。
 
 ## 已完成
 | ID | 功能 | 状态 |
@@ -80,7 +82,7 @@
 - 不删除、重置或无授权改写现有 Keychain/Provider 凭据；原生集成测试只用随机测试项。
 
 ## 当前候选
-- 正式发布包（唯一保留 DMG）：`~/AI-OS/releases/AI-OS_1.0.1-beta.7_aarch64.dmg`，SHA256 `e01786ccb23124485e12ca61f0a155729e04c34cb77ba1e2307423a1bb95d0f0`，构建提交 76e6b19，ad-hoc、未公证，codesign --verify --deep --strict 与 hdiutil verify PASS。旧 RC1 路径及以下清理节中的"当前唯一朋友测试包"均为历史，已被取代。
+- 当前发布包（唯一保留 DMG）：`~/AI-OS/releases/AI-OS_1.0.1-beta.7.1_aarch64.dmg`，SHA256 `a750622a3f8e50cd00b706ff8415589bff612e8696c835f4bca20a1a14605473`，构建提交 236d279，ad-hoc、未公证，codesign --verify --deep --strict 与 hdiutil verify PASS。Beta 7（e01786cc…，76e6b19）、旧 RC1 路径及以下清理节中的"当前唯一朋友测试包"均为历史，已被取代。
 - 新签名未执行本人首次授权，不将人工 PASS 扩大为跨重建零弹窗承诺；正式签名后的升级和授权仍需验证。
 
 ## RC 交友测试前清理（2026-11-08）
