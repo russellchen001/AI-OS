@@ -24,6 +24,7 @@ export default function FirstLaunchOnboarding({ workspaceActive = true, onOpenMy
   return (
     <div className="first-launch-backdrop" role="presentation">
       <section className="first-launch-card" role="dialog" aria-modal="true" aria-labelledby="first-launch-title">
+        <div className="first-launch-content">
         <p className="first-launch-kicker">Beta 7 setup · Step {Math.min(setup.step + 1, 3)} of 3</p>
         {(setup.error || setup.diagnostics?.diagnostic) && <p role="alert">{setup.error || setup.diagnostics?.diagnostic}</p>}
         {setup.step === 0 ? <>
@@ -45,8 +46,12 @@ export default function FirstLaunchOnboarding({ workspaceActive = true, onOpenMy
           {setup.diagnostics?.providerConnected && <p role="status">AI 已连接。这是设置的最后一步；可选权限可以以后再开启。点击“完成设置，开始聊天”即可完成全部三步。</p>}
           <p>OpenClaw: {setup.diagnostics?.openClawState ?? "checking"} (optional)</p>
           {setup.diagnostics?.vault && <details><summary>Credential access diagnostics</summary><p>This app session (process {setup.diagnostics.vault.pid}): vault reads {setup.diagnostics.vault.readCalls}, writes {setup.diagnostics.vault.writeCalls}, legacy reads {setup.diagnostics.vault.legacyReadCalls}. These are storage accesses, not permission-window counts. Run diagnostics again to refresh.</p><p>Metadata-only logs: ~/Library/Logs/AI OS/vault-access-*.jsonl. No passwords or tokens are included.</p></details>}
-          <div className="first-launch-actions">{!setup.diagnostics?.providerConnected && <button type="button" className="secondary-button" onClick={openMyAi}>Open My AI</button>}<button type="button" className="secondary-button" disabled={setup.busy} onClick={() => void setup.refresh()}>Run diagnostics</button>{setup.diagnostics?.openClawState === "broken" && <button type="button" className="secondary-button" disabled={setup.busy} onClick={() => void setup.repairOpenClaw()}>Repair OpenClaw</button>}<button type="button" className="secondary-button" onClick={openAgents}>Manage Agents</button><button type="button" disabled={!setup.diagnostics?.providerConnected} onClick={startChat}>完成设置，开始聊天</button></div>
+          <div className="first-launch-actions">{!setup.diagnostics?.providerConnected && <button type="button" className="secondary-button" onClick={openMyAi}>Open My AI</button>}<button type="button" className="secondary-button" disabled={setup.busy} onClick={() => void setup.refresh()}>Run diagnostics</button>{setup.diagnostics?.openClawState === "broken" && <button type="button" className="secondary-button" disabled={setup.busy} onClick={() => void setup.repairOpenClaw()}>Repair OpenClaw</button>}<button type="button" className="secondary-button" onClick={openAgents}>Manage Agents</button></div>
         </>}
+        </div>
+        {setup.step === 2 && <div className="first-launch-footer">
+          <button type="button" className="action-button" disabled={!setup.diagnostics?.providerConnected} onClick={startChat}>完成设置，开始聊天</button>
+        </div>}
       </section>
     </div>
   );
