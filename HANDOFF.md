@@ -18,6 +18,9 @@
 - 型号标签去写死（3f2a510、46248f8，用户要求）：My AI 云端卡片不再带写死型号（原 OpenAI 显示 GPT-5.6，而账号实际验证默认为 GPT-6.1-Sol）；已连接卡片显示该连接 generation-verified 的模型（默认在前，最多 3 个），未连接不显示型号。前端备用目录只给无列表 API 的 Doubao、compatible 保留占位（须真实请求验证）；OpenAI/Anthropic/Google/xAI/DeepSeek/OpenRouter/Kimi/Meta 不再回退到臆造型号。src/config/modelPricing.ts 是计价表，按型号 ID 估算成本，未改。verify/verify_beta7_provider_card_models.sh PASS；grok_account、claude_setup、provider_stability、information_architecture、unified_credentials、cli_provider_manager、p15_gm_4 PASS；npm run build、git diff --check PASS。
 - RC2–RC4 均已被正式包取代并移入废纸篓。未完成（人工、非阻塞）：在未登录 Grok CLI 的机器上看 `grok login` 提示。用户 2026-11-09 确认 RC4 卡片型号与断开按钮正常。
 
+## 发布后开发（下一版，未发布）
+- 1f5d950（本地，未推送）：Claude Code 账号登录可在 AI-OS 内选模型。可选项 = 账号默认 + 本机 Claude Code `--help` 中 `--model` 列出的别名（当前 fable/opus/sonnet，随 CLI 更新），每个须真实 Verify 才进聊天；拒绝以 `-` 开头或含空白的模型 ID，防参数注入。verify/verify_beta7_claude_models.sh PASS；安全 checks 29/29（Rust 1143/0/90）。测试包 `~/AI-OS/releases/candidates/AI_OS_1.0.1-beta.7_TEST_CLAUDE_MODELS_1f5d950_UNSIGNED_NOT_NOTARIZED_aarch64.dmg` SHA256 `4280639312c4d7aadc1b83ec813fa3757a1d404d13e7b472fd5225636e2f1867`。待人工：Refresh model catalog 后逐个 Verify 并在聊天切换；Pro 等套餐可能无某些模型，应显示验证失败而非已连接。版本号仍为 1.0.1-beta.7，发布前需升版本。
+
 ## 已完成
 | ID | 功能 | 状态 |
 |---|---|---|
