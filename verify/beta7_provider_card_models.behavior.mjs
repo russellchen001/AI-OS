@@ -9,7 +9,7 @@ const result = await build({ entryPoints: ['src/services/providers.ts'], bundle:
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const invoke=async()=>{throw new Error("no native layer")};' }));
   } }],
 });
-const { connectedModelLabels } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
+const { connectedModelLabels, discoverKnownModels } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 
 const model = (displayName, extra = {}) => ({ id: displayName, providerInstanceId: 'openai-account', remoteModelId: displayName,
   displayName, capabilities: ['chat'], enabled: true, isDefault: false, availability: 'verified', ...extra });
@@ -17,7 +17,15 @@ const instance = (models) => ({ id: 'openai-account', providerId: 'openai', disp
   credential: { kind: 'oauth', refreshable: true }, connectionState: 'connected', createdAt: '', updatedAt: '' });
 
 assert.deepEqual(connectedModelLabels(undefined), []);
-console.log('✅ No connection → card keeps its generic examples');
+console.log('✅ No connection → card names no model');
+
+for (const providerId of ['openai', 'anthropic', 'google', 'grok', 'deepseek', 'openrouter', 'kimi', 'meta', 'unknown']) {
+  assert.deepEqual(discoverKnownModels(providerId, `${providerId}-x`), [], providerId);
+}
+const doubao = discoverKnownModels('doubao', 'doubao-x');
+assert.equal(doubao.length, 1);
+assert.equal(doubao[0].availability, undefined, 'placeholder must stay unverified until a real request');
+console.log('✅ Providers with a native catalog never fall back to invented model names');
 
 assert.deepEqual(connectedModelLabels(instance([
   model('GPT-5.6'), model('GPT-6.1-Sol', { isDefault: true }), model('GPT-6.1-Mini'),

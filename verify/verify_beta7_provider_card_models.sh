@@ -10,4 +10,4 @@ else
   exit 1
 fi
 echo "PASS: $FEATURE"
-echo "MANUAL: My AI 已连接的卡片显示该连接验证过的模型（如 OpenAI 显示 GPT-6.1-Sol），未连接卡片显示通用示例。"
+echo "MANUAL: My AI 已连接的卡片显示该连接验证过的模型（如 OpenAI 显示 GPT-6.1-Sol），未连接卡片不显示型号。"

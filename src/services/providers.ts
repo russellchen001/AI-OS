@@ -12,28 +12,11 @@ export const PROVIDERS_CHANGED_EVENT = "ai-os:providers-changed";
 let providerInstanceCache: ProviderInstance[] = [];
 let providerInitialization: Promise<ProviderInstance[]> | undefined;
 
-const KNOWN_MODELS: Record<string, Array<{ id: string; name: string }>> = {
-  openai: [
-    { id: "gpt-5.6", name: "GPT‑5.6" },
-    { id: "gpt-5.6-codex", name: "GPT‑5.6 Codex" },
-  ],
-  anthropic: [
-    { id: "claude-opus", name: "Claude Opus" },
-    { id: "claude-sonnet", name: "Claude Sonnet" },
-  ],
-  google: [
-    { id: "gemini-pro", name: "Gemini Pro" },
-    { id: "gemini-flash", name: "Gemini Flash" },
-  ],
-  grok: [{ id: "grok-4.5", name: "Grok 4.5" }],
-  deepseek: [
-    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
-    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
-  ],
-  openrouter: [{ id: "openrouter/auto", name: "OpenRouter Auto" }],
+// Catalog-only Providers have no model listing API, so setup starts from a
+// placeholder that a real request must verify. Providers with a native
+// catalog never fall back to invented model names.
+const CATALOG_PLACEHOLDER_MODELS: Record<string, Array<{ id: string; name: string }>> = {
   doubao: [{ id: "doubao-seed", name: "Doubao Seed" }],
-  kimi: [{ id: "kimi-for-coding", name: "Kimi for Coding" }],
-  meta: [{ id: "muse-spark-1.1", name: "Muse Spark 1.1" }],
   compatible: [{ id: "default", name: "Default model" }],
 };
 
@@ -525,7 +508,7 @@ export function discoverKnownModels(
   providerId: ProviderId,
   providerInstanceId: string,
 ): ProviderModelEntry[] {
-  return (KNOWN_MODELS[providerId] ?? KNOWN_MODELS.compatible).map(
+  return (CATALOG_PLACEHOLDER_MODELS[providerId] ?? []).map(
     (model, index) => ({
       id: `${providerInstanceId}:${model.id}`,
       providerInstanceId,

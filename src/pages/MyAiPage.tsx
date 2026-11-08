@@ -107,7 +107,6 @@ type CloudProviderCard = {
   mark: string;
   name: string;
   description: string;
-  models: string[];
   accountLabel: string;
 };
 
@@ -117,7 +116,6 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "O",
     name: "OpenAI",
     description: "GPT and Codex models",
-    models: ["GPT‑5.6", "GPT‑5.6 Codex"],
     accountLabel: "Continue with ChatGPT",
   },
   {
@@ -125,7 +123,6 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "A",
     name: "Anthropic",
     description: "Claude models",
-    models: ["Claude Opus", "Claude Sonnet"],
     accountLabel: "Sign in with Claude",
   },
   {
@@ -133,7 +130,6 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "G",
     name: "Google",
     description: "Gemini models",
-    models: ["Gemini Pro", "Gemini Flash"],
     accountLabel: "Sign in with Google",
   },
   {
@@ -141,7 +137,6 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "X",
     name: "xAI",
     description: "Grok models",
-    models: ["Grok 4.7"],
     accountLabel: "Sign in with Grok",
   },
   {
@@ -149,7 +144,6 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "D",
     name: "DeepSeek",
     description: "DeepSeek chat and reasoning models",
-    models: ["DeepSeek V4 Flash", "DeepSeek V4 Pro"],
     accountLabel: "",
   },
   {
@@ -157,7 +151,6 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "R",
     name: "OpenRouter",
     description: "One connection for models from many providers",
-    models: ["Auto Router", "Open models"],
     accountLabel: "Sign in with OpenRouter",
   },
   {
@@ -165,7 +158,6 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "K",
     name: "Kimi Code",
     description: "Kimi coding subscription and API models",
-    models: ["Kimi for Coding"],
     accountLabel: "Sign in with Kimi",
   },
   {
@@ -173,7 +165,6 @@ export const cloudProviders: CloudProviderCard[] = [
     mark: "M",
     name: "Meta",
     description: "Muse Spark through Meta Model API",
-    models: ["Muse Spark 1.1"],
     accountLabel: "",
   },
 ];
@@ -1188,8 +1179,8 @@ function MyAiPage({
           );
           const legacyConnected = configuredProviderIds.has(provider.id) && !instance;
           const apiKeyOnly = supportsApiKey && !supportsAccountSignIn;
-          const verifiedModels = connectedModelLabels(instance);
-          const cardModels = verifiedModels.length ? verifiedModels : provider.models;
+          // Only models this connection has verified; no hard-coded examples.
+          const cardModels = connectedModelLabels(instance);
 
           const statusLabel =
             instance?.connectionState === "connected"
@@ -1216,9 +1207,11 @@ function MyAiPage({
               </span>
             </div>
 
-            <div className="provider-models">
-              {cardModels.map((model) => <span key={model}>{model}</span>)}
-            </div>
+            {cardModels.length > 0 && (
+              <div className="provider-models">
+                {cardModels.map((model) => <span key={model}>{model}</span>)}
+              </div>
+            )}
 
             <div className="provider-actions">
 <button
